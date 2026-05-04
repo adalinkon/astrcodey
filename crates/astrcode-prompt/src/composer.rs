@@ -40,6 +40,7 @@ mod tests {
             identity: None,
             user_rules: None,
             project_rules: None,
+            tools: vec![],
             extension_blocks: vec![],
             extra_instructions: None,
         }

@@ -293,6 +293,7 @@ pub(crate) async fn build_system_prompt_snapshot(
     let extra_instructions = non_empty(extra_system_prompt.unwrap_or_default());
 
     let identity = pipeline::load_identity_md(&pipeline::user_identity_md_path());
+    let user_rules = pipeline::load_user_rules(&pipeline::user_agents_md_path());
     let project_rules = pipeline::load_project_rules(std::path::Path::new(working_dir));
 
     let input = SystemPromptInput {
@@ -301,8 +302,9 @@ pub(crate) async fn build_system_prompt_snapshot(
         shell: resolve_shell().name,
         date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
         identity,
-        user_rules: None,
+        user_rules,
         project_rules,
+        tools: tools.to_vec(),
         extension_blocks,
         extra_instructions,
     };

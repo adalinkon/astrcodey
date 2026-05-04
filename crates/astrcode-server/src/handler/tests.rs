@@ -340,7 +340,7 @@ async fn create_session_configures_system_prompt() {
         if let ClientNotification::Event(event) = recv_event(&mut event_rx).await {
             if let EventPayload::SystemPromptConfigured { text, fingerprint } = event.payload {
                 saw_configured = true;
-                assert!(text.contains("# Identity"));
+                assert!(text.contains("[Identity]"));
                 assert!(!fingerprint.is_empty());
             }
         }
@@ -352,7 +352,7 @@ async fn create_session_configures_system_prompt() {
         state
             .system_prompt
             .as_deref()
-            .is_some_and(|prompt| prompt.contains("# Identity"))
+            .is_some_and(|prompt| prompt.contains("[Identity]"))
     );
     assert!(state.messages.is_empty());
 }
@@ -436,7 +436,7 @@ async fn submit_prompt_configures_missing_session_system_prompt() {
         state
             .system_prompt
             .as_deref()
-            .is_some_and(|prompt| prompt.contains("# Identity"))
+            .is_some_and(|prompt| prompt.contains("[Identity]"))
     );
 }
 

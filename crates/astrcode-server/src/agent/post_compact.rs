@@ -246,17 +246,21 @@ fn tool_origin_name(origin: ToolOrigin) -> &'static str {
 }
 
 fn extract_markdown_section<'a>(content: &'a str, heading: &str) -> Option<&'a str> {
-    let heading_line = format!("# {heading}");
+    let markdown_heading = format!("# {heading}");
+    let bracket_heading = format!("[{heading}]");
     let lines = markdown_lines(content);
-    let start = lines
-        .iter()
-        .position(|line| line.text.trim() == heading_line)?;
+    let start = lines.iter().position(|line| {
+        let text = line.text.trim();
+        text == markdown_heading || text == bracket_heading
+    })?;
     let byte_start = lines[start].end;
     let byte_end = lines
         .iter()
         .skip(start + 1)
         .find_map(|line| {
-            (line.text.starts_with("# ") && line.text.trim() != heading_line).then_some(line.start)
+            let text = line.text.trim();
+            (text.starts_with("# ") || (text.starts_with('[') && text.ends_with(']')))
+                .then_some(line.start)
         })
         .unwrap_or(content.len());
     let section = content[byte_start..byte_end].trim();
@@ -441,6 +445,15 @@ mod tests {
         let note = skills_note(Some(system_prompt)).unwrap();
 
         assert_eq!(note.body, "技能内容");
+    }
+
+    #[test]
+    fn skill_section_extraction_handles_bracket_headings() {
+        let system_prompt = "[Identity]\nbody\n\n[Skills]\nskill body\n\n[Agents]\nagent list";
+
+        let note = skills_note(Some(system_prompt)).unwrap();
+
+        assert_eq!(note.body, "skill body");
     }
 
     #[test]
