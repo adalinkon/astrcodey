@@ -193,7 +193,7 @@ fn render_spec_to_lines(
                 render_spec_to_lines(child, lines, width, theme, &child_prefix);
             }
         },
-        RenderSpec::List { items, tone: _, .. } => {
+        RenderSpec::List { items, .. } => {
             for item in items {
                 match item {
                     RenderSpec::Text { text, tone: _ } => {
