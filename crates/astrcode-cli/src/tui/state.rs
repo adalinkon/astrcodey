@@ -111,6 +111,31 @@ pub enum ScrollbackEntry {
     BlankLine,
 }
 
+/// 底部面板中的运行态活动，不进入终端 scrollback。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskActivity {
+    /// 活动标题，如当前轮次或工具名。
+    pub title: String,
+    /// 可选的短状态详情。
+    pub detail: Option<String>,
+}
+
+impl TaskActivity {
+    fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            detail: None,
+        }
+    }
+
+    fn with_detail(title: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            detail: Some(detail.into()),
+        }
+    }
+}
+
 /// 焦点位置枚举，指示当前激活的 UI 区域。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -150,6 +175,8 @@ pub struct TuiState {
     pub status: String,
     /// 最近一次错误信息
     pub error: Option<String>,
+    /// 当前运行态活动，只渲染在底部面板，不写入 scrollback。
+    pub task_activity: Option<TaskActivity>,
     /// 当前使用的模型名称
     pub model_name: String,
     /// 当前工作目录
@@ -219,6 +246,7 @@ impl TuiState {
             slash_selected: 0,
             status: "Ready".into(),
             error: None,
+            task_activity: None,
             model_name: String::new(),
             working_dir: String::new(),
             dirty: true,
@@ -411,6 +439,7 @@ impl TuiState {
                 self.active_session_id = Some(session_id.clone());
                 self.working_dir = snapshot.working_dir.clone();
                 self.messages.clear();
+                self.task_activity = None;
                 self.stream_scrollback.clear();
                 self.transcript_scroll = 0;
                 for message in &snapshot.messages {
@@ -469,14 +498,18 @@ impl TuiState {
                 model_id,
                 ..
             } => {
-                self.active_session_id = Some(event.session_id.clone());
+                self.active_session_id = Some(event.session_id.to_string());
                 self.working_dir = working_dir.clone();
                 self.model_name = model_id.clone();
+                self.task_activity = None;
                 self.stream_scrollback.clear();
                 self.push_message(
                     MessageRole::System,
                     "Session".into(),
-                    format!("Created session {}", super::short_id(&event.session_id)),
+                    format!(
+                        "Created session {}",
+                        super::short_id(event.session_id.as_str())
+                    ),
                     false,
                     None,
                 );
@@ -493,41 +526,45 @@ impl TuiState {
             EventPayload::TurnStarted => {
                 self.is_streaming = true;
                 self.error = None;
+                self.task_activity = Some(TaskActivity::new("Working"));
                 self.status = "Working".into();
                 self.mark_dirty();
             },
             EventPayload::TurnCompleted { finish_reason } => {
                 self.is_streaming = false;
-                self.status = format!("Ready · {}", finish_reason);
+                self.task_activity = None;
+                self.status = ready_status(finish_reason);
                 self.mark_dirty();
             },
             // 用户消息在按下 Enter 时已乐观推入，此处无需处理
             EventPayload::UserMessage { .. } => {},
             EventPayload::AssistantMessageStarted { message_id } => {
                 self.stream_scrollback
-                    .insert(message_id.clone(), StreamScrollbackState::default());
+                    .insert(message_id.to_string(), StreamScrollbackState::default());
                 self.scrollback_queue.push(ScrollbackEntry::StreamHeader {
                     role: MessageRole::Assistant,
                     label: "Astrcode".into(),
                 });
+                self.task_activity = Some(TaskActivity::new("Working"));
                 self.push_message(
                     MessageRole::Assistant,
                     "Astrcode".into(),
                     String::new(),
                     true,
-                    Some(message_id.clone()),
+                    Some(message_id.to_string()),
                 );
             },
             EventPayload::AssistantTextDelta { message_id, delta } => {
-                if let Some(message) = self.find_message_mut(message_id) {
+                if let Some(message) = self.find_message_mut(message_id.as_str()) {
                     message.body.append_text(delta);
                     self.mark_dirty();
                 }
-                self.push_assistant_stream_delta(message_id, delta);
+                self.push_assistant_stream_delta(message_id.as_str(), delta);
             },
             EventPayload::AssistantMessageCompleted { message_id, text } => {
-                let streamed_to_scrollback = self.finish_assistant_stream(message_id, text);
-                if let Some(message) = self.find_message_mut(message_id) {
+                let streamed_to_scrollback =
+                    self.finish_assistant_stream(message_id.as_str(), text);
+                if let Some(message) = self.find_message_mut(message_id.as_str()) {
                     message.body.set_text(text.clone());
                     message.is_streaming = false;
                     if !streamed_to_scrollback {
@@ -543,33 +580,37 @@ impl TuiState {
                         "Astrcode".into(),
                         text.clone(),
                         false,
-                        Some(message_id.clone()),
+                        Some(message_id.to_string()),
                     );
                 }
             },
             EventPayload::ThinkingDelta { delta } => {
+                self.task_activity = Some(TaskActivity::with_detail("Thinking", delta.clone()));
                 self.status = format!("Thinking · {}", delta);
                 self.mark_dirty();
             },
             EventPayload::ToolCallStarted { call_id, tool_name } => {
                 // 不需要在消息记录中显示的工具仅更新状态栏
                 if !tool_display::should_print_tool(tool_name) {
+                    self.task_activity = Some(TaskActivity::new(format!("Running {tool_name}")));
                     self.status = format!("Running {}", tool_name);
                     self.mark_dirty();
                     return;
                 }
                 let display = tool_display::started(tool_name);
+                self.task_activity = Some(TaskActivity::new(display.label.clone()));
                 self.push_message(
                     MessageRole::Tool,
                     display.label,
                     display.body,
                     true,
-                    Some(call_id.clone()),
+                    Some(call_id.to_string()),
                 );
             },
             EventPayload::ToolCallArgumentsDelta { call_id, .. } => {
-                if let Some(message) = self.find_message_mut(call_id) {
+                if let Some(message) = self.find_message_mut(call_id.as_str()) {
                     let label = message.label.clone();
+                    self.task_activity = Some(TaskActivity::new(format!("Running {label}")));
                     self.status = format!("Running {label}");
                     self.mark_dirty();
                 }
@@ -580,12 +621,14 @@ impl TuiState {
                 arguments,
             } => {
                 if !tool_display::should_print_tool(tool_name) {
+                    self.task_activity = Some(TaskActivity::new(format!("Running {tool_name}")));
                     self.status = format!("Running {}", tool_name);
                     self.mark_dirty();
                     return;
                 }
                 let display = tool_display::requested(tool_name, arguments);
-                if let Some(message) = self.find_message_mut(call_id) {
+                self.task_activity = Some(TaskActivity::new(display.label.clone()));
+                if let Some(message) = self.find_message_mut(call_id.as_str()) {
                     message.label = display.label;
                     message.body.set_text(display.body);
                     self.mark_dirty();
@@ -595,13 +638,14 @@ impl TuiState {
                         display.label,
                         display.body,
                         true,
-                        Some(call_id.clone()),
+                        Some(call_id.to_string()),
                     );
                 }
             },
             EventPayload::ToolOutputDelta { call_id, .. } => {
-                if let Some(message) = self.find_message_mut(call_id) {
+                if let Some(message) = self.find_message_mut(call_id.as_str()) {
                     let label = message.label.clone();
+                    self.task_activity = Some(TaskActivity::new(format!("Receiving {label}")));
                     self.status = format!("Receiving {label}");
                     self.mark_dirty();
                 }
@@ -617,13 +661,15 @@ impl TuiState {
                     && !result.is_error
                     && render_spec.is_none()
                 {
+                    self.task_activity = None;
                     self.status = format!("{} completed", tool_name);
                     self.mark_dirty();
                     return;
                 }
                 let display = tool_display::completed(tool_name, result);
+                self.task_activity = None;
 
-                if let Some(message) = self.find_message_mut(call_id) {
+                if let Some(message) = self.find_message_mut(call_id.as_str()) {
                     if let Some(spec) = render_spec {
                         let spec = tool_display::completed_render_spec(tool_name, spec, result);
                         message.body.set_render(spec, result.content.clone());
@@ -651,7 +697,7 @@ impl TuiState {
                         display.label,
                         display.body,
                         false,
-                        Some(call_id.clone()),
+                        Some(call_id.to_string()),
                     );
                 } else if let Some(spec) = render_spec {
                     let spec = tool_display::completed_render_spec(tool_name, spec, result);
@@ -660,7 +706,7 @@ impl TuiState {
                         display.label,
                         spec,
                         result.content.clone(),
-                        Some(call_id.clone()),
+                        Some(call_id.to_string()),
                     );
                 } else if !display.body.is_empty() {
                     self.push_message(
@@ -668,7 +714,7 @@ impl TuiState {
                         display.label,
                         display.body,
                         false,
-                        Some(call_id.clone()),
+                        Some(call_id.to_string()),
                     );
                 }
             },
@@ -685,12 +731,14 @@ impl TuiState {
             | EventPayload::SessionContinuedFromCompaction { .. } => {},
             EventPayload::AgentRunStarted => {
                 self.is_streaming = true;
+                self.task_activity = Some(TaskActivity::new("Agent running"));
                 self.status = "Agent running".into();
                 self.mark_dirty();
             },
             EventPayload::AgentRunCompleted { reason } => {
                 self.is_streaming = false;
-                self.status = format!("Ready · {}", reason);
+                self.task_activity = None;
+                self.status = ready_status(reason);
                 self.mark_dirty();
             },
             EventPayload::ErrorOccurred { message, .. } => {
@@ -713,6 +761,7 @@ impl TuiState {
     fn show_error(&mut self, message: &str) {
         self.error = Some(message.into());
         self.is_streaming = false;
+        self.task_activity = None;
         self.push_message(
             MessageRole::Error,
             "Error".into(),
@@ -879,6 +928,14 @@ fn ui_render_from_metadata(metadata: &BTreeMap<String, serde_json::Value>) -> Op
     metadata
         .get(UI_RENDER_METADATA_KEY)
         .and_then(|value| serde_json::from_value(value.clone()).ok())
+}
+
+fn ready_status(reason: &str) -> String {
+    if reason == "stop" {
+        "Ready".into()
+    } else {
+        format!("Ready · {reason}")
+    }
 }
 
 #[cfg(test)]
@@ -1109,6 +1166,69 @@ mod tests {
             .scrollback_queue
             .iter()
             .any(|entry| matches!(entry, ScrollbackEntry::Message(message) if message.role == MessageRole::Assistant)));
+    }
+
+    #[test]
+    fn agent_run_status_does_not_enter_scrollback() {
+        let mut state = TuiState::new();
+
+        apply_payload(&mut state, EventPayload::AgentRunStarted);
+
+        assert!(state.is_streaming);
+        assert_eq!(
+            state
+                .task_activity
+                .as_ref()
+                .map(|activity| activity.title.as_str()),
+            Some("Agent running")
+        );
+        assert!(state.scrollback_queue.is_empty());
+
+        apply_payload(
+            &mut state,
+            EventPayload::AgentRunCompleted {
+                reason: "done".into(),
+            },
+        );
+
+        assert!(!state.is_streaming);
+        assert!(state.task_activity.is_none());
+        assert!(state.scrollback_queue.is_empty());
+    }
+
+    #[test]
+    fn normal_stop_reason_does_not_stick_in_idle_status() {
+        let mut state = TuiState::new();
+
+        apply_payload(
+            &mut state,
+            EventPayload::TurnCompleted {
+                finish_reason: "stop".into(),
+            },
+        );
+        assert_eq!(state.status, "Ready");
+
+        apply_payload(
+            &mut state,
+            EventPayload::AgentRunCompleted {
+                reason: "stop".into(),
+            },
+        );
+        assert_eq!(state.status, "Ready");
+    }
+
+    #[test]
+    fn actionable_completion_reason_stays_visible() {
+        let mut state = TuiState::new();
+
+        apply_payload(
+            &mut state,
+            EventPayload::AgentRunCompleted {
+                reason: "aborted".into(),
+            },
+        );
+
+        assert_eq!(state.status, "Ready · aborted");
     }
 
     #[test]

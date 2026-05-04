@@ -9,10 +9,6 @@ use ratatui::style::{Color, Modifier, Style};
 /// 通过 [`Theme::detect()`] 自动检测终端明暗并生成对应配色。
 #[derive(Debug, Clone)]
 pub struct Theme {
-    /// 普通边框样式
-    pub border: Style,
-    /// 激活状态边框样式（如聚焦的输入框）
-    pub border_active: Style,
     /// 用户消息标签样式
     pub user_label: Style,
     /// 助手消息标签样式
@@ -27,10 +23,6 @@ pub struct Theme {
     pub body: Style,
     /// 次要/暗淡文本样式
     pub dim: Style,
-    /// 状态栏文本样式
-    pub status: Style,
-    /// 忙碌状态标签样式
-    pub status_busy: Style,
     /// 底部信息栏样式
     pub footer: Style,
     /// 输入编辑器文本样式
@@ -56,11 +48,6 @@ impl Theme {
         } else {
             Color::Rgb(92, 92, 86)
         };
-        let border = if dark {
-            Color::Rgb(58, 58, 54)
-        } else {
-            Color::Rgb(198, 198, 188)
-        };
         let accent = if dark {
             Color::Rgb(192, 169, 112)
         } else {
@@ -78,8 +65,6 @@ impl Theme {
         };
 
         Self {
-            border: Style::default().fg(border),
-            border_active: Style::default().fg(accent),
             user_label: Style::default().fg(user).add_modifier(Modifier::BOLD),
             assistant_label: Style::default().fg(accent).add_modifier(Modifier::BOLD),
             tool_label: Style::default().fg(tool).add_modifier(Modifier::BOLD),
@@ -97,8 +82,6 @@ impl Theme {
                 Color::Rgb(35, 35, 32)
             }),
             dim: Style::default().fg(muted),
-            status: Style::default().fg(accent),
-            status_busy: Style::default().fg(tool).add_modifier(Modifier::BOLD),
             footer: Style::default().fg(muted),
             composer: Style::default().fg(if dark {
                 Color::Rgb(235, 235, 224)

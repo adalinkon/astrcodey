@@ -1,7 +1,6 @@
 //! 底部面板渲染层 + scrollback 消息行生成。
 //!
-//! transcript 内容通过 `insert_before()` 写入终端原生 scrollback，
-//! 此处只渲染固定高度的底部 UI。
+//! transcript 内容写入终端原生 scrollback，此处只渲染固定高度的底部 UI。
 
 use astrcode_core::render::{RenderSpec, RenderTone};
 use ratatui::{
@@ -20,47 +19,35 @@ use super::{
 };
 
 /// 主渲染入口：只渲染底部面板。
+///
+/// 布局从上到下：[空白缓冲(1), composer(N-2), footer(1)]。
+/// 顶部缓冲行永远留空——当终端缩小时，viewport 顶行会被终端模拟器
+/// 推入 scrollback，保持空白可避免出现可见的 ghost 内容。
 pub fn render(state: &TuiState, frame: &mut Frame<'_>, theme: &Theme) {
     let area = frame.area();
     let footer_height = area.height.min(1);
-    let status_height = if state.error.is_some() && area.height > footer_height {
-        1
-    } else {
-        0
-    };
-    let can_show_live = status_height == 0
-        && has_live_activity(state)
-        && area.height > footer_height + status_height + 2;
-    let live_height = u16::from(can_show_live);
-    let composer_available = area
-        .height
-        .saturating_sub(footer_height + status_height + live_height);
-    let composer_height = composer_available;
+    let buffer_height = u16::from(area.height > footer_height);
+    let composer_height = area.height.saturating_sub(footer_height + buffer_height);
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(status_height),
-            Constraint::Length(live_height),
+            Constraint::Length(buffer_height),
             Constraint::Length(composer_height),
             Constraint::Length(footer_height),
         ])
         .split(area);
 
-    if status_height > 0 {
-        render_status(state, frame, layout[0], theme);
-    }
-    if live_height > 0 {
-        render_live_activity(state, frame, layout[1], theme);
-    }
-    render_composer(state, frame, layout[2], theme);
-    render_footer(state, frame, layout[3], theme);
+    // buffer_height 行留空，不渲染任何内容
+
+    render_composer(state, frame, layout[1], theme);
+    render_footer(state, frame, layout[2], theme);
 
     if state.show_slash_palette {
         render_slash_palette(state, frame, area, theme);
     }
 }
 
-/// 将单条消息渲染为行列表，供 `insert_before()` 写入 scrollback。
+/// 将单条消息渲染为行列表，供主循环写入原生 scrollback。
 pub fn message_to_lines(msg: &Message, width: u16, theme: &Theme) -> Vec<Line<'static>> {
     let content_width = width.max(1) as usize;
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -75,8 +62,7 @@ pub fn message_to_lines(msg: &Message, width: u16, theme: &Theme) -> Vec<Line<'s
     )]));
 
     // 有 RenderSpec 时使用结构化渲染，否则 fallback 到 plain_text。
-    // 完成态 assistant 普通文本在前端本地按 block-first Markdown 解释，
-    // streaming 分片保持原样写入 scrollback，避免最终整段重排。
+    // 完成态 assistant 普通文本在前端本地按 block-first Markdown 解释。
     if let Some(spec) = msg.body.render_spec() {
         render_spec_to_lines(spec, &mut lines, content_width, theme, "  ");
     } else {
@@ -108,7 +94,7 @@ pub fn message_to_lines(msg: &Message, width: u16, theme: &Theme) -> Vec<Line<'s
     lines
 }
 
-/// 将 scrollback 条目渲染为行列表，供 `insert_before()` 写入。
+/// 将 scrollback 条目渲染为行列表，供主循环写入原生 scrollback。
 pub fn scrollback_entry_to_lines(
     entry: &ScrollbackEntry,
     width: u16,
@@ -599,52 +585,14 @@ fn text_width(text: &str) -> usize {
         .sum()
 }
 
-// ─── Status / Composer / Footer / Slash palette (unchanged) ─────────────────
-
-fn render_status(state: &TuiState, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    if area.height == 0 {
-        return;
-    }
-    let line = if let Some(error) = &state.error {
-        Line::from(vec![
-            Span::styled("error ", theme.error_label),
-            Span::styled(error.clone(), theme.body),
-        ])
-    } else if state.is_streaming {
-        Line::from(vec![
-            Span::styled("working ", theme.status_busy),
-            Span::styled(state.status.clone(), theme.body),
-        ])
-    } else {
-        Line::from(Span::styled(state.status.clone(), theme.status))
-    };
-    frame.render_widget(Paragraph::new(line), area);
-}
-
-fn render_live_activity(state: &TuiState, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    if area.height == 0 {
-        return;
-    }
-    frame.render_widget(
-        Paragraph::new(Text::from(activity_lines(state, area.width, theme))),
-        area,
-    );
-}
+// ─── Composer / Footer / Slash palette ─────────────────────────────────────
 
 fn render_composer(state: &TuiState, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     if area.height == 0 {
         return;
     }
     let active = state.focus == Focus::Input || state.focus == Focus::SlashPalette;
-    let block = Block::default()
-        .borders(Borders::TOP)
-        .border_style(if active {
-            theme.border_active
-        } else {
-            theme.border
-        });
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = area;
 
     let content_width = inner.width.max(1);
     let (lines, cursor) = composer_lines_and_cursor(state, content_width);
@@ -792,71 +740,6 @@ fn composer_lines_and_cursor(state: &TuiState, width: u16) -> (Vec<String>, (u16
 
 pub fn visual_lines(text: &str, width: usize) -> Vec<String> {
     layout_visual_text(text, width, None).lines
-}
-
-fn has_live_activity(state: &TuiState) -> bool {
-    latest_live_message(state).is_some() || should_show_status_activity(state)
-}
-
-fn activity_lines(state: &TuiState, width: u16, theme: &Theme) -> Vec<Line<'static>> {
-    if let Some(message) = latest_live_message(state) {
-        let (icon, style) = match message.role {
-            MessageRole::Assistant => ("●", theme.assistant_label),
-            MessageRole::Tool => ("⏺", theme.tool_label),
-            MessageRole::Error => ("✖", theme.error_label),
-            MessageRole::User => ("›", theme.user_label),
-            MessageRole::System => ("•", theme.system_label),
-        };
-        let prefix = format!("  {icon} ");
-        let mut text = message.label.clone();
-        if message.role == MessageRole::Assistant {
-            text.push_str(" streaming");
-        } else if let Some(summary) = compact_activity_summary(message.body.plain_text()) {
-            text.push_str(" · ");
-            text.push_str(&summary);
-        }
-        let available = width.saturating_sub(text_width(&prefix) as u16).max(1) as usize;
-        let text = fit_line(&text, available);
-        return vec![Line::from(vec![
-            Span::styled(prefix, style),
-            Span::styled(text, style),
-        ])];
-    }
-
-    if should_show_status_activity(state) {
-        let prefix = "  ● ";
-        let available = width.saturating_sub(text_width(prefix) as u16).max(1) as usize;
-        let status = fit_line(&state.status, available);
-        return vec![Line::from(vec![
-            Span::styled(prefix, theme.status_busy),
-            Span::styled(status, theme.body),
-        ])];
-    }
-
-    Vec::new()
-}
-
-fn latest_live_message(state: &TuiState) -> Option<&Message> {
-    state
-        .messages
-        .iter()
-        .rev()
-        .find(|message| message.is_streaming)
-}
-
-fn should_show_status_activity(state: &TuiState) -> bool {
-    state.is_streaming
-        || (!state.status.is_empty()
-            && !state.status.starts_with("Ready")
-            && !state.status.ends_with("session(s)")
-            && state.status != "Ready")
-}
-
-fn compact_activity_summary(text: &str) -> Option<String> {
-    text.lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
 }
 
 fn compact_path(path: &str) -> String {
@@ -1082,5 +965,28 @@ mod tests {
                 .iter()
                 .any(|line| line == "  Keep **bold** and `code` literal")
         );
+    }
+
+    #[test]
+    fn footer_does_not_render_status_text() {
+        let theme = Theme::detect();
+        let backend = ratatui::backend::TestBackend::new(72, 5);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut state = TuiState::new();
+        state.status = "Working".into();
+        state.task_activity = Some(super::super::state::TaskActivity {
+            title: "Agent running".into(),
+            detail: None,
+        });
+
+        terminal
+            .draw(|frame| render(&state, frame, &theme))
+            .unwrap();
+
+        let screen = terminal.backend().to_string();
+        assert!(!screen.contains("Working"));
+        assert!(!screen.contains("Agent running"));
+        assert!(!screen.contains("Ready"));
+        assert!(!screen.contains('─'));
     }
 }
