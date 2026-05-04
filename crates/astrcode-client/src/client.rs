@@ -49,7 +49,7 @@ impl<T: ClientTransport> AstrcodeClient<T> {
         };
         match self.send(&cmd).await? {
             ClientNotification::Event(event) => match event.payload {
-                EventPayload::SessionStarted { .. } => Ok(event.session_id),
+                EventPayload::SessionStarted { .. } => Ok(event.session_id.into_string()),
                 _ => Err(ClientError::UnexpectedResponse),
             },
             ClientNotification::Error { message, .. } => Err(ClientError::Server(message)),
@@ -97,7 +97,7 @@ impl<T: ClientTransport> AstrcodeClient<T> {
         };
         match self.send(&cmd).await? {
             ClientNotification::Event(event) => match event.payload {
-                EventPayload::SessionStarted { .. } => Ok(event.session_id),
+                EventPayload::SessionStarted { .. } => Ok(event.session_id.into_string()),
                 _ => Err(ClientError::UnexpectedResponse),
             },
             ClientNotification::Error { message, .. } => Err(ClientError::Server(message)),

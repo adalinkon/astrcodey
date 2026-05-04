@@ -6,7 +6,7 @@ use astrcode_core::{
     event::{Event, EventPayload},
     llm::{LlmError, LlmEvent, LlmMessage, LlmProvider, ModelLimits},
     tool::{ToolDefinition, ToolResult},
-    types::new_message_id,
+    types::{SessionId, new_message_id},
 };
 use astrcode_extensions::{runner::ExtensionRunner, runtime::ExtensionRuntime};
 use astrcode_protocol::{
@@ -174,7 +174,7 @@ async fn sse_receiver_lag_emits_rehydrate_and_closes() {
                 session_id.clone(),
                 None,
                 EventPayload::UserMessage {
-                    message_id: format!("message-{text}"),
+                    message_id: format!("message-{text}").into(),
                     text: text.into(),
                 },
             ))
@@ -249,6 +249,7 @@ async fn compact_route_returns_child_session_and_child_snapshot_hydrates() {
     let (event_tx, _) = broadcast::channel(64);
     let app = router(Arc::clone(&runtime), event_tx);
     let session_id = create_session(app.clone()).await;
+    let sid = SessionId::from(session_id.clone());
     let read_fixture = "target/post-compact-read-fixture.txt";
     fs::create_dir_all("target").unwrap();
     fs::write(read_fixture, "pub fn compact_restore_fixture() {}").unwrap();
@@ -256,7 +257,7 @@ async fn compact_route_returns_child_session_and_child_snapshot_hydrates() {
     runtime
         .session_manager
         .append_event(Event::new(
-            session_id.clone(),
+            sid.clone(),
             None,
             EventPayload::ToolCallRequested {
                 call_id: "read-call-1".into(),
@@ -269,7 +270,7 @@ async fn compact_route_returns_child_session_and_child_snapshot_hydrates() {
     runtime
         .session_manager
         .append_event(Event::new(
-            session_id.clone(),
+            sid.clone(),
             None,
             EventPayload::ToolCallCompleted {
                 call_id: "read-call-1".into(),
@@ -291,7 +292,7 @@ async fn compact_route_returns_child_session_and_child_snapshot_hydrates() {
         runtime
             .session_manager
             .append_event(Event::new(
-                session_id.clone(),
+                sid.clone(),
                 None,
                 EventPayload::UserMessage {
                     message_id: new_message_id(),
@@ -303,7 +304,7 @@ async fn compact_route_returns_child_session_and_child_snapshot_hydrates() {
         runtime
             .session_manager
             .append_event(Event::new(
-                session_id.clone(),
+                sid.clone(),
                 None,
                 EventPayload::AssistantMessageCompleted {
                     message_id: new_message_id(),
@@ -338,18 +339,15 @@ async fn compact_route_returns_child_session_and_child_snapshot_hydrates() {
     let sse = read_sse_until(stream_response.into_body(), "sessionContinued").await;
     assert!(sse.contains(&child_id));
 
-    let parent = runtime
-        .session_manager
-        .read_model(&session_id)
-        .await
-        .unwrap();
+    let parent = runtime.session_manager.read_model(&sid).await.unwrap();
     assert!(parent.context_messages.is_empty());
     assert_eq!(parent.messages.len(), 8);
 
+    let child_id = SessionId::from(child_id);
     let child = runtime.session_manager.read_model(&child_id).await.unwrap();
     assert_eq!(
-        child.parent_session_id.as_deref(),
-        Some(session_id.as_str())
+        child.parent_session_id.as_ref().map(SessionId::as_str),
+        Some(sid.as_str())
     );
     assert!(!child.context_messages.is_empty());
     let restored_context = child
@@ -371,7 +369,7 @@ async fn compact_route_returns_child_session_and_child_snapshot_hydrates() {
         &format!("/api/sessions/{child_id}/conversation"),
     )
     .await;
-    assert_eq!(snapshot.session_id, child_id);
+    assert_eq!(snapshot.session_id, child_id.as_str());
     assert_eq!(snapshot.cursor.value, child.cursor());
     let _ = fs::remove_file(read_fixture);
 }

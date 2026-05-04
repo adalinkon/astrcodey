@@ -26,11 +26,7 @@ impl ExtensionContext for TestCtx {
         &self.wd
     }
     fn model_selection(&self) -> ModelSelection {
-        ModelSelection {
-            profile_name: String::new(),
-            model: String::new(),
-            provider_kind: String::new(),
-        }
+        ModelSelection::simple("")
     }
     fn config_value(&self, _: &str) -> Option<String> {
         None

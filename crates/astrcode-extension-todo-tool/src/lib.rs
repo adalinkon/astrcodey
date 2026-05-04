@@ -102,7 +102,8 @@ impl Extension for TodoToolExtension {
             return Err(ExtensionError::NotFound(tool_name.into()));
         }
 
-        let store = ProgressListStore::new(progress_store_root(&ctx.session_id, working_dir));
+        let store =
+            ProgressListStore::new(progress_store_root(ctx.session_id.as_str(), working_dir));
         Ok(match handle_todo_write(arguments, &store) {
             Ok(result) => result,
             Err(error) => ToolResult::text(
@@ -508,14 +509,8 @@ mod tests {
         ProgressListStore::new(test_root(name))
     }
 
-    fn session_root(name: &str) -> PathBuf {
-        let session_id = format!("session-{name}");
-        let working_dir = std::env::temp_dir()
-            .join("astrcode-todo-tool-tests")
-            .join(format!("workspace-{name}"))
-            .to_string_lossy()
-            .to_string();
-        let root = progress_store_root(&session_id, &working_dir);
+    fn reminder_root(name: &str) -> PathBuf {
+        let root = test_root(&format!("reminder-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         root
     }
@@ -672,7 +667,7 @@ mod tests {
 
     #[test]
     fn before_provider_request_injects_stale_nonempty_todo_reminder() {
-        let root = session_root("stale-reminder");
+        let root = reminder_root("stale");
         let store = ProgressListStore::new(root.clone());
         store
             .replace(vec![
@@ -710,7 +705,7 @@ mod tests {
 
     #[test]
     fn before_provider_request_skips_empty_todo_reminder() {
-        let root = session_root("empty-reminder");
+        let root = reminder_root("empty");
         let reminder = ProgressReminder::new(root);
         reminder
             .save_state(&ProgressReminderState {
@@ -726,7 +721,7 @@ mod tests {
 
     #[test]
     fn post_tool_use_resets_todo_write_staleness() {
-        let root = session_root("post-tool-reset");
+        let root = reminder_root("post-tool-reset");
         let reminder = ProgressReminder::new(root);
         reminder
             .save_state(&ProgressReminderState {

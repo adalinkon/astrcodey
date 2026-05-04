@@ -5,7 +5,7 @@ pub(super) fn session_snapshot(
     state: &astrcode_core::storage::SessionReadModel,
 ) -> SessionSnapshot {
     SessionSnapshot {
-        session_id: state.session_id.clone(),
+        session_id: state.session_id.to_string(),
         cursor: state.cursor(),
         messages: state.messages.iter().map(message_to_dto).collect(),
         model_id: state.model_id.clone(),

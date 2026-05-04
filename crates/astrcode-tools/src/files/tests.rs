@@ -14,7 +14,7 @@ use super::{shared::MAX_INLINE_IMAGE_BASE64_BYTES, *};
 
 fn empty_ctx() -> ToolExecutionContext {
     ToolExecutionContext {
-        session_id: String::new(),
+        session_id: String::new().into(),
         working_dir: String::new(),
         model_id: String::new(),
         available_tools: vec![],
@@ -44,7 +44,7 @@ impl ToolResultArtifactReader for FixedToolResultReader {
         char_offset: usize,
         max_chars: usize,
     ) -> Result<ToolResultArtifactSlice, StorageError> {
-        assert_eq!(session_id, "session-1");
+        assert_eq!(session_id.as_str(), "session-1");
         assert_eq!(path, self.path);
         assert_eq!(char_offset, 2);
         assert!(max_chars <= 60_000);

@@ -9,7 +9,7 @@ use std::{collections::HashSet, sync::Arc};
 use astrcode_context::manager::LlmContextAssembler;
 use astrcode_core::{
     event::{Event, EventPayload, ToolOutputStream},
-    types::{new_message_id, new_turn_id},
+    types::{SessionId, TurnId, new_message_id, new_turn_id},
 };
 use astrcode_extensions::{
     runner::ExtensionRunner,
@@ -50,6 +50,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
         parent_session_id: &str,
         request: SpawnRequest,
     ) -> Result<SpawnResult, String> {
+        let parent_session_id = SessionId::from(parent_session_id);
         let progress = ProgressTx::new(request.tool_call_id, request.event_tx);
         let child_name = request.name.clone();
         let user_prompt = request.user_prompt.clone();
@@ -57,7 +58,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
             Some(model) => model,
             None => {
                 self.session_manager
-                    .read_model(&parent_session_id.to_string())
+                    .read_model(&parent_session_id)
                     .await
                     .map_err(|e| format!("parent session {parent_session_id} not found: {e}"))?
                     .model_id
@@ -70,12 +71,12 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                 &request.working_dir,
                 &model_id,
                 2048,
-                Some(parent_session_id),
+                Some(&parent_session_id),
             )
             .await
             .map_err(|e| format!("create child session: {e}"))?;
 
-        let child_sid = create_event.session_id.to_string();
+        let child_sid = create_event.session_id.clone();
         let child_turn_id = new_turn_id();
 
         let tool_registry = build_tool_registry_snapshot(
@@ -92,7 +93,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
         }
         let (system_prompt, fingerprint) = build_system_prompt_snapshot(
             &self.extension_runner,
-            &child_sid,
+            child_sid.as_str(),
             &request.working_dir,
             &model_id,
             &prompt_tools,
@@ -239,7 +240,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                 );
                 Ok(SpawnResult {
                     content: output.text,
-                    child_session_id: final_child_sid,
+                    child_session_id: final_child_sid.into_string(),
                 })
             },
             Err(e) => Ok(SpawnResult {
@@ -272,7 +273,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                     );
                     format!("child agent error: {e}")
                 },
-                child_session_id: final_child_sid,
+                child_session_id: final_child_sid.into_string(),
             }),
         }
     }
@@ -301,7 +302,7 @@ impl ProgressTx {
             return;
         }
         let _ = tx.send(EventPayload::ToolOutputDelta {
-            call_id: call_id.clone(),
+            call_id: call_id.clone().into(),
             stream,
             delta,
         });
@@ -316,15 +317,15 @@ impl ProgressTx {
 
 async fn append_child_payload(
     session_manager: &SessionManager,
-    child_sid: &str,
-    child_turn_id: &str,
+    child_sid: &SessionId,
+    child_turn_id: &TurnId,
     payload: EventPayload,
 ) -> Result<(), String> {
     if payload.is_durable() {
         session_manager
             .append_event(Event::new(
-                child_sid.to_string(),
-                Some(child_turn_id.to_string()),
+                child_sid.clone(),
+                Some(child_turn_id.clone()),
                 payload,
             ))
             .await
@@ -335,12 +336,12 @@ async fn append_child_payload(
 
 async fn append_child_session_payload(
     session_manager: &SessionManager,
-    child_sid: &str,
+    child_sid: &SessionId,
     payload: EventPayload,
 ) -> Result<(), String> {
     if payload.is_durable() {
         session_manager
-            .append_event(Event::new(child_sid.to_string(), None, payload))
+            .append_event(Event::new(child_sid.clone(), None, payload))
             .await
             .map_err(|e| format!("append child session event: {e}"))?;
     }
@@ -535,7 +536,7 @@ mod tests {
 
         let result = spawner
             .spawn(
-                &parent.session_id,
+                parent.session_id.as_str(),
                 SpawnRequest {
                     name: "nested".into(),
                     system_prompt: "nested extra prompt".into(),
@@ -549,16 +550,14 @@ mod tests {
             )
             .await
             .unwrap();
+        let child_session_id = SessionId::from(result.child_session_id.clone());
 
-        let leaf = session_manager
-            .read_model(&result.child_session_id)
-            .await
-            .unwrap();
+        let leaf = session_manager.read_model(&child_session_id).await.unwrap();
         let previous_child_id = leaf
             .parent_session_id
             .clone()
             .expect("leaf should continue from a previous spawned child");
-        assert_ne!(previous_child_id, result.child_session_id);
+        assert_ne!(previous_child_id, child_session_id);
         assert_eq!(result.content, "leaf ok");
         assert!(llm.call_count.load(Ordering::SeqCst) >= 3);
 
@@ -569,7 +568,9 @@ mod tests {
         let mut ancestor_id = previous_child_id.clone();
         loop {
             let ancestor = session_manager.read_model(&ancestor_id).await.unwrap();
-            if ancestor.parent_session_id.as_deref() == Some(parent.session_id.as_str()) {
+            if ancestor.parent_session_id.as_ref().map(SessionId::as_str)
+                == Some(parent.session_id.as_str())
+            {
                 break;
             }
             ancestor_id = ancestor

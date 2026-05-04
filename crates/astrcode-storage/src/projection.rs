@@ -6,10 +6,11 @@ use astrcode_core::{
     event::{Event, EventPayload, Phase},
     llm::{LlmContent, LlmMessage, LlmRole},
     storage::{ConversationReadModel, SessionReadModel},
+    types::SessionId,
 };
 
 /// 从事件序列重建会话读模型。
-pub(crate) fn replay(session_id: String, events: &[Event]) -> SessionReadModel {
+pub(crate) fn replay(session_id: SessionId, events: &[Event]) -> SessionReadModel {
     let mut model = SessionReadModel::empty(session_id);
     for event in events {
         reduce(event, &mut model);
@@ -82,7 +83,7 @@ pub(crate) fn reduce(event: &Event, model: &mut SessionReadModel) {
             model.messages.push(LlmMessage {
                 role: LlmRole::Assistant,
                 content: vec![LlmContent::ToolCall {
-                    call_id: call_id.clone(),
+                    call_id: call_id.to_string(),
                     name: tool_name.clone(),
                     arguments: arguments.clone(),
                 }],
@@ -99,7 +100,7 @@ pub(crate) fn reduce(event: &Event, model: &mut SessionReadModel) {
             model.messages.push(LlmMessage {
                 role: LlmRole::Tool,
                 content: vec![LlmContent::ToolResult {
-                    tool_call_id: call_id.clone(),
+                    tool_call_id: call_id.to_string(),
                     content: result.content.clone(),
                     is_error: result.is_error,
                 }],

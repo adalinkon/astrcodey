@@ -162,6 +162,17 @@ pub struct ModelSelection {
     pub provider_kind: String,
 }
 
+impl ModelSelection {
+    /// 构造只有模型 ID 的选择信息，用于尚未携带完整 profile/provider 上下文的边界。
+    pub fn simple(model: impl Into<String>) -> Self {
+        Self {
+            profile_name: String::new(),
+            model: model.into(),
+            provider_kind: String::new(),
+        }
+    }
+}
+
 // ─── Default profiles (built-in) ─────────────────────────────────────────
 
 /// 生成内置的默认配置文件列表。

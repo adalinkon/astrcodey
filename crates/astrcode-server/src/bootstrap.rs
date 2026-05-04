@@ -78,8 +78,7 @@ pub async fn bootstrap() -> Result<ServerRuntime, BootstrapError> {
 /// 5. 初始化会话管理器和存储后端
 /// 6. 加载扩展并创建扩展运行器
 /// 7. 绑定扩展创建子会话的宿主能力
-/// 8. 初始化上下文窗口管理
-/// 9. 返回共享运行时容器
+/// 8. 返回共享运行时容器
 pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, BootstrapError> {
     // 1. 读取配置并解析成 EffectiveConfig。
     //
@@ -200,7 +199,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
         read_timeout_secs: effective.llm.read_timeout_secs,
     }));
 
-    // 9. 返回运行时容器。
+    // 8. 返回运行时容器。
     //
     // ServerRuntime 保存的是“共享基础设施”：session、LLM、prompt、扩展、
     // 配置和上下文预算。注意这里故意没有 tool_registry：
@@ -259,11 +258,7 @@ pub(crate) async fn build_system_prompt_snapshot(
     let mut ext_ctx = ServerExtensionContext::new(
         session_id.to_string(),
         working_dir.to_string(),
-        ModelSelection {
-            profile_name: String::new(),
-            model: model_id.to_string(),
-            provider_kind: String::new(),
-        },
+        ModelSelection::simple(model_id),
     );
     ext_ctx.set_tools(
         tools

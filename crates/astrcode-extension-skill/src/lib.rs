@@ -83,7 +83,11 @@ impl Extension for SkillExtension {
             return Err(ExtensionError::NotFound(tool_name.into()));
         }
 
-        Ok(handle_skill_tool(arguments, working_dir, &ctx.session_id))
+        Ok(handle_skill_tool(
+            arguments,
+            working_dir,
+            ctx.session_id.as_str(),
+        ))
     }
 }
 
@@ -739,11 +743,7 @@ mod tests {
         }
 
         fn model_selection(&self) -> ModelSelection {
-            ModelSelection {
-                profile_name: String::new(),
-                model: "mock".into(),
-                provider_kind: String::new(),
-            }
+            ModelSelection::simple("mock")
         }
 
         fn config_value(&self, _key: &str) -> Option<String> {

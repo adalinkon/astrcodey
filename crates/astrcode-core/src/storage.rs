@@ -33,7 +33,7 @@ pub trait EventStore: Send + Sync {
         session_id: &SessionId,
         working_dir: &str,
         model_id: &str,
-        parent_session_id: Option<&str>,
+        parent_session_id: Option<&SessionId>,
     ) -> Result<Event, StorageError>;
 
     /// 向会话的事件日志追加一个事件。

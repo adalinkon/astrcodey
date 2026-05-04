@@ -4,10 +4,15 @@ use astrcode_context::{compaction::CompactResult, manager::LlmContextAssembler};
 use astrcode_core::{
     config::{EffectiveConfig, LlmSettings, OpenAiApiMode},
     event::{Event, EventPayload, Phase},
+    extension::{
+        Extension, ExtensionContext, ExtensionError, ExtensionEvent, HookEffect, HookMode,
+        HookSubscription,
+    },
     llm::{LlmContent, LlmError, LlmEvent, LlmMessage, LlmProvider, ModelLimits},
     tool::ToolDefinition,
+    types::{SessionId, ToolCallId},
 };
-use astrcode_protocol::events::ClientNotification;
+use astrcode_protocol::{commands::ClientCommand, events::ClientNotification};
 use astrcode_storage::in_memory::InMemoryEventStore;
 use tokio::sync::mpsc;
 
@@ -74,6 +79,32 @@ impl LlmProvider for MockLlm {
 struct PendingLlm;
 
 struct InvalidSummaryLlm;
+
+struct FailSessionStartExtension;
+
+#[async_trait::async_trait]
+impl Extension for FailSessionStartExtension {
+    fn id(&self) -> &str {
+        "fail-session-start"
+    }
+
+    fn hook_subscriptions(&self) -> Vec<HookSubscription> {
+        vec![HookSubscription {
+            event: ExtensionEvent::SessionStart,
+            mode: HookMode::Blocking,
+            priority: 0,
+        }]
+    }
+
+    async fn on_event(
+        &self,
+        event: ExtensionEvent,
+        _ctx: &dyn ExtensionContext,
+    ) -> Result<HookEffect, ExtensionError> {
+        assert_eq!(event, ExtensionEvent::SessionStart);
+        Err(ExtensionError::Internal("session start failed".into()))
+    }
+}
 
 #[async_trait::async_trait]
 impl LlmProvider for PendingLlm {
@@ -246,7 +277,7 @@ fn compact_payload_helpers_split_projection_and_audit_fields() {
             continued_session_id,
             transcript_path: Some(path),
             ..
-        } if continued_session_id == "child" && path == "compact.jsonl"
+        } if continued_session_id.as_str() == "child" && path == "compact.jsonl"
     ));
     assert!(matches!(
         continued,
@@ -256,7 +287,7 @@ fn compact_payload_helpers_split_projection_and_audit_fields() {
             context_messages,
             retained_messages,
             ..
-        } if parent_session_id == "parent"
+        } if parent_session_id.as_str() == "parent"
             && parent_cursor == "7"
             && context_messages.len() == 1
             && retained_messages.len() == 1
@@ -324,6 +355,34 @@ async fn create_session_configures_system_prompt() {
             .is_some_and(|prompt| prompt.contains("# Identity"))
     );
     assert!(state.messages.is_empty());
+}
+
+#[tokio::test]
+async fn client_create_session_reports_start_hook_failure() {
+    let runtime = test_runtime();
+    runtime
+        .extension_runner
+        .register(Arc::new(FailSessionStartExtension))
+        .await;
+    let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(64);
+    let handler = CommandHandler::spawn_actor(runtime, event_tx);
+
+    let error = handler
+        .handle(ClientCommand::CreateSession {
+            working_dir: ".".into(),
+        })
+        .await
+        .unwrap_err();
+
+    assert!(error.contains("session start failed"));
+    let mut saw_error = false;
+    while let Ok(notification) = event_rx.try_recv() {
+        if let ClientNotification::Error { code, message } = notification {
+            saw_error = code == -32603 && message.contains("session start failed");
+            break;
+        }
+    }
+    assert!(saw_error, "client should receive create-session failure");
 }
 
 #[tokio::test]
@@ -430,7 +489,11 @@ async fn stale_pending_tool_calls_are_repaired_on_explicit_repair() {
         .unwrap();
     let stale_state = runtime.session_manager.read_model(&sid).await.unwrap();
     assert_eq!(stale_state.phase, Phase::CallingTool);
-    assert!(stale_state.pending_tool_calls.contains("call-1"));
+    assert!(
+        stale_state
+            .pending_tool_calls
+            .contains(&ToolCallId::from("call-1"))
+    );
 
     let (event_tx, _) = broadcast::channel(16);
     let (actor_tx, _actor_rx) = mpsc::unbounded_channel();
@@ -610,7 +673,10 @@ async fn compact_command_rewrites_provider_history_without_exposing_summary() {
     assert!(!parent_state.messages.is_empty());
 
     let state = runtime.session_manager.read_model(&child_id).await.unwrap();
-    assert_eq!(state.parent_session_id.as_deref(), Some(parent_id.as_str()));
+    assert_eq!(
+        state.parent_session_id.as_ref().map(SessionId::as_str),
+        Some(parent_id.as_str())
+    );
     assert!(!state.context_messages.is_empty());
     assert!(state.provider_messages().iter().any(|message| {
         message_to_dto(message)
@@ -770,7 +836,10 @@ async fn auto_compact_switches_active_session_to_continuation_child() {
     }
     assert_eq!(compaction_started_count, 1);
     let child_id = child_id.expect("compact boundary should create a child session");
-    assert_eq!(turn_completed_session.as_deref(), Some(child_id.as_str()));
+    assert_eq!(
+        turn_completed_session.as_ref().map(SessionId::as_str),
+        Some(child_id.as_str())
+    );
 
     let parent = runtime
         .session_manager
@@ -779,7 +848,10 @@ async fn auto_compact_switches_active_session_to_continuation_child() {
         .unwrap();
     assert!(parent.context_messages.is_empty());
     let child = runtime.session_manager.read_model(&child_id).await.unwrap();
-    assert_eq!(child.parent_session_id.as_deref(), Some(parent_id.as_str()));
+    assert_eq!(
+        child.parent_session_id.as_ref().map(SessionId::as_str),
+        Some(parent_id.as_str())
+    );
     assert!(!child.context_messages.is_empty());
     assert!(child.messages.iter().any(|message| {
         message_to_dto(message)

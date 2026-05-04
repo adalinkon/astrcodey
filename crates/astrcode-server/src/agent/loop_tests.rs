@@ -19,6 +19,7 @@ use astrcode_core::{
         ExecutionMode, Tool, ToolDefinition, ToolError, ToolExecutionContext, ToolOrigin,
         ToolResult,
     },
+    types::SessionId,
 };
 use astrcode_extensions::runner::ExtensionRunner;
 use astrcode_storage::in_memory::InMemoryEventStore;
@@ -1642,7 +1643,7 @@ async fn auto_compact_circuit_skips_forked_provider_after_repeated_failures() {
         call_count: AtomicUsize::new(0),
         compact_calls: AtomicUsize::new(0),
     });
-    let session_id = "auto-compact-fused-session".to_string();
+    let session_id = SessionId::from("auto-compact-fused-session");
     let auto_compact_failures = Arc::new(AutoCompactFailureTracker::default());
     for _ in 0..MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES {
         auto_compact_failures.record_provider_failure(&session_id);

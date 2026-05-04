@@ -51,7 +51,7 @@ impl EventStore for InMemoryEventStore {
         session_id: &SessionId,
         working_dir: &str,
         model_id: &str,
-        parent_session_id: Option<&str>,
+        parent_session_id: Option<&SessionId>,
     ) -> Result<Event, StorageError> {
         let mut event = Event::new(
             session_id.clone(),
@@ -59,7 +59,7 @@ impl EventStore for InMemoryEventStore {
             EventPayload::SessionStarted {
                 working_dir: working_dir.into(),
                 model_id: model_id.into(),
-                parent_session_id: parent_session_id.map(|s| s.to_string()),
+                parent_session_id: parent_session_id.cloned(),
             },
         );
         // EventLog seq 是会话内 0-indexed；第一条 SessionStarted 为 0。
@@ -190,7 +190,7 @@ impl EventStore for InMemoryEventStore {
             .ok_or_else(|| StorageError::NotFound(session_id.clone()))?;
         for suffix in 0..1000 {
             let path = format_memory_tool_result_path(
-                session_id,
+                session_id.as_str(),
                 &artifact.tool_name,
                 &artifact.call_id,
                 suffix,

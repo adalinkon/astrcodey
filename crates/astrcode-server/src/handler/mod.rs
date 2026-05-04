@@ -12,7 +12,7 @@ use astrcode_core::{
     llm::{LlmContent, LlmMessage, LlmRole},
     storage::SessionReadModel,
     tool::ToolResult,
-    types::{SessionId, TurnId, new_message_id, new_turn_id},
+    types::{SessionId, ToolCallId, TurnId, new_message_id, new_turn_id},
 };
 use astrcode_extensions::context::ServerExtensionContext;
 use astrcode_protocol::{
@@ -96,7 +96,7 @@ impl CommandHandler {
     pub async fn handle(&mut self, cmd: ClientCommand) -> Result<(), String> {
         match cmd {
             ClientCommand::CreateSession { working_dir } => {
-                let _ = self.create_session(working_dir).await;
+                self.create_session(working_dir).await?;
             },
 
             ClientCommand::SubmitPrompt { text, .. } => {
@@ -112,11 +112,11 @@ impl CommandHandler {
                     .unwrap_or_default()
                     .into_iter()
                     .map(|summary| SessionListItem {
-                        session_id: summary.session_id,
+                        session_id: summary.session_id.into_string(),
                         created_at: summary.created_at,
                         last_active_at: summary.updated_at,
                         working_dir: summary.working_dir,
-                        parent_session_id: summary.parent_session_id,
+                        parent_session_id: summary.parent_session_id.map(SessionId::into_string),
                     })
                     .collect();
                 let _ = self
@@ -138,20 +138,17 @@ impl CommandHandler {
 
             ClientCommand::ResumeSession { session_id }
             | ClientCommand::SwitchSession { session_id } => {
-                self.resume_session(session_id).await;
+                self.resume_session(session_id.into()).await;
             },
 
             ClientCommand::DeleteSession { session_id } => {
+                let session_id = SessionId::from(session_id);
                 // Dispatch SessionShutdown hook before deletion
                 {
                     let ext_ctx = ServerExtensionContext::new(
-                        session_id.clone(),
+                        session_id.to_string(),
                         String::new(),
-                        ModelSelection {
-                            profile_name: String::new(),
-                            model: self.runtime.effective.llm.model_id.clone(),
-                            provider_kind: String::new(),
-                        },
+                        ModelSelection::simple(self.runtime.effective.llm.model_id.clone()),
                     );
                     if let Err(e) = self
                         .runtime
@@ -191,7 +188,7 @@ impl CommandHandler {
             Ok(state) => {
                 let snapshot = session_snapshot(&state);
                 let _ = self.event_tx.send(ClientNotification::SessionResumed {
-                    session_id,
+                    session_id: session_id.into_string(),
                     snapshot,
                 });
             },
@@ -212,13 +209,9 @@ impl CommandHandler {
                 self.active_session_id = Some(event.session_id.clone());
                 let _ = self.event_tx.send(ClientNotification::Event(event.clone()));
                 let ext_ctx = ServerExtensionContext::new(
-                    event.session_id.clone(),
+                    event.session_id.to_string(),
                     working_dir.clone(),
-                    ModelSelection {
-                        profile_name: String::new(),
-                        model: self.runtime.effective.llm.model_id.clone(),
-                        provider_kind: String::new(),
-                    },
+                    ModelSelection::simple(self.runtime.effective.llm.model_id.clone()),
                 );
                 if let Err(e) = self
                     .runtime
@@ -416,7 +409,7 @@ impl CommandHandler {
                 }
                 self.active_session_id = Some(session_id.clone());
                 let _ = self.event_tx.send(ClientNotification::SessionResumed {
-                    session_id,
+                    session_id: session_id.into_string(),
                     snapshot,
                 });
             },
@@ -446,13 +439,9 @@ impl CommandHandler {
         self.active_session_id = Some(sid.clone());
         let _ = self.event_tx.send(ClientNotification::Event(event));
         let ext_ctx = ServerExtensionContext::new(
-            sid.clone(),
+            sid.to_string(),
             wd.clone(),
-            ModelSelection {
-                profile_name: String::new(),
-                model: self.runtime.effective.llm.model_id.clone(),
-                provider_kind: String::new(),
-            },
+            ModelSelection::simple(self.runtime.effective.llm.model_id.clone()),
         );
         self.runtime
             .extension_runner
@@ -515,7 +504,7 @@ impl CommandHandler {
         let tools = tool_registry.list_definitions();
         let (system_prompt, fingerprint) = build_system_prompt_snapshot(
             &self.runtime.extension_runner,
-            session_id,
+            session_id.as_str(),
             working_dir,
             &self.runtime.effective.llm.model_id,
             &tools,
@@ -678,7 +667,7 @@ impl CommandHandler {
                 session_id,
                 None,
                 EventPayload::ToolCallCompleted {
-                    call_id: pending.call_id.clone(),
+                    call_id: pending.call_id.clone().into(),
                     tool_name: pending.tool_name,
                     result: interrupted_tool_result(&pending.call_id),
                 },
@@ -799,7 +788,7 @@ fn pending_requested_tool_calls(state: &SessionReadModel) -> Vec<PendingRequeste
             let LlmContent::ToolCall { call_id, name, .. } = content else {
                 continue;
             };
-            if remaining.remove(call_id) {
+            if remaining.remove(&ToolCallId::from(call_id.clone())) {
                 pending.push(PendingRequestedToolCall {
                     call_id: call_id.clone(),
                     tool_name: name.clone(),

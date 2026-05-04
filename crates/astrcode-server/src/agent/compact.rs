@@ -133,11 +133,7 @@ fn compact_extension_context(input: &CompactHookContext<'_>) -> ServerExtensionC
     let mut ctx = ServerExtensionContext::new(
         input.session_id.to_string(),
         input.working_dir.to_string(),
-        ModelSelection {
-            profile_name: String::new(),
-            model: input.model_id.to_string(),
-            provider_kind: String::new(),
-        },
+        ModelSelection::simple(input.model_id),
     );
     ctx.set_tools(
         input
@@ -327,8 +323,8 @@ mod tests {
     #[test]
     fn auto_compact_failure_tracker_transfers_continuation_count() {
         let tracker = AutoCompactFailureTracker::default();
-        let parent = "parent-session".to_string();
-        let child = "child-session".to_string();
+        let parent = SessionId::from("parent-session");
+        let child = SessionId::from("child-session");
 
         tracker.record_provider_failure(&parent);
         tracker.record_provider_failure(&parent);

@@ -14,7 +14,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use crate::{event::EventPayload, storage::ToolResultArtifactReader};
+use crate::{event::EventPayload, storage::ToolResultArtifactReader, types::SessionId};
 
 /// 工具定义，作为函数调用 schema 发送给 LLM。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,7 +103,7 @@ pub enum ExecutionMode {
 #[derive(Clone)]
 pub struct ToolExecutionContext {
     /// 当前会话 ID。
-    pub session_id: String,
+    pub session_id: SessionId,
     /// 工作目录路径。
     pub working_dir: String,
     /// 当前使用的模型标识。

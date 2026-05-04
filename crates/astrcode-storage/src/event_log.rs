@@ -5,7 +5,7 @@
 
 use std::{
     fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{BufRead, BufReader, BufWriter, ErrorKind, Write},
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -52,10 +52,11 @@ impl EventLog {
     /// Open an existing event log.
     pub async fn open(path: PathBuf) -> Result<Self, StorageError> {
         if !path.exists() {
-            return Err(StorageError::NotFound(format!(
-                "Event log not found: {}",
-                path.display()
-            )));
+            return Err(std::io::Error::new(
+                ErrorKind::NotFound,
+                format!("Event log not found: {}", path.display()),
+            )
+            .into());
         }
         let next_seq = count_lines(&path)? as u64;
         // 以 append 模式打开文件，持有句柄供后续写入

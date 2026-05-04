@@ -497,7 +497,7 @@ impl Tool for ExtensionTool {
                     event_tx: _ctx.event_tx.clone(),
                 };
 
-                match self.runtime.spawn(&_ctx.session_id, request).await {
+                match self.runtime.spawn(_ctx.session_id.as_str(), request).await {
                     Ok(output) => {
                         result.content = output.content;
                         result
@@ -867,11 +867,7 @@ mod tests {
         }
 
         fn model_selection(&self) -> ModelSelection {
-            ModelSelection {
-                profile_name: String::new(),
-                model: "mock".to_string(),
-                provider_kind: String::new(),
-            }
+            ModelSelection::simple("mock")
         }
 
         fn config_value(&self, _key: &str) -> Option<String> {

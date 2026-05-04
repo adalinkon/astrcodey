@@ -73,7 +73,10 @@ async fn create_session(
     Json(request): Json<CreateSessionRequest>,
 ) -> Response {
     match state.handler.create_session(request.working_dir).await {
-        Ok(session_id) => Json(CreateSessionResponseDto { session_id }).into_response(),
+        Ok(session_id) => Json(CreateSessionResponseDto {
+            session_id: session_id.into_string(),
+        })
+        .into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "create_failed", error),
     }
 }
@@ -90,8 +93,9 @@ async fn list_sessions(State(state): State<HttpState>) -> Response {
 
 async fn conversation_snapshot(
     State(state): State<HttpState>,
-    Path(session_id): Path<SessionId>,
+    Path(session_id): Path<String>,
 ) -> Response {
+    let session_id = SessionId::from(session_id);
     match state
         .runtime
         .session_manager
@@ -105,17 +109,18 @@ async fn conversation_snapshot(
 
 async fn submit_prompt(
     State(state): State<HttpState>,
-    Path(session_id): Path<SessionId>,
+    Path(session_id): Path<String>,
     Json(request): Json<PromptRequest>,
 ) -> Response {
+    let session_id = SessionId::from(session_id);
     let result = state
         .handler
         .submit_prompt_for_session(session_id.clone(), request.text)
         .await;
     match result {
         Ok(turn_id) => Json(PromptSubmitResponse::Accepted {
-            session_id,
-            turn_id,
+            session_id: session_id.into_string(),
+            turn_id: turn_id.into_string(),
             branched_from_session_id: None,
         })
         .into_response(),
@@ -128,14 +133,15 @@ async fn submit_prompt(
 
 async fn compact_session(
     State(state): State<HttpState>,
-    Path(session_id): Path<SessionId>,
+    Path(session_id): Path<String>,
     Json(_request): Json<CompactSessionRequest>,
 ) -> Response {
+    let session_id = SessionId::from(session_id);
     match state.handler.compact_session(session_id).await {
         Ok(new_session_id) => Json(CompactSessionResponse {
             accepted: true,
             deferred: false,
-            new_session_id,
+            new_session_id: new_session_id.map(SessionId::into_string),
             message: "compact accepted".into(),
         })
         .into_response(),
@@ -146,10 +152,8 @@ async fn compact_session(
     }
 }
 
-async fn abort_session(
-    State(state): State<HttpState>,
-    Path(session_id): Path<SessionId>,
-) -> Response {
+async fn abort_session(State(state): State<HttpState>, Path(session_id): Path<String>) -> Response {
+    let session_id = SessionId::from(session_id);
     match state.handler.abort_session(session_id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) if error.contains("No active turn") => {
@@ -160,7 +164,7 @@ async fn abort_session(
 }
 
 async fn fork_session(
-    Path(_session_id): Path<SessionId>,
+    Path(_session_id): Path<String>,
     Json(_request): Json<ForkSessionRequest>,
 ) -> Response {
     error_response(
@@ -172,8 +176,9 @@ async fn fork_session(
 
 async fn session_stream(
     State(state): State<HttpState>,
-    Path(session_id): Path<SessionId>,
+    Path(session_id): Path<String>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+    let session_id = SessionId::from(session_id);
     let rx = state.event_tx.subscribe();
     let runtime = Arc::clone(&state.runtime);
     let stream = stream::unfold(
@@ -191,7 +196,7 @@ async fn session_stream(
                         };
                         let cursor = event_cursor(&runtime, &event).await;
                         let item = sse_event(&ConversationStreamEnvelopeDto {
-                            session_id: session_id.clone(),
+                            session_id: session_id.to_string(),
                             cursor: ConversationCursorDto {
                                 value: cursor.clone(),
                             },
@@ -204,7 +209,7 @@ async fn session_stream(
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         let cursor = state_cursor(&runtime, &session_id).await;
                         let item = sse_event(&ConversationStreamEnvelopeDto {
-                            session_id: session_id.clone(),
+                            session_id: session_id.to_string(),
                             cursor: ConversationCursorDto { value: cursor },
                             delta: ConversationDeltaDto::RehydrateRequired,
                         });
@@ -221,13 +226,13 @@ async fn session_stream(
 fn summary_to_dto(summary: SessionSummary) -> SessionListItemDto {
     let title = session_title(&summary.working_dir);
     SessionListItemDto {
-        session_id: summary.session_id,
+        session_id: summary.session_id.into_string(),
         working_dir: summary.working_dir,
         display_name: title.clone(),
         title,
         created_at: summary.created_at,
         updated_at: summary.updated_at,
-        parent_session_id: summary.parent_session_id,
+        parent_session_id: summary.parent_session_id.map(SessionId::into_string),
         parent_storage_seq: None,
         phase: summary.phase,
     }
@@ -237,7 +242,7 @@ fn conversation_to_dto(snapshot: ConversationReadModel) -> ConversationSnapshotR
     let session = snapshot.session;
     let can_submit_prompt = matches!(session.phase, Phase::Idle | Phase::Error);
     ConversationSnapshotResponseDto {
-        session_id: session.session_id.clone(),
+        session_id: session.session_id.to_string(),
         session_title: session_title(&session.working_dir),
         cursor: ConversationCursorDto {
             value: session.cursor(),
@@ -265,14 +270,14 @@ fn event_to_delta(event: &Event) -> Option<ConversationDeltaDto> {
     match &event.payload {
         EventPayload::UserMessage { message_id, text } => Some(ConversationDeltaDto::AppendBlock {
             block: ConversationBlockDto::User {
-                id: message_id.clone(),
+                id: message_id.to_string(),
                 text: text.clone(),
             },
         }),
         EventPayload::AssistantMessageStarted { message_id } => {
             Some(ConversationDeltaDto::AppendBlock {
                 block: ConversationBlockDto::Assistant {
-                    id: message_id.clone(),
+                    id: message_id.to_string(),
                     text: String::new(),
                     status: ConversationBlockStatusDto::Streaming,
                 },
@@ -280,14 +285,14 @@ fn event_to_delta(event: &Event) -> Option<ConversationDeltaDto> {
         },
         EventPayload::AssistantTextDelta { message_id, delta } => {
             Some(ConversationDeltaDto::PatchBlock {
-                block_id: message_id.clone(),
+                block_id: message_id.to_string(),
                 text_delta: delta.clone(),
             })
         },
         EventPayload::AssistantMessageCompleted { message_id, text } => {
             Some(ConversationDeltaDto::AppendBlock {
                 block: ConversationBlockDto::Assistant {
-                    id: message_id.clone(),
+                    id: message_id.to_string(),
                     text: text.clone(),
                     status: ConversationBlockStatusDto::Complete,
                 },
@@ -296,7 +301,7 @@ fn event_to_delta(event: &Event) -> Option<ConversationDeltaDto> {
         EventPayload::ToolCallStarted { call_id, tool_name } => {
             Some(ConversationDeltaDto::AppendBlock {
                 block: ConversationBlockDto::ToolCall {
-                    id: call_id.clone(),
+                    id: call_id.to_string(),
                     name: tool_name.clone(),
                     text: String::new(),
                     status: ConversationBlockStatusDto::Streaming,
@@ -308,7 +313,7 @@ fn event_to_delta(event: &Event) -> Option<ConversationDeltaDto> {
             stream,
             delta,
         } => Some(ConversationDeltaDto::ToolOutput {
-            call_id: call_id.clone(),
+            call_id: call_id.to_string(),
             stream: *stream,
             delta: delta.clone(),
         }),
@@ -318,7 +323,7 @@ fn event_to_delta(event: &Event) -> Option<ConversationDeltaDto> {
             result,
         } => Some(ConversationDeltaDto::AppendBlock {
             block: ConversationBlockDto::ToolCall {
-                id: call_id.clone(),
+                id: call_id.to_string(),
                 name: tool_name.clone(),
                 text: result.content.clone(),
                 status: if result.is_error {
@@ -330,7 +335,7 @@ fn event_to_delta(event: &Event) -> Option<ConversationDeltaDto> {
         }),
         EventPayload::ErrorOccurred { message, .. } => Some(ConversationDeltaDto::AppendBlock {
             block: ConversationBlockDto::Error {
-                id: event.id.clone(),
+                id: event.id.to_string(),
                 message: message.clone(),
             },
         }),
@@ -338,8 +343,8 @@ fn event_to_delta(event: &Event) -> Option<ConversationDeltaDto> {
             continued_session_id,
             ..
         } => Some(ConversationDeltaDto::SessionContinued {
-            parent_session_id: event.session_id.clone(),
-            new_session_id: continued_session_id.clone(),
+            parent_session_id: event.session_id.to_string(),
+            new_session_id: continued_session_id.to_string(),
             parent_cursor: ConversationCursorDto {
                 value: event.seq.unwrap_or_default().to_string(),
             },

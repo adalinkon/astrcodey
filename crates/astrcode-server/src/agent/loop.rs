@@ -334,7 +334,7 @@ impl AgentLoop {
                             send_event(
                                 &event_tx,
                                 EventPayload::ToolCallStarted {
-                                    call_id: call_id.clone(),
+                                    call_id: call_id.clone().into(),
                                     tool_name: name.clone(),
                                 },
                             );
@@ -342,7 +342,7 @@ impl AgentLoop {
                                 send_event(
                                     &event_tx,
                                     EventPayload::ToolCallArgumentsDelta {
-                                        call_id: call_id.clone(),
+                                        call_id: call_id.clone().into(),
                                         delta: arguments.clone(),
                                     },
                                 );
@@ -359,7 +359,10 @@ impl AgentLoop {
                             }
                             send_event(
                                 &event_tx,
-                                EventPayload::ToolCallArgumentsDelta { call_id, delta },
+                                EventPayload::ToolCallArgumentsDelta {
+                                    call_id: call_id.into(),
+                                    delta,
+                                },
                             );
                         },
                         LlmEvent::Done { finish_reason } => {
@@ -549,7 +552,7 @@ impl AgentLoop {
                 Some(Ok(mut compaction)) => {
                     enrich_post_compact_context(
                         &mut compaction,
-                        &self.session_id,
+                        self.session_id.as_str(),
                         &prepare_input.messages,
                         &self.working_dir,
                         Some(&self.system_prompt),
@@ -566,7 +569,7 @@ impl AgentLoop {
                     Ok(mut compaction) => {
                         enrich_post_compact_context(
                             &mut compaction,
-                            &self.session_id,
+                            self.session_id.as_str(),
                             &prepare_input.messages,
                             &self.working_dir,
                             Some(&self.system_prompt),
@@ -740,7 +743,7 @@ impl AgentLoop {
         collect_compact_instructions(
             &self.extension_runner,
             CompactHookContext {
-                session_id: &self.session_id,
+                session_id: self.session_id.as_str(),
                 working_dir: &self.working_dir,
                 model_id: &self.model_id,
                 tools,
@@ -763,7 +766,7 @@ impl AgentLoop {
         dispatch_post_compact(
             &self.extension_runner,
             CompactHookContext {
-                session_id: &self.session_id,
+                session_id: self.session_id.as_str(),
                 working_dir: &self.working_dir,
                 model_id: &self.model_id,
                 tools,
@@ -795,13 +798,9 @@ impl AgentLoop {
     /// 构建当前回合的扩展上下文，包含会话 ID、工作目录和模型信息。
     fn build_ext_ctx(&self) -> ServerExtensionContext {
         ServerExtensionContext::new(
-            self.session_id.clone(),
+            self.session_id.to_string(),
             self.working_dir.clone(),
-            ModelSelection {
-                profile_name: String::new(),
-                model: self.model_id.clone(),
-                provider_kind: String::new(),
-            },
+            ModelSelection::simple(self.model_id.clone()),
         )
     }
 
@@ -1262,7 +1261,7 @@ impl AgentLoop {
                 send_event(
                     input.event_tx,
                     EventPayload::ToolCallCompleted {
-                        call_id: pending.call_id.clone(),
+                        call_id: pending.call_id.clone().into(),
                         tool_name: pending.tool_name.clone(),
                         result: pending.result.clone(),
                     },
@@ -1491,7 +1490,7 @@ pub(crate) struct ExecutableToolCall {
 }
 
 pub(crate) struct ToolCallRuntimeContext {
-    session_id: String,
+    session_id: SessionId,
     working_dir: String,
     model_id: String,
     tools: Vec<ToolDefinition>,
@@ -1520,7 +1519,7 @@ pub(crate) fn send_tool_requested(
     send_event(
         event_tx,
         EventPayload::ToolCallRequested {
-            call_id: tc.call_id.clone(),
+            call_id: tc.call_id.clone().into(),
             tool_name: tc.name.clone(),
             arguments: arguments.clone(),
         },

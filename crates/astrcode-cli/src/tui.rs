@@ -1,7 +1,7 @@
-//! 交互式终端模式 (Inline Viewport)。
+//! 交互式终端模式（原生 scrollback + 底部固定面板）。
 //!
 //! TUI 运行在主屏幕上，底部只保留很小的交互面板。
-//! 消息记录通过 `insert_before()` 写入终端原生 scrollback，
+//! 消息记录通过 scroll region 写入终端原生 scrollback，
 //! 用户可用终端原生滚轮/键盘翻页查看历史消息。
 
 mod composer;
@@ -13,7 +13,7 @@ mod theme;
 mod tool_display;
 
 use std::{
-    io::{self, Stdout, Write},
+    io::{self, Stdout},
     sync::Arc,
     time::Duration,
 };
@@ -29,7 +29,8 @@ use input::Action;
 use ratatui::{
     Terminal, TerminalOptions, Viewport,
     backend::{Backend, ClearType, CrosstermBackend},
-    layout::{Position, Rect},
+    buffer::Buffer,
+    layout::{Position, Rect, Size},
     prelude::Widget,
     text::Text,
     widgets::Paragraph,
@@ -42,7 +43,7 @@ use crate::transport::InProcessTransport;
 
 type Client = AstrcodeClient<InProcessTransport>;
 
-const INLINE_VIEWPORT_HEIGHT: u16 = 4;
+const INLINE_VIEWPORT_HEIGHT: u16 = 5;
 
 /// TUI 主入口：初始化终端、启动事件循环。
 pub async fn run() -> io::Result<()> {
@@ -57,20 +58,19 @@ pub async fn run() -> io::Result<()> {
     spawn_keyboard_reader(action_tx.clone());
 
     // 首帧绘制
-    terminal.draw_bottom(&state, &theme)?;
+    terminal.draw_frame(&mut state, &theme)?;
+    state.dirty = false;
 
     loop {
         tokio::select! {
             action = action_rx.recv() => {
                 let Some(action) = action else { break };
                 handle_action(action, &mut state, &client, &mut terminal).await?;
-                flush_scrollback(&mut state, &mut terminal, &theme)?;
             },
             item = stream.recv() => {
                 match item.map_err(io_error)? {
                     StreamItem::Event(notification) => {
                         state.apply(&notification);
-                        flush_scrollback(&mut state, &mut terminal, &theme)?;
                     },
                     StreamItem::Lagged(n) => {
                         state.status = format!("Skipped {n} event(s) · rehydrating");
@@ -88,7 +88,7 @@ pub async fn run() -> io::Result<()> {
             break;
         }
         if state.dirty {
-            terminal.draw_bottom(&state, &theme)?;
+            terminal.draw_frame(&mut state, &theme)?;
             state.dirty = false;
         }
     }
@@ -361,29 +361,27 @@ impl TerminalSession {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnableBracketedPaste)?;
-        // 交替滚动：滚轮在 raw 模式下也工作
-        // 光标移到底部，这样 inline viewport 在屏幕最后一行
-        let (_, rows) = crossterm::terminal::size()?;
-        write!(stdout, "\x1b[{};1H", rows)?;
-        stdout.flush()?;
-
+        // 不进入 alternate screen；滚轮/翻页继续走终端原生 scrollback。
+        let (columns, rows) = crossterm::terminal::size()?;
         let options = TerminalOptions {
-            viewport: Viewport::Inline(INLINE_VIEWPORT_HEIGHT),
+            viewport: Viewport::Fixed(viewport_rect(Size::new(columns, rows))),
         };
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::with_options(backend, options)?;
         Ok(Self { terminal })
     }
 
-    /// 绘制底部面板（状态栏 + 输入编辑器 + 底部信息栏）。
-    fn draw_bottom(&mut self, state: &TuiState, theme: &theme::Theme) -> io::Result<()> {
+    /// 将待提交历史写入原生 scrollback，并绘制底部面板。
+    fn draw_frame(&mut self, state: &mut TuiState, theme: &theme::Theme) -> io::Result<()> {
+        sync_viewport_resize_if_needed(&mut self.terminal)?;
+        flush_scrollback(state, self, theme)?;
         self.terminal
             .draw(|frame| render::render(state, frame, theme))
             .map(|_| ())
     }
 
     fn sync_resize(&mut self) -> io::Result<()> {
-        sync_inline_resize(&mut self.terminal)
+        sync_viewport_resize(&mut self.terminal)
     }
 
     fn composer_width(&self) -> usize {
@@ -403,19 +401,44 @@ impl TerminalSession {
     }
 }
 
-fn sync_inline_resize<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
-    let old_area = terminal.get_frame().area();
-    clear_terminal_rows(terminal.backend_mut(), old_area)?;
-    terminal.autoresize()?;
-    terminal.clear()
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        let _ = self.terminal.show_cursor();
+        let _ = execute!(io::stdout(), DisableBracketedPaste);
+        let _ = disable_raw_mode();
+    }
 }
 
-fn clear_terminal_rows<B: Backend>(backend: &mut B, area: Rect) -> io::Result<()> {
+fn viewport_rect(screen: Size) -> Rect {
+    let height = INLINE_VIEWPORT_HEIGHT.min(screen.height);
+    Rect {
+        x: 0,
+        y: screen.height.saturating_sub(height),
+        width: screen.width,
+        height,
+    }
+}
+
+fn sync_viewport_resize<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
+    let old_area = terminal.get_frame().area();
+    let new_area = viewport_rect(terminal.size()?);
+    clear_terminal_rows_from(terminal.backend_mut(), old_area.top().min(new_area.top()))?;
+    terminal.resize(new_area)
+}
+
+fn sync_viewport_resize_if_needed<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
+    let area = terminal.get_frame().area();
+    let expected = viewport_rect(terminal.size()?);
+    if area != expected {
+        sync_viewport_resize(terminal)?;
+    }
+    Ok(())
+}
+
+fn clear_terminal_rows_from<B: Backend>(backend: &mut B, top: u16) -> io::Result<()> {
     let cursor = backend.get_cursor_position()?;
     let screen = backend.size()?;
-    let top = area.top().min(screen.height);
-    let bottom = area.bottom().min(screen.height);
-    for y in top..bottom {
+    for y in top.min(screen.height)..screen.height {
         backend.set_cursor_position(Position { x: 0, y })?;
         backend.clear_region(ClearType::CurrentLine)?;
     }
@@ -428,23 +451,72 @@ fn insert_scrollback_entry<B: Backend>(
     entry: &state::ScrollbackEntry,
     theme: &theme::Theme,
 ) -> io::Result<()> {
-    terminal.autoresize()?;
+    sync_viewport_resize_if_needed(terminal)?;
     let width = terminal.size()?.width;
     let lines = scrollback_entry_to_lines(entry, width, theme);
-    let height = lines.len() as u16;
-    terminal.insert_before(height, |buf| {
-        let p = Paragraph::new(Text::from(lines.clone()));
-        Widget::render(p, buf.area, buf);
-    })?;
-    Ok(())
+    insert_history_lines_above_viewport(terminal, lines)
 }
 
-impl Drop for TerminalSession {
-    fn drop(&mut self) {
-        let _ = self.terminal.show_cursor();
-        let _ = execute!(io::stdout(), DisableBracketedPaste);
-        let _ = disable_raw_mode();
+fn insert_history_lines_above_viewport<B: Backend>(
+    terminal: &mut Terminal<B>,
+    lines: Vec<ratatui::text::Line<'static>>,
+) -> io::Result<()> {
+    let viewport = terminal.get_frame().area();
+    let viewport_top = viewport.top();
+    if viewport_top == 0 || lines.is_empty() {
+        return Ok(());
     }
+
+    let saved_cursor = terminal.backend_mut().get_cursor_position()?;
+    let width = viewport.width.max(1);
+    let mut start = 0usize;
+    while start < lines.len() {
+        let remaining = lines.len() - start;
+        let chunk_height = remaining.min(viewport_top as usize) as u16;
+        let end = start + chunk_height as usize;
+        let chunk = lines[start..end].to_vec();
+
+        terminal
+            .backend_mut()
+            .scroll_region_up(0..viewport_top, chunk_height)?;
+        draw_history_chunk(
+            terminal.backend_mut(),
+            chunk,
+            width,
+            viewport_top.saturating_sub(chunk_height),
+        )?;
+        start = end;
+    }
+    terminal.backend_mut().set_cursor_position(saved_cursor)?;
+    terminal.backend_mut().flush()
+}
+
+fn draw_history_chunk<B: Backend>(
+    backend: &mut B,
+    lines: Vec<ratatui::text::Line<'static>>,
+    width: u16,
+    y: u16,
+) -> io::Result<()> {
+    let height = lines.len() as u16;
+    if height == 0 {
+        return Ok(());
+    }
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    };
+    let mut buffer = Buffer::empty(area);
+    let paragraph = Paragraph::new(Text::from(lines));
+    Widget::render(paragraph, area, &mut buffer);
+    let width = width as usize;
+    let content = buffer.content;
+    backend.draw(content.iter().enumerate().map(|(index, cell)| {
+        let x = (index % width) as u16;
+        let dy = (index / width) as u16;
+        (x, y + dy, cell)
+    }))
 }
 
 /// 将 scrollback_queue 中的消息全部写入终端原生 scrollback。
@@ -496,25 +568,30 @@ fn resolve_session_id(state: &TuiState, input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use ratatui::backend::TestBackend;
-    use state::{MessageRole, ScrollbackEntry};
+    use state::MessageRole;
 
     use super::*;
 
     #[test]
-    fn scrollback_insert_autoresizes_inline_viewport_before_writing() {
+    fn scrollback_insert_resizes_fixed_viewport_before_writing() {
         let theme = theme::Theme::detect();
         let backend = TestBackend::new(20, 6);
         let mut terminal = Terminal::with_options(
             backend,
             TerminalOptions {
-                viewport: Viewport::Inline(INLINE_VIEWPORT_HEIGHT),
+                viewport: Viewport::Fixed(viewport_rect(Size::new(20, 6))),
             },
         )
         .unwrap();
-        let entry = ScrollbackEntry::StreamText {
-            role: MessageRole::Assistant,
-            text: "alpha beta gamma delta".into(),
-        };
+        let mut state = TuiState::new();
+        state.push_message(
+            MessageRole::Assistant,
+            "Astrcode".into(),
+            "alpha beta gamma delta".into(),
+            false,
+            None,
+        );
+        let entry = state.scrollback_queue.pop().unwrap();
 
         terminal.backend_mut().resize(8, 6);
         insert_scrollback_entry(&mut terminal, &entry, &theme).unwrap();
@@ -522,6 +599,7 @@ mod tests {
         {
             let frame = terminal.get_frame();
             assert_eq!(frame.area().width, 8);
+            assert_eq!(frame.area().top(), 1);
         }
 
         let state = TuiState::new();
@@ -531,18 +609,25 @@ mod tests {
     }
 
     #[test]
-    fn resize_clears_stale_inline_viewport_rows() {
+    fn resize_clears_stale_fixed_viewport_rows() {
         let theme = theme::Theme::detect();
-        let backend = TestBackend::new(40, 8);
+        let mut backend = TestBackend::new(40, 8);
+        backend
+            .set_cursor_position(Position { x: 0, y: 7 })
+            .unwrap();
         let mut terminal = Terminal::with_options(
             backend,
             TerminalOptions {
-                viewport: Viewport::Inline(INLINE_VIEWPORT_HEIGHT),
+                viewport: Viewport::Fixed(viewport_rect(Size::new(40, 8))),
             },
         )
         .unwrap();
         let mut state = TuiState::new();
         state.is_streaming = true;
+        state.task_activity = Some(state::TaskActivity {
+            title: "Agent running".into(),
+            detail: None,
+        });
         state.status = "Agent running".into();
 
         terminal
@@ -551,8 +636,66 @@ mod tests {
         assert!(terminal.backend().to_string().contains("Agent running"));
 
         terminal.backend_mut().resize(40, 12);
-        sync_inline_resize(&mut terminal).unwrap();
+        sync_viewport_resize(&mut terminal).unwrap();
 
         assert!(!terminal.backend().to_string().contains("Agent running"));
+    }
+
+    #[test]
+    fn repeated_resize_keeps_single_idle_status() {
+        let theme = theme::Theme::detect();
+        let mut backend = TestBackend::new(48, 10);
+        backend
+            .set_cursor_position(Position { x: 0, y: 9 })
+            .unwrap();
+        let mut terminal = Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Fixed(viewport_rect(Size::new(48, 10))),
+            },
+        )
+        .unwrap();
+        let mut state = TuiState::new();
+        state.status = "Ready · type / for commands".into();
+
+        terminal
+            .draw(|frame| render::render(&state, frame, &theme))
+            .unwrap();
+        terminal.backend_mut().resize(48, 16);
+        sync_viewport_resize(&mut terminal).unwrap();
+        terminal
+            .draw(|frame| render::render(&state, frame, &theme))
+            .unwrap();
+        terminal.backend_mut().resize(48, 12);
+        sync_viewport_resize(&mut terminal).unwrap();
+
+        terminal
+            .draw(|frame| render::render(&state, frame, &theme))
+            .unwrap();
+
+        let screen = terminal.backend().to_string();
+        assert_eq!(screen.matches("Ready · type / for commands").count(), 1);
+        assert!(screen.contains("Ask astrcode to inspect"));
+    }
+
+    #[test]
+    fn fixed_viewport_resize_does_not_append_lines() {
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Fixed(viewport_rect(Size::new(40, 8))),
+            },
+        )
+        .unwrap();
+        let initial_scrollback = terminal.backend().scrollback().content.len();
+
+        terminal.backend_mut().resize(40, 12);
+        sync_viewport_resize(&mut terminal).unwrap();
+
+        assert_eq!(
+            terminal.backend().scrollback().content.len(),
+            initial_scrollback
+        );
     }
 }

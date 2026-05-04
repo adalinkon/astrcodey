@@ -333,7 +333,7 @@ impl FfiCtxOwned {
     ) -> Self {
         let tools_json = serde_json::to_string(&ctx.available_tools).unwrap_or_default();
         Self::new(
-            ctx.session_id.clone(),
+            ctx.session_id.to_string(),
             working_dir.to_string(),
             tool_name.to_string(),
             tool_input.to_string(),

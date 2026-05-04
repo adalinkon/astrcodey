@@ -78,7 +78,7 @@ async fn test_e2e_create_session_and_prompt() {
         },
         other => panic!("Expected SessionStarted event, got {:?}", other),
     };
-    assert!(!session_id.is_empty());
+    assert!(!session_id.as_str().is_empty());
 
     // 提交提示
     client

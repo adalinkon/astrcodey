@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use astrcode_core::types::{project_hash_from_path, project_key_from_path};
+use astrcode_core::types::project_key_from_path;
 
 /// 解析用户主目录。
 ///
@@ -62,24 +62,9 @@ pub fn sessions_dir_for_project_path(project_path: &Path) -> PathBuf {
     sessions_dir(&project_key_from_path(project_path))
 }
 
-/// 根据真实项目路径获取旧版 hash project 的会话目录。
-pub fn legacy_sessions_dir_for_project_path(project_path: &Path) -> PathBuf {
-    sessions_dir(&project_hash_from_path(project_path))
-}
-
-/// 根据真实项目路径获取会话目录；旧 hash 会话存在时继续使用旧目录。
+/// 根据真实项目路径获取会话目录。
 pub fn session_dir_for_project_path(project_path: &Path, session_id: &str) -> PathBuf {
-    let current = sessions_dir_for_project_path(project_path).join(session_id);
-    if current.exists() {
-        return current;
-    }
-
-    let legacy = legacy_sessions_dir_for_project_path(project_path).join(session_id);
-    if legacy.exists() {
-        return legacy;
-    }
-
-    current
+    sessions_dir_for_project_path(project_path).join(session_id)
 }
 
 /// 根据真实项目路径获取某个会话的计划目录。
@@ -199,6 +184,8 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, OnceLock};
+
     use super::*;
 
     #[test]
@@ -225,14 +212,20 @@ mod tests {
     fn project_path_sessions_use_readable_project_key() {
         let path = sessions_dir_for_project_path(Path::new(r"D:\work\astrcode"));
 
-        assert!(path.ends_with(Path::new("D%3A%5Cwork%5Castrcode").join("sessions")));
+        assert!(path.ends_with(Path::new("D-work-astrcode").join("sessions")));
     }
 
     #[test]
     fn test_resolve_home_with_test_env() {
+        let _guard = test_env_lock().lock().unwrap();
         std::env::set_var("ASTRCODE_TEST_HOME", "/tmp/test-astrcode");
         let home = resolve_home_dir();
         assert_eq!(home, PathBuf::from("/tmp/test-astrcode"));
         std::env::remove_var("ASTRCODE_TEST_HOME");
+    }
+
+    fn test_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
     }
 }

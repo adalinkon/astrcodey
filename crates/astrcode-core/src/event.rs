@@ -57,7 +57,7 @@ pub enum EventPayload {
         model_id: String,
         /// 父会话 ID，用于子会话场景。根会话为 `None`。
         #[serde(skip_serializing_if = "Option::is_none")]
-        parent_session_id: Option<String>,
+        parent_session_id: Option<SessionId>,
     },
 
     /// 会话 system prompt 已固定。

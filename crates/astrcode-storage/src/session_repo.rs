@@ -15,10 +15,7 @@ use astrcode_core::{
         CompactSnapshotInput, ConversationReadModel, EventStore, SessionReadModel, SessionSummary,
         StorageError, ToolResultArtifactInput, ToolResultArtifactRef, ToolResultArtifactSlice,
     },
-    types::{
-        Cursor, ProjectKey, SessionId, project_hash_from_path, project_key_from_path,
-        validate_session_id,
-    },
+    types::{Cursor, ProjectKey, SessionId, project_key_from_path, validate_session_id},
 };
 use astrcode_support::{
     hostpaths,
@@ -41,8 +38,6 @@ pub struct FileSystemSessionRepository {
     sessions: Arc<RwLock<HashMap<SessionId, Arc<SessionMeta>>>>,
     /// 会话存储的基础路径
     base_path: PathBuf,
-    /// 旧版 hash 项目目录，存在时用于读取老会话。
-    legacy_base_path: Option<PathBuf>,
 }
 
 /// 会话的内部元数据，持有事件日志和快照管理器。
@@ -51,7 +46,7 @@ struct SessionMeta {
     log: Arc<EventLog>,
     /// 快照管理器，负责创建和列出恢复点
     snapshot_mgr: SnapshotManager,
-    /// 当前会话所在目录。旧 hash 会话打开后继续写回旧目录。
+    /// 当前会话所在目录。
     dir: PathBuf,
     /// 从事件日志同步维护的内部读模型。
     projection: RwLock<SessionReadModel>,
@@ -63,52 +58,38 @@ impl FileSystemSessionRepository {
     /// # 参数
     /// - `project_key`: 项目路径派生的可读目录名，用于确定存储目录
     pub fn new(project_key: ProjectKey) -> Self {
-        Self::with_paths(hostpaths::sessions_dir(&project_key), None)
+        Self::with_base_path(hostpaths::sessions_dir(&project_key))
     }
 
-    /// 根据真实项目路径创建仓库，新会话使用可读 project key，旧 hash 会话仍可打开。
+    /// 根据真实项目路径创建仓库，新会话使用可读 project key。
     pub fn for_project_path(project_path: &Path) -> Self {
-        let current = hostpaths::sessions_dir(&project_key_from_path(project_path));
-        let legacy = hostpaths::sessions_dir(&project_hash_from_path(project_path));
-        let legacy = (legacy != current).then_some(legacy);
-        Self::with_paths(current, legacy)
+        Self::with_base_path(hostpaths::sessions_dir(&project_key_from_path(
+            project_path,
+        )))
     }
 
-    fn with_paths(base_path: PathBuf, legacy_base_path: Option<PathBuf>) -> Self {
+    fn with_base_path(base_path: PathBuf) -> Self {
         if let Err(e) = std::fs::create_dir_all(&base_path) {
             tracing::warn!("Failed to create sessions dir {}: {e}", base_path.display());
         }
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             base_path,
-            legacy_base_path,
         }
     }
 
     /// 获取指定会话的目录路径。
     fn session_dir(&self, id: &SessionId) -> PathBuf {
-        self.base_path.join(id)
+        self.base_path.join(id.as_str())
     }
 
     fn existing_session_dir(&self, id: &SessionId) -> PathBuf {
-        let current = self.session_dir(id);
-        if current.exists() {
-            return current;
-        }
-
-        if let Some(legacy_base_path) = &self.legacy_base_path {
-            let legacy = legacy_base_path.join(id);
-            if legacy.exists() {
-                return legacy;
-            }
-        }
-
-        current
+        self.session_dir(id)
     }
 
     /// 获取指定会话的事件日志文件路径。
     fn event_log_path(session_dir: &Path, id: &SessionId) -> PathBuf {
-        session_dir.join(format!("session-{}.jsonl", id))
+        session_dir.join(format!("session-{id}.jsonl"))
     }
 
     /// 获取或打开会话元数据。
@@ -120,7 +101,8 @@ impl FileSystemSessionRepository {
         &self,
         session_id: &SessionId,
     ) -> Result<Arc<SessionMeta>, StorageError> {
-        validate_session_id(session_id).map_err(|e| StorageError::InvalidId(e.to_string()))?;
+        validate_session_id(session_id.as_str())
+            .map_err(|e| StorageError::InvalidId(e.to_string()))?;
 
         if let Some(meta) = self.sessions.read().await.get(session_id).cloned() {
             return Ok(meta);
@@ -161,7 +143,7 @@ impl FileSystemSessionRepository {
                 Ok(model) => return Ok(model),
                 Err(error) => {
                     tracing::warn!(
-                        session_id,
+                        session_id = %session_id,
                         "Falling back to full event replay after snapshot restore failed: {error}"
                     );
                 },
@@ -208,9 +190,10 @@ impl EventStore for FileSystemSessionRepository {
         session_id: &SessionId,
         working_dir: &str,
         model_id: &str,
-        parent_session_id: Option<&str>,
+        parent_session_id: Option<&SessionId>,
     ) -> Result<Event, StorageError> {
-        validate_session_id(session_id).map_err(|e| StorageError::InvalidId(e.to_string()))?;
+        validate_session_id(session_id.as_str())
+            .map_err(|e| StorageError::InvalidId(e.to_string()))?;
 
         let dir = self.session_dir(session_id);
         std::fs::create_dir_all(&dir)?;
@@ -221,7 +204,7 @@ impl EventStore for FileSystemSessionRepository {
             EventPayload::SessionStarted {
                 working_dir: working_dir.into(),
                 model_id: model_id.into(),
-                parent_session_id: parent_session_id.map(|s| s.to_string()),
+                parent_session_id: parent_session_id.cloned(),
             },
         );
 
@@ -302,7 +285,8 @@ impl EventStore for FileSystemSessionRepository {
         session_id: &SessionId,
         cursor: &Cursor,
     ) -> Result<Vec<Event>, StorageError> {
-        validate_session_id(session_id).map_err(|e| StorageError::InvalidId(e.to_string()))?;
+        validate_session_id(session_id.as_str())
+            .map_err(|e| StorageError::InvalidId(e.to_string()))?;
         let events = self.replay_events(session_id).await?;
         let Ok(seq) = cursor.parse::<u64>() else {
             return Err(StorageError::InvalidId(format!("Invalid cursor: {cursor}")));
@@ -347,7 +331,7 @@ impl EventStore for FileSystemSessionRepository {
             for entry in std::fs::read_dir(base_path)? {
                 let entry = entry?;
                 if entry.file_type()?.is_dir() {
-                    let id = entry.file_name().to_string_lossy().to_string();
+                    let id = SessionId::from(entry.file_name().to_string_lossy().to_string());
                     if !ids.contains(&id) {
                         ids.push(id);
                     }
@@ -359,11 +343,12 @@ impl EventStore for FileSystemSessionRepository {
     }
 
     async fn delete_session(&self, session_id: &SessionId) -> Result<(), StorageError> {
-        validate_session_id(session_id).map_err(|e| StorageError::InvalidId(e.to_string()))?;
+        validate_session_id(session_id.as_str())
+            .map_err(|e| StorageError::InvalidId(e.to_string()))?;
 
         self.sessions.write().await.remove(session_id);
         for base_path in self.session_roots() {
-            let dir = base_path.join(session_id);
+            let dir = base_path.join(session_id.as_str());
             if dir.exists() {
                 std::fs::remove_dir_all(&dir)?;
             }
@@ -376,7 +361,8 @@ impl EventStore for FileSystemSessionRepository {
         session_id: &SessionId,
         snapshot: CompactSnapshotInput,
     ) -> Result<Option<String>, StorageError> {
-        validate_session_id(session_id).map_err(|e| StorageError::InvalidId(e.to_string()))?;
+        validate_session_id(session_id.as_str())
+            .map_err(|e| StorageError::InvalidId(e.to_string()))?;
         let meta = self.get_or_open_meta(session_id).await?;
 
         let dir = meta.dir.join("compact-snapshots");
@@ -426,11 +412,16 @@ impl EventStore for FileSystemSessionRepository {
         session_id: &SessionId,
         artifact: ToolResultArtifactInput,
     ) -> Result<ToolResultArtifactRef, StorageError> {
-        validate_session_id(session_id).map_err(|e| StorageError::InvalidId(e.to_string()))?;
+        validate_session_id(session_id.as_str())
+            .map_err(|e| StorageError::InvalidId(e.to_string()))?;
         let meta = self.get_or_open_meta(session_id).await?;
 
         let dir = meta.dir.join("tool-results");
-        Ok(write_tool_result_file(&dir, &artifact, session_id)?)
+        Ok(write_tool_result_file(
+            &dir,
+            &artifact,
+            session_id.as_str(),
+        )?)
     }
 
     async fn read_tool_result_artifact_by_path(
@@ -440,7 +431,8 @@ impl EventStore for FileSystemSessionRepository {
         char_offset: usize,
         max_chars: usize,
     ) -> Result<ToolResultArtifactSlice, StorageError> {
-        validate_session_id(session_id).map_err(|e| StorageError::InvalidId(e.to_string()))?;
+        validate_session_id(session_id.as_str())
+            .map_err(|e| StorageError::InvalidId(e.to_string()))?;
         let meta = self.get_or_open_meta(session_id).await?;
 
         let path = PathBuf::from(path);
@@ -465,11 +457,7 @@ impl EventStore for FileSystemSessionRepository {
 
 impl FileSystemSessionRepository {
     fn session_roots(&self) -> Vec<&PathBuf> {
-        let mut roots = vec![&self.base_path];
-        if let Some(legacy_base_path) = &self.legacy_base_path {
-            roots.push(legacy_base_path);
-        }
-        roots
+        vec![&self.base_path]
     }
 }
 
@@ -479,7 +467,7 @@ mod tests {
         event::EventPayload,
         llm::{LlmMessage, LlmRole},
         storage::CompactSnapshotInput,
-        types::{new_message_id, project_hash_from_path, project_key_from_path},
+        types::{new_message_id, project_key_from_path},
     };
 
     use super::*;
@@ -490,9 +478,8 @@ mod tests {
         let repo = FileSystemSessionRepository {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             base_path: temp_dir.path().join("sessions"),
-            legacy_base_path: None,
         };
-        let session_id = "session-test".to_string();
+        let session_id = SessionId::from("session-test");
         repo.create_session(&session_id, ".", "mock", None)
             .await
             .unwrap();
@@ -524,7 +511,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_path = temp_dir.path().join("sessions");
         let repo = test_repo(base_path.clone());
-        let session_id = "session-test".to_string();
+        let session_id = SessionId::from("session-test");
         repo.create_session(&session_id, ".", "mock", None)
             .await
             .unwrap();
@@ -544,7 +531,7 @@ mod tests {
         let path = reference.path.as_ref().expect("filesystem path");
         assert!(path.contains("tool-results"));
         assert!(path.contains("session-test"));
-        assert!(std::path::Path::new(path).starts_with(base_path.join(&session_id)));
+        assert!(std::path::Path::new(path).starts_with(base_path.join(session_id.as_str())));
 
         let slice = repo
             .read_tool_result_artifact_by_path(&session_id, path, 2, 3)
@@ -559,7 +546,7 @@ mod tests {
     async fn tool_result_artifact_reuses_same_content_and_keeps_collisions() {
         let temp_dir = tempfile::tempdir().unwrap();
         let repo = test_repo(temp_dir.path().join("sessions"));
-        let session_id = "session-test".to_string();
+        let session_id = SessionId::from("session-test");
         repo.create_session(&session_id, ".", "mock", None)
             .await
             .unwrap();
@@ -608,7 +595,7 @@ mod tests {
     async fn append_updates_projection_immediately() {
         let temp_dir = tempfile::tempdir().unwrap();
         let repo = test_repo(temp_dir.path().join("sessions"));
-        let session_id = "session-test".to_string();
+        let session_id = SessionId::from("session-test");
         repo.create_session(&session_id, ".", "mock", None)
             .await
             .unwrap();
@@ -634,7 +621,7 @@ mod tests {
     async fn reopen_rebuilds_projection_from_event_log() {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_path = temp_dir.path().join("sessions");
-        let session_id = "session-test".to_string();
+        let session_id = SessionId::from("session-test");
         let repo = test_repo(base_path.clone());
         repo.create_session(&session_id, ".", "mock", None)
             .await
@@ -663,7 +650,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_path = temp_dir.path().join("sessions");
         let repo = test_repo(base_path.clone());
-        let session_id = "session-test".to_string();
+        let session_id = SessionId::from("session-test");
         repo.create_session(&session_id, ".", "mock", None)
             .await
             .unwrap();
@@ -680,7 +667,7 @@ mod tests {
         repo.checkpoint(&session_id, &"1".into()).await.unwrap();
 
         let snapshot_path = base_path
-            .join(&session_id)
+            .join(session_id.as_str())
             .join("snapshots")
             .join("snapshot-1.json");
         let snapshot: serde_json::Value =
@@ -688,7 +675,7 @@ mod tests {
         assert_eq!(snapshot["version"], 1);
         assert_eq!(snapshot["cursor"], "1");
         assert_eq!(snapshot["latest_seq"], 1);
-        assert_eq!(snapshot["model"]["session_id"], session_id);
+        assert_eq!(snapshot["model"]["session_id"], session_id.as_str());
         assert_eq!(snapshot["model"]["messages"].as_array().unwrap().len(), 1);
     }
 
@@ -696,7 +683,7 @@ mod tests {
     async fn reopen_restores_projection_from_snapshot_and_tail() {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_path = temp_dir.path().join("sessions");
-        let session_id = "session-test".to_string();
+        let session_id = SessionId::from("session-test");
         let repo = test_repo(base_path.clone());
         repo.create_session(&session_id, ".", "mock", None)
             .await
@@ -736,7 +723,7 @@ mod tests {
     async fn checkpoint_rejects_stale_cursor() {
         let temp_dir = tempfile::tempdir().unwrap();
         let repo = test_repo(temp_dir.path().join("sessions"));
-        let session_id = "session-test".to_string();
+        let session_id = SessionId::from("session-test");
         repo.create_session(&session_id, ".", "mock", None)
             .await
             .unwrap();
@@ -764,7 +751,7 @@ mod tests {
     async fn corrupt_snapshot_falls_back_to_full_replay() {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_path = temp_dir.path().join("sessions");
-        let session_id = "session-test".to_string();
+        let session_id = SessionId::from("session-test");
         let repo = test_repo(base_path.clone());
         repo.create_session(&session_id, ".", "mock", None)
             .await
@@ -783,7 +770,7 @@ mod tests {
         let expected = repo.session_read_model(&session_id).await.unwrap();
         std::fs::write(
             base_path
-                .join(&session_id)
+                .join(session_id.as_str())
                 .join("snapshots")
                 .join("snapshot-1.json"),
             "not json",
@@ -800,9 +787,10 @@ mod tests {
     async fn list_summaries_reads_unopened_session_projection() {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_path = temp_dir.path().join("sessions");
-        let session_id = "session-test".to_string();
+        let session_id = SessionId::from("session-test");
         let repo = test_repo(base_path.clone());
-        repo.create_session(&session_id, "D:/work/project", "mock", Some("parent"))
+        let parent_id = SessionId::from("parent");
+        repo.create_session(&session_id, "D:/work/project", "mock", Some(&parent_id))
             .await
             .unwrap();
 
@@ -813,11 +801,17 @@ mod tests {
         assert_eq!(summaries[0].session_id, session_id);
         assert_eq!(summaries[0].working_dir, "D:/work/project");
         assert_eq!(summaries[0].model_id, "mock");
-        assert_eq!(summaries[0].parent_session_id.as_deref(), Some("parent"));
+        assert_eq!(
+            summaries[0]
+                .parent_session_id
+                .as_ref()
+                .map(SessionId::as_str),
+            Some("parent")
+        );
     }
 
     #[tokio::test]
-    async fn project_path_repository_writes_readable_dirs_and_reads_legacy_hash_dirs() {
+    async fn project_path_repository_writes_readable_dir() {
         let temp_dir = tempfile::tempdir().unwrap();
         let workspace = temp_dir.path().join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
@@ -825,26 +819,10 @@ mod tests {
             .path()
             .join("projects")
             .join(project_key_from_path(&workspace));
-        let legacy_project_dir = temp_dir
-            .path()
-            .join("projects")
-            .join(project_hash_from_path(&workspace));
         let current_sessions_dir = current_project_dir.join("sessions");
-        let legacy_sessions_dir = legacy_project_dir.join("sessions");
 
-        let legacy_session = "legacy-session".to_string();
-        let legacy_repo =
-            FileSystemSessionRepository::with_paths(legacy_sessions_dir.clone(), None);
-        legacy_repo
-            .create_session(&legacy_session, workspace.to_str().unwrap(), "mock", None)
-            .await
-            .unwrap();
-
-        let repo = FileSystemSessionRepository::with_paths(
-            current_sessions_dir,
-            Some(legacy_sessions_dir),
-        );
-        let current_session = "current-session".to_string();
+        let repo = FileSystemSessionRepository::with_base_path(current_sessions_dir);
+        let current_session = SessionId::from("current-session");
         repo.create_session(&current_session, workspace.to_str().unwrap(), "mock", None)
             .await
             .unwrap();
@@ -852,9 +830,7 @@ mod tests {
         let sessions = repo.list_sessions().await.unwrap();
 
         assert!(current_project_dir.exists());
-        assert!(legacy_project_dir.exists());
-        assert!(sessions.contains(&legacy_session));
-        assert!(sessions.contains(&current_session));
+        assert_eq!(sessions, vec![current_session]);
         assert!(
             current_project_dir
                 .file_name()
@@ -868,7 +844,7 @@ mod tests {
     async fn custom_event_does_not_change_projection() {
         let temp_dir = tempfile::tempdir().unwrap();
         let repo = test_repo(temp_dir.path().join("sessions"));
-        let session_id = "session-test".to_string();
+        let session_id = SessionId::from("session-test");
         repo.create_session(&session_id, ".", "mock", None)
             .await
             .unwrap();
@@ -906,8 +882,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_path = temp_dir.path().join("sessions");
         let repo = test_repo(base_path.clone());
-        let parent_id = "parent-session".to_string();
-        let child_id = "child-session".to_string();
+        let parent_id = SessionId::from("parent-session");
+        let child_id = SessionId::from("child-session");
         repo.create_session(&parent_id, ".", "mock", None)
             .await
             .unwrap();
@@ -960,7 +936,10 @@ mod tests {
 
         let reopened = test_repo(base_path);
         let child = reopened.session_read_model(&child_id).await.unwrap();
-        assert_eq!(child.parent_session_id.as_deref(), Some(parent_id.as_str()));
+        assert_eq!(
+            child.parent_session_id.as_ref().map(SessionId::as_str),
+            Some(parent_id.as_str())
+        );
         assert_eq!(
             child.context_messages,
             vec![LlmMessage::system("hidden summary")]
@@ -973,7 +952,6 @@ mod tests {
         FileSystemSessionRepository {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             base_path,
-            legacy_base_path: None,
         }
     }
 }

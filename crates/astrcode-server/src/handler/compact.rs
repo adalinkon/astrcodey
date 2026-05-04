@@ -69,7 +69,7 @@ impl CommandHandler {
         let compact_instructions = match collect_compact_instructions(
             &self.runtime.extension_runner,
             CompactHookContext {
-                session_id: sid,
+                session_id: sid.as_str(),
                 working_dir: &state.working_dir,
                 model_id: &state.model_id,
                 tools: &tools,
@@ -137,7 +137,7 @@ impl CommandHandler {
         };
         enrich_post_compact_context(
             &mut compaction,
-            sid,
+            sid.as_str(),
             &provider_messages,
             &state.working_dir,
             state.system_prompt.as_deref(),
@@ -148,7 +148,7 @@ impl CommandHandler {
         if let Err(error) = dispatch_post_compact(
             &self.runtime.extension_runner,
             CompactHookContext {
-                session_id: sid,
+                session_id: sid.as_str(),
                 working_dir: &state.working_dir,
                 model_id: &state.model_id,
                 tools: &tools,
@@ -212,13 +212,9 @@ impl CommandHandler {
         ));
 
         let ext_ctx = ServerExtensionContext::new(
-            child_session_id.clone(),
+            child_session_id.to_string(),
             working_dir,
-            ModelSelection {
-                profile_name: String::new(),
-                model: model_id,
-                provider_kind: String::new(),
-            },
+            ModelSelection::simple(model_id),
         );
         self.runtime
             .extension_runner
@@ -262,7 +258,7 @@ impl CommandHandler {
             .await
             .map_err(|e| format!("read session {child_session_id}: {e}"))?;
         let _ = self.event_tx.send(ClientNotification::SessionResumed {
-            session_id: child_session_id.clone(),
+            session_id: child_session_id.clone().into_string(),
             snapshot: session_snapshot(&child_state),
         });
         Ok(child_session_id)

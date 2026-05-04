@@ -252,7 +252,7 @@ async fn read_stream(
         output.text.push_str(&delta);
         if let Some(tx) = &event_tx {
             let _ = tx.send(EventPayload::ToolOutputDelta {
-                call_id: call_id.clone(),
+                call_id: call_id.clone().into(),
                 stream: stream_kind,
                 delta,
             });
@@ -290,7 +290,7 @@ mod tests {
 
     fn empty_ctx() -> ToolExecutionContext {
         ToolExecutionContext {
-            session_id: String::new(),
+            session_id: String::new().into(),
             working_dir: String::new(),
             model_id: String::new(),
             available_tools: vec![],
@@ -391,7 +391,7 @@ mod tests {
                 delta,
             } = event
             {
-                assert_eq!(call_id, "shell-stream");
+                assert_eq!(call_id.as_str(), "shell-stream");
                 saw_stdout |= stream == ToolOutputStream::Stdout && delta.contains("out");
                 saw_stderr |= stream == ToolOutputStream::Stderr && delta.contains("err");
             }

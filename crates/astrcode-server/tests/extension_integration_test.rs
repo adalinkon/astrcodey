@@ -234,11 +234,7 @@ fn context_with_pre_tool_input(command: &str) -> ServerExtensionContext {
     let mut ctx = ServerExtensionContext::new(
         "test-session".into(),
         "/tmp".into(),
-        ModelSelection {
-            profile_name: String::new(),
-            model: "test-model".into(),
-            provider_kind: String::new(),
-        },
+        ModelSelection::simple("test-model"),
     );
     ctx.set_pre_tool_use_input(PreToolUseInput {
         tool_name: "shell".into(),
@@ -409,11 +405,7 @@ async fn extension_context_snapshot_works_for_nonblocking() {
     let ctx = ServerExtensionContext::new(
         "test-session".into(),
         "/tmp".into(),
-        ModelSelection {
-            profile_name: String::new(),
-            model: "test-model".into(),
-            provider_kind: String::new(),
-        },
+        ModelSelection::simple("test-model"),
     );
 
     // dispatch() copies the extension list and releases the lock,
@@ -433,11 +425,7 @@ async fn dispatch_with_no_registered_extensions_is_noop() {
     let ctx = ServerExtensionContext::new(
         "empty".into(),
         "/tmp".into(),
-        ModelSelection {
-            profile_name: String::new(),
-            model: "noop".into(),
-            provider_kind: String::new(),
-        },
+        ModelSelection::simple("noop"),
     );
 
     // Should not error or panic
