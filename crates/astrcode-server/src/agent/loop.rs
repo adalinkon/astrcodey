@@ -399,10 +399,9 @@ impl AgentLoop {
                     message_id,
                     message_started,
                 } => {
-                    let completed_text = text.map(|t| {
-                        messages.push(LlmMessage::assistant(&t));
-                        final_text.push_str(&t);
-                        t
+                    let completed_text = text.inspect(|t| {
+                        messages.push(LlmMessage::assistant(t));
+                        final_text.push_str(t);
                     });
 
                     self.dispatch_after_provider_response(&ext_ctx).await?;
