@@ -41,8 +41,16 @@ enum Commands {
 /// 程序入口：解析命令行参数并分发到对应子命令处理函数。
 #[tokio::main]
 async fn main() {
-    let _guard = astrcode_log::init();
     let cli = Cli::parse();
+
+    // TUI 模式禁用 stderr 日志，避免破坏终端 UI
+    let _guard = match &cli.command {
+        Commands::Tui => astrcode_log::init_with(astrcode_log::LogOptions {
+            stderr_enabled: false,
+            ..astrcode_log::LogOptions::default()
+        }),
+        _ => astrcode_log::init(),
+    };
 
     match cli.command {
         Commands::Tui => {

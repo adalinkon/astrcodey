@@ -141,6 +141,13 @@ pub(crate) fn reduce(event: &Event, model: &mut SessionReadModel) {
             model.phase = Phase::Error;
         },
         EventPayload::Custom { .. } => {},
+        // 后台任务事件：ToolCallBackgrounded 是 durable，
+        // 标记调用已转入后台但不改变 phase（agent loop 仍在运行）。
+        EventPayload::ToolCallBackgrounded { .. } => {},
+        // BackgroundTaskOutput 是 live 事件，正常情况下不会出现在持久化回放中。
+        EventPayload::BackgroundTaskOutput { .. } => {},
+        // BackgroundTaskCompleted 记录后台任务的最终结果。
+        EventPayload::BackgroundTaskCompleted { .. } => {},
     }
 }
 

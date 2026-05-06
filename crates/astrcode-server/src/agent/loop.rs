@@ -6,7 +6,7 @@
 //! `drive_agent` 负责在回合执行时转发事件流并等待最终输出。
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::BTreeMap,
     future::Future,
     sync::Arc,
     time::Instant,
@@ -26,7 +26,7 @@ use astrcode_core::{
     extension::{CompactTrigger, ExtensionEvent, PostToolUseInput, PreToolUseInput},
     llm::{LlmContent, LlmEvent, LlmMessage, LlmProvider, LlmRole},
     storage::{CompactSnapshotInput, ToolResultArtifactInput, ToolResultArtifactReader},
-    tool::{ExecutionMode, ToolDefinition, ToolExecutionContext, ToolResult},
+    tool::{ExecutionMode, ToolDefinition, ToolResult},
     types::*,
 };
 use astrcode_extensions::{
@@ -51,15 +51,27 @@ use crate::{
             compact_trigger_name, compact_with_forked_provider, dispatch_post_compact,
         },
         post_compact::enrich_post_compact_context,
+        tool_exec::execute_tool_call,
+        tool_types::{
+            BackgroundTaskCompletion, CommitToolResults, ExecuteToolCalls, ExecutableToolCall,
+            PendingCommittedToolResult, PendingToolCall, PreparedToolCall, PreparedToolOutcome,
+            ToolCallRuntimeContext, ToolExecutionStep, assistant_tool_call_message,
+            committed_tool_result_content_len, missing_tool_result, send_tool_requested,
+        },
+        util::{
+            activate_discovered_mcp_tools, append_deferred_mcp_tools_reminder,
+            discovered_mcp_tool_names, initially_active_mcp_tools,
+            parse_and_repair_json, provider_visible_tools, tool_is_visible,
+        },
     },
     session::SessionManager,
 };
 
 /// 并行执行工具调用时的最大并发数。
 const MAX_PARALLEL_TOOL_CALLS: usize = 5;
-const MCP_TOOL_PREFIX: &str = "mcp__";
-const TOOL_SEARCH_TOOL_NAME: &str = "tool_search_tool";
-const TOOL_SEARCH_METADATA_KEY: &str = "toolSearch";
+pub(super) const MCP_TOOL_PREFIX: &str = "mcp__";
+pub(super) const TOOL_SEARCH_TOOL_NAME: &str = "tool_search_tool";
+pub(super) const TOOL_SEARCH_METADATA_KEY: &str = "toolSearch";
 
 /// 运行 agent 的一次 process_prompt，通过 select! + drain 实时处理事件。
 ///
@@ -118,9 +130,18 @@ pub(crate) enum AgentSignal {
         compaction: CompactResult,
         reply: oneshot::Sender<Result<SessionId, String>>,
     },
+    /// 后台任务完成，需要通过 actor_tx 通知 handler。
+    #[allow(dead_code)]
+    BackgroundTaskCompleted {
+        session_id: SessionId,
+        task_id: BackgroundTaskId,
+        call_id: ToolCallId,
+        tool_name: String,
+        result: ToolResult,
+    },
 }
 
-fn send_event(event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>, payload: EventPayload) {
+pub(super) fn send_event(event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>, payload: EventPayload) {
     if let Some(tx) = event_tx {
         let _ = tx.send(AgentSignal::Event(payload));
     }
@@ -152,8 +173,8 @@ pub struct AgentLoop {
     session_manager: Arc<SessionManager>,
     /// Auto compact provider 失败熔断器，跨 turn/continuation 共享。
     auto_compact_failures: Arc<AutoCompactFailureTracker>,
-    /// 工具白名单。设置后仅允许调用列表中的工具，用于子会话等受限场景。
-    tool_allowlist: Option<HashSet<String>>,
+    /// 后台任务完成通知通道。
+    background_result_tx: Option<mpsc::UnboundedSender<BackgroundTaskCompletion>>,
 }
 
 #[derive(Clone)]
@@ -164,6 +185,8 @@ pub struct AgentServices {
     pub context_assembler: Arc<LlmContextAssembler>,
     pub session_manager: Arc<SessionManager>,
     pub auto_compact_failures: Arc<AutoCompactFailureTracker>,
+    /// 后台任务完成通知通道。handler 层创建并持有接收端。
+    pub background_result_tx: Option<mpsc::UnboundedSender<BackgroundTaskCompletion>>,
 }
 
 impl AgentLoop {
@@ -193,15 +216,8 @@ impl AgentLoop {
             context_assembler: services.context_assembler,
             session_manager: services.session_manager,
             auto_compact_failures: services.auto_compact_failures,
-            tool_allowlist: None,
+            background_result_tx: services.background_result_tx,
         }
-    }
-
-    /// 设置工具白名单，仅允许调用指定名称的工具。
-    /// 用于子会话等需要限制可用工具的场景。
-    pub fn with_tool_allowlist(mut self, allowed_tools: Vec<String>) -> Self {
-        self.tool_allowlist = Some(allowed_tools.into_iter().collect());
-        self
     }
 
     /// 处理用户输入的完整 Agent 循环。
@@ -221,11 +237,8 @@ impl AgentLoop {
     ) -> Result<AgentTurnOutput, AgentError> {
         // 构建扩展上下文，填充工具定义供扩展钩子查询
         let mut ext_ctx = self.build_ext_ctx();
-        let mut all_tools = self.tool_registry.list_definitions();
-        if let Some(allowed) = &self.tool_allowlist {
-            all_tools.retain(|tool| tool_name_matches_allowlist(allowed, &tool.name));
-        }
-        let mut active_mcp_tools = initially_active_mcp_tools(&all_tools, &self.tool_allowlist);
+        let all_tools = self.tool_registry.list_definitions();
+        let mut active_mcp_tools = initially_active_mcp_tools(&all_tools);
         let mut tools = provider_visible_tools(&all_tools, &active_mcp_tools);
         let tool_map: std::collections::HashMap<_, _> =
             tools.iter().map(|t| (t.name.clone(), t.clone())).collect();
@@ -817,14 +830,6 @@ impl AgentLoop {
         ctx
     }
 
-    /// 检查指定工具名是否在白名单中。
-    /// 如果未设置白名单，则允许所有工具。
-    fn tool_is_allowed(&self, name: &str) -> bool {
-        self.tool_allowlist
-            .as_ref()
-            .is_none_or(|allowed| tool_name_matches_allowlist(allowed, name))
-    }
-
     /// 预处理工具调用列表。
     ///
     /// 对每个待执行的工具调用依次执行：
@@ -842,27 +847,6 @@ impl AgentLoop {
 
         for (index, tc) in tool_calls.iter().enumerate() {
             let args: serde_json::Value = parse_and_repair_json(&tc.arguments, &tc.name);
-
-            if !self.tool_is_allowed(&tc.name) {
-                let blocked_result = ToolResult {
-                    call_id: tc.call_id.clone(),
-                    content: format!("Tool '{}' is not available to this agent", tc.name),
-                    is_error: true,
-                    error: Some(format!("tool '{}' is not allowed", tc.name)),
-                    metadata: Default::default(),
-                    duration_ms: None,
-                };
-                send_tool_requested(event_tx, tc, &args);
-                prepared.push(PreparedToolCall {
-                    index,
-                    call_id: tc.call_id.clone(),
-                    name: tc.name.clone(),
-                    tool_input: args,
-                    mode: ExecutionMode::Sequential,
-                    outcome: PreparedToolOutcome::Blocked(blocked_result),
-                });
-                continue;
-            }
 
             if !tool_is_visible(tools, &tc.name) {
                 let blocked_result = ToolResult {
@@ -1007,6 +991,7 @@ impl AgentLoop {
                             tool_result_reader: Some(Arc::clone(&self.session_manager)
                                 as Arc<dyn ToolResultArtifactReader>),
                             event_tx: input.event_tx.clone(),
+                            background_result_tx: self.background_result_tx.clone(),
                         },
                         executable,
                     )
@@ -1159,6 +1144,7 @@ impl AgentLoop {
         let tools = tools.to_vec();
         let tool_result_reader =
             Some(Arc::clone(&self.session_manager) as Arc<dyn ToolResultArtifactReader>);
+        let background_result_tx = self.background_result_tx.clone();
 
         join_set.spawn(async move {
             execute_tool_call(
@@ -1170,6 +1156,7 @@ impl AgentLoop {
                     tools,
                     tool_result_reader,
                     event_tx,
+                    background_result_tx,
                 },
                 call,
             )
@@ -1421,229 +1408,6 @@ fn retained_messages_after_compaction(
         .collect()
 }
 
-/// 等待执行的工具调用，在 LLM 流式响应中逐步积累参数。
-pub(crate) struct PendingToolCall {
-    /// 工具调用的唯一标识
-    pub(crate) call_id: String,
-    /// 工具名称
-    pub(crate) name: String,
-    /// 工具调用的 JSON 参数（可能跨多个 delta 事件拼接）
-    pub(crate) arguments: String,
-}
-
-pub(crate) struct PreparedToolCall {
-    pub(crate) index: usize,
-    pub(crate) call_id: String,
-    pub(crate) name: String,
-    pub(crate) tool_input: serde_json::Value,
-    pub(crate) mode: ExecutionMode,
-    pub(crate) outcome: PreparedToolOutcome,
-}
-
-struct ExecuteToolCalls<'a> {
-    prepared: &'a [PreparedToolCall],
-    tools: &'a [ToolDefinition],
-    messages: &'a mut Vec<LlmMessage>,
-    all_tool_results: &'a mut Vec<ToolResult>,
-    event_tx: &'a Option<mpsc::UnboundedSender<AgentSignal>>,
-}
-
-struct CommitToolResults<'a> {
-    prepared: &'a [PreparedToolCall],
-    results: BTreeMap<usize, ToolResult>,
-    tools: &'a [ToolDefinition],
-    messages: &'a mut Vec<LlmMessage>,
-    all_tool_results: &'a mut Vec<ToolResult>,
-    event_tx: &'a Option<mpsc::UnboundedSender<AgentSignal>>,
-}
-
-struct PendingCommittedToolResult {
-    call_id: String,
-    tool_name: String,
-    result: ToolResult,
-}
-
-enum ToolExecutionStep {
-    Blocked(ToolResult),
-    Parallel(ExecutableToolCall),
-    Sequential(ExecutableToolCall),
-}
-
-pub(crate) enum PreparedToolOutcome {
-    Ready,
-    Blocked(ToolResult),
-}
-
-#[derive(Clone)]
-pub(crate) struct ExecutableToolCall {
-    pub(crate) index: usize,
-    pub(crate) call_id: String,
-    pub(crate) name: String,
-    pub(crate) tool_input: serde_json::Value,
-}
-
-pub(crate) struct ToolCallRuntimeContext {
-    session_id: SessionId,
-    working_dir: String,
-    model_id: String,
-    tools: Vec<ToolDefinition>,
-    tool_result_reader: Option<Arc<dyn ToolResultArtifactReader>>,
-    event_tx: Option<mpsc::UnboundedSender<AgentSignal>>,
-}
-
-impl PreparedToolCall {
-    /// 将预处理后的工具调用转换为可执行任务输入。
-    pub(crate) fn to_executable(&self) -> ExecutableToolCall {
-        ExecutableToolCall {
-            index: self.index,
-            call_id: self.call_id.clone(),
-            name: self.name.clone(),
-            tool_input: self.tool_input.clone(),
-        }
-    }
-}
-
-/// 向客户端报告工具调用已经通过预处理并准备执行。
-pub(crate) fn send_tool_requested(
-    event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
-    tc: &PendingToolCall,
-    arguments: &serde_json::Value,
-) {
-    send_event(
-        event_tx,
-        EventPayload::ToolCallRequested {
-            call_id: tc.call_id.clone().into(),
-            tool_name: tc.name.clone(),
-            arguments: arguments.clone(),
-        },
-    );
-}
-
-/// 将本轮 assistant 产生的工具调用整理成 LLM 历史消息。
-pub(crate) fn assistant_tool_call_message(prepared: &[PreparedToolCall]) -> LlmMessage {
-    LlmMessage {
-        role: LlmRole::Assistant,
-        content: prepared
-            .iter()
-            .map(|call| LlmContent::ToolCall {
-                call_id: call.call_id.clone(),
-                name: call.name.clone(),
-                arguments: call.tool_input.clone(),
-            })
-            .collect(),
-        name: None,
-    }
-}
-
-fn committed_tool_result_content_len(messages: &[LlmMessage]) -> usize {
-    messages
-        .iter()
-        .filter(|message| message.role == LlmRole::Tool)
-        .flat_map(|message| &message.content)
-        .filter_map(|content| match content {
-            LlmContent::ToolResult { content, .. } => Some(content.len()),
-            _ => None,
-        })
-        .sum()
-}
-
-/// 执行单个工具调用，并把异常统一转成工具错误结果。
-pub(crate) async fn execute_tool_call(
-    tool_registry: Arc<ToolRegistry>,
-    runtime: ToolCallRuntimeContext,
-    call: ExecutableToolCall,
-) -> (usize, ToolResult) {
-    let started_at = Instant::now();
-    let tool_name = call.name.clone();
-    let call_id = call.call_id.clone();
-    let tool_event_bridge = runtime.event_tx.as_ref().map(|agent_tx| {
-        let (tool_tx, mut tool_rx) = mpsc::unbounded_channel();
-        let agent_tx = agent_tx.clone();
-        let handle = tokio::spawn(async move {
-            while let Some(payload) = tool_rx.recv().await {
-                let _ = agent_tx.send(AgentSignal::Event(payload));
-            }
-        });
-        (tool_tx, handle)
-    });
-    let tool_event_tx = tool_event_bridge
-        .as_ref()
-        .map(|(tool_tx, _)| tool_tx.clone());
-    let tool_ctx = ToolExecutionContext {
-        session_id: runtime.session_id,
-        working_dir: runtime.working_dir,
-        model_id: runtime.model_id,
-        available_tools: runtime.tools,
-        tool_call_id: Some(call.call_id.clone()),
-        event_tx: tool_event_tx,
-        tool_result_reader: runtime.tool_result_reader,
-    };
-
-    let mut result = match tool_registry
-        .execute(&call.name, call.tool_input.clone(), &tool_ctx)
-        .await
-    {
-        Ok(mut result) => {
-            result.call_id = call.call_id.clone();
-            result.duration_ms = Some(started_at.elapsed().as_millis() as u64);
-            result
-        },
-        Err(e) => {
-            let err_msg = format!("Error: {}", e);
-            ToolResult {
-                call_id: call.call_id.clone(),
-                content: err_msg.clone(),
-                is_error: true,
-                error: Some(err_msg),
-                metadata: Default::default(),
-                duration_ms: Some(started_at.elapsed().as_millis() as u64),
-            }
-        },
-    };
-    // Release the tool-side sender before awaiting the bridge; otherwise the
-    // bridge keeps waiting for more tool progress events and this call hangs.
-    drop(tool_ctx);
-    if let Some((tool_tx, bridge)) = tool_event_bridge {
-        drop(tool_tx);
-        let _ = bridge.await;
-    }
-
-    if result.call_id.is_empty() {
-        result.call_id = call.call_id.clone();
-    }
-
-    if result.is_error {
-        tracing::warn!(
-            tool_name,
-            call_id,
-            duration_ms = result.duration_ms.unwrap_or_default(),
-            error = result.error.as_deref().unwrap_or("unknown error"),
-            "tool execution completed with error"
-        );
-    } else {
-        tracing::debug!(
-            tool_name,
-            call_id,
-            duration_ms = result.duration_ms.unwrap_or_default(),
-            "tool execution completed"
-        );
-    }
-
-    (call.index, result)
-}
-
-/// 为没有产出结果的工具调用生成占位错误结果。
-pub(crate) fn missing_tool_result(call: &PreparedToolCall) -> ToolResult {
-    let message = format!("Tool '{}' did not produce a result", call.name);
-    ToolResult {
-        call_id: call.call_id.clone(),
-        content: message.clone(),
-        is_error: true,
-        error: Some(message),
-        metadata: Default::default(),
-        duration_ms: None,
-    }
-}
 
 /// 把 compact 结果转换成主循环继续发送给 provider 的 prepared context。
 fn prepared_context_from_compaction(compaction: CompactResult) -> PreparedContext {
@@ -1665,104 +1429,6 @@ fn counts_as_auto_compact_provider_failure(error: &CompactError) -> bool {
     )
 }
 
-fn initially_active_mcp_tools(
-    tools: &[ToolDefinition],
-    allowlist: &Option<HashSet<String>>,
-) -> HashSet<String> {
-    let Some(allowed) = allowlist else {
-        return HashSet::new();
-    };
-    tools
-        .iter()
-        .filter(|tool| is_concrete_mcp_tool(&tool.name))
-        .filter(|tool| tool_name_matches_allowlist(allowed, &tool.name))
-        .map(|tool| tool.name.clone())
-        .collect()
-}
-
-fn provider_visible_tools(
-    tools: &[ToolDefinition],
-    active_mcp_tools: &HashSet<String>,
-) -> Vec<ToolDefinition> {
-    tools
-        .iter()
-        .filter(|tool| {
-            !is_concrete_mcp_tool(&tool.name)
-                || active_mcp_tools.contains(&tool.name)
-                || tool.name == TOOL_SEARCH_TOOL_NAME
-        })
-        .cloned()
-        .collect()
-}
-
-fn append_deferred_mcp_tools_reminder(
-    messages: &mut Vec<LlmMessage>,
-    tools: &[ToolDefinition],
-    active_mcp_tools: &HashSet<String>,
-) {
-    let deferred = tools
-        .iter()
-        .filter(|tool| is_concrete_mcp_tool(&tool.name))
-        .filter(|tool| !active_mcp_tools.contains(&tool.name))
-        .map(|tool| tool.name.as_str())
-        .collect::<Vec<_>>();
-    if deferred.is_empty() || !tool_is_visible(tools, TOOL_SEARCH_TOOL_NAME) {
-        return;
-    }
-
-    let mut text = String::from(
-        "<available-deferred-mcp-tools>\nDeferred MCP tools are listed by name only. Use \
-         tool_search_tool to fetch full schemas before calling one of these tools.\n",
-    );
-    for name in deferred {
-        text.push_str(name);
-        text.push('\n');
-    }
-    text.push_str("</available-deferred-mcp-tools>");
-    messages.push(LlmMessage::system(text));
-}
-
-fn activate_discovered_mcp_tools(
-    active_mcp_tools: &mut HashSet<String>,
-    tools: &[ToolDefinition],
-    discovered: Vec<String>,
-) -> bool {
-    let available = tools
-        .iter()
-        .filter(|tool| is_concrete_mcp_tool(&tool.name))
-        .map(|tool| tool.name.as_str())
-        .collect::<HashSet<_>>();
-    let mut changed = false;
-    for name in discovered {
-        if available.contains(name.as_str()) {
-            changed |= active_mcp_tools.insert(name);
-        }
-    }
-    changed
-}
-
-fn discovered_mcp_tool_names(result: &ToolResult) -> Vec<String> {
-    result
-        .metadata
-        .get(TOOL_SEARCH_METADATA_KEY)
-        .and_then(|value| value.get("matches"))
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|match_value| match_value.get("name").and_then(|value| value.as_str()))
-        .filter(|name| is_concrete_mcp_tool(name))
-        .map(str::to_string)
-        .collect()
-}
-
-fn tool_is_visible(tools: &[ToolDefinition], name: &str) -> bool {
-    tools.iter().any(|tool| tool.name == name)
-}
-
-fn is_concrete_mcp_tool(name: &str) -> bool {
-    name.starts_with(MCP_TOOL_PREFIX) && name != TOOL_SEARCH_TOOL_NAME
-}
-
 /// Agent 处理过程中可能出现的错误类型。
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
@@ -1779,80 +1445,6 @@ impl From<astrcode_core::llm::LlmError> for AgentError {
     fn from(e: astrcode_core::llm::LlmError) -> Self {
         AgentError::Llm(e.to_string())
     }
-}
-
-/// 检查工具名是否匹配白名单。
-pub(crate) fn tool_name_matches_allowlist(allowed: &HashSet<String>, tool_name: &str) -> bool {
-    allowed
-        .iter()
-        .any(|allowed_name| allowed_name.eq_ignore_ascii_case(tool_name))
-}
-
-/// 解析并尝试修复 JSON 参数。
-///
-/// 某些 LLM 提供者（如 glm-5.1）可能生成格式不正确的 JSON。
-/// 此函数尝试修复常见问题，如：
-/// - 末尾缺少闭合括号
-/// - 末尾有多余的逗号
-/// - 引号不匹配
-fn parse_and_repair_json(arguments: &str, tool_name: &str) -> serde_json::Value {
-    // 首先尝试直接解析
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments) {
-        return value;
-    }
-
-    // 记录原始错误信息
-    tracing::warn!(
-        tool = %tool_name,
-        arguments_preview = %arguments.chars().take(200).collect::<String>(),
-        arguments_len = arguments.len(),
-        "Failed to parse tool call arguments, attempting repair"
-    );
-
-    // 尝试修复策略 1：去除末尾的逗号
-    let trimmed = arguments.trim();
-    if let Some(repaired) = trimmed.strip_suffix(',') {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(repaired) {
-            tracing::debug!(
-                tool = %tool_name,
-                "Successfully repaired JSON by removing trailing comma"
-            );
-            return value;
-        }
-    }
-
-    // 尝试修复策略 2：尝试补全未闭合的 JSON 对象
-    let mut repaired = trimmed.to_string();
-    let open_braces = trimmed.matches('{').count();
-    let close_braces = trimmed.matches('}').count();
-    let open_brackets = trimmed.matches('[').count();
-    let close_brackets = trimmed.matches(']').count();
-
-    // 补全缺失的闭合括号
-    for _ in 0..(open_braces.saturating_sub(close_braces)) {
-        repaired.push('}');
-    }
-    for _ in 0..(open_brackets.saturating_sub(close_brackets)) {
-        repaired.push(']');
-    }
-
-    if repaired != trimmed {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&repaired) {
-            tracing::debug!(
-                tool = %tool_name,
-                "Successfully repaired JSON by adding missing closing brackets"
-            );
-            return value;
-        }
-    }
-
-    // 所有修复尝试都失败，返回空对象
-    tracing::error!(
-        tool = %tool_name,
-        arguments_preview = %arguments.chars().take(500).collect::<String>(),
-        "All JSON repair attempts failed, using empty object"
-    );
-    serde_json::json!({})
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────

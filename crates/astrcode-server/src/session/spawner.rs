@@ -4,7 +4,7 @@
 //! 将事件持久化到子会话存储，并经由 [`ProgressTx`] 将关键进展
 //! 转译为 [`ToolOutputDelta`] 实时反馈给父会话的 TUI。
 
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use astrcode_context::manager::LlmContextAssembler;
 use astrcode_core::{
@@ -24,7 +24,7 @@ use super::{
 use crate::{
     agent::{
         AgentLoop, AgentServices, AgentSignal, AutoCompactFailureTracker,
-        compact::compact_trigger_name, drive_agent, tool_name_matches_allowlist,
+        compact::compact_trigger_name, drive_agent,
     },
     bootstrap::{build_system_prompt_snapshot, build_tool_registry_snapshot, prompt_fingerprint},
 };
@@ -86,11 +86,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
         )
         .await;
 
-        let allowed_tools: HashSet<String> = request.allowed_tools.iter().cloned().collect();
-        let mut prompt_tools = tool_registry.list_definitions();
-        if !allowed_tools.is_empty() {
-            prompt_tools.retain(|tool| tool_name_matches_allowlist(&allowed_tools, &tool.name));
-        }
+        let prompt_tools = tool_registry.list_definitions();
         let (system_prompt, fingerprint) = build_system_prompt_snapshot(
             &self.extension_runner,
             child_sid.as_str(),
@@ -147,9 +143,9 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                 context_assembler: Arc::clone(&self.context_assembler),
                 session_manager: Arc::clone(&self.session_manager),
                 auto_compact_failures: Arc::clone(&self.auto_compact_failures),
+                background_result_tx: None, // 子会话暂不支持后台任务
             },
-        )
-        .with_tool_allowlist(request.allowed_tools);
+        );
 
         let current_child_sid = Arc::new(Mutex::new(child_sid.clone()));
         let final_child_sid_ref = Arc::clone(&current_child_sid);
@@ -216,6 +212,9 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                                 *current_child_sid.lock().await = child_sid.clone();
                             }
                             let _ = reply.send(result);
+                        },
+                        AgentSignal::BackgroundTaskCompleted { .. } => {
+                            // 子会话不支持后台任务，忽略
                         },
                     }
                 }

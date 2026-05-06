@@ -557,6 +557,7 @@ impl CommandHandler {
                     context_assembler: runtime.context_assembler.clone(),
                     session_manager: runtime.session_manager.clone(),
                     auto_compact_failures: runtime.auto_compact_failures.clone(),
+                    background_result_tx: None, // TODO: wire up handler-level background result receiver
                 },
             );
 
@@ -604,6 +605,21 @@ impl CommandHandler {
                                 *current_session_id.lock().await = child_session_id.clone();
                             }
                             let _ = reply.send(result);
+                        },
+                        AgentSignal::BackgroundTaskCompleted {
+                            session_id,
+                            task_id,
+                            call_id,
+                            tool_name,
+                            result,
+                        } => {
+                            let _ = actor_tx.send(CommandMessage::BackgroundTaskCompleted {
+                                session_id,
+                                task_id,
+                                call_id,
+                                tool_name,
+                                result,
+                            });
                         },
                     }
                 }

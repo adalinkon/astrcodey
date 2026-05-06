@@ -1,0 +1,365 @@
+//! 工具调用执行实现。
+//!
+//! 包含阻塞式执行、带后台化能力的执行、以及后台 watcher 逻辑。
+
+use std::{sync::Arc, time::Instant};
+
+use astrcode_core::{
+    event::EventPayload,
+    tool::{BackgroundPolicy, ToolExecutionContext, ToolResult},
+    types::*,
+};
+use astrcode_tools::registry::ToolRegistry;
+use tokio::sync::mpsc;
+
+use super::{AgentSignal, background::backgrounded_placeholder_result};
+use super::r#loop::send_event;
+use super::tool_types::{
+    BackgroundTaskCompletion, ExecutableToolCall, ToolCallRuntimeContext,
+};
+
+/// 执行单个工具调用，并把异常统一转成工具错误结果。
+///
+/// 当工具声明了 [`BackgroundPolicy::AutoAfter`] 且执行超过阈值时，
+/// 自动将任务转入后台执行，并返回一个占位结果让 LLM 继续推理。
+pub(crate) async fn execute_tool_call(
+    tool_registry: Arc<ToolRegistry>,
+    runtime: ToolCallRuntimeContext,
+    call: ExecutableToolCall,
+) -> (usize, ToolResult) {
+    let policy = tool_registry.background_policy(&call.name);
+
+    match policy {
+        BackgroundPolicy::Never => {
+            execute_tool_call_blocking(tool_registry, runtime, call).await
+        },
+        BackgroundPolicy::AutoAfter { threshold_secs } => {
+            execute_tool_call_with_background(
+                tool_registry,
+                runtime,
+                call,
+                threshold_secs,
+            )
+            .await
+        },
+    }
+}
+
+/// 普通的阻塞式工具执行（原有逻辑）。
+async fn execute_tool_call_blocking(
+    tool_registry: Arc<ToolRegistry>,
+    runtime: ToolCallRuntimeContext,
+    call: ExecutableToolCall,
+) -> (usize, ToolResult) {
+    let started_at = Instant::now();
+    let tool_name = call.name.clone();
+    let call_id = call.call_id.clone();
+    let tool_event_bridge = runtime.event_tx.as_ref().map(|agent_tx| {
+        let (tool_tx, mut tool_rx) = mpsc::unbounded_channel();
+        let agent_tx = agent_tx.clone();
+        let handle = tokio::spawn(async move {
+            while let Some(payload) = tool_rx.recv().await {
+                let _ = agent_tx.send(AgentSignal::Event(payload));
+            }
+        });
+        (tool_tx, handle)
+    });
+    let tool_event_tx = tool_event_bridge
+        .as_ref()
+        .map(|(tool_tx, _)| tool_tx.clone());
+    let tool_ctx = ToolExecutionContext {
+        session_id: runtime.session_id,
+        working_dir: runtime.working_dir,
+        model_id: runtime.model_id,
+        available_tools: runtime.tools,
+        tool_call_id: Some(call.call_id.clone()),
+        event_tx: tool_event_tx,
+        tool_result_reader: runtime.tool_result_reader,
+    };
+
+    let mut result = match tool_registry
+        .execute(&call.name, call.tool_input.clone(), &tool_ctx)
+        .await
+    {
+        Ok(mut result) => {
+            result.call_id = call.call_id.clone();
+            result.duration_ms = Some(started_at.elapsed().as_millis() as u64);
+            result
+        },
+        Err(e) => {
+            let err_msg = format!("Error: {}", e);
+            ToolResult {
+                call_id: call.call_id.clone(),
+                content: err_msg.clone(),
+                is_error: true,
+                error: Some(err_msg),
+                metadata: Default::default(),
+                duration_ms: Some(started_at.elapsed().as_millis() as u64),
+            }
+        },
+    };
+    // Release the tool-side sender before awaiting the bridge; otherwise the
+    // bridge keeps waiting for more tool progress events and this call hangs.
+    drop(tool_ctx);
+    if let Some((tool_tx, bridge)) = tool_event_bridge {
+        drop(tool_tx);
+        let _ = bridge.await;
+    }
+
+    if result.call_id.is_empty() {
+        result.call_id = call.call_id.clone();
+    }
+
+    if result.is_error {
+        tracing::warn!(
+            tool_name,
+            call_id,
+            duration_ms = result.duration_ms.unwrap_or_default(),
+            error = result.error.as_deref().unwrap_or("unknown error"),
+            "tool execution completed with error"
+        );
+    } else {
+        tracing::debug!(
+            tool_name,
+            call_id,
+            duration_ms = result.duration_ms.unwrap_or_default(),
+            "tool execution completed"
+        );
+    }
+
+    (call.index, result)
+}
+
+/// 带后台化能力的工具执行。
+///
+/// spawn 工具执行 task 后，用共享结果槽等待结果或阈值超时。
+/// 超时则保留 task 继续在后台执行，watcher 从共享槽读取最终结果并通知 handler。
+async fn execute_tool_call_with_background(
+    tool_registry: Arc<ToolRegistry>,
+    runtime: ToolCallRuntimeContext,
+    call: ExecutableToolCall,
+    threshold_secs: u64,
+) -> (usize, ToolResult) {
+    let started_at = Instant::now();
+    let tool_name = call.name.clone();
+    let call_id = call.call_id.clone();
+    let call_index = call.index;
+
+    // 构造工具执行所需的上下文
+    let tool_event_tx = runtime.event_tx.as_ref().map(|agent_tx| {
+        let (tool_tx, mut tool_rx) = mpsc::unbounded_channel();
+        let agent_tx = agent_tx.clone();
+        tokio::spawn(async move {
+            while let Some(payload) = tool_rx.recv().await {
+                let _ = agent_tx.send(AgentSignal::Event(payload));
+            }
+        });
+        tool_tx
+    });
+
+    let tool_ctx = ToolExecutionContext {
+        session_id: runtime.session_id.clone(),
+        working_dir: runtime.working_dir.clone(),
+        model_id: runtime.model_id.clone(),
+        available_tools: runtime.tools.clone(),
+        tool_call_id: Some(call.call_id.clone()),
+        event_tx: tool_event_tx,
+        tool_result_reader: runtime.tool_result_reader.clone(),
+    };
+
+    // 共享结果槽：exec task 写入，主线程或 watcher 读取
+    let result_slot = Arc::new(std::sync::Mutex::new(None::<Result<ToolResult, astrcode_core::tool::ToolError>>));
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let name = call.name.clone();
+    let tool_input = call.tool_input.clone();
+    let slot_writer = Arc::clone(&result_slot);
+    let exec_handle = tokio::spawn(async move {
+        let result = tool_registry.execute(&name, tool_input, &tool_ctx).await;
+        *slot_writer.lock().unwrap() = Some(result);
+        let _ = done_tx.send(());
+    });
+
+    // 用 timeout 等待完成通知或超时
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(threshold_secs),
+        done_rx,
+    ).await {
+        Ok(Ok(())) => {
+            // 在阈值内完成
+            exec_handle.abort(); // 已完成，abort 无害
+            let result = result_slot.lock().unwrap().take().expect("done_tx sent but no result");
+            match result {
+                Ok(mut r) => {
+                    r.call_id = call_id.clone();
+                    r.duration_ms = Some(started_at.elapsed().as_millis() as u64);
+                    if r.call_id.is_empty() {
+                        r.call_id = call_id.clone();
+                    }
+                    tracing::debug!(
+                        tool_name,
+                        call_id,
+                        duration_ms = r.duration_ms.unwrap_or_default(),
+                        "tool execution completed (before background threshold)"
+                    );
+                    (call_index, r)
+                },
+                Err(e) => {
+                    let err_msg = format!("Error: {e}");
+                    (call_index, ToolResult {
+                        call_id: call_id.clone(),
+                        content: err_msg.clone(),
+                        is_error: true,
+                        error: Some(err_msg),
+                        metadata: Default::default(),
+                        duration_ms: Some(started_at.elapsed().as_millis() as u64),
+                    })
+                },
+            }
+        },
+        Ok(Err(_)) => {
+            // done_tx dropped（task panicked before completion）
+            exec_handle.abort();
+            let err_msg = "Tool task failed: oneshot dropped".to_string();
+            (call_index, ToolResult {
+                call_id: call_id.clone(),
+                content: err_msg.clone(),
+                is_error: true,
+                error: Some(err_msg),
+                metadata: Default::default(),
+                duration_ms: Some(started_at.elapsed().as_millis() as u64),
+            })
+        },
+        Err(_) => {
+            // 超时，转入后台。exec_handle 继续运行。
+            background_tool_call(exec_handle, result_slot, runtime, call, threshold_secs, started_at).await
+        },
+    }
+}
+
+/// 将已超时的工具执行转为后台运行，返回占位结果。
+async fn background_tool_call(
+    exec_handle: tokio::task::JoinHandle<()>,
+    result_slot: Arc<std::sync::Mutex<Option<Result<ToolResult, astrcode_core::tool::ToolError>>>>,
+    runtime: ToolCallRuntimeContext,
+    call: ExecutableToolCall,
+    threshold_secs: u64,
+    started_at: Instant,
+) -> (usize, ToolResult) {
+    let tool_name = call.name.clone();
+    let call_id = call.call_id.clone();
+    let call_index = call.index;
+    let task_id = new_background_task_id();
+
+    tracing::info!(
+        tool_name,
+        call_id,
+        task_id = %task_id,
+        threshold_secs,
+        "tool execution moved to background"
+    );
+
+    // 发送后台化事件
+    send_event(
+        &runtime.event_tx,
+        EventPayload::ToolCallBackgrounded {
+            call_id: ToolCallId::from(call_id.clone()),
+            tool_name: tool_name.clone(),
+            task_id: task_id.clone(),
+            reason: "auto_threshold".to_string(),
+        },
+    );
+
+    // Spawn 后台 watcher：等待执行完成，然后通知
+    let bg_session_id = runtime.session_id.clone();
+    let bg_call_id = call_id.clone();
+    let bg_tool_name = tool_name.clone();
+    let bg_task_id = task_id.clone();
+    let bg_result_tx = runtime.background_result_tx.clone();
+    let bg_event_tx = runtime.event_tx.clone();
+
+    tokio::spawn(async move {
+        // 等待 exec task 完成
+        let _ = exec_handle.await;
+
+        // 从共享槽读取结果
+        let raw = result_slot.lock().unwrap().take();
+        let mut result = match raw {
+            Some(Ok(mut r)) => {
+                r.call_id = bg_call_id.clone();
+                r.duration_ms = Some(started_at.elapsed().as_millis() as u64);
+                r
+            },
+            Some(Err(e)) => {
+                let err_msg = format!("Error: {e}");
+                ToolResult {
+                    call_id: bg_call_id.clone(),
+                    content: err_msg.clone(),
+                    is_error: true,
+                    error: Some(err_msg),
+                    metadata: Default::default(),
+                    duration_ms: Some(started_at.elapsed().as_millis() as u64),
+                }
+            },
+            None => {
+                let err_msg = "Background task completed but no result available".to_string();
+                ToolResult {
+                    call_id: bg_call_id.clone(),
+                    content: err_msg.clone(),
+                    is_error: true,
+                    error: Some(err_msg),
+                    metadata: Default::default(),
+                    duration_ms: Some(started_at.elapsed().as_millis() as u64),
+                }
+            },
+        };
+
+        if result.call_id.is_empty() {
+            result.call_id = bg_call_id.clone();
+        }
+
+        tracing::info!(
+            tool_name = bg_tool_name,
+            call_id = bg_call_id,
+            task_id = %bg_task_id,
+            is_error = result.is_error,
+            "background task completed"
+        );
+
+        // 通过 background_result_tx 通知 handler（持久化路径）
+        if let Some(tx) = bg_result_tx {
+            let _ = tx.send(BackgroundTaskCompletion {
+                session_id: bg_session_id.clone(),
+                task_id: bg_task_id.clone(),
+                call_id: ToolCallId::from(bg_call_id.clone()),
+                tool_name: bg_tool_name.clone(),
+                result: result.clone(),
+            });
+        }
+
+        // 通过 event 通道发送完成事件（live 通知）
+        send_event(
+            &bg_event_tx,
+            EventPayload::BackgroundTaskCompleted {
+                task_id: bg_task_id,
+                call_id: ToolCallId::from(bg_call_id),
+                tool_name: bg_tool_name,
+                result,
+            },
+        );
+    });
+
+    // 返回占位结果
+    let command = call
+        .tool_input
+        .get("command")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let placeholder = backgrounded_placeholder_result(
+        &call_id,
+        &task_id,
+        &tool_name,
+        command.as_deref(),
+    );
+    (call_index, placeholder)
+}

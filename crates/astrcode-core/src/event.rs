@@ -231,6 +231,45 @@ pub enum EventPayload {
         /// 事件数据（任意 JSON 值）。
         data: serde_json::Value,
     },
+
+    /// 工具调用已转入后台执行。
+    ///
+    /// 当工具执行超过其声明的后台化阈值时，agent loop 自动将调用
+    /// 从同步等待转为后台运行，并返回占位结果给 LLM 继续推理。
+    ToolCallBackgrounded {
+        /// 工具调用唯一标识。
+        call_id: ToolCallId,
+        /// 工具名称。
+        tool_name: String,
+        /// 后台任务 ID，用于后续查询和取消。
+        task_id: crate::types::BackgroundTaskId,
+        /// 后台化原因（如 "auto_threshold"）。
+        reason: String,
+    },
+
+    /// 后台任务的输出增量（stdout/stderr 流）。
+    ///
+    /// 这是 live 事件，不持久化到事件日志。
+    BackgroundTaskOutput {
+        /// 后台任务 ID。
+        task_id: crate::types::BackgroundTaskId,
+        /// 输出流类型。
+        stream: ToolOutputStream,
+        /// 本次增量输出文本。
+        delta: String,
+    },
+
+    /// 后台任务已完成。
+    BackgroundTaskCompleted {
+        /// 后台任务 ID。
+        task_id: crate::types::BackgroundTaskId,
+        /// 原始工具调用 ID。
+        call_id: ToolCallId,
+        /// 工具名称。
+        tool_name: String,
+        /// 工具执行的最终结果。
+        result: ToolResult,
+    },
 }
 
 impl EventPayload {
@@ -248,6 +287,7 @@ impl EventPayload {
                 | Self::CompactionStarted
                 | Self::AgentRunStarted
                 | Self::AgentRunCompleted { .. }
+                | Self::BackgroundTaskOutput { .. }
         )
     }
 }

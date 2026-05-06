@@ -551,62 +551,149 @@ impl OpenAiProvider {
         let mut decoder = Utf8StreamDecoder::new();
         // 解析器对外只发标准化 LlmEvent；不同 API 的流式细节都收敛在累积器内。
         let mut accumulator = LlmAccumulator::new();
+        // 行缓冲：HTTP chunk 边界可能切断 SSE 行，需要跨 chunk 拼接。
+        let mut line_buffer = String::new();
 
         while let Some(chunk) = stream.next().await {
             let bytes = chunk.map_err(|e| LlmError::Transport(e.to_string()))?;
-            let text = decoder.decode(&bytes);
-
-            match api_mode {
-                OpenAiApiMode::ChatCompletions => {
-                    for line in text.lines() {
-                        if line.is_empty() || !line.starts_with("data: ") {
-                            continue;
-                        }
-                        let data = &line[6..];
-                        if data == "[DONE]" {
-                            if !accumulator.done_sent() {
-                                accumulator.done_sent = true;
-                                let _ = tx.send(LlmEvent::Done {
-                                    finish_reason: "stop".into(),
-                                });
-                            }
-                            return Ok(());
-                        }
-                        if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
-                            accumulator.ingest_chat_completion(&event, tx);
-                        } else {
-                            tracing::warn!(
-                                "Failed to parse SSE data as JSON: {} bytes",
-                                data.len()
-                            );
-                        }
-                    }
-                },
-                OpenAiApiMode::Responses => {
-                    for line in text.lines() {
-                        if line.is_empty() {
-                            continue;
-                        }
-                        if let Some(data) = line.strip_prefix("data: ") {
-                            if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
-                                accumulator.ingest_responses(&event, tx);
-                            } else {
-                                tracing::warn!(
-                                    "Failed to parse Responses SSE data: {} bytes",
-                                    data.len()
-                                );
-                            }
-                        }
-                    }
-                },
+            if let Some(text) = decoder.push(&bytes) {
+                Self::consume_sse_text_chunk(
+                    &text,
+                    &mut line_buffer,
+                    &mut accumulator,
+                    api_mode,
+                    tx,
+                );
             }
         }
+        // 流结束后刷新 UTF-8 尾部缓冲区（容错恢复坏字节）
+        if let Some(tail_text) = decoder.finish() {
+            Self::consume_sse_text_chunk(
+                &tail_text,
+                &mut line_buffer,
+                &mut accumulator,
+                api_mode,
+                tx,
+            );
+        }
+        // 处理流结束后 line_buffer 中残留的最后一行（如果有）
+        Self::flush_sse_buffer(&mut line_buffer, &mut accumulator, api_mode, tx);
         if !accumulator.done_sent() {
             let _ = tx.send(LlmEvent::Done {
                 finish_reason: "stop".into(),
             });
         }
         Ok(())
+    }
+
+    /// 处理一个 SSE 文本 chunk，按换行符拆分完整行并解析。
+    ///
+    /// TCP 是字节流协议，不保证消息边界。一个完整的 SSE 行可能被分成多个 chunk，
+    /// 因此不能假设每个 chunk 包含完整的 `data: {...}` 行。
+    fn consume_sse_text_chunk(
+        chunk_text: &str,
+        line_buffer: &mut String,
+        accumulator: &mut LlmAccumulator,
+        api_mode: OpenAiApiMode,
+        tx: &mpsc::UnboundedSender<LlmEvent>,
+    ) {
+        line_buffer.push_str(chunk_text);
+
+        while let Some(newline_pos) = line_buffer.find('\n') {
+            let line: String = line_buffer[..newline_pos]
+                .trim_end_matches('\r')
+                .to_string();
+            // 移除已处理的行（包含换行符）
+            *line_buffer = line_buffer[newline_pos + 1..].to_string();
+
+            Self::process_sse_line(&line, accumulator, api_mode, tx);
+        }
+    }
+
+    /// 刷新 SSE 缓冲区中剩余的不完整行（流结束后的收尾处理）。
+    ///
+    /// 当 HTTP 流结束时，缓冲区中可能还剩一行没有换行符。
+    /// 本函数处理这最后一行并清空缓冲区。
+    fn flush_sse_buffer(
+        line_buffer: &mut String,
+        accumulator: &mut LlmAccumulator,
+        api_mode: OpenAiApiMode,
+        tx: &mpsc::UnboundedSender<LlmEvent>,
+    ) {
+        let remaining = std::mem::take(line_buffer);
+        let remaining = remaining.trim().to_string();
+        if !remaining.is_empty() {
+            Self::process_sse_line(&remaining, accumulator, api_mode, tx);
+        }
+    }
+
+    /// 处理单条 SSE 行。
+    fn process_sse_line(
+        line: &str,
+        accumulator: &mut LlmAccumulator,
+        api_mode: OpenAiApiMode,
+        tx: &mpsc::UnboundedSender<LlmEvent>,
+    ) {
+        match api_mode {
+            OpenAiApiMode::ChatCompletions => {
+                if line.is_empty() || !line.starts_with("data: ") {
+                    return;
+                }
+                let data = &line[6..];
+                if data == "[DONE]" {
+                    if !accumulator.done_sent() {
+                        accumulator.done_sent = true;
+                        let _ = tx.send(LlmEvent::Done {
+                            finish_reason: "stop".into(),
+                        });
+                    }
+                    return;
+                }
+                if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
+                    accumulator.ingest_chat_completion(&event, tx);
+                } else {
+                    // 清除控制字符后重试（某些提供者会在 JSON 中混入控制字符）
+                    let cleaned: String =
+                        data.chars().filter(|c| !c.is_control() || c.is_whitespace()).collect();
+                    if cleaned != data {
+                        if let Ok(event) = serde_json::from_str::<serde_json::Value>(&cleaned) {
+                            accumulator.ingest_chat_completion(&event, tx);
+                            return;
+                        }
+                    }
+                    tracing::warn!(
+                        "Failed to parse SSE data as JSON: {} bytes, preview: {:?}",
+                        data.len(),
+                        &data[..data.len().min(80)]
+                    );
+                }
+            },
+            OpenAiApiMode::Responses => {
+                if line.is_empty() {
+                    return;
+                }
+                if let Some(data) = line.strip_prefix("data: ") {
+                    if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
+                        accumulator.ingest_responses(&event, tx);
+                    } else {
+                        let cleaned: String =
+                            data.chars().filter(|c| !c.is_control() || c.is_whitespace()).collect();
+                        if cleaned != data {
+                            if let Ok(event) = serde_json::from_str::<serde_json::Value>(&cleaned)
+                            {
+                                accumulator.ingest_responses(&event, tx);
+                                return;
+                            }
+                        }
+                        tracing::warn!(
+                            "Failed to parse Responses SSE data: {} bytes, preview: {:?}",
+                            data.len(),
+                            &data[..data.len().min(80)]
+                        );
+                    }
+                }
+            },
+        }
     }
 }
 
@@ -619,6 +706,8 @@ pub struct LlmAccumulator {
     // Responses 先流出 function_call 输出项，再用 item_id 继续发送参数增量。
     response_tool_items: BTreeMap<String, ResponseToolCallPartial>,
     done_sent: bool,
+    // 避免重复打印 cache usage 日志（每个 SSE chunk 都携带相同的 usage 对象）
+    cache_usage_reported: bool,
 }
 
 #[derive(Debug, Default)]
@@ -643,6 +732,7 @@ impl LlmAccumulator {
             tool_calls: BTreeMap::new(),
             response_tool_items: BTreeMap::new(),
             done_sent: false,
+            cache_usage_reported: false,
         }
     }
 
@@ -655,7 +745,10 @@ impl LlmAccumulator {
         event: &serde_json::Value,
         tx: &mpsc::UnboundedSender<LlmEvent>,
     ) {
-        trace_prompt_cache_usage(event);
+        if !self.cache_usage_reported {
+            trace_prompt_cache_usage(event);
+            self.cache_usage_reported = true;
+        }
         if let Some(choices) = event["choices"].as_array() {
             for choice in choices {
                 if let Some(delta) = choice.get("delta") {
@@ -721,7 +814,10 @@ impl LlmAccumulator {
         event: &serde_json::Value,
         tx: &mpsc::UnboundedSender<LlmEvent>,
     ) {
-        trace_prompt_cache_usage(event);
+        if !self.cache_usage_reported {
+            trace_prompt_cache_usage(event);
+            self.cache_usage_reported = true;
+        }
         let Some(event_type) = event["type"].as_str() else {
             return;
         };
@@ -857,43 +953,136 @@ impl Default for LlmAccumulator {
 
 // ─── UTF-8 解码器 ─────────────────────────────────────────────────────
 
+/// 流式 UTF-8 解码器，处理分块字节流中的多字节字符边界和坏字节。
+///
+/// 借鉴 v1 的设计：
+/// - `push()` 追加新字节块并返回已确认完整的 UTF-8 文本
+/// - `finish()` 在流结束时刷新尾部缓冲，对坏字节做容错恢复（替换为 U+FFFD）
+/// - 遇到坏字节时用替换字符替代，继续保住整轮输出
 pub struct Utf8StreamDecoder {
-    buffer: Vec<u8>,
+    pending: Vec<u8>,
 }
 
 impl Utf8StreamDecoder {
     pub fn new() -> Self {
-        Self { buffer: Vec::new() }
+        Self { pending: Vec::new() }
     }
 
-    /// 解码分块字节流，避免把多字节 UTF-8 字符切坏。
-    pub fn decode(&mut self, bytes: &[u8]) -> String {
-        self.buffer.extend_from_slice(bytes);
-        match std::str::from_utf8(&self.buffer) {
-            Ok(s) => {
-                let result = s.to_string();
-                self.buffer.clear();
-                result
-            },
-            Err(e) => {
-                let valid_up_to = e.valid_up_to();
-                if valid_up_to > 0 {
-                    let result = std::str::from_utf8(&self.buffer[..valid_up_to])
-                        .expect("valid_up_to guarantees valid UTF-8")
-                        .to_string();
-                    self.buffer = self.buffer[valid_up_to..].to_vec();
-                    result
-                } else {
-                    if self.buffer.len() > 4096 {
-                        tracing::warn!(
-                            "Discarding {} bytes of invalid UTF-8 in SSE stream",
-                            self.buffer.len()
-                        );
-                        self.buffer.clear();
+    /// 追加一个新的字节块，并返回当前已经确认完整的 UTF-8 文本。
+    ///
+    /// 遇到坏字节时用 U+FFFD 替换字符替代，继续处理而不是丢弃。
+    pub fn push(&mut self, chunk: &[u8]) -> Option<String> {
+        if chunk.is_empty() {
+            return None;
+        }
+        self.pending.extend_from_slice(chunk);
+        self.decode_available()
+    }
+
+    /// 在流结束时刷新尾部缓冲。
+    ///
+    /// 流结束时也做容错恢复：如果尾部是损坏/不完整 UTF-8，替换为 U+FFFD 并继续。
+    /// 这样可以避免单个网关脏字节导致整轮会话失败。
+    pub fn finish(&mut self) -> Option<String> {
+        if self.pending.is_empty() {
+            return None;
+        }
+
+        let mut decoded = String::new();
+
+        loop {
+            match std::str::from_utf8(&self.pending) {
+                Ok(text) => {
+                    decoded.push_str(text);
+                    self.pending.clear();
+                    break;
+                },
+                Err(error) => {
+                    let valid_up_to = error.valid_up_to();
+                    if valid_up_to > 0 {
+                        let valid_prefix = std::str::from_utf8(&self.pending[..valid_up_to])
+                            .expect("valid_up_to should always point to a valid utf-8 prefix");
+                        decoded.push_str(valid_prefix);
                     }
-                    String::new()
-                }
-            },
+
+                    if let Some(invalid_len) = error.error_len() {
+                        tracing::warn!(
+                            "stream decoder recovered invalid utf-8 sequence at stream end: \
+                             valid_up_to={}, invalid_len={}, bytes={}",
+                            valid_up_to,
+                            invalid_len,
+                            debug_utf8_bytes(&self.pending, valid_up_to, Some(invalid_len))
+                        );
+                        decoded.push(char::REPLACEMENT_CHARACTER);
+                        self.pending.drain(..valid_up_to + invalid_len);
+                        if self.pending.is_empty() {
+                            break;
+                        }
+                    } else {
+                        // `error_len == None` 表示尾部是"可能缺失字节"的不完整序列。
+                        // 流已经结束，不会再有后续字节，因此直接用替换符收尾并清空缓存。
+                        tracing::warn!(
+                            "stream decoder recovered incomplete utf-8 tail at stream end: \
+                             valid_up_to={}, bytes={}",
+                            valid_up_to,
+                            debug_utf8_bytes(&self.pending, valid_up_to, None)
+                        );
+                        decoded.push(char::REPLACEMENT_CHARACTER);
+                        self.pending.clear();
+                        break;
+                    }
+                },
+            }
+        }
+
+        (!decoded.is_empty()).then_some(decoded)
+    }
+
+    fn decode_available(&mut self) -> Option<String> {
+        let mut decoded = String::new();
+
+        loop {
+            match std::str::from_utf8(&self.pending) {
+                Ok(text) => {
+                    decoded.push_str(text);
+                    self.pending.clear();
+                    return (!decoded.is_empty()).then_some(decoded);
+                },
+                Err(error) => {
+                    let valid_up_to = error.valid_up_to();
+                    if valid_up_to > 0 {
+                        let valid_prefix = std::str::from_utf8(&self.pending[..valid_up_to])
+                            .expect("valid_up_to should always point to a valid utf-8 prefix");
+                        decoded.push_str(valid_prefix);
+                    }
+
+                    let Some(invalid_len) = error.error_len() else {
+                        if decoded.is_empty() {
+                            return None;
+                        }
+                        // 只消费已经确认完整的前缀，把尾部不完整字符留给下一个 chunk。
+                        let tail = self.pending.split_off(valid_up_to);
+                        self.pending = tail;
+                        return Some(decoded);
+                    };
+
+                    tracing::warn!(
+                        "stream decoder recovered invalid utf-8 sequence: valid_up_to={}, \
+                         invalid_len={}, bytes={}",
+                        valid_up_to,
+                        invalid_len,
+                        debug_utf8_bytes(&self.pending, valid_up_to, Some(invalid_len))
+                    );
+
+                    // 某些第三方网关会在 SSE 文本中混入坏字节。这里把坏字节替换为 U+FFFD，
+                    // 继续保住整轮输出，而不是因为单个脏字节直接终止会话。
+                    decoded.push(char::REPLACEMENT_CHARACTER);
+                    self.pending.drain(..valid_up_to + invalid_len);
+                    if self.pending.is_empty() {
+                        return Some(decoded);
+                    }
+                },
+            }
         }
     }
 }
@@ -904,14 +1093,36 @@ impl Default for Utf8StreamDecoder {
     }
 }
 
-/// 清理 JSON 片段，去除一些常见的无效字符。
+/// 格式化 UTF-8 字节片段用于日志输出。
+fn debug_utf8_bytes(bytes: &[u8], valid_up_to: usize, invalid_len: Option<usize>) -> String {
+    let start = valid_up_to.saturating_sub(8);
+    let end = invalid_len
+        .map(|len| (valid_up_to + len + 8).min(bytes.len()))
+        .unwrap_or(bytes.len().min(valid_up_to + 8));
+
+    bytes[start..end]
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            if start + i == valid_up_to {
+                format!("[{b:02x}")
+            } else if invalid_len.is_some_and(|len| start + i == valid_up_to + len - 1) {
+                format!("{b:02x}]")
+            } else {
+                format!("{b:02x}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// 清理 JSON 片段，去除控制字符但保留所有可打印字符（包括 Unicode）。
 ///
 /// 某些 LLM 提供者在流式传输工具调用参数时可能会插入
 /// 控制字符或其他无效内容。此函数尝试清理这些内容。
 fn clean_json_fragment(fragment: &str) -> String {
-    // 去除常见的控制字符（保留换行、制表符等空白字符）
     fragment.chars().filter(|&c| {
-        c.is_ascii_graphic() || c.is_ascii_whitespace()
+        !c.is_control() || c.is_whitespace()
     }).collect()
 }
 

@@ -748,6 +748,18 @@ impl TuiState {
                 self.status = format!("Event: {name}");
                 self.mark_dirty();
             },
+            EventPayload::ToolCallBackgrounded { tool_name, task_id, .. } => {
+                self.status = format!("{tool_name} → background ({task_id})");
+                self.mark_dirty();
+            },
+            EventPayload::BackgroundTaskOutput { task_id, .. } => {
+                self.status = format!("background output ({task_id})");
+                self.mark_dirty();
+            },
+            EventPayload::BackgroundTaskCompleted { task_id, tool_name, .. } => {
+                self.status = format!("{tool_name} background done ({task_id})");
+                self.mark_dirty();
+            },
         }
     }
 

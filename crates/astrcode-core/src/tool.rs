@@ -96,6 +96,20 @@ pub enum ExecutionMode {
     Parallel,
 }
 
+/// 工具的后台化策略。
+///
+/// 由 agent loop 的工具执行调度层查询，决定是否在执行超过阈值后
+/// 将工具调用自动转入后台，不阻塞 agent loop 继续推进。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundPolicy {
+    /// 不自动后台化（默认）。
+    #[default]
+    Never,
+    /// 执行超过阈值秒数后自动后台化。
+    AutoAfter { threshold_secs: u64 },
+}
+
 /// 每次工具调用时传递的上下文。
 ///
 /// 由 Agent 在每次工具调用开始时创建，携带工具（尤其是扩展工具）
@@ -174,6 +188,14 @@ pub trait Tool: Send + Sync {
     /// 返回工具的执行模式偏好。
     fn execution_mode(&self) -> ExecutionMode {
         self.definition().execution_mode
+    }
+
+    /// 返回工具的后台化策略。
+    ///
+    /// 默认为 [`BackgroundPolicy::Never`]。工具可以覆写此方法声明
+    /// 自己在执行时间过长时可以自动转入后台。
+    fn background_policy(&self) -> BackgroundPolicy {
+        BackgroundPolicy::Never
     }
 
     /// 使用给定参数和调用上下文执行工具。

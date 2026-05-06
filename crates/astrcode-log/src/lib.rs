@@ -62,6 +62,9 @@ pub struct LogOptions {
     pub file_filter: String,
     /// Whether to enable file logging at all.
     pub file_enabled: bool,
+    /// Whether to enable stderr logging. Disable for TUI mode to avoid
+    /// corrupting the terminal UI.
+    pub stderr_enabled: bool,
 }
 
 impl Default for LogOptions {
@@ -69,8 +72,9 @@ impl Default for LogOptions {
         Self {
             log_dir: default_log_dir(),
             stderr_filter: "info".into(),
-            file_filter: "debug".into(),
+            file_filter: "info,astrcode=debug".into(),
             file_enabled: true,
+            stderr_enabled: true,
         }
     }
 }
@@ -93,16 +97,23 @@ pub fn init() -> tracing_appender::non_blocking::WorkerGuard {
 ///
 /// See [`init()`] for lifetime and panic caveats.
 pub fn init_with(opts: LogOptions) -> tracing_appender::non_blocking::WorkerGuard {
-    let stderr_filter = std::env::var("ASTRCODE_LOG").unwrap_or(opts.stderr_filter);
+    let subscriber = Registry::default();
 
-    let stderr_layer = tracing_subscriber::fmt::layer()
-        .with_writer(std::io::stderr)
-        .with_ansi(true)
-        .with_target(true)
-        .with_level(true)
-        .with_filter(EnvFilter::new(&stderr_filter));
+    let stderr_layer = if opts.stderr_enabled {
+        let stderr_filter = std::env::var("ASTRCODE_LOG").unwrap_or(opts.stderr_filter);
+        Some(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_ansi(true)
+                .with_target(true)
+                .with_level(true)
+                .with_filter(EnvFilter::new(&stderr_filter)),
+        )
+    } else {
+        None
+    };
 
-    let subscriber = Registry::default().with(stderr_layer);
+    let subscriber = subscriber.with(stderr_layer);
 
     if opts.file_enabled {
         fs::create_dir_all(&opts.log_dir)

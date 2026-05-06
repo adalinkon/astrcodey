@@ -3,7 +3,8 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use astrcode_core::tool::{
-    ExecutionMode, Tool, ToolDefinition, ToolError, ToolExecutionContext, ToolResult,
+    BackgroundPolicy, ExecutionMode, Tool, ToolDefinition, ToolError, ToolExecutionContext,
+    ToolResult,
 };
 
 /// Registry of available tools (built-in + extension-registered).
@@ -79,6 +80,14 @@ impl ToolRegistry {
             definition.execution_mode = tool.execution_mode();
             definition
         })
+    }
+
+    /// 按名称查询工具的后台化策略，未找到返回 `Never`。
+    pub fn background_policy(&self, name: &str) -> BackgroundPolicy {
+        self.tools
+            .get(name)
+            .map(|tool| tool.background_policy())
+            .unwrap_or(BackgroundPolicy::Never)
     }
 
     /// Drain all registered tools into a Vec (consumes the registry).

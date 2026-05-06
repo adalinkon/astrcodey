@@ -33,20 +33,6 @@ use tokio::{
 
 use super::*;
 
-#[test]
-fn tool_allowlist_matches_canonical_names_case_insensitively() {
-    let allowed = HashSet::from([
-        String::from("read"),
-        String::from("GREP"),
-        String::from("shell"),
-    ]);
-
-    assert!(tool_name_matches_allowlist(&allowed, "read"));
-    assert!(tool_name_matches_allowlist(&allowed, "grep"));
-    assert!(tool_name_matches_allowlist(&allowed, "shell"));
-    assert!(!tool_name_matches_allowlist(&allowed, "write"));
-}
-
 struct BlockingPreToolExtension;
 
 #[async_trait::async_trait]
@@ -803,6 +789,7 @@ where
         context_assembler: test_context_assembler(),
         session_manager: Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new()))),
         auto_compact_failures: Arc::new(AutoCompactFailureTracker::default()),
+        background_result_tx: None,
     }
 }
 
@@ -1208,6 +1195,7 @@ async fn large_tool_result_is_persisted_before_next_llm_call() {
             context_assembler: test_context_assembler(),
             session_manager: Arc::clone(&session_manager),
             auto_compact_failures: Arc::new(AutoCompactFailureTracker::default()),
+            background_result_tx: None,
         },
     );
 
@@ -1333,6 +1321,7 @@ async fn aggregate_tool_result_budget_persists_largest_inline_result() {
             context_assembler: test_context_assembler(),
             session_manager,
             auto_compact_failures: Arc::new(AutoCompactFailureTracker::default()),
+            background_result_tx: None,
         },
     );
 
@@ -1669,6 +1658,7 @@ async fn auto_compact_circuit_skips_forked_provider_after_repeated_failures() {
             context_assembler,
             session_manager: Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new()))),
             auto_compact_failures,
+            background_result_tx: None,
         },
     );
     let mut history = Vec::new();

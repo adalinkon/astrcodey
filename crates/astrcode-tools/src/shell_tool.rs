@@ -84,6 +84,13 @@ impl Tool for ShellTool {
         }
     }
 
+    /// Shell 命令执行超过 timeout 一半时间后自动后台化。
+    fn background_policy(&self) -> BackgroundPolicy {
+        BackgroundPolicy::AutoAfter {
+            threshold_secs: (self.timeout_secs / 2).max(30),
+        }
+    }
+
     /// 执行 shell 命令：解析参数 → 构建子进程 → 并发读取 stdout/stderr → 等待完成或超时。
     ///
     /// 超时后会强制终止子进程并返回 `ToolError::Timeout`。

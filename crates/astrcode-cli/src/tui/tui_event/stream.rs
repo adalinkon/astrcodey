@@ -17,9 +17,7 @@ pub enum TuiEvent {
     Key(KeyEvent),
     /// Bracketed paste 文本
     Paste(String),
-    /// 终端尺寸变化
-    Resize,
-    /// 计划的重绘
+    /// 计划的重绘（包括 resize 触发的重绘）
     Draw,
 }
 
@@ -64,25 +62,33 @@ impl EventStream {
     }
 
     /// 轮询 crossterm 事件。
+    ///
+    /// 过滤掉的事件（key release、FocusLost 等）不会结束流，
+    /// 而是继续轮询直到获得有效事件或 `Pending`。
     fn poll_crossterm_event(
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<TuiEvent>> {
-        let broker = match &self.broker {
-            Some(b) => b,
-            None => return Poll::Ready(None),
-        };
+        loop {
+            let broker = match &self.broker {
+                Some(b) => b,
+                None => return Poll::Ready(None),
+            };
 
-        match broker.poll_crossterm_event(cx) {
-            Poll::Ready(Some(Ok(event))) => {
-                Poll::Ready(self.map_crossterm_event(event))
-            },
-            Poll::Ready(Some(Err(_))) => {
-                // crossterm 错误，返回 None
-                Poll::Ready(None)
-            },
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
+            match broker.poll_crossterm_event(cx) {
+                Poll::Ready(Some(Ok(event))) => {
+                    if let Some(tui_event) = self.map_crossterm_event(event) {
+                        return Poll::Ready(Some(tui_event));
+                    }
+                    // 事件被过滤（key release / FocusLost 等），继续轮询
+                },
+                Poll::Ready(Some(Err(e))) => {
+                    tracing::error!("crossterm event stream error, treating as end-of-stream: {e}");
+                    return Poll::Ready(None);
+                },
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
         }
     }
 
@@ -118,7 +124,9 @@ impl EventStream {
                 }
                 Some(TuiEvent::Key(key_event))
             }
-            Event::Resize(_, _) => Some(TuiEvent::Resize),
+            // Resize 映射为 Draw，与 Codex 一致。
+            // resize 的实际处理在 draw_frame 的 pending_viewport_area + update_inline_viewport 中。
+            Event::Resize(_, _) => Some(TuiEvent::Draw),
             Event::Paste(text) => Some(TuiEvent::Paste(text)),
             Event::FocusGained => {
                 self.focus.set_focused(true);

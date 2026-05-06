@@ -31,7 +31,7 @@ use crossterm::{
 };
 use input::Action;
 use ratatui::{
-    backend::CrosstermBackend,
+    backend::{Backend, CrosstermBackend},
     layout::Position,
 };
 use custom_terminal::Terminal as CustomTerminal;
@@ -67,11 +67,15 @@ pub async fn run() -> io::Result<()> {
     terminal.draw_frame(&mut state, &theme)?;
     state.dirty = false;
 
+    let mut exit_reason = None::<String>;
     loop {
         tokio::select! {
             // TUI 事件（键盘、粘贴、resize、绘制）
             event = event_stream.next() => {
-                let Some(event) = event else { break };
+                let Some(event) = event else {
+                    exit_reason = Some("event stream ended".into());
+                    break;
+                };
                 handle_tui_event(event, &mut state, &client, &mut terminal).await?;
             },
             // 服务器事件
@@ -101,6 +105,12 @@ pub async fn run() -> io::Result<()> {
         }
     }
 
+    drop(terminal);
+
+    if let Some(reason) = exit_reason {
+        eprintln!("[TUI] exited abnormally: {reason}");
+    }
+
     Ok(())
 }
 
@@ -122,14 +132,8 @@ async fn handle_tui_event(
             state.insert_paste(&text);
             state.mark_dirty();
         },
-        TuiEvent::Resize => {
-            // 不调用 sync_resize / autoresize！
-            // 让 draw_frame 内的 update_inline_viewport 自己处理 resize，
-            // 这样它才能正确比较 old_height 和 new_height。
-            state.mark_dirty();
-        },
         TuiEvent::Draw => {
-            // 计划的重绘事件
+            // 计划的重绘事件（包括 resize 触发的重绘）
             state.mark_dirty();
         },
     }
@@ -359,7 +363,7 @@ impl TerminalSession {
         let mut stdout = io::stdout();
         execute!(stdout, EnableBracketedPaste)?;
 
-        let backend = CrosstermBackend::new(stdout);
+        let mut backend = CrosstermBackend::new(stdout);
 
         // 探测初始光标位置（必须在 raw mode 之后，使用 CPR 逃逸序列）
         #[cfg(unix)]
@@ -392,11 +396,26 @@ impl TerminalSession {
     /// 将待提交历史写入原生 scrollback，并绘制底部面板。
     ///
     /// 使用 Codex 的 draw_with_resize_reflow 模式：
-    /// 不依赖 pending_viewport_area（光标位置启发式），
-    /// 而是通过 update_inline_viewport 的 resize-reflow 逻辑
-    /// 直接处理终端放大和缩小。
+    /// 1. 在 sync_update 之前查询光标位置（避免与事件读取竞争）
+    /// 2. 在 sync_update 内部：
+    ///    a. 应用 pending_viewport_area（光标位置启发式）
+    ///    b. update_inline_viewport 处理 resize-reflow
+    ///    c. flush scrollback
+    ///    d. invalidate viewport（如需要）
+    ///    e. draw
     fn draw_frame(&mut self, state: &mut TuiState, theme: &theme::Theme) -> io::Result<()> {
+        // Precompute viewport area adjustment from cursor position heuristic
+        // BEFORE entering the synchronized update, to avoid racing with the
+        // event reader.
+        let pending_viewport_area = self.pending_viewport_area()?;
+
         let _ = io::stdout().sync_update(|_| {
+            // Apply cursor-based viewport adjustment if resize moved the cursor
+            if let Some(new_area) = pending_viewport_area {
+                self.terminal.set_viewport_area(new_area);
+                self.terminal.clear()?;
+            }
+
             let needs_full_repaint = self.terminal.update_inline_viewport(INLINE_VIEWPORT_HEIGHT)?;
 
             self.flush_scrollback(state, theme)?;
@@ -411,6 +430,32 @@ impl TerminalSession {
         })?;
 
         Ok(())
+    }
+
+    /// Cursor position heuristic to detect resize-induced viewport drift.
+    ///
+    /// When the terminal is resized, the emulator reflows content which can
+    /// shift the cursor position. By comparing the actual cursor position
+    /// with the last known position, we can compute how the viewport should
+    /// be adjusted to keep the inline viewport at the correct screen location.
+    fn pending_viewport_area(&mut self) -> io::Result<Option<ratatui::layout::Rect>> {
+        let screen_size = self.terminal.size()?;
+        let last_known_screen_size = self.terminal.last_known_screen_size;
+        if screen_size != last_known_screen_size {
+            if let Ok(cursor_pos) = self.terminal.get_cursor_position() {
+                let last_known_cursor_pos = self.terminal.last_known_cursor_pos;
+                // If the cursor moved due to resize reflow, adjust the viewport
+                // to keep it in the same relative position.
+                if cursor_pos.y != last_known_cursor_pos.y {
+                    let offset = ratatui::layout::Offset {
+                        x: 0,
+                        y: cursor_pos.y as i32 - last_known_cursor_pos.y as i32,
+                    };
+                    return Ok(Some(self.terminal.viewport_area.offset(offset)));
+                }
+            }
+        }
+        Ok(None)
     }
 
     fn composer_width(&self) -> usize {
@@ -450,76 +495,6 @@ impl Drop for TerminalSession {
     }
 }
 
-fn sync_viewport_resize<B: ratatui::backend::Backend>(
-    terminal: &mut Terminal<B>,
-) -> io::Result<()> {
-    terminal.autoresize()
-}
-
-fn insert_scrollback_entry<B: ratatui::backend::Backend>(
-    terminal: &mut Terminal<B>,
-    entry: &state::ScrollbackEntry,
-    theme: &theme::Theme,
-) -> io::Result<()> {
-    sync_viewport_resize(terminal)?;
-    let width = terminal.size()?.width;
-    let lines = scrollback_entry_to_lines(entry, width, theme);
-    if lines.is_empty() {
-        return Ok(());
-    }
-    let height = lines.len() as u16;
-    terminal.insert_before(height, |buffer| {
-        Paragraph::new(Text::from(lines)).render(buffer.area, buffer);
-        // Clear wide-char continuation cells to prevent CJK rendering artifacts.
-        // ratatui's crossterm backend tracks cursor position per cell (x, y),
-        // not per visual column — so when it writes a space into the continuation
-        // cell of a CJK character, the space overwrites the character's right half.
-        // Clearing the symbol makes Print("") a no-op, letting the wide character
-        // occupy both columns correctly.
-        clear_wide_continuation_cells(buffer);
-    })
-}
-
-/// Erase continuation-cell symbols left by ratatui after wide characters.
-fn clear_wide_continuation_cells(buffer: &mut ratatui::buffer::Buffer) {
-    use unicode_width::UnicodeWidthChar;
-
-    let buf_width = buffer.area.width as usize;
-    let buf_height = buffer.area.height as usize;
-    for row in 0..buf_height {
-        let mut col: usize = 0;
-        while col < buf_width {
-            let cell = &buffer.content[row * buf_width + col];
-            let w = cell
-                .symbol()
-                .chars()
-                .next()
-                .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(1))
-                .unwrap_or(1)
-                .max(1);
-            for offset in 1..w {
-                let idx = row * buf_width + col + offset;
-                if idx < buffer.content.len() {
-                    buffer.content[idx].set_symbol("");
-                }
-            }
-            col += w;
-        }
-    }
-}
-
-/// 将 scrollback_queue 中的消息全部写入终端原生 scrollback。
-fn flush_scrollback(
-    state: &mut TuiState,
-    terminal: &mut TerminalSession,
-    theme: &theme::Theme,
-) -> io::Result<()> {
-    let entries: Vec<_> = state.scrollback_queue.drain(..).collect();
-    for entry in entries {
-        terminal.insert_scrollback_entry(&entry, theme)?;
-    }
-    Ok(())
-}
 
 fn io_error(error: impl std::fmt::Display) -> io::Error {
     io::Error::other(error.to_string())

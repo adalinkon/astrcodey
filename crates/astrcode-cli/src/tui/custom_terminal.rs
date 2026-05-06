@@ -182,8 +182,15 @@ where
 
     pub fn autoresize(&mut self) -> io::Result<()> {
         let screen_size = self.size()?;
-        self.last_known_screen_size = screen_size;
+        if screen_size != self.last_known_screen_size {
+            self.last_known_screen_size = screen_size;
+        }
         Ok(())
+    }
+
+    /// Gets the current cursor position from the backend.
+    pub fn get_cursor_position(&mut self) -> io::Result<Position> {
+        self.backend.get_cursor_position()
     }
 
     /// Draw a single frame: run render callback, diff, flush.
@@ -243,13 +250,19 @@ where
         Ok(())
     }
 
-    /// Clear from position to end of screen and force full repaint.
-    pub fn clear_after_position(&mut self, position: Position) -> io::Result<()> {
-        self.backend.set_cursor_position(position)?;
+    /// Clear the viewport area and force a full redraw on the next draw call.
+    pub fn clear(&mut self) -> io::Result<()> {
+        if self.viewport_area.is_empty() {
+            return Ok(());
+        }
+        self.backend
+            .set_cursor_position(self.viewport_area.as_position())?;
         self.backend.clear_region(ClearType::AfterCursor)?;
+        // Reset the back buffer to make sure the next update will redraw everything.
         self.previous_buffer_mut().reset();
         Ok(())
     }
+
 
     /// Force full repaint by resetting the diff buffer.
     pub fn invalidate_viewport(&mut self) {
@@ -288,11 +301,6 @@ where
     /// Returns `true` when the caller must invalidate the diff buffer.
     pub fn update_inline_viewport(&mut self, height: u16) -> io::Result<bool> {
         let size = self.size()?;
-        let old_height = self.last_known_screen_size.height;
-        let terminal_height_grew = size.height > old_height;
-        let viewport_was_bottom_aligned = self.viewport_area.bottom() == old_height;
-
-        let previous_area = self.viewport_area;
         let mut area = self.viewport_area;
         area.height = height.min(size.height);
         area.width = size.width;
@@ -300,22 +308,19 @@ where
         if area.bottom() > size.height {
             let scroll_by = area.bottom() - size.height;
             self.backend_mut().scroll_region_up(0..area.top(), scroll_by)?;
-            area.y = size.height.saturating_sub(area.height);
-        } else if terminal_height_grew && viewport_was_bottom_aligned {
-            area.y = size.height.saturating_sub(area.height);
+            area.y = size.height - area.height;
         }
 
-        let mut needs_full_repaint = false;
         if area != self.viewport_area {
-            let clear_y = previous_area.y.min(area.y);
-            let clear_position = Position::new(0, clear_y);
+            self.clear()?;
             self.set_viewport_area(area);
-            self.clear_after_position(clear_position)?;
-            needs_full_repaint = true;
         }
 
-        self.last_known_screen_size = size;
-        Ok(needs_full_repaint)
+        // NOTE: Do NOT update last_known_screen_size here.
+        // That is handled by autoresize() inside draw(), which is called
+        // after update_inline_viewport. Updating it here would cause
+        // pending_viewport_area to miss the resize on the next frame.
+        Ok(false)
     }
 }
 

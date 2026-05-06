@@ -760,24 +760,7 @@ fn composer_lines_and_cursor(state: &TuiState, width: u16) -> (Vec<String>, (u16
 }
 
 pub fn visual_lines(text: &str, width: usize) -> Vec<String> {
-    let result = layout_visual_text(text, width, None).lines;
-    // 调试输出：检查是否有额外的空格
-    #[cfg(debug_assertions)]
-    {
-        for (i, line) in result.iter().enumerate() {
-            let has_spaces = line.chars().any(|c| c == ' ');
-            let has_cjk = line.chars().any(|c| {
-                let cp = c as u32;
-                (0x4E00..=0x9FFF).contains(&cp) || // CJK Unified Ideographs
-                (0x3400..=0x4DBF).contains(&cp) || // CJK Extension A
-                (0x20000..=0x2A6DF).contains(&cp) // CJK Extension B
-            });
-            if has_cjk && has_spaces {
-                tracing::warn!("visual_line[{}] 可能包含空格的 CJK 文本: '{}'", i, line);
-            }
-        }
-    }
-    result
+    layout_visual_text(text, width, None).lines
 }
 
 fn compact_path(path: &str) -> String {

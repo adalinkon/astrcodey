@@ -274,12 +274,3 @@ mod imp {
 
 #[cfg(unix)]
 pub use imp::*;
-
-/// Fallback for non-Unix platforms.
-#[cfg(not(unix))]
-pub fn cursor_position(_timeout: std::time::Duration) -> io::Result<Option<ratatui::layout::Position>> {
-    Ok(None)
-}
-
-/// Default timeout for cursor position probe.
-pub const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);

@@ -4,6 +4,7 @@ use astrcode_context::compaction::CompactResult;
 use astrcode_core::{
     event::EventPayload,
     extension::CompactTrigger,
+    tool::ToolResult,
     types::{SessionId, TurnId},
 };
 use astrcode_protocol::{commands::ClientCommand, events::ClientNotification};
@@ -123,6 +124,14 @@ pub(super) enum CommandMessage {
         compaction: CompactResult,
         reply: oneshot::Sender<Result<SessionId, String>>,
     },
+    /// 后台任务完成，需要持久化事件并广播给客户端。
+    BackgroundTaskCompleted {
+        session_id: SessionId,
+        task_id: astrcode_core::types::BackgroundTaskId,
+        call_id: astrcode_core::types::ToolCallId,
+        tool_name: String,
+        result: ToolResult,
+    },
 }
 
 impl CommandHandler {
@@ -223,6 +232,38 @@ impl CommandHandler {
                     .continue_active_turn_from_compaction(session_id, turn_id, trigger, compaction)
                     .await;
                 let _ = reply.send(result);
+            },
+            CommandMessage::BackgroundTaskCompleted {
+                session_id,
+                task_id,
+                call_id,
+                tool_name,
+                result,
+            } => {
+                // 持久化后台任务完成事件并广播给客户端
+                let _ = self
+                    .record_and_broadcast(
+                        &session_id,
+                        None,
+                        EventPayload::ToolCallCompleted {
+                            call_id,
+                            tool_name: tool_name.clone(),
+                            result: result.clone(),
+                        },
+                    )
+                    .await;
+                let _ = self
+                    .record_and_broadcast(
+                        &session_id,
+                        None,
+                        EventPayload::BackgroundTaskCompleted {
+                            task_id,
+                            call_id: astrcode_core::types::ToolCallId::from(result.call_id.clone()),
+                            tool_name,
+                            result,
+                        },
+                    )
+                    .await;
             },
         }
     }
