@@ -54,6 +54,23 @@ use super::{
         initially_active_mcp_tools, provider_visible_tools,
     },
 };
+
+// ─── StreamOutcome ───────────────────────────────────────────────────────
+
+enum StreamOutcome {
+    Complete {
+        text: String,
+        finish_reason: String,
+        message_id: MessageId,
+        message_started: bool,
+    },
+    ToolCalls {
+        text: Option<String>,
+        tool_calls: Vec<PendingToolCall>,
+        message_id: MessageId,
+        message_started: bool,
+    },
+}
 use crate::{
     agent::AutoCompactFailureTracker,
     session::SessionManager,
@@ -134,6 +151,118 @@ pub struct AgentServices {
     pub session_manager: Arc<SessionManager>,
     pub auto_compact_failures: Arc<AutoCompactFailureTracker>,
     pub background_result_tx: Option<mpsc::UnboundedSender<BackgroundTaskCompletion>>,
+}
+
+/// 消费 LLM 事件流直到完成或积累工具调用。
+///
+/// 返回 `StreamOutcome::Complete` 表示回复完成（无工具调用），
+/// 返回 `StreamOutcome::ToolCalls` 表示需要执行工具后继续循环。
+async fn consume_llm_stream(
+    mut rx: mpsc::UnboundedReceiver<LlmEvent>,
+    event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
+    message_id: MessageId,
+) -> Result<StreamOutcome, AgentError> {
+    let mut current_text = String::new();
+    let mut tool_calls: Vec<PendingToolCall> = Vec::new();
+    let mut message_started = false;
+
+    while let Some(event) = rx.recv().await {
+        match event {
+            LlmEvent::ContentDelta { delta } => {
+                if !message_started {
+                    send_event(
+                        event_tx,
+                        EventPayload::AssistantMessageStarted {
+                            message_id: message_id.clone(),
+                        },
+                    );
+                    message_started = true;
+                }
+                send_event(
+                    event_tx,
+                    EventPayload::AssistantTextDelta {
+                        message_id: message_id.clone(),
+                        delta: delta.clone(),
+                    },
+                );
+                current_text.push_str(&delta);
+            },
+            LlmEvent::ToolCallStart {
+                call_id,
+                name,
+                arguments,
+            } => {
+                send_event(
+                    event_tx,
+                    EventPayload::ToolCallStarted {
+                        call_id: call_id.clone().into(),
+                        tool_name: name.clone(),
+                    },
+                );
+                if !arguments.is_empty() {
+                    send_event(
+                        event_tx,
+                        EventPayload::ToolCallArgumentsDelta {
+                            call_id: call_id.clone().into(),
+                            delta: arguments.clone(),
+                        },
+                    );
+                }
+                tool_calls.push(PendingToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                });
+            },
+            LlmEvent::ToolCallDelta { call_id, delta } => {
+                if let Some(tc) = tool_calls.iter_mut().find(|t| t.call_id == call_id) {
+                    tc.arguments.push_str(&delta);
+                }
+                send_event(
+                    event_tx,
+                    EventPayload::ToolCallArgumentsDelta {
+                        call_id: call_id.into(),
+                        delta,
+                    },
+                );
+            },
+            LlmEvent::Done { finish_reason } => {
+                if tool_calls.is_empty() {
+                    return Ok(StreamOutcome::Complete {
+                        text: current_text,
+                        finish_reason,
+                        message_id,
+                        message_started,
+                    });
+                }
+                let text = if current_text.is_empty() {
+                    None
+                } else {
+                    Some(current_text)
+                };
+                return Ok(StreamOutcome::ToolCalls {
+                    text,
+                    tool_calls,
+                    message_id,
+                    message_started,
+                });
+            },
+            LlmEvent::Error { message } => {
+                let recoverable = is_prompt_too_long_message(&message);
+                send_event(
+                    event_tx,
+                    EventPayload::ErrorOccurred {
+                        code: -32603,
+                        message: message.clone(),
+                        recoverable,
+                    },
+                );
+                return Err(AgentError::Llm(message));
+            },
+        }
+    }
+
+    Err(AgentError::Llm("LLM stream ended unexpectedly".into()))
 }
 
 impl AgentLoop {
@@ -235,166 +364,94 @@ impl AgentLoop {
                 .apply_before_provider_request_hook(system_messages, context_messages, &tools)
                 .await?;
 
-            let mut rx = self
+            let rx = self
                 .start_provider_stream(send_messages, &tools, &event_tx, &ext_ctx)
                 .await?;
             let message_id = new_message_id();
-            let mut message_started = false;
-            let mut current_text = String::new();
-            let mut tool_calls: Vec<PendingToolCall> = Vec::new();
-            let mut completed_text: Option<String> = None;
 
-            {
-                while let Some(event) = rx.recv().await {
-                    match event {
-                        LlmEvent::ContentDelta { delta } => {
-                            if !message_started {
-                                send_event(
-                                    &event_tx,
-                                    EventPayload::AssistantMessageStarted {
-                                        message_id: message_id.clone(),
-                                    },
-                                );
-                                message_started = true;
-                            }
-                            send_event(
-                                &event_tx,
-                                EventPayload::AssistantTextDelta {
-                                    message_id: message_id.clone(),
-                                    delta: delta.clone(),
-                                },
-                            );
-                            current_text.push_str(&delta);
-                        },
-                        LlmEvent::ToolCallStart {
-                            call_id,
-                            name,
-                            arguments,
-                        } => {
-                            send_event(
-                                &event_tx,
-                                EventPayload::ToolCallStarted {
-                                    call_id: call_id.clone().into(),
-                                    tool_name: name.clone(),
-                                },
-                            );
-                            if !arguments.is_empty() {
-                                send_event(
-                                    &event_tx,
-                                    EventPayload::ToolCallArgumentsDelta {
-                                        call_id: call_id.clone().into(),
-                                        delta: arguments.clone(),
-                                    },
-                                );
-                            }
-                            tool_calls.push(PendingToolCall {
-                                call_id,
-                                name,
-                                arguments,
-                            });
-                        },
-                        LlmEvent::ToolCallDelta { call_id, delta } => {
-                            if let Some(tc) = tool_calls.iter_mut().find(|t| t.call_id == call_id) {
-                                tc.arguments.push_str(&delta);
-                            }
-                            send_event(
-                                &event_tx,
-                                EventPayload::ToolCallArgumentsDelta {
-                                    call_id: call_id.into(),
-                                    delta,
-                                },
-                            );
-                        },
-                        LlmEvent::Done { finish_reason } => {
-                            if !current_text.is_empty() {
-                                let text = std::mem::take(&mut current_text);
-                                messages.push(LlmMessage::assistant(&text));
-                                final_text.push_str(&text);
-                                completed_text = Some(text);
-                            }
+            let outcome = consume_llm_stream(rx, &event_tx, message_id).await?;
 
-                            if tool_calls.is_empty() {
-                                if let (Some(text), true) = (completed_text.take(), message_started)
-                                {
-                                    send_event(
-                                        &event_tx,
-                                        EventPayload::AssistantMessageCompleted {
-                                            message_id: message_id.clone(),
-                                            text,
-                                        },
-                                    );
-                                }
-                                self.extension_runner
-                                    .dispatch(ExtensionEvent::TurnEnd, &ext_ctx)
-                                    .await?;
-                                return Ok(AgentTurnOutput {
-                                    text: final_text,
-                                    finish_reason,
-                                    tool_results: all_tool_results,
-                                    auto_compaction: auto_compaction.map(|continuation| {
-                                        continuation.with_retained_messages(&messages)
-                                    }),
-                                });
-                            }
-                            break;
-                        },
-                        LlmEvent::Error { message } => {
-                            let recoverable = is_prompt_too_long_message(&message);
+            match outcome {
+                StreamOutcome::Complete {
+                    text,
+                    finish_reason,
+                    message_id,
+                    message_started,
+                } => {
+                    if !text.is_empty() {
+                        messages.push(LlmMessage::assistant(&text));
+                        final_text.push_str(&text);
+                        if message_started {
                             send_event(
                                 &event_tx,
-                                EventPayload::ErrorOccurred {
-                                    code: -32603,
-                                    message: message.clone(),
-                                    recoverable,
+                                EventPayload::AssistantMessageCompleted {
+                                    message_id,
+                                    text,
                                 },
                             );
-                            self.extension_runner
-                                .dispatch(ExtensionEvent::TurnEnd, &ext_ctx)
-                                .await?;
-                            return Err(AgentError::Llm(message));
-                        },
+                        }
                     }
-                }
-            }
-            {
-                self.dispatch_after_provider_response(&ext_ctx).await?;
-            }
+                    self.extension_runner
+                        .dispatch(ExtensionEvent::TurnEnd, &ext_ctx)
+                        .await?;
+                    return Ok(AgentTurnOutput {
+                        text: final_text,
+                        finish_reason,
+                        tool_results: all_tool_results,
+                        auto_compaction: auto_compaction.map(|continuation| {
+                            continuation.with_retained_messages(&messages)
+                        }),
+                    });
+                },
+                StreamOutcome::ToolCalls {
+                    text,
+                    tool_calls,
+                    message_id,
+                    message_started,
+                } => {
+                    let completed_text = text.map(|t| {
+                        messages.push(LlmMessage::assistant(&t));
+                        final_text.push_str(&t);
+                        t
+                    });
 
-            {
-                let prepared_tool_calls = self
-                    .tools
-                    .prepare_tool_calls(&tool_calls, &tools, &event_tx)
-                    .await?;
-                messages.push(assistant_tool_call_message(&prepared_tool_calls));
-                let discovered_tools = self
-                    .tools
-                    .execute_and_commit(ExecuteToolCalls {
-                        prepared: &prepared_tool_calls,
-                        tools: &tools,
-                        messages: &mut messages,
-                        all_tool_results: &mut all_tool_results,
-                        event_tx: &event_tx,
-                    })
-                    .await?;
-                if activate_discovered_mcp_tools(
-                    &mut active_mcp_tools,
-                    &all_tools,
-                    discovered_tools,
-                ) {
-                    tools = provider_visible_tools(&all_tools, &active_mcp_tools);
-                }
+                    self.dispatch_after_provider_response(&ext_ctx).await?;
 
-                if let Some(text) = completed_text.take() {
-                    if message_started {
-                        send_event(
-                            &event_tx,
-                            EventPayload::AssistantMessageCompleted {
-                                message_id: message_id.clone(),
-                                text,
-                            },
-                        );
+                    let prepared_tool_calls = self
+                        .tools
+                        .prepare_tool_calls(&tool_calls, &tools, &event_tx)
+                        .await?;
+                    messages.push(assistant_tool_call_message(&prepared_tool_calls));
+                    let discovered_tools = self
+                        .tools
+                        .execute_and_commit(ExecuteToolCalls {
+                            prepared: &prepared_tool_calls,
+                            tools: &tools,
+                            messages: &mut messages,
+                            all_tool_results: &mut all_tool_results,
+                            event_tx: &event_tx,
+                        })
+                        .await?;
+                    if activate_discovered_mcp_tools(
+                        &mut active_mcp_tools,
+                        &all_tools,
+                        discovered_tools,
+                    ) {
+                        tools = provider_visible_tools(&all_tools, &active_mcp_tools);
                     }
-                }
+
+                    if let Some(text) = completed_text {
+                        if message_started {
+                            send_event(
+                                &event_tx,
+                                EventPayload::AssistantMessageCompleted {
+                                    message_id,
+                                    text,
+                                },
+                            );
+                        }
+                    }
+                },
             }
         }
     }
