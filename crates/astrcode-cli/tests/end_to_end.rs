@@ -156,9 +156,7 @@ async fn test_e2e_list_sessions() {
 
     // 验证收到 SessionList 通知
     match stream.recv().await.unwrap() {
-        ClientNotification::SessionList {
-            sessions,
-        } => {
+        ClientNotification::SessionList { sessions } => {
             println!("Sessions: {:?}", sessions);
         },
         other => panic!("Expected SessionList, got: {:?}", other),

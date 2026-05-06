@@ -6,30 +6,22 @@
 //! - Custom Frame with cursor position tracking
 //! - Double buffering for efficient updates
 
-use std::io;
-use std::io::Write;
+use std::{io, io::Write};
 
-use crossterm::cursor::MoveTo;
-use crossterm::cursor::SetCursorStyle;
-use crossterm::queue;
-use crossterm::style::Colors;
-use crossterm::style::Print;
-use crossterm::style::SetAttribute;
-use crossterm::style::SetBackgroundColor;
-use crossterm::style::SetColors;
-use crossterm::style::SetForegroundColor;
-use crossterm::terminal::Clear;
-use ratatui::backend::Backend;
-use ratatui::backend::ClearType;
-use ratatui::buffer::Buffer;
-use ratatui::buffer::Cell;
-use ratatui::layout::Position;
-use ratatui::layout::Rect;
-use ratatui::layout::Size;
-use ratatui::style::Color;
-use ratatui::style::Modifier;
-use unicode_width::UnicodeWidthStr;
+use crossterm::{
+    cursor::{MoveTo, SetCursorStyle},
+    queue,
+    style::{Colors, Print, SetAttribute, SetBackgroundColor, SetColors, SetForegroundColor},
+    terminal::Clear,
+};
+use ratatui::{
+    backend::{Backend, ClearType},
+    buffer::{Buffer, Cell},
+    layout::{Position, Rect, Size},
+    style::{Color, Modifier},
+};
 use ratatui_crossterm::IntoCrossterm;
+use unicode_width::UnicodeWidthStr;
 
 /// Returns the display width of a cell symbol, ignoring OSC escape sequences.
 fn display_width(s: &str) -> usize {
@@ -74,7 +66,6 @@ impl Frame<'_> {
     pub fn set_cursor_position<P: Into<Position>>(&mut self, position: P) {
         self.cursor_position = Some(position.into());
     }
-
 }
 
 #[derive(Debug, Clone, Default, Eq, PartialEq, Hash)]
@@ -214,7 +205,7 @@ where
                 self.set_cursor_style(cursor_style)?;
                 self.show_cursor()?;
                 self.set_cursor_position(position)?;
-            }
+            },
         }
 
         self.swap_buffers();
@@ -287,10 +278,7 @@ where
 
     /// Get composer available width (viewport width minus padding).
     pub fn composer_width(&self) -> usize {
-        self.viewport_area
-            .width
-            .saturating_sub(2)
-            .max(1) as usize
+        self.viewport_area.width.saturating_sub(2).max(1) as usize
     }
 
     /// Update inline viewport height, matching Codex's resize-reflow logic.
@@ -307,7 +295,8 @@ where
 
         if area.bottom() > size.height {
             let scroll_by = area.bottom() - size.height;
-            self.backend_mut().scroll_region_up(0..area.top(), scroll_by)?;
+            self.backend_mut()
+                .scroll_region_up(0..area.top(), scroll_by)?;
             area.y = size.height - area.height;
         }
 
@@ -419,23 +408,33 @@ where
         match command {
             DrawCommand::Put { cell, .. } => {
                 if cell.modifier != modifier {
-                    ModifierDiff { from: modifier, to: cell.modifier }.queue(writer)?;
+                    ModifierDiff {
+                        from: modifier,
+                        to: cell.modifier,
+                    }
+                    .queue(writer)?;
                     modifier = cell.modifier;
                 }
                 if cell.fg != fg || cell.bg != bg {
-                    queue!(writer, SetColors(Colors::new(cell.fg.into_crossterm(), cell.bg.into_crossterm())))?;
+                    queue!(
+                        writer,
+                        SetColors(Colors::new(
+                            cell.fg.into_crossterm(),
+                            cell.bg.into_crossterm()
+                        ))
+                    )?;
                     fg = cell.fg;
                     bg = cell.bg;
                 }
                 queue!(writer, Print(cell.symbol()))?;
-            }
+            },
             DrawCommand::ClearToEnd { bg: clear_bg, .. } => {
                 queue!(writer, SetAttribute(crossterm::style::Attribute::Reset))?;
                 modifier = Modifier::empty();
                 queue!(writer, SetBackgroundColor(clear_bg.into_crossterm()))?;
                 bg = clear_bg;
                 queue!(writer, Clear(crossterm::terminal::ClearType::UntilNewLine))?;
-            }
+            },
         }
     }
 

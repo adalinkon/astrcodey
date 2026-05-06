@@ -3,9 +3,11 @@
 //! 将 crate-internal 的 [`LlmMessage`] / [`LlmContent`] / [`ToolDefinition`]
 //! 转换为 OpenAI Chat Completions 和 Responses API 所需的 JSON 结构。
 
-use astrcode_core::config::OpenAiApiMode;
-use astrcode_core::llm::{LlmContent, LlmMessage, LlmRole, PromptCacheRetention};
-use astrcode_core::tool::ToolDefinition;
+use astrcode_core::{
+    config::OpenAiApiMode,
+    llm::{LlmContent, LlmMessage, LlmRole, PromptCacheRetention},
+    tool::ToolDefinition,
+};
 
 // ─── 工具序列化 ────────────────────────────────────────────────────────
 

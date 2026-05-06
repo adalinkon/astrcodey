@@ -5,10 +5,7 @@
 //! Agent 是无状态的短暂对象，处理完一个回合后即被丢弃。
 //! `drive_agent` 负责在回合执行时转发事件流并等待最终输出。
 
-use std::{
-    future::Future,
-    sync::Arc,
-};
+use std::{future::Future, sync::Arc};
 
 use astrcode_context::{
     compaction::{
@@ -36,18 +33,18 @@ use tokio::sync::{mpsc, oneshot};
 use super::{
     compact::{
         CompactHookContext, MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES, collect_compact_instructions,
-        compact_trigger_name, compact_with_forked_provider, dispatch_post_compact,
-        counts_as_auto_compact_provider_failure, prepared_context_from_compaction,
+        compact_trigger_name, compact_with_forked_provider,
+        counts_as_auto_compact_provider_failure, dispatch_post_compact,
+        prepared_context_from_compaction,
     },
     post_compact::enrich_post_compact_context,
     shared_context::{
-        AgentError, AgentSignal, SharedTurnContext, end_turn_with_error, send_event,
-        retained_messages_after_compaction,
+        AgentError, AgentSignal, SharedTurnContext, end_turn_with_error,
+        retained_messages_after_compaction, send_event,
     },
     tool_pipeline::ToolPipeline,
     tool_types::{
-        BackgroundTaskCompletion, ExecuteToolCalls, PendingToolCall,
-        assistant_tool_call_message,
+        BackgroundTaskCompletion, ExecuteToolCalls, PendingToolCall, assistant_tool_call_message,
     },
     util::{
         activate_discovered_mcp_tools, append_deferred_mcp_tools_reminder,
@@ -71,10 +68,7 @@ enum StreamOutcome {
         message_started: bool,
     },
 }
-use crate::{
-    agent::AutoCompactFailureTracker,
-    session::SessionManager,
-};
+use crate::{agent::AutoCompactFailureTracker, session::SessionManager};
 
 /// 运行 agent 的一次 process_prompt，通过 select! + drain 实时处理事件。
 ///
@@ -384,10 +378,7 @@ impl AgentLoop {
                         if message_started {
                             send_event(
                                 &event_tx,
-                                EventPayload::AssistantMessageCompleted {
-                                    message_id,
-                                    text,
-                                },
+                                EventPayload::AssistantMessageCompleted { message_id, text },
                             );
                         }
                     }
@@ -398,9 +389,8 @@ impl AgentLoop {
                         text: final_text,
                         finish_reason,
                         tool_results: all_tool_results,
-                        auto_compaction: auto_compaction.map(|continuation| {
-                            continuation.with_retained_messages(&messages)
-                        }),
+                        auto_compaction: auto_compaction
+                            .map(|continuation| continuation.with_retained_messages(&messages)),
                     });
                 },
                 StreamOutcome::ToolCalls {
@@ -444,10 +434,7 @@ impl AgentLoop {
                         if message_started {
                             send_event(
                                 &event_tx,
-                                EventPayload::AssistantMessageCompleted {
-                                    message_id,
-                                    text,
-                                },
+                                EventPayload::AssistantMessageCompleted { message_id, text },
                             );
                         }
                     }

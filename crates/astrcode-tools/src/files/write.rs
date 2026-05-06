@@ -72,7 +72,9 @@ impl Tool for WriteFileTool {
         let args: WriteFileArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(format!("invalid write args: {e}")))?;
         let path = resolve_sandboxed_path(&self.working_dir, &args.path, ctx, started_at);
-        let Ok(path) = path else { return Ok(path.unwrap_err()) };
+        let Ok(path) = path else {
+            return Ok(path.unwrap_err());
+        };
         if args.create_dirs {
             let Some(parent) = path.parent() else {
                 return Err(ToolError::Execution("path has no parent directory".into()));

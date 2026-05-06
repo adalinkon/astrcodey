@@ -557,7 +557,8 @@ impl CommandHandler {
                     context_assembler: runtime.context_assembler.clone(),
                     session_manager: runtime.session_manager.clone(),
                     auto_compact_failures: runtime.auto_compact_failures.clone(),
-                    background_result_tx: None, // TODO: wire up handler-level background result receiver
+                    background_result_tx: None, /* TODO: wire up handler-level background result
+                                                 * receiver */
                 },
             );
 

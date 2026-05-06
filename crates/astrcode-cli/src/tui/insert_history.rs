@@ -4,32 +4,24 @@
 //! cell is an escape-sequence operation rather than a normal ratatui render. The mode determines
 //! how to create room for new history above the inline viewport.
 
-use std::fmt;
-use std::io;
-use std::io::Write;
+use std::{fmt, io, io::Write};
 
-use crossterm::Command;
-use crossterm::cursor::MoveDown;
-use crossterm::cursor::MoveTo;
-use crossterm::cursor::MoveToColumn;
-use crossterm::cursor::RestorePosition;
-use crossterm::cursor::SavePosition;
-use crossterm::queue;
-use crossterm::style::Color as CColor;
-use crossterm::style::Colors;
-use crossterm::style::Print;
-use crossterm::style::SetAttribute;
+use crossterm::{
+    Command,
+    cursor::{MoveDown, MoveTo, MoveToColumn, RestorePosition, SavePosition},
+    queue,
+    style::{
+        Color as CColor, Colors, Print, SetAttribute, SetBackgroundColor, SetColors,
+        SetForegroundColor,
+    },
+    terminal::{Clear, ClearType},
+};
+use ratatui::{
+    layout::Size,
+    style::{Color, Modifier},
+    text::{Line, Span},
+};
 use ratatui_crossterm::IntoCrossterm;
-use crossterm::style::SetBackgroundColor;
-use crossterm::style::SetColors;
-use crossterm::style::SetForegroundColor;
-use crossterm::terminal::Clear;
-use crossterm::terminal::ClearType;
-use ratatui::layout::Size;
-use ratatui::style::Color;
-use ratatui::style::Modifier;
-use ratatui::text::Line;
-use ratatui::text::Span;
 
 use super::custom_terminal::Terminal;
 
@@ -48,10 +40,7 @@ pub enum InsertHistoryMode {
 
 /// Insert `lines` above the viewport using the terminal's backend writer
 /// (avoids direct stdout references).
-pub fn insert_history_lines<B>(
-    terminal: &mut Terminal<B>,
-    lines: Vec<Line>,
-) -> io::Result<()>
+pub fn insert_history_lines<B>(terminal: &mut Terminal<B>, lines: Vec<Line>) -> io::Result<()>
 where
     B: ratatui::backend::Backend<Error = io::Error> + Write,
 {
@@ -106,7 +95,7 @@ where
                 // Scroll the entire screen up by emitting \n at the bottom
                 queue!(
                     writer,
-                    MoveTo(/*x*/ 0, screen_size.height.saturating_sub(1))
+                    MoveTo(/* x */ 0, screen_size.height.saturating_sub(1))
                 )?;
                 for _ in 0..scroll_up_amount {
                     queue!(writer, Print("\n"))?;
@@ -119,7 +108,7 @@ where
             }
 
             let cursor_top = area.top().saturating_sub(scroll_up_amount + shift_down);
-            queue!(writer, MoveTo(/*x*/ 0, cursor_top))?;
+            queue!(writer, MoveTo(/* x */ 0, cursor_top))?;
 
             for (i, line) in wrapped.iter().enumerate() {
                 if i > 0 {
@@ -127,14 +116,14 @@ where
                 }
                 write_history_line(writer, line, wrap_width)?;
             }
-        }
+        },
         InsertHistoryMode::Standard => {
             let cursor_top = if area.bottom() < screen_size.height {
                 let scroll_amount = wrapped_lines.min(screen_size.height - area.bottom());
 
                 let top_1based = area.top() + 1;
                 queue!(writer, SetScrollRegion(top_1based..screen_size.height))?;
-                queue!(writer, MoveTo(/*x*/ 0, area.top()))?;
+                queue!(writer, MoveTo(/* x */ 0, area.top()))?;
                 for _ in 0..scroll_amount {
                     queue!(writer, Print("\x1bM"))?;
                 }
@@ -166,9 +155,10 @@ where
             queue!(writer, SetScrollRegion(1..area.top()))?;
 
             // NB: we are using MoveTo instead of set_cursor_position here to avoid messing with the
-            // terminal's last_known_cursor_position, which hopefully will still be accurate after we
-            // fetch/restore the cursor position. insert_history_lines should be cursor-position-neutral :)
-            queue!(writer, MoveTo(/*x*/ 0, cursor_top))?;
+            // terminal's last_known_cursor_position, which hopefully will still be accurate after
+            // we fetch/restore the cursor position. insert_history_lines should be
+            // cursor-position-neutral :)
+            queue!(writer, MoveTo(/* x */ 0, cursor_top))?;
 
             for line in &wrapped {
                 queue!(writer, Print("\r\n"))?;
@@ -176,7 +166,7 @@ where
             }
 
             queue!(writer, ResetScrollRegion)?;
-        }
+        },
     }
 
     // Restore the cursor position to where it was before we started.
@@ -430,7 +420,10 @@ where
         if next_fg != fg || next_bg != bg {
             queue!(
                 writer,
-                SetColors(Colors::new(next_fg.into_crossterm(), next_bg.into_crossterm()))
+                SetColors(Colors::new(
+                    next_fg.into_crossterm(),
+                    next_bg.into_crossterm()
+                ))
             )?;
             fg = next_fg;
             bg = next_bg;
@@ -446,4 +439,3 @@ where
         SetAttribute(crossterm::style::Attribute::Reset),
     )
 }
-

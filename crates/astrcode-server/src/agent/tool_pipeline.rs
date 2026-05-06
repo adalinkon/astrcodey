@@ -1,11 +1,7 @@
 //! Tool execution pipeline — preprocessing, parallel/sequential scheduling,
 //! result commit, and persistence.
 
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::Instant,
-};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 use astrcode_core::{
     event::EventPayload,
@@ -16,21 +12,22 @@ use astrcode_core::{
 };
 use astrcode_extensions::runner::{ExtensionRunner, ToolHookOutcome};
 use astrcode_support::tool_results::{
-    MAX_TOOL_RESULTS_PER_MESSAGE_CHARS, TOOL_RESULT_PREVIEW_CHARS,
-    persisted_tool_result_summary, should_persist_tool_result, tool_result_inline_limit,
-    tool_result_preview,
+    MAX_TOOL_RESULTS_PER_MESSAGE_CHARS, TOOL_RESULT_PREVIEW_CHARS, persisted_tool_result_summary,
+    should_persist_tool_result, tool_result_inline_limit, tool_result_preview,
 };
 use astrcode_tools::registry::ToolRegistry;
 use tokio::{sync::mpsc, task::JoinSet};
 
 use super::{
-    shared_context::{AgentError, AgentSignal, SharedTurnContext, send_event, TOOL_SEARCH_TOOL_NAME},
+    shared_context::{
+        AgentError, AgentSignal, SharedTurnContext, TOOL_SEARCH_TOOL_NAME, send_event,
+    },
     tool_exec::execute_tool_call,
     tool_types::{
         BackgroundTaskCompletion, CommitToolResults, ExecutableToolCall, ExecuteToolCalls,
         PendingCommittedToolResult, PendingToolCall, PreparedToolCall, PreparedToolOutcome,
-        ToolCallRuntimeContext, ToolExecutionStep,
-        committed_tool_result_content_len, missing_tool_result, send_tool_requested,
+        ToolCallRuntimeContext, ToolExecutionStep, committed_tool_result_content_len,
+        missing_tool_result, send_tool_requested,
     },
     util::{discovered_mcp_tool_names, parse_and_repair_json, tool_is_visible},
 };
@@ -222,9 +219,8 @@ impl ToolPipeline {
                             working_dir: self.shared.working_dir.clone(),
                             model_id: self.shared.model_id.clone(),
                             tools: input.tools.to_vec(),
-                            tool_result_reader: Some(
-                                Arc::clone(&self.session_manager) as Arc<dyn ToolResultArtifactReader>
-                            ),
+                            tool_result_reader: Some(Arc::clone(&self.session_manager)
+                                as Arc<dyn ToolResultArtifactReader>),
                             event_tx: input.event_tx.clone(),
                             background_result_tx: self.background_result_tx.clone(),
                         },

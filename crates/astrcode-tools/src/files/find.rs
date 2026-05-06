@@ -7,7 +7,9 @@ use std::{
 use astrcode_core::tool::*;
 use serde::Deserialize;
 
-use super::shared::{FileCollectOptions, collect_candidate_files, resolve_sandboxed_path, tool_call_id};
+use super::shared::{
+    FileCollectOptions, collect_candidate_files, resolve_sandboxed_path, tool_call_id,
+};
 // ─── find ────────────────────────────────────────────────────────────────
 
 const DEFAULT_FIND_FILES_MAX_RESULTS: usize = 100;
@@ -106,7 +108,9 @@ impl Tool for FindFilesTool {
         let root = match args.root {
             Some(ref raw) => {
                 let root = resolve_sandboxed_path(&self.working_dir, raw, ctx, started_at);
-                let Ok(root) = root else { return Ok(root.unwrap_err()) };
+                let Ok(root) = root else {
+                    return Ok(root.unwrap_err());
+                };
                 root
             },
             None => self.working_dir.clone(),

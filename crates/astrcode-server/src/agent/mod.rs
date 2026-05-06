@@ -12,7 +12,7 @@ pub(crate) mod util;
 
 pub use background::{BackgroundTaskManager, TaskSummary};
 pub use compact::AutoCompactFailureTracker;
+pub(crate) use r#loop::drive_agent;
 pub use r#loop::{AgentCompactContinuation, AgentLoop, AgentServices, AgentTurnOutput};
 pub use shared_context::AgentError;
-pub(crate) use r#loop::drive_agent;
 pub(crate) use shared_context::AgentSignal;

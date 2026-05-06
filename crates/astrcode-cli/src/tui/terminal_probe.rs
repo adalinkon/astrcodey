@@ -9,14 +9,13 @@
 #[cfg(unix)]
 #[cfg_attr(test, allow(dead_code))]
 mod imp {
-    use std::fs::File;
-    use std::fs::OpenOptions;
-    use std::io;
-    use std::io::Write;
-    use std::os::fd::AsRawFd;
-    use std::os::fd::FromRawFd;
-    use std::time::Duration;
-    use std::time::Instant;
+    use std::{
+        fs::{File, OpenOptions},
+        io,
+        io::Write,
+        os::fd::{AsRawFd, FromRawFd},
+        time::{Duration, Instant},
+    };
 
     use ratatui::layout::Position;
 
@@ -49,7 +48,7 @@ mod imp {
                     let stdio_err = match (reader.err(), writer.err()) {
                         (Some(reader_err), Some(writer_err)) => {
                             format!("reader: {reader_err}; writer: {writer_err}")
-                        }
+                        },
                         (Some(reader_err), None) => format!("reader: {reader_err}"),
                         (None, Some(writer_err)) => format!("writer: {writer_err}"),
                         (None, None) => "unknown stdio duplicate error".to_string(),
@@ -62,7 +61,8 @@ mod imp {
                                 io::Error::new(
                                     fallback_err.kind(),
                                     format!(
-                                        "failed to duplicate stdio ({stdio_err}) or open /dev/tty reader ({fallback_err})"
+                                        "failed to duplicate stdio ({stdio_err}) or open /dev/tty \
+                                         reader ({fallback_err})"
                                     ),
                                 )
                             })?;
@@ -71,13 +71,14 @@ mod imp {
                             io::Error::new(
                                 fallback_err.kind(),
                                 format!(
-                                    "failed to duplicate stdio ({stdio_err}) or open /dev/tty writer ({fallback_err})"
+                                    "failed to duplicate stdio ({stdio_err}) or open /dev/tty \
+                                     writer ({fallback_err})"
                                 ),
                             )
                         },
                     )?;
                     Self::new(reader, writer)
-                }
+                },
             }
         }
 
@@ -147,7 +148,7 @@ mod imp {
                     .as_millis()
                     .min(i32::MAX as u128) as i32;
                 let result = unsafe {
-                    libc::poll(&mut fd, /*nfds*/ 1, timeout_ms)
+                    libc::poll(&mut fd, /* nfds */ 1, timeout_ms)
                 };
                 if result > 0 {
                     return Ok((fd.revents & libc::POLLIN) != 0);

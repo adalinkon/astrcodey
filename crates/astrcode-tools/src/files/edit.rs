@@ -123,7 +123,9 @@ impl Tool for EditFileTool {
         let args: EditFileArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(format!("invalid edit args: {e}")))?;
         let path = resolve_sandboxed_path(&self.working_dir, &args.path, ctx, started_at);
-        let Ok(path) = path else { return Ok(path.unwrap_err()) };
+        let Ok(path) = path else {
+            return Ok(path.unwrap_err());
+        };
         let operations = normalize_edit_operations(args)?;
 
         let original = std::fs::read_to_string(&path)

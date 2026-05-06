@@ -80,7 +80,7 @@ pub fn message_to_lines(msg: &Message, width: u16, theme: &Theme) -> Vec<Line<'s
                     // 使用 Span::raw 来避免 styled 可能的字符处理问题
                     lines.push(Line::from(vec![
                         Span::styled("  ", theme.dim),
-                        Span::raw(line),  // 使用 raw 而不是 styled
+                        Span::raw(line), // 使用 raw 而不是 styled
                     ]));
                 }
             }
@@ -546,7 +546,12 @@ fn push_wrapped_line_with_prefix_style(
         #[cfg(debug_assertions)]
         {
             if line.contains(' ') && has_cjk_chars(line) {
-                tracing::warn!("push_wrapped_line_with_prefix_style: CJK 文本包含空格 - prefix: '{}', line: '{}'", prefix, line);
+                tracing::warn!(
+                    "push_wrapped_line_with_prefix_style: CJK 文本包含空格 - prefix: '{}', line: \
+                     '{}'",
+                    prefix,
+                    line
+                );
             }
         }
         lines.push(Line::from(vec![

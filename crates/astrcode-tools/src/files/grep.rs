@@ -211,7 +211,9 @@ impl Tool for GrepTool {
         let root = match args.path {
             Some(ref raw) => {
                 let root = resolve_sandboxed_path(&self.working_dir, raw, ctx, started_at);
-                let Ok(root) = root else { return Ok(root.unwrap_err()) };
+                let Ok(root) = root else {
+                    return Ok(root.unwrap_err());
+                };
                 root
             },
             None => self.working_dir.clone(),

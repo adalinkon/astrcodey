@@ -5,8 +5,8 @@
 use std::collections::HashSet;
 
 use astrcode_core::{
-    tool::{ToolDefinition, ToolResult},
     llm::LlmMessage,
+    tool::{ToolDefinition, ToolResult},
 };
 
 use super::shared_context::{MCP_TOOL_PREFIX, TOOL_SEARCH_METADATA_KEY, TOOL_SEARCH_TOOL_NAME};
@@ -243,8 +243,7 @@ mod tests {
 
     #[test]
     fn parse_and_repair_json_handles_truncated_string() {
-        let result =
-            parse_and_repair_json(r#"{"todos": [{"status": "com"#, "testTool");
+        let result = parse_and_repair_json(r#"{"todos": [{"status": "com"#, "testTool");
         assert_eq!(result["todos"][0]["status"], "com");
     }
 

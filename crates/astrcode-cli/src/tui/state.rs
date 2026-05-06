@@ -659,12 +659,9 @@ impl TuiState {
                 }
                 // Agent 工具启动时立即写入 scrollback，避免长时间无渲染
                 if tool_name == "agent" {
-                    let snapshot = self
-                        .find_message_mut(call_id.as_str())
-                        .map(|m| m.clone());
+                    let snapshot = self.find_message_mut(call_id.as_str()).map(|m| m.clone());
                     if let Some(msg) = snapshot {
-                        self.scrollback_queue
-                            .push(ScrollbackEntry::Message(msg));
+                        self.scrollback_queue.push(ScrollbackEntry::Message(msg));
                     }
                 }
             },
@@ -722,13 +719,13 @@ impl TuiState {
                         // 在完成消息前插入工具统计摘要
                         if let Some(tracker) = self.child_agents.remove(call_id.as_str()) {
                             if !tracker.completed_tools.is_empty() {
-                                let tools_summary = tracker
-                                    .completed_tools
-                                    .iter()
-                                    .fold(BTreeMap::<&String, usize>::new(), |mut acc, t| {
+                                let tools_summary = tracker.completed_tools.iter().fold(
+                                    BTreeMap::<&String, usize>::new(),
+                                    |mut acc, t| {
                                         *acc.entry(t).or_default() += 1;
                                         acc
-                                    });
+                                    },
+                                );
                                 let summary: Vec<String> = tools_summary
                                     .into_iter()
                                     .map(|(name, count)| {
@@ -741,7 +738,11 @@ impl TuiState {
                                     .collect();
                                 self.scrollback_queue.push(ScrollbackEntry::StreamText {
                                     role: MessageRole::Tool,
-                                    text: format!("  {} tool(s): {}", tracker.completed_tools.len(), summary.join(", ")),
+                                    text: format!(
+                                        "  {} tool(s): {}",
+                                        tracker.completed_tools.len(),
+                                        summary.join(", ")
+                                    ),
                                 });
                             }
                         }
@@ -808,7 +809,9 @@ impl TuiState {
                 self.status = format!("Event: {name}");
                 self.mark_dirty();
             },
-            EventPayload::ToolCallBackgrounded { tool_name, task_id, .. } => {
+            EventPayload::ToolCallBackgrounded {
+                tool_name, task_id, ..
+            } => {
                 self.status = format!("{tool_name} → background ({task_id})");
                 self.mark_dirty();
             },
@@ -816,7 +819,9 @@ impl TuiState {
                 self.status = format!("background output ({task_id})");
                 self.mark_dirty();
             },
-            EventPayload::BackgroundTaskCompleted { task_id, tool_name, .. } => {
+            EventPayload::BackgroundTaskCompleted {
+                task_id, tool_name, ..
+            } => {
                 self.status = format!("{tool_name} background done ({task_id})");
                 self.mark_dirty();
             },
@@ -945,10 +950,7 @@ impl TuiState {
     /// - `tool completed` 消息（由下一个 tool started 或最终 Done 隐含）
     /// - `tool output` 消息（工具输出细节）
     fn handle_child_agent_delta(&mut self, call_id: &str, delta: &str) {
-        let tracker = self
-            .child_agents
-            .entry(call_id.to_string())
-            .or_default();
+        let tracker = self.child_agents.entry(call_id.to_string()).or_default();
 
         for line in delta.lines() {
             let clean = line.strip_prefix("child ").unwrap_or(line);
@@ -1524,7 +1526,9 @@ mod tests {
             EventPayload::ToolOutputDelta {
                 call_id: "call-agent-2".into(),
                 stream: astrcode_core::event::ToolOutputStream::Stdout,
-                delta: "child tool started: find\nchild tool completed: find: ok\nchild tool started: find\nchild tool completed: find: ok\nchild tool started: grep\nchild tool completed: grep: 5 matches\n"
+                delta: "child tool started: find\nchild tool completed: find: ok\nchild tool \
+                        started: find\nchild tool completed: find: ok\nchild tool started: \
+                        grep\nchild tool completed: grep: 5 matches\n"
                     .into(),
             },
         );

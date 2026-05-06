@@ -8,12 +8,14 @@ use std::collections::BTreeMap;
 use astrcode_core::{config::OpenAiApiMode, llm::*, tool::ToolDefinition};
 use tokio::sync::mpsc;
 
-use crate::retry::RetryPolicy;
-use crate::serialization::{
-    chat_message_to_json, prompt_cache_retention_wire_value, responses_input_items,
-    responses_tools_json, stable_hash_hex, system_text, tools_to_json,
+use crate::{
+    retry::RetryPolicy,
+    serialization::{
+        chat_message_to_json, prompt_cache_retention_wire_value, responses_input_items,
+        responses_tools_json, stable_hash_hex, system_text, tools_to_json,
+    },
+    stream_decoder::{SseLineReader, Utf8StreamDecoder, clean_json_fragment},
 };
-use crate::stream_decoder::{clean_json_fragment, SseLineReader, Utf8StreamDecoder};
 
 pub struct OpenAiProvider {
     config: LlmClientConfig,
@@ -83,7 +85,7 @@ impl OpenAiProvider {
             })
             .unwrap_or(false)
     }
-    
+
     /// 构建最终请求体。
     ///
     /// Chat Completions 和 Responses 的消息 / 工具结构不兼容，
@@ -201,11 +203,7 @@ impl OpenAiProvider {
         let tools_text = serde_json::to_string(&tools_json).unwrap_or_default();
         format!(
             "astrcode-{}",
-            stable_hash_hex(&[
-                self.model_id.as_str(),
-                sys.as_str(),
-                tools_text.as_str()
-            ])
+            stable_hash_hex(&[self.model_id.as_str(), sys.as_str(), tools_text.as_str()])
         )
     }
 }
@@ -371,8 +369,10 @@ fn process_sse_line(
             if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
                 accumulator.ingest_chat_completion(&event, tx);
             } else {
-                let cleaned: String =
-                    data.chars().filter(|c| !c.is_control() || c.is_whitespace()).collect();
+                let cleaned: String = data
+                    .chars()
+                    .filter(|c| !c.is_control() || c.is_whitespace())
+                    .collect();
                 if cleaned != data {
                     if let Ok(event) = serde_json::from_str::<serde_json::Value>(&cleaned) {
                         accumulator.ingest_chat_completion(&event, tx);
@@ -395,8 +395,10 @@ fn process_sse_line(
                 if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
                     accumulator.ingest_responses(&event, tx);
                 } else {
-                    let cleaned: String =
-                        data.chars().filter(|c| !c.is_control() || c.is_whitespace()).collect();
+                    let cleaned: String = data
+                        .chars()
+                        .filter(|c| !c.is_control() || c.is_whitespace())
+                        .collect();
                     if cleaned != data {
                         if let Ok(event) = serde_json::from_str::<serde_json::Value>(&cleaned) {
                             accumulator.ingest_responses(&event, tx);
@@ -662,9 +664,11 @@ fn trace_prompt_cache_usage(event: &serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::config::OpenAiApiMode;
-    use astrcode_core::llm::*;
-    use astrcode_core::tool::{ExecutionMode, ToolOrigin, ToolDefinition};
+    use astrcode_core::{
+        config::OpenAiApiMode,
+        llm::*,
+        tool::{ExecutionMode, ToolDefinition, ToolOrigin},
+    };
 
     use super::*;
 

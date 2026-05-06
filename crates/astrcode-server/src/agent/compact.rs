@@ -13,7 +13,8 @@ use std::{
 
 use astrcode_context::{
     compaction::{
-        CompactError, CompactResult, CompactSkipReason, CompactSummaryRenderOptions, compact_messages_with_request,
+        CompactError, CompactResult, CompactSkipReason, CompactSummaryRenderOptions,
+        compact_messages_with_request,
     },
     settings::ContextWindowSettings,
 };

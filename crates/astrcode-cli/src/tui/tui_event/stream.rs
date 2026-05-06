@@ -2,11 +2,16 @@
 //!
 //! 将 crossterm 事件映射为 TuiEvent，支持暂停/恢复。
 
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use crossterm::event::{Event, KeyEvent, KeyEventKind};
-use tokio_stream::{Stream, wrappers::{BroadcastStream, WatchStream}};
+use tokio_stream::{
+    Stream,
+    wrappers::{BroadcastStream, WatchStream},
+};
 
 use super::{EventBroker, TerminalFocus};
 
@@ -65,10 +70,7 @@ impl EventStream {
     ///
     /// 过滤掉的事件（key release、FocusLost 等）不会结束流，
     /// 而是继续轮询直到获得有效事件或 `Pending`。
-    fn poll_crossterm_event(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<TuiEvent>> {
+    fn poll_crossterm_event(&mut self, cx: &mut Context<'_>) -> Poll<Option<TuiEvent>> {
         loop {
             let broker = match &self.broker {
                 Some(b) => b,
@@ -123,7 +125,7 @@ impl EventStream {
                     return None;
                 }
                 Some(TuiEvent::Key(key_event))
-            }
+            },
             // Resize 映射为 Draw，与 Codex 一致。
             // resize 的实际处理在 draw_frame 的 pending_viewport_area + update_inline_viewport 中。
             Event::Resize(_, _) => Some(TuiEvent::Draw),
@@ -131,11 +133,11 @@ impl EventStream {
             Event::FocusGained => {
                 self.focus.set_focused(true);
                 Some(TuiEvent::Draw)
-            }
+            },
             Event::FocusLost => {
                 self.focus.set_focused(false);
                 None
-            }
+            },
             _ => None,
         }
     }

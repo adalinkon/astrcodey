@@ -11,10 +11,10 @@ mod insert_history;
 mod render;
 mod slash;
 mod state;
-mod theme;
 mod terminal_probe;
-mod tui_event;
+mod theme;
 mod tool_display;
+mod tui_event;
 
 use std::{
     io::{self, Stdout},
@@ -24,22 +24,22 @@ use std::{
 use astrcode_client::client::AstrcodeClient;
 use astrcode_protocol::commands::ClientCommand;
 use crossterm::{
+    SynchronizedUpdate,
     event::{DisableBracketedPaste, EnableBracketedPaste, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode},
-    SynchronizedUpdate,
 };
+use custom_terminal::Terminal as CustomTerminal;
 use input::Action;
+use insert_history::insert_history_lines;
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     layout::Position,
 };
-use custom_terminal::Terminal as CustomTerminal;
 use render::scrollback_entry_to_lines;
-use insert_history::insert_history_lines;
 use state::TuiState;
 use tokio_stream::StreamExt;
-use tui_event::{EventBroker, TerminalFocus, TuiEvent, EventStream as TuiEventStream};
+use tui_event::{EventBroker, EventStream as TuiEventStream, TerminalFocus, TuiEvent};
 
 use crate::transport::InProcessTransport;
 
@@ -247,10 +247,7 @@ async fn accept_slash_selection(state: &mut TuiState, client: &Arc<Client>) -> i
     submit_current_input(state, client).await
 }
 
-async fn submit_current_input(
-    state: &mut TuiState,
-    client: &Arc<Client>,
-) -> io::Result<()> {
+async fn submit_current_input(state: &mut TuiState, client: &Arc<Client>) -> io::Result<()> {
     let input = state.input_text().trim_end().to_string();
     if input.trim().is_empty() {
         return Ok(());
@@ -358,26 +355,25 @@ impl TerminalSession {
 
         // 探测初始光标位置（必须在 raw mode 之后，使用 CPR 逃逸序列）
         #[cfg(unix)]
-        let cursor_pos =
-            match terminal_probe::cursor_position(terminal_probe::DEFAULT_TIMEOUT) {
-                Ok(Some(pos)) => pos,
-                Ok(None) => {
-                    tracing::warn!("initial cursor position probe timed out; defaulting to origin");
-                    Position { x: 0, y: 0 }
-                }
-                Err(err) => {
-                    tracing::warn!("failed to read initial cursor position; defaulting to origin: {err}");
-                    Position { x: 0, y: 0 }
-                }
-            };
+        let cursor_pos = match terminal_probe::cursor_position(terminal_probe::DEFAULT_TIMEOUT) {
+            Ok(Some(pos)) => pos,
+            Ok(None) => {
+                tracing::warn!("initial cursor position probe timed out; defaulting to origin");
+                Position { x: 0, y: 0 }
+            },
+            Err(err) => {
+                tracing::warn!(
+                    "failed to read initial cursor position; defaulting to origin: {err}"
+                );
+                Position { x: 0, y: 0 }
+            },
+        };
 
         #[cfg(not(unix))]
-        let cursor_pos = backend
-            .get_cursor_position()
-            .unwrap_or_else(|err| {
-                tracing::warn!("failed to read initial cursor position; defaulting to origin: {err}");
-                Position { x: 0, y: 0 }
-            });
+        let cursor_pos = backend.get_cursor_position().unwrap_or_else(|err| {
+            tracing::warn!("failed to read initial cursor position; defaulting to origin: {err}");
+            Position { x: 0, y: 0 }
+        });
 
         let terminal = CustomTerminal::with_options_and_cursor_position(backend, cursor_pos)?;
 
@@ -388,12 +384,9 @@ impl TerminalSession {
     ///
     /// 使用 Codex 的 draw_with_resize_reflow 模式：
     /// 1. 在 sync_update 之前查询光标位置（避免与事件读取竞争）
-    /// 2. 在 sync_update 内部：
-    ///    a. 应用 pending_viewport_area（光标位置启发式）
-    ///    b. update_inline_viewport 处理 resize-reflow
-    ///    c. flush scrollback
-    ///    d. invalidate viewport（如需要）
-    ///    e. draw
+    /// 2. 在 sync_update 内部： a. 应用 pending_viewport_area（光标位置启发式） b.
+    ///    update_inline_viewport 处理 resize-reflow c. flush scrollback d. invalidate
+    ///    viewport（如需要） e. draw
     fn draw_frame(&mut self, state: &mut TuiState, theme: &theme::Theme) -> io::Result<()> {
         // Precompute viewport area adjustment from cursor position heuristic
         // BEFORE entering the synchronized update, to avoid racing with the
@@ -407,7 +400,9 @@ impl TerminalSession {
                 self.terminal.clear()?;
             }
 
-            let needs_full_repaint = self.terminal.update_inline_viewport(INLINE_VIEWPORT_HEIGHT)?;
+            let needs_full_repaint = self
+                .terminal
+                .update_inline_viewport(INLINE_VIEWPORT_HEIGHT)?;
 
             self.flush_scrollback(state, theme)?;
 
@@ -415,9 +410,8 @@ impl TerminalSession {
                 self.terminal.invalidate_viewport();
             }
 
-            self.terminal.draw(|frame| {
-                render::render(state, frame, theme)
-            })
+            self.terminal
+                .draw(|frame| render::render(state, frame, theme))
         })?;
 
         Ok(())
@@ -465,11 +459,7 @@ impl TerminalSession {
     }
 
     /// 刷新 scrollback_queue 中的所有条目。
-    fn flush_scrollback(
-        &mut self,
-        state: &mut TuiState,
-        theme: &theme::Theme,
-    ) -> io::Result<()> {
+    fn flush_scrollback(&mut self, state: &mut TuiState, theme: &theme::Theme) -> io::Result<()> {
         let entries: Vec<_> = state.scrollback_queue.drain(..).collect();
         for entry in entries {
             self.insert_scrollback_entry(&entry, theme)?;

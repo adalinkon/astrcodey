@@ -120,8 +120,8 @@ pub fn backgrounded_placeholder_result(
     command: Option<&str>,
 ) -> ToolResult {
     let mut content = format!(
-        "Task moved to background (task: {task_id}). \
-         The result will be available in the next turn."
+        "Task moved to background (task: {task_id}). The result will be available in the next \
+         turn."
     );
     if let Some(cmd) = command {
         content = format!("{content} Command: {cmd}");
@@ -157,11 +157,8 @@ pub fn completed_task_context_message(tool_name: &str, result: &ToolResult) -> S
     };
 
     format!(
-        "<completed-background-task>\n\
-         Tool: {tool_name}\n\
-         {exit_info}\n\
-         Output:\n{}\n\
-         </completed-background-task>",
+        "<completed-background-task>\nTool: \
+         {tool_name}\n{exit_info}\nOutput:\n{}\n</completed-background-task>",
         result.content
     )
 }

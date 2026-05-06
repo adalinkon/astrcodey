@@ -12,10 +12,10 @@ use astrcode_core::{
 use astrcode_tools::registry::ToolRegistry;
 use tokio::sync::mpsc;
 
-use super::background::backgrounded_placeholder_result;
-use super::shared_context::{AgentSignal, send_event};
-use super::tool_types::{
-    BackgroundTaskCompletion, ExecutableToolCall, ToolCallRuntimeContext,
+use super::{
+    background::backgrounded_placeholder_result,
+    shared_context::{AgentSignal, send_event},
+    tool_types::{BackgroundTaskCompletion, ExecutableToolCall, ToolCallRuntimeContext},
 };
 
 /// 执行单个工具调用，并把异常统一转成工具错误结果。
@@ -30,17 +30,9 @@ pub(crate) async fn execute_tool_call(
     let policy = tool_registry.background_policy(&call.name);
 
     match policy {
-        BackgroundPolicy::Never => {
-            execute_tool_call_blocking(tool_registry, runtime, call).await
-        },
+        BackgroundPolicy::Never => execute_tool_call_blocking(tool_registry, runtime, call).await,
         BackgroundPolicy::AutoAfter { threshold_secs } => {
-            execute_tool_call_with_background(
-                tool_registry,
-                runtime,
-                call,
-                threshold_secs,
-            )
-            .await
+            execute_tool_call_with_background(tool_registry, runtime, call, threshold_secs).await
         },
     }
 }
@@ -168,7 +160,9 @@ async fn execute_tool_call_with_background(
     };
 
     // 共享结果槽：exec task 写入，主线程或 watcher 读取
-    let result_slot = Arc::new(std::sync::Mutex::new(None::<Result<ToolResult, astrcode_core::tool::ToolError>>));
+    let result_slot = Arc::new(std::sync::Mutex::new(
+        None::<Result<ToolResult, astrcode_core::tool::ToolError>>,
+    ));
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
 
     let name = call.name.clone();
@@ -181,14 +175,15 @@ async fn execute_tool_call_with_background(
     });
 
     // 用 timeout 等待完成通知或超时
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(threshold_secs),
-        done_rx,
-    ).await {
+    match tokio::time::timeout(std::time::Duration::from_secs(threshold_secs), done_rx).await {
         Ok(Ok(())) => {
             // 在阈值内完成
             exec_handle.abort(); // 已完成，abort 无害
-            let result = result_slot.lock().unwrap().take().expect("done_tx sent but no result");
+            let result = result_slot
+                .lock()
+                .unwrap()
+                .take()
+                .expect("done_tx sent but no result");
             match result {
                 Ok(mut r) => {
                     r.call_id = call_id.clone();
@@ -206,14 +201,17 @@ async fn execute_tool_call_with_background(
                 },
                 Err(e) => {
                     let err_msg = format!("Error: {e}");
-                    (call_index, ToolResult {
-                        call_id: call_id.clone(),
-                        content: err_msg.clone(),
-                        is_error: true,
-                        error: Some(err_msg),
-                        metadata: Default::default(),
-                        duration_ms: Some(started_at.elapsed().as_millis() as u64),
-                    })
+                    (
+                        call_index,
+                        ToolResult {
+                            call_id: call_id.clone(),
+                            content: err_msg.clone(),
+                            is_error: true,
+                            error: Some(err_msg),
+                            metadata: Default::default(),
+                            duration_ms: Some(started_at.elapsed().as_millis() as u64),
+                        },
+                    )
                 },
             }
         },
@@ -221,18 +219,29 @@ async fn execute_tool_call_with_background(
             // done_tx dropped（task panicked before completion）
             exec_handle.abort();
             let err_msg = "Tool task failed: oneshot dropped".to_string();
-            (call_index, ToolResult {
-                call_id: call_id.clone(),
-                content: err_msg.clone(),
-                is_error: true,
-                error: Some(err_msg),
-                metadata: Default::default(),
-                duration_ms: Some(started_at.elapsed().as_millis() as u64),
-            })
+            (
+                call_index,
+                ToolResult {
+                    call_id: call_id.clone(),
+                    content: err_msg.clone(),
+                    is_error: true,
+                    error: Some(err_msg),
+                    metadata: Default::default(),
+                    duration_ms: Some(started_at.elapsed().as_millis() as u64),
+                },
+            )
         },
         Err(_) => {
             // 超时，转入后台。exec_handle 继续运行。
-            background_tool_call(exec_handle, result_slot, runtime, call, threshold_secs, started_at).await
+            background_tool_call(
+                exec_handle,
+                result_slot,
+                runtime,
+                call,
+                threshold_secs,
+                started_at,
+            )
+            .await
         },
     }
 }
@@ -355,11 +364,7 @@ async fn background_tool_call(
         .get("command")
         .and_then(|v| v.as_str())
         .map(String::from);
-    let placeholder = backgrounded_placeholder_result(
-        &call_id,
-        &task_id,
-        &tool_name,
-        command.as_deref(),
-    );
+    let placeholder =
+        backgrounded_placeholder_result(&call_id, &task_id, &tool_name, command.as_deref());
     (call_index, placeholder)
 }

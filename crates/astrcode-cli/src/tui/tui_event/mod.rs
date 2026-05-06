@@ -5,18 +5,20 @@
 
 mod stream;
 
-#[allow(unused_imports)]
-pub use stream::{EventStream, TuiEvent};
-
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
-use std::task::{Context, Poll};
-use std::pin::Pin;
-use std::io;
+use std::{
+    io,
+    pin::Pin,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll},
+};
 
 use crossterm::event::{Event, EventStream as CrosstermEventStream};
 use futures::Stream;
+#[allow(unused_imports)]
+pub use stream::{EventStream, TuiEvent};
 
 /// 事件代理：共享的 crossterm EventStream。
 ///
@@ -36,20 +38,25 @@ impl EventBroker {
     /// 轮询 crossterm 事件。
     ///
     /// 如果已暂停，返回 Poll::Pending。
-    pub(crate) fn poll_crossterm_event(&self, cx: &mut Context<'_>) -> Poll<Option<io::Result<Event>>> {
+    pub(crate) fn poll_crossterm_event(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<io::Result<Event>>> {
         let mut state = self.state.lock().unwrap();
         match &mut *state {
             BrokerState::Start => {
                 *state = BrokerState::Running(CrosstermEventStream::new());
                 if let BrokerState::Running(stream) = &mut *state {
-                    Pin::new(stream).poll_next(cx).map(|r| r.map(|r| r.map_err(io::Error::other)))
+                    Pin::new(stream)
+                        .poll_next(cx)
+                        .map(|r| r.map(|r| r.map_err(io::Error::other)))
                 } else {
                     unreachable!()
                 }
-            }
-            BrokerState::Running(stream) => {
-                Pin::new(stream).poll_next(cx).map(|r| r.map(|r| r.map_err(io::Error::other)))
-            }
+            },
+            BrokerState::Running(stream) => Pin::new(stream)
+                .poll_next(cx)
+                .map(|r| r.map(|r| r.map_err(io::Error::other))),
         }
     }
 

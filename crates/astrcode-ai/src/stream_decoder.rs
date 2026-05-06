@@ -63,7 +63,9 @@ pub struct Utf8StreamDecoder {
 
 impl Utf8StreamDecoder {
     pub fn new() -> Self {
-        Self { pending: Vec::new() }
+        Self {
+            pending: Vec::new(),
+        }
     }
 
     /// 追加一个新的字节块，并返回当前已经确认完整的 UTF-8 文本。
