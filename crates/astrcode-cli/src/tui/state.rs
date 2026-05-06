@@ -189,12 +189,27 @@ pub struct TuiState {
     pub scrollback_queue: Vec<ScrollbackEntry>,
     /// 正在按片段写入 scrollback 的助手消息。
     stream_scrollback: BTreeMap<String, StreamScrollbackState>,
+    /// 子 agent 流式输出追踪器（key 为工具调用 ID）。
+    child_agents: BTreeMap<String, ChildAgentTracker>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct StreamScrollbackState {
     pending: String,
     seen_delta: bool,
+}
+
+/// 子 agent 流式输出追踪器。
+///
+/// 解析 `ToolOutputDelta` 中 "child " 前缀的结构化事件，
+/// 只将有意义的进展（工具指示器、错误）推入 scrollback，
+/// 抑制中间文本 token 和冗余状态行。
+#[derive(Debug, Clone, Default)]
+struct ChildAgentTracker {
+    /// 已完成的工具名称列表。
+    completed_tools: Vec<String>,
+    /// 正在运行的工具列表。
+    running_tools: Vec<String>,
 }
 
 impl StreamScrollbackState {
@@ -253,6 +268,7 @@ impl TuiState {
             should_quit: false,
             scrollback_queue: Vec::new(),
             stream_scrollback: BTreeMap::new(),
+            child_agents: BTreeMap::new(),
         }
     }
 
@@ -657,19 +673,7 @@ impl TuiState {
                     let label = message.label.clone();
                     let is_agent = label.starts_with("Task(");
                     if is_agent {
-                        let clean = clean_child_progress(delta);
-                        if !clean.is_empty() {
-                            for line in clean.lines().filter(|l| !l.trim().is_empty()) {
-                                self.scrollback_queue.push(ScrollbackEntry::StreamText {
-                                    role: MessageRole::Tool,
-                                    text: line.to_string(),
-                                });
-                            }
-                        }
-                        self.task_activity = Some(TaskActivity::with_detail(
-                            "Running task",
-                            clean_child_progress_one_line(delta),
-                        ));
+                        self.handle_child_agent_delta(call_id.as_str(), delta);
                     } else {
                         self.task_activity = Some(TaskActivity::new(format!("Receiving {label}")));
                     }
@@ -715,6 +719,32 @@ impl TuiState {
                     message.is_streaming = false;
                     let completed = message.clone();
                     if tool_name == "agent" {
+                        // 在完成消息前插入工具统计摘要
+                        if let Some(tracker) = self.child_agents.remove(call_id.as_str()) {
+                            if !tracker.completed_tools.is_empty() {
+                                let tools_summary = tracker
+                                    .completed_tools
+                                    .iter()
+                                    .fold(BTreeMap::<&String, usize>::new(), |mut acc, t| {
+                                        *acc.entry(t).or_default() += 1;
+                                        acc
+                                    });
+                                let summary: Vec<String> = tools_summary
+                                    .into_iter()
+                                    .map(|(name, count)| {
+                                        if count > 1 {
+                                            format!("{name}({count})")
+                                        } else {
+                                            name.clone()
+                                        }
+                                    })
+                                    .collect();
+                                self.scrollback_queue.push(ScrollbackEntry::StreamText {
+                                    role: MessageRole::Tool,
+                                    text: format!("  {} tool(s): {}", tracker.completed_tools.len(), summary.join(", ")),
+                                });
+                            }
+                        }
                         self.scrollback_queue.push(ScrollbackEntry::BlankLine);
                     }
                     self.scrollback_queue
@@ -902,6 +932,76 @@ impl TuiState {
         }
     }
 
+    /// 处理子 agent 的 `ToolOutputDelta`，只推入有意义的进度到 scrollback。
+    ///
+    /// 子 agent 的 delta 包含 "child " 前缀的结构化事件和原始文本 token。
+    /// 此方法解析这些事件，只显示：
+    /// - 工具启动的紧凑指示器（`  · tool_name`）
+    /// - 错误信息
+    ///
+    /// 抑制的内容：
+    /// - 原始文本 token（中间产物，完成时由 ToolCallCompleted 显示摘要）
+    /// - `assistant started` / `assistant completed` 状态行
+    /// - `tool completed` 消息（由下一个 tool started 或最终 Done 隐含）
+    /// - `tool output` 消息（工具输出细节）
+    fn handle_child_agent_delta(&mut self, call_id: &str, delta: &str) {
+        let tracker = self
+            .child_agents
+            .entry(call_id.to_string())
+            .or_default();
+
+        for line in delta.lines() {
+            let clean = line.strip_prefix("child ").unwrap_or(line);
+            let trimmed = clean.trim();
+
+            if trimmed.is_empty()
+                || trimmed == "assistant started"
+                || trimmed.starts_with("assistant completed:")
+                || trimmed.starts_with("turn completed:")
+                || trimmed.starts_with("tool output:")
+            {
+                continue;
+            }
+
+            if let Some(tool_name) = trimmed.strip_prefix("tool started: ") {
+                tracker.running_tools.push(tool_name.to_string());
+                self.scrollback_queue.push(ScrollbackEntry::StreamText {
+                    role: MessageRole::Tool,
+                    text: format!("  · {tool_name}"),
+                });
+                continue;
+            }
+
+            if let Some(rest) = trimmed.strip_prefix("tool completed: ") {
+                let tool_name = rest.split(':').next().unwrap_or(rest).trim();
+                tracker.completed_tools.push(tool_name.to_string());
+                tracker.running_tools.retain(|t| t != tool_name);
+                continue;
+            }
+
+            if let Some(msg) = trimmed.strip_prefix("error: ") {
+                self.scrollback_queue.push(ScrollbackEntry::StreamText {
+                    role: MessageRole::Tool,
+                    text: format!("  ! {msg}"),
+                });
+                continue;
+            }
+
+            // 原始文本 token — 不推入 scrollback
+        }
+
+        let progress = if tracker.running_tools.is_empty() {
+            format!("{} tool(s)", tracker.completed_tools.len())
+        } else {
+            format!(
+                "{} tool(s) · running: {}",
+                tracker.completed_tools.len(),
+                tracker.running_tools.join(", ")
+            )
+        };
+        self.task_activity = Some(TaskActivity::with_detail("Running task", progress));
+    }
+
     /// 按 key 反向查找消息，返回可变引用。
     ///
     /// 从最新消息开始搜索，用于流式更新时定位已有消息。
@@ -937,28 +1037,6 @@ impl TuiState {
 
 fn compact_inline(text: &str, max_chars: usize) -> String {
     tool_display::compact_inline(text, max_chars)
-}
-
-/// 去除子 agent 进度文本的 "child " 前缀，使其更可读。
-fn clean_child_progress(delta: &str) -> String {
-    delta
-        .lines()
-        .map(|line| line.strip_prefix("child ").unwrap_or(line))
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
-        .to_string()
-}
-
-fn clean_child_progress_one_line(delta: &str) -> String {
-    let clean = clean_child_progress(delta);
-    let first_line = clean.lines().next().unwrap_or("");
-    let mut summary = first_line.split_whitespace().collect::<Vec<_>>().join(" ");
-    if summary.chars().count() > 80 {
-        summary = summary.chars().take(79).collect();
-        summary.push('…');
-    }
-    summary
 }
 
 fn session_list_body(
@@ -1315,5 +1393,166 @@ mod tests {
 
         state.history_next();
         assert!(state.input_text().is_empty());
+    }
+
+    #[test]
+    fn child_agent_filters_text_tokens_and_shows_compact_tools() {
+        let mut state = TuiState::new();
+
+        // 启动 agent 工具
+        apply_payload(
+            &mut state,
+            EventPayload::ToolCallStarted {
+                call_id: "call-agent-1".into(),
+                tool_name: "agent".into(),
+            },
+        );
+        apply_payload(
+            &mut state,
+            EventPayload::ToolCallRequested {
+                call_id: "call-agent-1".into(),
+                tool_name: "agent".into(),
+                arguments: serde_json::json!({
+                    "description": "探索设计",
+                    "subagent_type": "explore",
+                    "prompt": "探索项目"
+                }),
+            },
+        );
+        state.scrollback_queue.clear();
+
+        // 模拟子 agent 的流式输出（与 spawner.rs 中 child_progress_delta 格式一致）
+        apply_payload(
+            &mut state,
+            EventPayload::ToolOutputDelta {
+                call_id: "call-agent-1".into(),
+                stream: astrcode_core::event::ToolOutputStream::Stdout,
+                delta: "child assistant started\n".into(),
+            },
+        );
+        // 原始文本 token — 应该被抑制
+        apply_payload(
+            &mut state,
+            EventPayload::ToolOutputDelta {
+                call_id: "call-agent-1".into(),
+                stream: astrcode_core::event::ToolOutputStream::Stdout,
+                delta: "我来系统地探索项目中的设计。\n".into(),
+            },
+        );
+        // 工具启动 — 应该显示为紧凑指示器
+        apply_payload(
+            &mut state,
+            EventPayload::ToolOutputDelta {
+                call_id: "call-agent-1".into(),
+                stream: astrcode_core::event::ToolOutputStream::Stdout,
+                delta: "child tool started: find\n".into(),
+            },
+        );
+        apply_payload(
+            &mut state,
+            EventPayload::ToolOutputDelta {
+                call_id: "call-agent-1".into(),
+                stream: astrcode_core::event::ToolOutputStream::Stdout,
+                delta: "child tool completed: find: 3 files\n".into(),
+            },
+        );
+        apply_payload(
+            &mut state,
+            EventPayload::ToolOutputDelta {
+                call_id: "call-agent-1".into(),
+                stream: astrcode_core::event::ToolOutputStream::Stdout,
+                delta: "child tool started: read\n".into(),
+            },
+        );
+        // assistant completed — 应该被抑制
+        apply_payload(
+            &mut state,
+            EventPayload::ToolOutputDelta {
+                call_id: "call-agent-1".into(),
+                stream: astrcode_core::event::ToolOutputStream::Stdout,
+                delta: "child assistant completed: 找到了相关文件\n".into(),
+            },
+        );
+
+        // 验证：只有工具指示器，没有原始文本和状态行
+        let stream_texts: Vec<&str> = state
+            .scrollback_queue
+            .iter()
+            .filter_map(|entry| match entry {
+                ScrollbackEntry::StreamText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        // 应该只有 "· find" 和 "· read"
+        assert_eq!(stream_texts.len(), 2);
+        assert_eq!(stream_texts[0], "  · find");
+        assert_eq!(stream_texts[1], "  · read");
+
+        // 不应该包含原始文本 token
+        assert!(!stream_texts.iter().any(|t| t.contains("系统地探索")));
+        // 不应该包含 "assistant started/completed" 状态行
+        assert!(!stream_texts.iter().any(|t| t.contains("assistant")));
+        // 不应该包含 "tool completed" 消息
+        assert!(!stream_texts.iter().any(|t| t.contains("tool completed")));
+    }
+
+    #[test]
+    fn child_agent_tool_summary_on_completion() {
+        let mut state = TuiState::new();
+
+        apply_payload(
+            &mut state,
+            EventPayload::ToolCallStarted {
+                call_id: "call-agent-2".into(),
+                tool_name: "agent".into(),
+            },
+        );
+        apply_payload(
+            &mut state,
+            EventPayload::ToolCallRequested {
+                call_id: "call-agent-2".into(),
+                tool_name: "agent".into(),
+                arguments: serde_json::json!({"description": "test"}),
+            },
+        );
+        state.scrollback_queue.clear();
+
+        // 工具调用流
+        apply_payload(
+            &mut state,
+            EventPayload::ToolOutputDelta {
+                call_id: "call-agent-2".into(),
+                stream: astrcode_core::event::ToolOutputStream::Stdout,
+                delta: "child tool started: find\nchild tool completed: find: ok\nchild tool started: find\nchild tool completed: find: ok\nchild tool started: grep\nchild tool completed: grep: 5 matches\n"
+                    .into(),
+            },
+        );
+
+        // 完成 agent 工具
+        apply_payload(
+            &mut state,
+            EventPayload::ToolCallCompleted {
+                call_id: "call-agent-2".into(),
+                tool_name: "agent".into(),
+                result: tool_result("探索完成", false),
+            },
+        );
+
+        // 验证完成时的工具统计摘要
+        let summary_entry = state.scrollback_queue.iter().find(|entry| {
+            matches!(entry, ScrollbackEntry::StreamText { text, .. } if text.contains("tool(s):"))
+        });
+        assert!(summary_entry.is_some(), "应有工具统计摘要");
+        let summary_text = match summary_entry.unwrap() {
+            ScrollbackEntry::StreamText { text, .. } => text.as_str(),
+            _ => unreachable!(),
+        };
+        assert!(summary_text.contains("3 tool(s)"), "应统计 3 个工具调用");
+        assert!(summary_text.contains("find(2)"), "find 应显示为 2 次");
+        assert!(summary_text.contains("grep"), "grep 应出现");
+
+        // tracker 应该已被清理
+        assert!(!state.child_agents.contains_key("call-agent-2"));
     }
 }
