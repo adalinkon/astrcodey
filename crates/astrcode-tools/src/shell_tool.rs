@@ -54,8 +54,9 @@ impl Tool for ShellTool {
             description: format!(
                 "Execute a shell command with the default shell ({}). Returns stdout, stderr, and \
                  exit code. Prefer file tools for reading, searching, and editing files; use \
-                 shell for commands that need the OS or project toolchain. Timeout: 120s.",
-                shell.name
+                 shell for commands that need the OS or project toolchain. Default timeout: \
+                 {}s (max 600s, prefer override with the timeout parameter).",
+                shell.name, self.timeout_secs,
             ),
             origin: ToolOrigin::Builtin,
             execution_mode: ExecutionMode::Sequential,
