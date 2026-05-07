@@ -41,7 +41,7 @@ pub const PLAN_REQUIRED_HEADINGS: &[&str] = &[
     "Existing Code To Reuse",
     "Implementation Steps",
     "Verification",
-    "Open Questions",
+    "Assumptions",
 ];
 
 /// Review checklist shown to the LLM during the exit gate.
