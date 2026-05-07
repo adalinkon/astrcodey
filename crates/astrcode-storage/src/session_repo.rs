@@ -1023,4 +1023,130 @@ mod tests {
             base_path,
         }
     }
+
+    #[tokio::test]
+    async fn parallel_tool_call_requested_events_produce_single_assistant_message() {
+        use astrcode_core::llm::{LlmContent, LlmRole};
+        use astrcode_core::types::ToolCallId;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo = test_repo(temp_dir.path().join("sessions"));
+        let session_id = SessionId::from("session-parallel");
+        repo.create_session(&session_id, ".", "mock", None)
+            .await
+            .unwrap();
+        repo.append_event(Event::new(
+            session_id.clone(),
+            None,
+            EventPayload::UserMessage {
+                message_id: new_message_id(),
+                text: "read files".into(),
+            },
+        ))
+        .await
+        .unwrap();
+
+        // Simulate the event sequence from a parallel tool call batch:
+        // ToolCallStarted + ToolCallRequested for each, then ToolCallCompleted for each.
+        repo.append_event(Event::new(
+            session_id.clone(),
+            None,
+            EventPayload::ToolCallStarted {
+                call_id: ToolCallId::from("call_1"),
+                tool_name: "read".into(),
+            },
+        ))
+        .await
+        .unwrap();
+        repo.append_event(Event::new(
+            session_id.clone(),
+            None,
+            EventPayload::ToolCallStarted {
+                call_id: ToolCallId::from("call_2"),
+                tool_name: "read".into(),
+            },
+        ))
+        .await
+        .unwrap();
+        repo.append_event(Event::new(
+            session_id.clone(),
+            None,
+            EventPayload::ToolCallRequested {
+                call_id: ToolCallId::from("call_1"),
+                tool_name: "read".into(),
+                arguments: serde_json::json!({"path": "a.rs"}),
+            },
+        ))
+        .await
+        .unwrap();
+        repo.append_event(Event::new(
+            session_id.clone(),
+            None,
+            EventPayload::ToolCallRequested {
+                call_id: ToolCallId::from("call_2"),
+                tool_name: "read".into(),
+                arguments: serde_json::json!({"path": "b.rs"}),
+            },
+        ))
+        .await
+        .unwrap();
+        repo.append_event(Event::new(
+            session_id.clone(),
+            None,
+            EventPayload::ToolCallCompleted {
+                call_id: ToolCallId::from("call_1"),
+                tool_name: "read".into(),
+                result: astrcode_core::tool::ToolResult {
+                    call_id: "call_1".into(),
+                    content: "a".into(),
+                    is_error: false,
+                    error: None,
+                    metadata: Default::default(),
+                    duration_ms: None,
+                },
+            },
+        ))
+        .await
+        .unwrap();
+        repo.append_event(Event::new(
+            session_id.clone(),
+            None,
+            EventPayload::ToolCallCompleted {
+                call_id: ToolCallId::from("call_2"),
+                tool_name: "read".into(),
+                result: astrcode_core::tool::ToolResult {
+                    call_id: "call_2".into(),
+                    content: "b".into(),
+                    is_error: false,
+                    error: None,
+                    metadata: Default::default(),
+                    duration_ms: None,
+                },
+            },
+        ))
+        .await
+        .unwrap();
+
+        let model = repo.session_read_model(&session_id).await.unwrap();
+
+        // Expected: [user] [assistant(tool_call_1, tool_call_2)] [tool_result_1] [tool_result_2]
+        assert_eq!(model.messages.len(), 4);
+        assert_eq!(model.messages[0].role, LlmRole::User);
+        assert_eq!(model.messages[1].role, LlmRole::Assistant);
+
+        // The assistant message must contain both tool calls merged into one message.
+        let tool_call_count = model.messages[1]
+            .content
+            .iter()
+            .filter(|c| matches!(c, LlmContent::ToolCall { .. }))
+            .count();
+        assert_eq!(tool_call_count, 2, "parallel tool calls must be merged into one assistant message");
+
+        assert_eq!(model.messages[2].role, LlmRole::Tool);
+        assert_eq!(model.messages[3].role, LlmRole::Tool);
+
+        // provider_messages should also be well-formed
+        let provider_msgs = model.provider_messages();
+        assert_eq!(provider_msgs.len(), 4);
+    }
 }

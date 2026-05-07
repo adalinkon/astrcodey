@@ -80,15 +80,37 @@ pub(crate) fn reduce(event: &Event, model: &mut SessionReadModel) {
             arguments,
         } => {
             model.pending_tool_calls.insert(call_id.clone());
-            model.messages.push(LlmMessage {
-                role: LlmRole::Assistant,
-                content: vec![LlmContent::ToolCall {
-                    call_id: call_id.to_string(),
-                    name: tool_name.clone(),
-                    arguments: arguments.clone(),
-                }],
-                name: None,
-            });
+            let tool_call = LlmContent::ToolCall {
+                call_id: call_id.to_string(),
+                name: tool_name.clone(),
+                arguments: arguments.clone(),
+            };
+            // Merge into the previous assistant message if it already contains
+            // tool calls from the same batch.  OpenAI requires all parallel tool
+            // calls to live in a single assistant message; splitting them across
+            // consecutive assistant messages triggers a 400 protocol error.
+            if let Some(last) = model.messages.last_mut() {
+                if last.role == LlmRole::Assistant
+                    && last
+                        .content
+                        .iter()
+                        .any(|c| matches!(c, LlmContent::ToolCall { .. }))
+                {
+                    last.content.push(tool_call);
+                } else {
+                    model.messages.push(LlmMessage {
+                        role: LlmRole::Assistant,
+                        content: vec![tool_call],
+                        name: None,
+                    });
+                }
+            } else {
+                model.messages.push(LlmMessage {
+                    role: LlmRole::Assistant,
+                    content: vec![tool_call],
+                    name: None,
+                });
+            }
             model.phase = Phase::CallingTool;
         },
         EventPayload::ToolCallCompleted {

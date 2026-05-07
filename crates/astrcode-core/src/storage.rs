@@ -256,6 +256,9 @@ impl SessionReadModel {
     }
 
     /// 返回 provider 可见消息。
+    ///
+    /// 包含防御性归一化：将连续的 assistant+tool_calls 消息合并为一条，
+    /// 以满足 OpenAI API 对 `tool_calls` 消息的协议要求。
     pub fn provider_messages(&self) -> Vec<LlmMessage> {
         let mut messages = Vec::with_capacity(
             self.context_messages
@@ -264,6 +267,7 @@ impl SessionReadModel {
         );
         messages.extend(self.context_messages.clone());
         messages.extend(self.messages.clone());
+        normalize_tool_call_messages(&mut messages);
         messages
     }
 
@@ -359,10 +363,52 @@ pub enum StorageError {
     Unsupported(String),
 }
 
+/// 将连续的 assistant 消息中包含 `ToolCall` 的合并为一条消息。
+///
+/// OpenAI Chat Completions API 要求同一个 turn 中的所有 tool_calls
+/// 必须在一条 assistant 消息中；连续多条带 `tool_calls` 的 assistant 消息
+/// 会导致 400 协议错误。此函数作为防御性归一化步骤，确保即使上游 projection
+/// 或旧 snapshot 产生了分离的消息，发给 provider 的也是正确格式。
+fn normalize_tool_call_messages(messages: &mut Vec<LlmMessage>) {
+    use crate::llm::LlmContent;
+    use crate::llm::LlmRole;
+    let mut i = 0;
+    while i < messages.len() {
+        if messages[i].role != LlmRole::Assistant
+            || !messages[i]
+                .content
+                .iter()
+                .any(|c| matches!(c, LlmContent::ToolCall { .. }))
+        {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < messages.len()
+            && messages[j].role == LlmRole::Assistant
+            && messages[j]
+                .content
+                .iter()
+                .any(|c| matches!(c, LlmContent::ToolCall { .. }))
+        {
+            j += 1;
+        }
+        if j > i + 1 {
+            let mut merged = messages[i].content.clone();
+            for msg in messages.iter().take(j).skip(i + 1) {
+                merged.extend(msg.content.iter().cloned());
+            }
+            messages[i].content = merged;
+            messages.drain((i + 1)..j);
+        }
+        i += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::LlmMessage;
+    use crate::llm::{LlmContent, LlmMessage, LlmRole};
 
     #[test]
     fn session_read_model_serializes_round_trip() {
@@ -384,5 +430,61 @@ mod tests {
         let model = SessionReadModel::empty("session-test".into());
 
         assert_eq!(model.cursor(), "0");
+    }
+
+    #[test]
+    fn provider_messages_merges_consecutive_tool_call_assistant_messages() {
+        let mut model = SessionReadModel::empty("session-test".into());
+        model.messages.push(LlmMessage::user("look at these files"));
+        model.messages.push(LlmMessage {
+            role: LlmRole::Assistant,
+            content: vec![LlmContent::ToolCall {
+                call_id: "call_1".into(),
+                name: "read".into(),
+                arguments: serde_json::json!({"path": "a.rs"}),
+            }],
+            name: None,
+        });
+        model.messages.push(LlmMessage {
+            role: LlmRole::Assistant,
+            content: vec![LlmContent::ToolCall {
+                call_id: "call_2".into(),
+                name: "read".into(),
+                arguments: serde_json::json!({"path": "b.rs"}),
+            }],
+            name: None,
+        });
+        model.messages.push(LlmMessage {
+            role: LlmRole::Tool,
+            content: vec![LlmContent::ToolResult {
+                tool_call_id: "call_1".into(),
+                content: "file a".into(),
+                is_error: false,
+            }],
+            name: Some("read".into()),
+        });
+        model.messages.push(LlmMessage {
+            role: LlmRole::Tool,
+            content: vec![LlmContent::ToolResult {
+                tool_call_id: "call_2".into(),
+                content: "file b".into(),
+                is_error: false,
+            }],
+            name: Some("read".into()),
+        });
+
+        let messages = model.provider_messages();
+
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].role, LlmRole::User);
+        assert_eq!(messages[1].role, LlmRole::Assistant);
+        let tool_calls: Vec<_> = messages[1]
+            .content
+            .iter()
+            .filter(|c| matches!(c, LlmContent::ToolCall { .. }))
+            .collect();
+        assert_eq!(tool_calls.len(), 2);
+        assert_eq!(messages[2].role, LlmRole::Tool);
+        assert_eq!(messages[3].role, LlmRole::Tool);
     }
 }
