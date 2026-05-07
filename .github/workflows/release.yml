@@ -20,27 +20,33 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             artifact: astrcode-x86_64-linux
-            ext: ""
+            binary: astrcode
+            archive: tar.gz
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-latest
             artifact: astrcode-aarch64-linux
-            ext: ""
+            binary: astrcode
+            archive: tar.gz
           - target: x86_64-apple-darwin
             runner: macos-latest
             artifact: astrcode-x86_64-macos
-            ext: ""
+            binary: astrcode
+            archive: tar.gz
           - target: aarch64-apple-darwin
             runner: macos-latest
             artifact: astrcode-aarch64-macos
-            ext: ""
+            binary: astrcode
+            archive: tar.gz
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             artifact: astrcode-x86_64-windows
-            ext: ".exe"
+            binary: astrcode.exe
+            archive: zip
           - target: aarch64-pc-windows-msvc
             runner: windows-latest
             artifact: astrcode-aarch64-windows
-            ext: ".exe"
+            binary: astrcode.exe
+            archive: zip
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -55,25 +61,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
       - name: Build release binary
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo build --release --target ${{ matrix.target }}
-      - name: Package binary (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.artifact }}.tar.gz astrcode
-      - name: Package binary (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          cd target/${{ matrix.target }}/release
-          Compress-Archive -Path astrcode.exe -DestinationPath ../../../${{ matrix.artifact }}.zip
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        run: tar czf ${{ matrix.artifact }}.tar.gz -C target/${{ matrix.target }}/release ${{ matrix.binary }}
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: Compress-Archive -Path target/${{ matrix.target }}/release/${{ matrix.binary }} -DestinationPath ${{ matrix.artifact }}.zip
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: |
-            ${{ matrix.artifact }}.tar.gz
-            ${{ matrix.artifact }}.zip
-          if-no-files-found: warn
+          path: ${{ matrix.artifact }}.${{ matrix.archive }}
 
   release:
     name: Publish Release
@@ -83,34 +85,35 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: false
       - name: Gather release files
         run: |
           mkdir release-assets
           find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} release-assets/ \;
+          ls -la release-assets/
       - name: Generate changelog
         id: changelog
         run: |
           VERSION=${GITHUB_REF_NAME}
-          PREVIOUS=$(git tag --sort=-creatordate | head -2 | tail -1)
-          if [ -n "$PREVIOUS" ]; then
-            LOG=$(git log "${PREVIOUS}..HEAD" --pretty=format:"- %s (%h)" --no-merges)
-          else
-            LOG=$(git log --pretty=format:"- %s (%h)" --no-merges -20)
-          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          PREVIOUS=$(git tag --sort=-creatordate | grep -v "^${VERSION}$" | head -1)
           {
-            echo "version=$VERSION"
             echo "## What's Changed"
             echo ""
-            echo "$LOG"
+            if [ -n "$PREVIOUS" ]; then
+              git log "${PREVIOUS}..HEAD" --pretty=format:"- %s (%h)" --no-merges
+            else
+              git log --pretty=format:"- %s (%h)" --no-merges -20
+            fi
           } > release-notes.md
+          cat release-notes.md
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ steps.changelog.outputs.version }}
           body_path: release-notes.md
           files: release-assets/*
-          generate_release_notes: false
