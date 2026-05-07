@@ -66,16 +66,17 @@ impl CommandHandler {
         let tool_registry = self.ensure_tool_registry(sid, &state.working_dir).await;
         let provider_messages = state.provider_messages();
         let tools = tool_registry.list_definitions();
+        let hook_ctx = CompactHookContext {
+            session_id: sid.as_str(),
+            working_dir: &state.working_dir,
+            model_id: &state.model_id,
+            tools: &tools,
+            trigger: CompactTrigger::ManualCommand,
+            message_count: provider_messages.len(),
+        };
         let compact_instructions = match collect_compact_instructions(
             &self.runtime.extension_runner,
-            CompactHookContext {
-                session_id: sid.as_str(),
-                working_dir: &state.working_dir,
-                model_id: &state.model_id,
-                tools: &tools,
-                trigger: CompactTrigger::ManualCommand,
-                message_count: provider_messages.len(),
-            },
+            hook_ctx,
         )
         .await
         {
@@ -148,14 +149,7 @@ impl CommandHandler {
 
         if let Err(error) = dispatch_post_compact(
             &self.runtime.extension_runner,
-            CompactHookContext {
-                session_id: sid.as_str(),
-                working_dir: &state.working_dir,
-                model_id: &state.model_id,
-                tools: &tools,
-                trigger: CompactTrigger::ManualCommand,
-                message_count: provider_messages.len(),
-            },
+            hook_ctx,
             &compaction,
         )
         .await

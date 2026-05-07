@@ -82,6 +82,7 @@ impl AutoCompactFailureTracker {
 
 // ─── Hook 上下文 ─────────────────────────────────────────────────────────
 
+#[derive(Clone, Copy)]
 pub(crate) struct CompactHookContext<'a> {
     pub(crate) session_id: &'a str,
     pub(crate) working_dir: &'a str,
