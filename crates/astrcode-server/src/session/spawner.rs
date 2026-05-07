@@ -98,9 +98,10 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
         .await
         .map_err(|e| format!("build child system prompt: {e}"))?;
 
-        append_child_session_payload(
+        append_child_payload(
             self.session_manager.as_ref(),
             &child_sid,
+            None,
             EventPayload::SystemPromptConfigured {
                 text: system_prompt.clone(),
                 fingerprint,
@@ -111,14 +112,14 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
         append_child_payload(
             self.session_manager.as_ref(),
             &child_sid,
-            &child_turn_id,
+            Some(&child_turn_id),
             EventPayload::TurnStarted,
         )
         .await?;
         append_child_payload(
             self.session_manager.as_ref(),
             &child_sid,
-            &child_turn_id,
+            Some(&child_turn_id),
             EventPayload::UserMessage {
                 message_id: new_message_id(),
                 text: user_prompt.clone(),
@@ -171,7 +172,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                     match signal {
                         AgentSignal::Event(payload) => {
                             let sid = current_child_sid.lock().await.clone();
-                            let _ = append_child_payload(&sm, &sid, &cti, payload.clone()).await;
+                            let _ = append_child_payload(&sm, &sid, Some(&cti), payload.clone()).await;
                             p.forward(&payload);
                         },
                         AgentSignal::AutoCompact {
@@ -225,7 +226,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                 append_child_payload(
                     self.session_manager.as_ref(),
                     &final_child_sid,
-                    &child_turn_id,
+                    Some(&child_turn_id),
                     EventPayload::TurnCompleted {
                         finish_reason: output.finish_reason.clone(),
                     },
@@ -246,7 +247,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                         append_child_payload(
                             self.session_manager.as_ref(),
                             &final_child_sid,
-                            &child_turn_id,
+                            Some(&child_turn_id),
                             EventPayload::ErrorOccurred {
                                 code: -32603,
                                 message: e.to_string(),
@@ -258,7 +259,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                     append_child_payload(
                         self.session_manager.as_ref(),
                         &final_child_sid,
-                        &child_turn_id,
+                        Some(&child_turn_id),
                         EventPayload::TurnCompleted {
                             finish_reason: "error".into(),
                         },
@@ -315,32 +316,18 @@ impl ProgressTx {
 async fn append_child_payload(
     session_manager: &SessionManager,
     child_sid: &SessionId,
-    child_turn_id: &TurnId,
+    child_turn_id: Option<&TurnId>,
     payload: EventPayload,
 ) -> Result<(), String> {
     if payload.is_durable() {
         session_manager
             .append_event(Event::new(
                 child_sid.clone(),
-                Some(child_turn_id.clone()),
+                child_turn_id.cloned(),
                 payload,
             ))
             .await
             .map_err(|e| format!("append child event: {e}"))?;
-    }
-    Ok(())
-}
-
-async fn append_child_session_payload(
-    session_manager: &SessionManager,
-    child_sid: &SessionId,
-    payload: EventPayload,
-) -> Result<(), String> {
-    if payload.is_durable() {
-        session_manager
-            .append_event(Event::new(child_sid.clone(), None, payload))
-            .await
-            .map_err(|e| format!("append child session event: {e}"))?;
     }
     Ok(())
 }

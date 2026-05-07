@@ -27,7 +27,7 @@ pub(super) fn message_to_dto(message: &LlmMessage) -> MessageDto {
 }
 
 /// 将 LLM 内容块转换为纯文本表示，用于客户端展示。
-fn content_to_text(content: &LlmContent) -> String {
+pub(crate) fn content_to_text(content: &LlmContent) -> String {
     match content {
         LlmContent::Text { text } => text.clone(),
         LlmContent::Image { .. } => "[image]".into(),

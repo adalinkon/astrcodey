@@ -49,7 +49,7 @@ use super::{
     },
     util::{
         activate_discovered_mcp_tools, append_deferred_mcp_tools_reminder,
-        initially_active_mcp_tools, provider_visible_tools,
+        provider_visible_tools,
     },
 };
 
@@ -303,7 +303,7 @@ impl AgentLoop {
     ) -> Result<AgentTurnOutput, AgentError> {
         let mut ext_ctx = self.shared.ext_ctx();
         let all_tools = self.tools.list_definitions();
-        let mut active_mcp_tools = initially_active_mcp_tools(&all_tools);
+        let mut active_mcp_tools = std::collections::HashSet::new();
         let mut tools = provider_visible_tools(&all_tools, &active_mcp_tools);
         let tool_map: std::collections::HashMap<_, _> =
             tools.iter().map(|t| (t.name.clone(), t.clone())).collect();

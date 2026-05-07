@@ -18,9 +18,8 @@ use astrcode_core::{
     },
     types::*,
 };
-use astrcode_protocol::events::ClientNotification;
 pub(crate) use payload::{compact_boundary_payload, session_continued_from_compaction_payload};
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::RwLock;
 
 /// 活跃会话句柄。
 ///
@@ -28,19 +27,6 @@ use tokio::sync::{RwLock, broadcast};
 pub struct Session {
     /// 会话唯一标识。
     pub id: SessionId,
-    event_tx: broadcast::Sender<ClientNotification>,
-}
-
-impl Session {
-    fn new(id: SessionId, capacity: usize) -> Self {
-        let (event_tx, _) = broadcast::channel(capacity);
-        Self { id, event_tx }
-    }
-
-    /// 订阅此会话的事件广播。
-    pub fn subscribe(&self) -> broadcast::Receiver<ClientNotification> {
-        self.event_tx.subscribe()
-    }
 }
 
 /// 会话管理器，协调活跃会话缓存与 storage 事件存储。
@@ -63,7 +49,7 @@ impl SessionManager {
         &self,
         working_dir: &str,
         model_id: &str,
-        capacity: usize,
+        _capacity: usize,
         parent_session_id: Option<&SessionId>,
     ) -> Result<Event, SessionError> {
         let sid = new_session_id();
@@ -74,7 +60,7 @@ impl SessionManager {
         self.active
             .write()
             .await
-            .insert(sid.clone(), Arc::new(Session::new(sid, capacity)));
+            .insert(sid.clone(), Arc::new(Session { id: sid }));
         Ok(event)
     }
 
@@ -87,7 +73,7 @@ impl SessionManager {
         // open_session rebuilds the storage-owned projection. The active
         // Session handle only needs its broadcast channel.
         self.store.open_session(session_id).await?;
-        let session = Arc::new(Session::new(session_id.clone(), 2048));
+        let session = Arc::new(Session { id: session_id.clone() });
         self.active
             .write()
             .await

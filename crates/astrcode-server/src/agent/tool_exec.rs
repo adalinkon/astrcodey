@@ -18,6 +18,17 @@ use super::{
     tool_types::{BackgroundTaskCompletion, ExecutableToolCall, ToolCallRuntimeContext},
 };
 
+fn error_tool_result(call_id: String, message: String, duration: std::time::Duration) -> ToolResult {
+    ToolResult {
+        call_id,
+        content: message.clone(),
+        is_error: true,
+        error: Some(message),
+        metadata: Default::default(),
+        duration_ms: Some(duration.as_millis() as u64),
+    }
+}
+
 /// 执行单个工具调用，并把异常统一转成工具错误结果。
 ///
 /// 当工具声明了 [`BackgroundPolicy::AutoAfter`] 且执行超过阈值时，
@@ -37,6 +48,24 @@ pub(crate) async fn execute_tool_call(
     }
 }
 
+/// 创建 tool → agent 事件转发桥。
+///
+/// 返回 (tool_event_tx, Option<JoinHandle>)。
+/// tool_event_tx 传给 ToolExecutionContext；JoinHandle 用于在工具执行完毕后等待桥排空。
+/// 调用方需在 tool_ctx drop 后再 drop tool_event_tx，然后 await JoinHandle。
+fn spawn_event_bridge(
+    agent_tx: &mpsc::UnboundedSender<AgentSignal>,
+) -> (mpsc::UnboundedSender<EventPayload>, tokio::task::JoinHandle<()>) {
+    let (tool_tx, mut tool_rx) = mpsc::unbounded_channel();
+    let agent_tx = agent_tx.clone();
+    let handle = tokio::spawn(async move {
+        while let Some(payload) = tool_rx.recv().await {
+            let _ = agent_tx.send(AgentSignal::Event(payload));
+        }
+    });
+    (tool_tx, handle)
+}
+
 /// 普通的阻塞式工具执行（原有逻辑）。
 async fn execute_tool_call_blocking(
     tool_registry: Arc<ToolRegistry>,
@@ -46,16 +75,7 @@ async fn execute_tool_call_blocking(
     let started_at = Instant::now();
     let tool_name = call.name.clone();
     let call_id = call.call_id.clone();
-    let tool_event_bridge = runtime.event_tx.as_ref().map(|agent_tx| {
-        let (tool_tx, mut tool_rx) = mpsc::unbounded_channel();
-        let agent_tx = agent_tx.clone();
-        let handle = tokio::spawn(async move {
-            while let Some(payload) = tool_rx.recv().await {
-                let _ = agent_tx.send(AgentSignal::Event(payload));
-            }
-        });
-        (tool_tx, handle)
-    });
+    let tool_event_bridge = runtime.event_tx.as_ref().map(spawn_event_bridge);
     let tool_event_tx = tool_event_bridge
         .as_ref()
         .map(|(tool_tx, _)| tool_tx.clone());
@@ -78,17 +98,11 @@ async fn execute_tool_call_blocking(
             result.duration_ms = Some(started_at.elapsed().as_millis() as u64);
             result
         },
-        Err(e) => {
-            let err_msg = format!("Error: {}", e);
-            ToolResult {
-                call_id: call.call_id.clone(),
-                content: err_msg.clone(),
-                is_error: true,
-                error: Some(err_msg),
-                metadata: Default::default(),
-                duration_ms: Some(started_at.elapsed().as_millis() as u64),
-            }
-        },
+        Err(e) => error_tool_result(
+            call.call_id.clone(),
+            format!("Error: {e}"),
+            started_at.elapsed(),
+        ),
     };
     // Release the tool-side sender before awaiting the bridge; otherwise the
     // bridge keeps waiting for more tool progress events and this call hangs.
@@ -139,13 +153,7 @@ async fn execute_tool_call_with_background(
 
     // 构造工具执行所需的上下文
     let tool_event_tx = runtime.event_tx.as_ref().map(|agent_tx| {
-        let (tool_tx, mut tool_rx) = mpsc::unbounded_channel();
-        let agent_tx = agent_tx.clone();
-        tokio::spawn(async move {
-            while let Some(payload) = tool_rx.recv().await {
-                let _ = agent_tx.send(AgentSignal::Event(payload));
-            }
-        });
+        let (tool_tx, _bridge_handle) = spawn_event_bridge(agent_tx);
         tool_tx
     });
 
@@ -180,7 +188,6 @@ async fn execute_tool_call_with_background(
     match tokio::time::timeout(std::time::Duration::from_secs(threshold_secs), done_rx).await {
         Ok(Ok(())) => {
             // 在阈值内完成
-            exec_handle.abort(); // 已完成，abort 无害
             let result = result_slot
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -201,36 +208,22 @@ async fn execute_tool_call_with_background(
                     );
                     (call_index, r)
                 },
-                Err(e) => {
-                    let err_msg = format!("Error: {e}");
-                    (
-                        call_index,
-                        ToolResult {
-                            call_id: call_id.clone(),
-                            content: err_msg.clone(),
-                            is_error: true,
-                            error: Some(err_msg),
-                            metadata: Default::default(),
-                            duration_ms: Some(started_at.elapsed().as_millis() as u64),
-                        },
-                    )
-                },
+                Err(e) => (
+                    call_index,
+                    error_tool_result(call_id.clone(), format!("Error: {e}"), started_at.elapsed()),
+                ),
             }
         },
         Ok(Err(_)) => {
             // done_tx dropped（task panicked before completion）
             exec_handle.abort();
-            let err_msg = "Tool task failed: oneshot dropped".to_string();
             (
                 call_index,
-                ToolResult {
-                    call_id: call_id.clone(),
-                    content: err_msg.clone(),
-                    is_error: true,
-                    error: Some(err_msg),
-                    metadata: Default::default(),
-                    duration_ms: Some(started_at.elapsed().as_millis() as u64),
-                },
+                error_tool_result(
+                    call_id.clone(),
+                    "Tool task failed: oneshot dropped".into(),
+                    started_at.elapsed(),
+                ),
             )
         },
         Err(_) => {
@@ -300,28 +293,16 @@ async fn background_tool_call(
                 r.duration_ms = Some(started_at.elapsed().as_millis() as u64);
                 r
             },
-            Some(Err(e)) => {
-                let err_msg = format!("Error: {e}");
-                ToolResult {
-                    call_id: bg_call_id.clone(),
-                    content: err_msg.clone(),
-                    is_error: true,
-                    error: Some(err_msg),
-                    metadata: Default::default(),
-                    duration_ms: Some(started_at.elapsed().as_millis() as u64),
-                }
-            },
-            None => {
-                let err_msg = "Background task completed but no result available".to_string();
-                ToolResult {
-                    call_id: bg_call_id.clone(),
-                    content: err_msg.clone(),
-                    is_error: true,
-                    error: Some(err_msg),
-                    metadata: Default::default(),
-                    duration_ms: Some(started_at.elapsed().as_millis() as u64),
-                }
-            },
+            Some(Err(e)) => error_tool_result(
+                bg_call_id.clone(),
+                format!("Error: {e}"),
+                started_at.elapsed(),
+            ),
+            None => error_tool_result(
+                bg_call_id.clone(),
+                "Background task completed but no result available".into(),
+                started_at.elapsed(),
+            ),
         };
 
         if result.call_id.is_empty() {

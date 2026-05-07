@@ -158,16 +158,10 @@ fn clean_compact_instructions(instructions: Vec<String>) -> Vec<String> {
 
 // ─── Forked provider ─────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ForkQuerySource {
-    Compact,
-}
-
 pub(crate) struct ForkedProviderRequest {
     pub(crate) base_messages: Vec<LlmMessage>,
     pub(crate) prompt_messages: Vec<LlmMessage>,
     pub(crate) tools: Vec<ToolDefinition>,
-    pub(crate) query_source: ForkQuerySource,
     pub(crate) max_turns: usize,
 }
 
@@ -223,7 +217,6 @@ impl ForkedProviderRunner {
             });
         }
 
-        let _query_source = request.query_source;
         let mut messages = request.base_messages;
         messages.extend(request.prompt_messages);
         let mut rx = self.llm.generate(messages, request.tools).await?;
@@ -280,7 +273,6 @@ impl CompactForkRunner {
                 base_messages: messages,
                 prompt_messages: Vec::new(),
                 tools: self.tools.clone(),
-                query_source: ForkQuerySource::Compact,
                 max_turns: 1,
             })
             .await

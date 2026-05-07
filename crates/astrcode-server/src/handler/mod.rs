@@ -36,7 +36,7 @@ use crate::{
 mod actor;
 mod compact;
 mod events;
-mod snapshot;
+pub(crate) mod snapshot;
 
 pub use actor::CommandHandle;
 use actor::CommandMessage;

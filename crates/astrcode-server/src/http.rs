@@ -7,7 +7,7 @@ use std::{convert::Infallible, sync::Arc};
 
 use astrcode_core::{
     event::{Event, EventPayload, Phase},
-    llm::{LlmContent, LlmMessage, LlmRole},
+    llm::{LlmMessage, LlmRole},
     storage::{SessionReadModel, SessionSummary},
     types::SessionId,
 };
@@ -18,7 +18,7 @@ use astrcode_protocol::{
         ConversationBlockStatusDto, ConversationControlStateDto, ConversationCursorDto,
         ConversationDeltaDto, ConversationErrorEnvelopeDto, ConversationSnapshotResponseDto,
         ConversationStreamEnvelopeDto, CreateSessionRequest, CreateSessionResponseDto,
-        ForkSessionRequest, PromptRequest, PromptSubmitResponse, SessionListItemDto,
+        PromptRequest, PromptSubmitResponse, SessionListItemDto,
         SessionListResponseDto,
     },
 };
@@ -64,7 +64,6 @@ pub fn router(
         .route("/api/sessions/:id/prompt", post(submit_prompt))
         .route("/api/sessions/:id/compact", post(compact_session))
         .route("/api/sessions/:id/abort", post(abort_session))
-        .route("/api/sessions/:id/fork", post(fork_session))
         .with_state(state)
 }
 
@@ -161,17 +160,6 @@ async fn abort_session(State(state): State<HttpState>, Path(session_id): Path<St
         },
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "abort_failed", error),
     }
-}
-
-async fn fork_session(
-    Path(_session_id): Path<String>,
-    Json(_request): Json<ForkSessionRequest>,
-) -> Response {
-    error_response(
-        StatusCode::NOT_IMPLEMENTED,
-        "fork_not_implemented",
-        "fork is not implemented in HTTP v1",
-    )
 }
 
 async fn session_stream(
@@ -333,9 +321,23 @@ fn event_to_delta(event: &Event) -> Option<ConversationDeltaDto> {
                 value: event.seq.unwrap_or_default().to_string(),
             },
         }),
-        _ => Some(ConversationDeltaDto::UpdateControlState {
+        // Phase transitions that the client needs to know about
+        EventPayload::TurnStarted
+        | EventPayload::AgentRunStarted
+        | EventPayload::CompactionStarted
+        | EventPayload::ToolCallBackgrounded { .. }
+        | EventPayload::BackgroundTaskCompleted { .. } => Some(ConversationDeltaDto::UpdateControlState {
             control: control_from_phase(projected_phase(&event.payload)),
         }),
+        // Terminal events — the client already has the block content
+        EventPayload::TurnCompleted { .. }
+        | EventPayload::AgentRunCompleted { .. }
+        | EventPayload::SystemPromptConfigured { .. }
+        | EventPayload::SessionContinuedFromCompaction { .. }
+        | EventPayload::ThinkingDelta { .. }
+        | EventPayload::ToolCallArgumentsDelta { .. }
+        | EventPayload::ToolCallRequested { .. } => None,
+        _ => None,
     }
 }
 
@@ -376,7 +378,7 @@ fn message_to_block(index: usize, message: &LlmMessage) -> ConversationBlockDto 
     let text = message
         .content
         .iter()
-        .map(content_to_text)
+        .map(crate::handler::snapshot::content_to_text)
         .collect::<Vec<_>>()
         .join("");
     match message.role {
@@ -393,17 +395,6 @@ fn message_to_block(index: usize, message: &LlmMessage) -> ConversationBlockDto 
             status: ConversationBlockStatusDto::Complete,
         },
         LlmRole::System => ConversationBlockDto::SystemNote { id, text },
-    }
-}
-
-fn content_to_text(content: &LlmContent) -> String {
-    match content {
-        LlmContent::Text { text } => text.clone(),
-        LlmContent::Image { .. } => "[image]".into(),
-        LlmContent::ToolCall {
-            name, arguments, ..
-        } => format!("tool call: {name}({arguments})"),
-        LlmContent::ToolResult { content, .. } => content.clone(),
     }
 }
 
@@ -453,14 +444,6 @@ fn session_title(working_dir: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn fork_request_shape_deserializes() {
-        let request: ForkSessionRequest =
-            serde_json::from_value(serde_json::json!({"turnId":"t1","storageSeq":7})).unwrap();
-        assert_eq!(request.turn_id.as_deref(), Some("t1"));
-        assert_eq!(request.storage_seq, Some(7));
-    }
 
     #[test]
     fn conversation_snapshot_cursor_is_full_snapshot_version() {
