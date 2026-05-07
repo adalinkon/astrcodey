@@ -263,6 +263,7 @@ impl LlmProvider for OpenAiProvider {
 // ─── HTTP 流与 SSE 解析 ────────────────────────────────────────────────
 
 impl OpenAiProvider {
+    #[allow(clippy::too_many_arguments)]
     async fn stream_request(
         client: reqwest::Client,
         endpoint: String,
