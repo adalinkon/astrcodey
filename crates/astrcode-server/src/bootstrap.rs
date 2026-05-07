@@ -307,7 +307,10 @@ pub(crate) async fn build_system_prompt_snapshot(
             content: a,
         });
     }
-    let extra_instructions = non_empty(extra_system_prompt.unwrap_or_default());
+    let extra_instructions = extra_system_prompt.and_then(|s| {
+        let trimmed = s.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    });
 
     let identity = pipeline::load_identity_md(&pipeline::user_identity_md_path());
     let user_rules = pipeline::load_user_rules(&pipeline::user_agents_md_path());
@@ -333,11 +336,6 @@ pub(crate) async fn build_system_prompt_snapshot(
         .unwrap_or_default();
     let fingerprint = prompt_fingerprint(&system_prompt);
     Ok((system_prompt, fingerprint))
-}
-
-fn non_empty(text: &str) -> Option<String> {
-    let trimmed = text.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 pub(crate) fn prompt_fingerprint(text: &str) -> String {

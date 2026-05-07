@@ -70,8 +70,7 @@ impl SessionManager {
             return Ok(session.clone());
         }
 
-        // open_session rebuilds the storage-owned projection. The active
-        // Session handle only needs its broadcast channel.
+        // open_session rebuilds the storage-owned projection.
         self.store.open_session(session_id).await?;
         let session = Arc::new(Session { id: session_id.clone() });
         self.active

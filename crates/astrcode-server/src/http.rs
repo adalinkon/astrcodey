@@ -353,7 +353,8 @@ fn projected_phase(payload: &EventPayload) -> Phase {
         | EventPayload::ToolCallArgumentsDelta { .. }
         | EventPayload::ToolCallRequested { .. }
         | EventPayload::ToolOutputDelta { .. }
-        | EventPayload::ToolCallCompleted { .. } => Phase::CallingTool,
+        | EventPayload::ToolCallCompleted { .. }
+        | EventPayload::ToolCallBackgrounded { .. } => Phase::CallingTool,
         EventPayload::CompactionStarted => Phase::Compacting,
         EventPayload::ErrorOccurred { .. } => Phase::Error,
         _ => Phase::Idle,
