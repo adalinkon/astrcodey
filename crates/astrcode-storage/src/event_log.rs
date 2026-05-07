@@ -164,6 +164,30 @@ impl EventLog {
         }
         Ok(None)
     }
+
+    /// Read only the last event from the log file.
+    ///
+    /// Iterates to the end of the file and returns the last non-empty line
+    /// parsed as an event. This is more efficient than `replay_all()` for
+    /// extracting the most recent event (e.g. for `updated_at` timestamps).
+    pub async fn read_last_event(path: &PathBuf) -> Result<Option<Event>, StorageError> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut last: Option<Event> = None;
+        for line in reader.lines() {
+            let line = line?;
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(event) = serde_json::from_str::<Event>(&line) {
+                last = Some(event);
+            }
+        }
+        Ok(last)
+    }
 }
 
 fn count_lines(path: &Path) -> Result<usize, StorageError> {

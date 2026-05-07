@@ -289,13 +289,9 @@ fn event_to_delta(event: &Event) -> Option<ConversationDeltaDto> {
                 text_delta: delta.clone(),
             })
         },
-        EventPayload::AssistantMessageCompleted { message_id, text } => {
-            Some(ConversationDeltaDto::AppendBlock {
-                block: ConversationBlockDto::Assistant {
-                    id: message_id.to_string(),
-                    text: text.clone(),
-                    status: ConversationBlockStatusDto::Complete,
-                },
+        EventPayload::AssistantMessageCompleted { message_id, .. } => {
+            Some(ConversationDeltaDto::CompleteBlock {
+                block_id: message_id.to_string(),
             })
         },
         EventPayload::ToolCallStarted { call_id, tool_name } => {
@@ -317,22 +313,11 @@ fn event_to_delta(event: &Event) -> Option<ConversationDeltaDto> {
             stream: *stream,
             delta: delta.clone(),
         }),
-        EventPayload::ToolCallCompleted {
-            call_id,
-            tool_name,
-            result,
-        } => Some(ConversationDeltaDto::AppendBlock {
-            block: ConversationBlockDto::ToolCall {
-                id: call_id.to_string(),
-                name: tool_name.clone(),
-                text: result.content.clone(),
-                status: if result.is_error {
-                    ConversationBlockStatusDto::Error
-                } else {
-                    ConversationBlockStatusDto::Complete
-                },
-            },
-        }),
+        EventPayload::ToolCallCompleted { call_id, .. } => {
+            Some(ConversationDeltaDto::CompleteBlock {
+                block_id: call_id.to_string(),
+            })
+        },
         EventPayload::ErrorOccurred { message, .. } => Some(ConversationDeltaDto::AppendBlock {
             block: ConversationBlockDto::Error {
                 id: event.id.to_string(),

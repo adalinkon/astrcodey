@@ -32,11 +32,34 @@ impl<T: ClientTransport> AstrcodeClient<T> {
         }
     }
 
-    /// 发送命令并等待服务端返回第一个响应通知。
+    /// 发送命令并循环等待匹配的响应通知。
     ///
-    /// 内部调用传输层的 `execute` 方法，将传输错误映射为 `ClientError`。
-    async fn send(&self, cmd: &ClientCommand) -> Result<ClientNotification, ClientError> {
-        Ok(self.transport.execute(cmd).await?)
+    /// 跳过无关的广播事件（如后台任务完成、异步 Agent 事件等），
+    /// 直到收到 predicate 匹配的通知或事件流断开。
+    async fn wait_for<F>(
+        &self,
+        cmd: &ClientCommand,
+        predicate: F,
+    ) -> Result<ClientNotification, ClientError>
+    where
+        F: Fn(&ClientNotification) -> bool,
+    {
+        let mut rx = self.transport.subscribe().await?;
+        self.transport.send(cmd).await?;
+        loop {
+            match rx.recv().await {
+                Ok(notification) => {
+                    if predicate(&notification) {
+                        return Ok(notification);
+                    }
+                    continue;
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    return Err(ClientError::UnexpectedResponse);
+                },
+            }
+        }
     }
 
     /// 创建新的会话。
@@ -47,7 +70,15 @@ impl<T: ClientTransport> AstrcodeClient<T> {
         let cmd = ClientCommand::CreateSession {
             working_dir: working_dir.into(),
         };
-        match self.send(&cmd).await? {
+        let notification = self
+            .wait_for(&cmd, |n| {
+                matches!(
+                    n,
+                    ClientNotification::Event(event) if matches!(event.payload, EventPayload::SessionStarted { .. })
+                ) || matches!(n, ClientNotification::Error { .. })
+            })
+            .await?;
+        match notification {
             ClientNotification::Event(event) => match event.payload {
                 EventPayload::SessionStarted { .. } => Ok(event.session_id.into_string()),
                 _ => Err(ClientError::UnexpectedResponse),
@@ -65,7 +96,7 @@ impl<T: ClientTransport> AstrcodeClient<T> {
             text: text.into(),
             attachments: vec![],
         };
-        self.send(&cmd).await?;
+        self.transport.send(&cmd).await?;
         Ok(())
     }
 
@@ -74,7 +105,13 @@ impl<T: ClientTransport> AstrcodeClient<T> {
     /// 返回会话列表，每项包含会话 ID 等摘要信息。
     pub async fn list_sessions(&self) -> Result<Vec<SessionListItem>, ClientError> {
         let cmd = ClientCommand::ListSessions;
-        match self.send(&cmd).await? {
+        let notification = self
+            .wait_for(&cmd, |n| {
+                matches!(n, ClientNotification::SessionList { .. })
+                    || matches!(n, ClientNotification::Error { .. })
+            })
+            .await?;
+        match notification {
             ClientNotification::SessionList { sessions } => Ok(sessions),
             ClientNotification::Error { message, .. } => Err(ClientError::Server(message)),
             _ => Err(ClientError::UnexpectedResponse),
@@ -95,7 +132,15 @@ impl<T: ClientTransport> AstrcodeClient<T> {
             session_id: session_id.into(),
             at_cursor: at_cursor.map(String::from),
         };
-        match self.send(&cmd).await? {
+        let notification = self
+            .wait_for(&cmd, |n| {
+                matches!(
+                    n,
+                    ClientNotification::Event(event) if matches!(event.payload, EventPayload::SessionStarted { .. })
+                ) || matches!(n, ClientNotification::Error { .. })
+            })
+            .await?;
+        match notification {
             ClientNotification::Event(event) => match event.payload {
                 EventPayload::SessionStarted { .. } => Ok(event.session_id.into_string()),
                 _ => Err(ClientError::UnexpectedResponse),
@@ -122,13 +167,13 @@ impl<T: ClientTransport> AstrcodeClient<T> {
 
     /// 发送命令并获取原始服务端事件响应。
     pub async fn send_raw(&self, cmd: &ClientCommand) -> Result<ClientNotification, ClientError> {
-        self.send(cmd).await
+        Ok(self.transport.execute(cmd).await?)
     }
 
     /// 中止当前轮次（abort）。
     pub async fn abort(&self) -> Result<(), ClientError> {
         let cmd = ClientCommand::Abort;
-        self.send(&cmd).await?;
+        self.transport.send(&cmd).await?;
         Ok(())
     }
 }

@@ -488,9 +488,11 @@ impl FileSystemSessionRepository {
         Ok(ids)
     }
 
-    /// 从事件日志的第一行事件构造轻量级 SessionSummary。
+    /// 从事件日志的首行和末行事件构造轻量级 SessionSummary。
     ///
-    /// 避免为未打开的会话重放整个事件日志，大幅提升大量会话场景下的列表性能。
+    /// 读取首行获取 SessionStarted 元数据（working_dir, model_id 等），
+    /// 读取末行获取更准确的 updated_at 和 latest_cursor。
+    /// 避免为未打开的会话重放整个事件日志。
     async fn read_summary_from_first_event(
         &self,
         session_id: &SessionId,
@@ -514,15 +516,24 @@ impl FileSystemSessionRepository {
             _ => return Ok(None),
         };
 
+        let last_event = EventLog::read_last_event(&log_path).await?;
+        let updated_at = last_event
+            .as_ref()
+            .map(|e| e.timestamp.to_rfc3339())
+            .unwrap_or_else(|| first_event.timestamp.to_rfc3339());
+        let latest_cursor = last_event
+            .and_then(|e| e.seq.map(|s| s.to_string()))
+            .unwrap_or_else(|| "0".into());
+
         Ok(Some(SessionSummary {
             session_id: session_id.clone(),
             working_dir,
             model_id,
             parent_session_id,
             created_at: first_event.timestamp.to_rfc3339(),
-            updated_at: first_event.timestamp.to_rfc3339(),
+            updated_at,
             phase: astrcode_core::event::Phase::default(),
-            latest_cursor: "0".into(),
+            latest_cursor,
         }))
     }
 }

@@ -225,6 +225,7 @@ impl LlmProvider for OpenAiProvider {
 
         let endpoint = self.endpoint();
         let api_key = self.config.api_key.clone();
+        let extra_headers = self.config.extra_headers.clone();
         let client = self.client.clone();
         let api_mode = self.api_mode;
         let retry = RetryPolicy {
@@ -233,9 +234,10 @@ impl LlmProvider for OpenAiProvider {
         };
 
         tokio::spawn(async move {
-            let result =
-                Self::stream_request(client, endpoint, api_key, body, api_mode, retry, tx.clone())
-                    .await;
+            let result = Self::stream_request(
+                client, endpoint, api_key, extra_headers, body, api_mode, retry, tx.clone(),
+            )
+            .await;
             if let Err(e) = result {
                 let _ = tx.send(LlmEvent::Error {
                     message: e.to_string(),
@@ -258,6 +260,7 @@ impl OpenAiProvider {
         client: reqwest::Client,
         endpoint: String,
         api_key: String,
+        extra_headers: std::collections::HashMap<String, String>,
         body: serde_json::Value,
         api_mode: OpenAiApiMode,
         retry: RetryPolicy,
@@ -267,9 +270,13 @@ impl OpenAiProvider {
 
         loop {
             attempt += 1;
-            let response = client
+            let mut req = client
                 .post(&endpoint)
-                .header("Authorization", format!("Bearer {}", api_key))
+                .header("Authorization", format!("Bearer {}", api_key));
+            for (key, value) in &extra_headers {
+                req = req.header(key.as_str(), value.as_str());
+            }
+            let response = req
                 .json(&body)
                 .send()
                 .await
