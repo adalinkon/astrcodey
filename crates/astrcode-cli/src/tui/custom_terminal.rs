@@ -300,6 +300,11 @@ where
             area.y = size.height - area.height;
         }
 
+        // Re-anchor to bottom when viewport shrinks (e.g. closing popup overlay)
+        if area.height < self.viewport_area.height {
+            area.y = size.height.saturating_sub(area.height);
+        }
+
         if area != self.viewport_area {
             self.clear()?;
             self.set_viewport_area(area);

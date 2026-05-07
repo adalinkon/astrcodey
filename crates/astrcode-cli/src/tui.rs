@@ -393,6 +393,12 @@ impl TerminalSession {
         // event reader.
         let pending_viewport_area = self.pending_viewport_area()?;
 
+        let viewport_height = if state.show_slash_palette {
+            INLINE_VIEWPORT_HEIGHT + 4
+        } else {
+            INLINE_VIEWPORT_HEIGHT
+        };
+
         let _ = io::stdout().sync_update(|_| {
             // Apply cursor-based viewport adjustment if resize moved the cursor
             if let Some(new_area) = pending_viewport_area {
@@ -402,7 +408,7 @@ impl TerminalSession {
 
             let needs_full_repaint = self
                 .terminal
-                .update_inline_viewport(INLINE_VIEWPORT_HEIGHT)?;
+                .update_inline_viewport(viewport_height)?;
 
             self.flush_scrollback(state, theme)?;
 

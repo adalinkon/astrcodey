@@ -65,7 +65,6 @@ v2 首期刻意选择保守、明确、容易落地的基础设施组合：
 - 纯 Rust workspace
 - JSON-RPC 2.0 over stdio
 - JSONL 事件日志加快照
-- 核心不做 MCP
 - v2 范围内不做执行沙箱
 
 ## 系统拓扑
@@ -132,6 +131,10 @@ v2 设计把系统拆成 `crates/` 下的 18 个 crate，并分为五层。
 
 - `astrcode-extensions`：扩展加载、生命周期分发、hook 执行策略、超时处理、能力注册
 - `astrcode-extension-mode`：Agent 运行模式切换（Code / Plan），包含 Exit Gate、计划 Artifact 持久化、heading 校验
+- `astrcode-extension-skill`：斜杠命令技能发现与分发
+- `astrcode-extension-todo-tool`：进度追踪 Todo 工具
+- `astrcode-extension-agent-tools`：子 Agent 委派（Agent 工具）
+- `astrcode-extension-mcp`：MCP 协议客户端（stdio）、工具发现
 
 这一层是 v2 的主要定制边界。
 
