@@ -72,12 +72,6 @@ pub enum ClientCommand {
     /// 手动触发上下文压缩。
     Compact,
 
-    /// 切换代理模式（如 code、architect、ask 等）。
-    SwitchMode {
-        /// 目标模式名称。
-        mode: String,
-    },
-
     // ---- 状态查询 ----
     /// 获取当前完整状态快照。
     GetState,
