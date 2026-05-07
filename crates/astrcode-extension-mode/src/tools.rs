@@ -47,7 +47,7 @@ pub fn upsert_plan_tool_definition() -> ToolDefinition {
         description: "\
 Create or update the session plan artifact. The plan must contain all required headings: \
 Context, Goal, Scope, Non-Goals, Existing Code To Reuse, Implementation Steps, Verification, \
-Assumptions (defaults and open questions). Only available in plan mode."
+Dependencies and Risks, Assumptions (defaults and open questions). Only available in plan mode."
             .into(),
         parameters: json!({
             "type": "object",

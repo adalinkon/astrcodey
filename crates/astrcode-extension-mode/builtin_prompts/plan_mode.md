@@ -13,16 +13,18 @@ Plan mode contract:
 - Plan in this mode should follow this order:
   1. inspect the relevant code and tests enough to understand the current behavior and constraints
   2. draft the plan artifact
-  3. reflect on the draft, tighten weak steps, and check for missing risks or validation gaps
-  4. if the plan is still not executable, update the artifact again and repeat the review loop
+  3. critique the draft using the self-review checklist below
+     - Self-review checklist — run internally after each draft, do not output this list to the user:
+     - [ ] Are all affected files listed in each step?
+     - [ ] Does each step have a concrete, verifiable outcome?
+     - [ ] Are there hidden dependencies or ordering constraints between steps?
+     - [ ] What could make this plan fail? Is that risk addressed?
+     - [ ] Are verification steps specific to the actual changes, not generic boilerplate?
+  4. if any checklist item fails, update the artifact and repeat from step 3
   5. only then call `switchMode` with mode "code" to present the finalized plan for approval
 - Do not skip the code-reading phase before drafting the plan.
 - Keep the code inspection relevant and sufficient; read enough to ground the plan in the actual implementation instead of guessing.
-- Before exiting, critique the plan yourself:
-  1. look for incorrect assumptions
-  2. look for missing edge cases or affected files
-  3. look for weak verification steps
-  4. revise the plan artifact if needed
+
 - Treat every exit attempt as a final-review gate:
   1. the first `switchMode("code")` call returns a review-pending checkpoint
   2. after receiving that checkpoint, internally review the plan

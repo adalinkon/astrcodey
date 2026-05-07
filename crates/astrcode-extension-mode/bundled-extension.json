@@ -40,7 +40,7 @@
     },
     {
       "name": "upsertSessionPlan",
-      "description": "Create or update the session plan artifact. The plan must contain all required headings: Context, Goal, Scope, Non-Goals, Existing Code To Reuse, Implementation Steps, Verification, Assumptions. Only available in plan mode.",
+      "description": "Create or update the session plan artifact. The plan must contain all required headings: Context, Goal, Scope, Non-Goals, Existing Code To Reuse, Implementation Steps, Verification, Dependencies and Risks, Assumptions. Only available in plan mode.",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
