@@ -38,7 +38,6 @@ interface ConversationState {
   switchSession: (sessionId: string) => Promise<void>
   submitPrompt: (text: string) => Promise<boolean>
   abortCurrentTurn: () => Promise<void>
-  compactSession: () => Promise<void>
   applyDelta: (delta: ConversationDelta) => void
 }
 
@@ -269,19 +268,6 @@ export const useAppStore = create<ConversationState>((set, get) => ({
     if (!activeSessionId) return
 
     await api.abortSession(activeSessionId)
-  },
-
-  compactSession: async () => {
-    const { activeSessionId, control } = get()
-    if (!activeSessionId || !control?.canRequestCompact) return
-
-    const response = await api.compactSession(activeSessionId)
-    await get().refreshSessions()
-    if (response.newSessionId) {
-      await get().switchSession(response.newSessionId)
-    } else {
-      await get().switchSession(activeSessionId)
-    }
   },
 
   applyDelta: (delta: ConversationDelta) => {

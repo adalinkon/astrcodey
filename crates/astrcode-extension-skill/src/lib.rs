@@ -72,6 +72,48 @@ impl Extension for SkillExtension {
         vec![skill_tool_definition()]
     }
 
+    async fn slash_commands_for(
+        &self,
+        working_dir: &str,
+    ) -> Vec<astrcode_core::extension::SlashCommand> {
+        discover_skills(working_dir)
+            .into_iter()
+            .map(|skill| {
+                let description =
+                    truncate_for_index(&skill.index_description(), MAX_DESCRIPTION_CHARS);
+                astrcode_core::extension::SlashCommand {
+                    name: skill.id,
+                    description,
+                    args_schema: None,
+                }
+            })
+            .collect()
+    }
+
+    async fn execute_command(
+        &self,
+        command_name: &str,
+        arguments: &str,
+        working_dir: &str,
+        ctx: &dyn ExtensionContext,
+    ) -> Result<astrcode_core::extension::ExtensionCommandResult, ExtensionError> {
+        let skills = discover_skills(working_dir);
+        let Some(skill) = skills
+            .iter()
+            .find(|skill| skill.matches_requested_name(command_name))
+        else {
+            return Err(ExtensionError::NotFound(command_name.into()));
+        };
+
+        Ok(
+            astrcode_core::extension::ExtensionCommandResult::start_turn(render_skill_content(
+                skill,
+                Some(arguments),
+                ctx.session_id(),
+            )),
+        )
+    }
+
     async fn execute_tool(
         &self,
         tool_name: &str,
@@ -785,6 +827,60 @@ mod tests {
             panic!("expected prompt contributions");
         };
         assert!(contributions.skills[0].contains("- commit: Commit changes."));
+    }
+
+    #[tokio::test]
+    async fn skills_are_registered_as_slash_commands_for_working_dir() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+        write_skill(
+            &workspace.join(".astrcode").join("skills"),
+            "reviewnow",
+            &sample_md("Review current code.", "Review guide"),
+        );
+
+        let commands = SkillExtension
+            .slash_commands_for(&workspace.to_string_lossy())
+            .await;
+
+        assert!(commands.iter().any(|command| {
+            command.name == "reviewnow" && command.description == "Review current code."
+        }));
+    }
+
+    #[tokio::test]
+    async fn skill_slash_command_starts_turn_with_rendered_instructions() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+        write_skill(
+            &workspace.join(".astrcode").join("skills"),
+            "commit",
+            &sample_md("Commit changes.", "Use ${SKILL_DIR} for ${SESSION_ID}."),
+        );
+        let context = TestContext {
+            working_dir: workspace.to_string_lossy().into_owned(),
+            expose_skill_tool: true,
+        };
+
+        let result = SkillExtension
+            .execute_command(
+                "commit",
+                "staged files",
+                &workspace.to_string_lossy(),
+                &context,
+            )
+            .await
+            .expect("skill command");
+
+        let astrcode_core::extension::ExtensionCommandResult::StartTurn { instructions } = result
+        else {
+            panic!("skill command should start a turn");
+        };
+        assert!(instructions.contains("<skill-name>commit</skill-name>"));
+        assert!(instructions.contains("<skill-args>staged files</skill-args>"));
+        assert!(instructions.contains("Invocation arguments: staged files"));
     }
 
     #[tokio::test]

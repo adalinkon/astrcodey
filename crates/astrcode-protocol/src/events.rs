@@ -135,4 +135,6 @@ pub struct ExtensionCommandInfo {
     pub description: String,
     /// 是否需要参数。
     pub needs_argument: bool,
+    /// 命令来源：`builtin`、`plugin` 或 `skill`。
+    pub source: String,
 }

@@ -81,6 +81,28 @@ pub struct CompactSessionResponse {
     pub message: String,
 }
 
+/// 斜杠命令列表响应。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlashCommandListResponseDto {
+    /// 当前会话可执行的斜杠命令。
+    pub commands: Vec<SlashCommandInfoDto>,
+}
+
+/// 可执行斜杠命令信息。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlashCommandInfoDto {
+    /// 命令名称（不含前导斜杠 `/`）。
+    pub name: String,
+    /// 人类可读描述。
+    pub description: String,
+    /// 是否需要参数。
+    pub needs_argument: bool,
+    /// 命令来源：`builtin`、`plugin` 或 `skill`。
+    pub source: String,
+}
+
 /// fork 请求的冻结线缆形状。v1 route 返回 501。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

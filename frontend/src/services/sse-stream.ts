@@ -4,6 +4,10 @@ import type { ConversationStreamEnvelope } from './types'
 
 export type SseEventHandler = (envelope: ConversationStreamEnvelope) => void
 
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'AbortError'
+}
+
 export async function consumeSseStream(
   sessionId: string,
   cursor: string | null,
@@ -24,6 +28,9 @@ export async function consumeSseStream(
       signal,
     })
   } catch (err) {
+    if (signal.aborted || isAbortError(err)) {
+      return 'aborted'
+    }
     console.error('[sse] fetch failed', err)
     throw err
   }
@@ -76,7 +83,17 @@ export async function consumeSseStream(
   }
 
   while (!signal.aborted) {
-    const { value, done } = await reader.read()
+    let chunk: ReadableStreamReadResult<Uint8Array>
+    try {
+      chunk = await reader.read()
+    } catch (err) {
+      if (signal.aborted || isAbortError(err)) {
+        return 'aborted'
+      }
+      throw err
+    }
+
+    const { value, done } = chunk
     if (done) break
 
     buffer += decoder.decode(value, { stream: true })

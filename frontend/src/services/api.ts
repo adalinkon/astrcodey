@@ -2,7 +2,6 @@ import { getHostBridge } from '../lib/hostBridge'
 import {
   decodeActiveSelectionResponse,
   decodeAvailableModels,
-  decodeCompactSessionResponse,
   decodeConfigReloadResponse,
   decodeConfigView,
   decodeConversationSnapshot,
@@ -11,18 +10,19 @@ import {
   decodeDeleteProjectResponse,
   decodeModelTestResult,
   decodePromptSubmitResponse,
+  decodeSlashCommandListResponse,
   decodeSessionListResponse,
 } from './protocol'
 import type {
   CreateSessionResponse,
   PromptSubmitResponse,
-  CompactSessionResponse,
   SessionListResponse,
   ConversationSnapshot,
   ConfigView,
   CurrentModelInfo,
   AvailableModel,
   ModelTestResult,
+  SlashCommandListResponse,
 } from './types'
 
 let baseUrl = ''
@@ -111,14 +111,11 @@ export async function submitPrompt(
   }
 }
 
-export async function compactSession(
+export async function listCommands(
   sessionId: string
-): Promise<CompactSessionResponse> {
-  return decodeCompactSessionResponse(
-    await request(`/api/sessions/${encodeURIComponent(sessionId)}/compact`, {
-      method: 'POST',
-      body: JSON.stringify({}),
-    })
+): Promise<SlashCommandListResponse> {
+  return decodeSlashCommandListResponse(
+    await request(`/api/sessions/${encodeURIComponent(sessionId)}/commands`)
   )
 }
 

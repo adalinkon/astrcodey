@@ -73,6 +73,14 @@ pub trait Extension: Send + Sync {
         vec![]
     }
 
+    /// 可选：返回绑定到指定工作目录的斜杠命令列表。
+    ///
+    /// 默认复用静态 `slash_commands()`，需要按项目动态发现命令的扩展可覆盖此方法。
+    async fn slash_commands_for(&self, working_dir: &str) -> Vec<SlashCommand> {
+        let _ = working_dir;
+        self.slash_commands()
+    }
+
     /// 可选：执行此扩展注册的斜杠命令。
     ///
     /// 当用户在 TUI 输入 `/command_name arguments` 时调用。
@@ -379,11 +387,46 @@ pub struct SlashCommand {
 
 /// 扩展斜杠命令的执行结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExtensionCommandResult {
-    /// 输出文本，展示给用户。
-    pub content: String,
-    /// 是否为错误结果。
-    pub is_error: bool,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ExtensionCommandResult {
+    /// 只展示文本，不启动 agent turn。兼容现有原生插件命令语义。
+    Display {
+        /// 输出文本，展示给用户。
+        content: String,
+        /// 是否为错误结果。
+        is_error: bool,
+    },
+    /// 同步处理完成，不启动 agent turn。
+    Handled {
+        /// 说明文本。
+        message: String,
+    },
+    /// 启动一个 agent turn，并把这些指令作为本轮 transient system context。
+    StartTurn {
+        /// 本轮临时指令，不写入可见 transcript。
+        instructions: String,
+    },
+}
+
+impl ExtensionCommandResult {
+    pub fn display(content: impl Into<String>, is_error: bool) -> Self {
+        Self::Display {
+            content: content.into(),
+            is_error,
+        }
+    }
+
+    pub fn handled(message: impl Into<String>) -> Self {
+        Self::Handled {
+            message: message.into(),
+        }
+    }
+
+    pub fn start_turn(instructions: impl Into<String>) -> Self {
+        Self::StartTurn {
+            instructions: instructions.into(),
+        }
+    }
 }
 
 // ─── Extension Context ───────────────────────────────────────────────────

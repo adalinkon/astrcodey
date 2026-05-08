@@ -4,6 +4,7 @@
 //! 也支持通过 `ASTRCODE_SHELL` 环境变量手动覆盖。
 
 use std::env;
+use std::sync::OnceLock;
 
 /// Shell 家族分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +33,7 @@ pub struct ShellInfo {
 /// 解析当前使用的 Shell。
 ///
 /// 优先检查 `ASTRCODE_SHELL` 环境变量，如果未设置则根据平台自动检测。
+/// 自动检测结果会被缓存，同一进程内只检测一次。
 pub fn resolve_shell() -> ShellInfo {
     // 允许通过环境变量覆盖
     if let Ok(override_shell) = env::var("ASTRCODE_SHELL") {
@@ -41,7 +43,12 @@ pub fn resolve_shell() -> ShellInfo {
                 name: override_shell.clone(),
                 path: override_shell,
             },
-            "powershell" | "pwsh" => ShellInfo {
+            "pwsh" => ShellInfo {
+                family: ShellFamily::PowerShell,
+                name: "pwsh".into(),
+                path: "pwsh.exe".into(),
+            },
+            "powershell" => ShellInfo {
                 family: ShellFamily::PowerShell,
                 name: "powershell".into(),
                 path: "powershell.exe".into(),
@@ -59,7 +66,12 @@ pub fn resolve_shell() -> ShellInfo {
         };
     }
 
-    // 根据平台自动检测
+    CACHED_SHELL.get_or_init(detect_shell).clone()
+}
+
+static CACHED_SHELL: OnceLock<ShellInfo> = OnceLock::new();
+
+fn detect_shell() -> ShellInfo {
     if cfg!(windows) {
         detect_windows_shell()
     } else {
@@ -69,9 +81,11 @@ pub fn resolve_shell() -> ShellInfo {
 
 /// 在 Windows 平台上检测 Shell 类型。
 ///
-/// 检测顺序：MSYS2/MinGW/Git Bash → PowerShell → cmd（默认回退）。
+/// 检测顺序：MSYS2 会话 → Git Bash → PowerShell 7 (pwsh) → Windows PowerShell 5.x。
+/// 通过 PATH 和常见安装路径查找实际可用的 shell，而非依赖 `PSModulePath`
+/// （该变量在几乎所有 Windows 系统上都存在，无法区分 shell 类型）。
 fn detect_windows_shell() -> ShellInfo {
-    // 检测 MSYS2 / MinGW / Git Bash
+    // MSYS2 / MinGW / Git Bash 终端会话
     if env::var("MSYSTEM").is_ok() {
         return ShellInfo {
             family: ShellFamily::Posix,
@@ -79,20 +93,83 @@ fn detect_windows_shell() -> ShellInfo {
             path: "bash.exe".into(),
         };
     }
-    // 检测 PowerShell
-    if env::var("PSModulePath").is_ok() {
+
+    // Git Bash — 常见开发环境，优先使用
+    if let Some(path) = find_git_bash() {
         return ShellInfo {
-            family: ShellFamily::PowerShell,
-            name: "powershell".into(),
-            path: "powershell.exe".into(),
+            family: ShellFamily::Posix,
+            name: "bash (Git Bash)".into(),
+            path,
         };
     }
-    // 回退到 cmd
-    ShellInfo {
-        family: ShellFamily::Cmd,
-        name: "cmd".into(),
-        path: "cmd.exe".into(),
+
+    // PowerShell 7+ (pwsh) — 支持 &&，跨平台
+    if let Some(path) = find_pwsh() {
+        return ShellInfo {
+            family: ShellFamily::PowerShell,
+            name: "pwsh".into(),
+            path,
+        };
     }
+
+    // Windows PowerShell 5.x — 现代版本 Windows 始终可用
+    ShellInfo {
+        family: ShellFamily::PowerShell,
+        name: "powershell".into(),
+        path: "powershell.exe".into(),
+    }
+}
+
+/// 在 PATH 中查找可执行文件。
+fn find_in_path(name: &str) -> Option<String> {
+    let path_var = env::var("PATH").ok()?;
+    for dir in std::env::split_paths(&path_var) {
+        let full = dir.join(name);
+        if full.exists() {
+            return Some(full.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+/// 查找 PowerShell 7+ (pwsh)，先搜 PATH 再查默认安装路径。
+fn find_pwsh() -> Option<String> {
+    if let Some(p) = find_in_path("pwsh.exe") {
+        return Some(p);
+    }
+    env::var("ProgramFiles").ok().and_then(|pf| {
+        let p = std::path::Path::new(&pf)
+            .join("PowerShell")
+            .join("7")
+            .join("pwsh.exe");
+        p.exists().then(|| p.to_string_lossy().into_owned())
+    })
+}
+
+/// 查找 Git Bash，检查 ProgramFiles 和 LOCALAPPDATA 下的安装路径。
+fn find_git_bash() -> Option<String> {
+    for var in &["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
+        if let Ok(pf) = env::var(var) {
+            let p = std::path::Path::new(&pf)
+                .join("Git")
+                .join("bin")
+                .join("bash.exe");
+            if p.exists() {
+                return Some(p.to_string_lossy().into_owned());
+            }
+        }
+    }
+    if let Ok(local) = env::var("LOCALAPPDATA") {
+        let p = std::path::Path::new(&local)
+            .join("Programs")
+            .join("Git")
+            .join("bin")
+            .join("bash.exe");
+        if p.exists() {
+            return Some(p.to_string_lossy().into_owned());
+        }
+    }
+    None
 }
 
 /// 在 POSIX 平台上检测 Shell 类型。

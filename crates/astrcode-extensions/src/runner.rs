@@ -37,6 +37,12 @@ struct OrderedExtension {
     mode: HookMode,
 }
 
+#[derive(Debug, Clone)]
+pub struct RegisteredSlashCommand {
+    pub extension_id: String,
+    pub command: astrcode_core::extension::SlashCommand,
+}
+
 impl ExtensionRunner {
     /// 创建新的扩展运行器。
     ///
@@ -404,6 +410,24 @@ impl ExtensionRunner {
         cmds
     }
 
+    /// 从所有已注册的扩展收集绑定到工作目录的斜杠命令。
+    pub async fn collect_commands_for(&self, working_dir: &str) -> Vec<RegisteredSlashCommand> {
+        let exts: Vec<Arc<dyn Extension>> = { self.extensions.read().await.clone() };
+        let mut cmds = Vec::new();
+        for ext in exts.iter() {
+            cmds.extend(
+                ext.slash_commands_for(working_dir)
+                    .await
+                    .into_iter()
+                    .map(|command| RegisteredSlashCommand {
+                        extension_id: ext.id().to_string(),
+                        command,
+                    }),
+            );
+        }
+        cmds
+    }
+
     /// 将斜杠命令派发到注册了该命令的扩展。
     ///
     /// 遍历所有扩展，找到 `slash_commands()` 中包含该命令名的扩展并调用其
@@ -415,9 +439,10 @@ impl ExtensionRunner {
         working_dir: &str,
         ctx: &dyn ExtensionContext,
     ) -> Result<astrcode_core::extension::ExtensionCommandResult, ExtensionError> {
-        let exts: Vec<Arc<dyn Extension>> = { self.extensions.read().await.clone() };
+        let mut exts: Vec<Arc<dyn Extension>> = { self.extensions.read().await.clone() };
+        exts.sort_by_key(|ext| command_dispatch_priority(ext.id()));
         for ext in exts.iter() {
-            let commands = ext.slash_commands();
+            let commands = ext.slash_commands_for(working_dir).await;
             if commands.iter().any(|cmd| cmd.name == command_name) {
                 return ext
                     .execute_command(command_name, arguments, working_dir, ctx)
@@ -453,6 +478,14 @@ impl ExtensionRunner {
             .into_iter()
             .map(|(_, _, mode, ext)| OrderedExtension { ext, mode })
             .collect()
+    }
+}
+
+fn command_dispatch_priority(extension_id: &str) -> u8 {
+    if extension_id == "astrcode-skill" {
+        1
+    } else {
+        0
     }
 }
 

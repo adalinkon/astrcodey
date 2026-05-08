@@ -15,6 +15,8 @@ import type {
   Phase,
   ProfileView,
   PromptSubmitResponse,
+  SlashCommandInfo,
+  SlashCommandListResponse,
   SessionListItem,
   SessionListResponse,
   ToolOutputStream,
@@ -320,6 +322,25 @@ export function decodeCompactSessionResponse(
     deferred: requiredBoolean(object, 'deferred'),
     newSessionId: optionalString(object, 'newSessionId'),
     message: requiredString(object, 'message'),
+  }
+}
+
+function decodeSlashCommandInfo(value: unknown): SlashCommandInfo {
+  const object = decodeObject(value, 'slash command info')
+  return {
+    name: requiredString(object, 'name'),
+    description: requiredString(object, 'description'),
+    needsArgument: requiredBoolean(object, 'needsArgument'),
+    source: requiredString(object, 'source'),
+  }
+}
+
+export function decodeSlashCommandListResponse(
+  value: unknown
+): SlashCommandListResponse {
+  const object = decodeObject(value, 'slash command list response')
+  return {
+    commands: arrayField(object, 'commands').map(decodeSlashCommandInfo),
   }
 }
 

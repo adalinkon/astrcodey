@@ -44,6 +44,17 @@ export interface CompactSessionResponse {
   message: string
 }
 
+export interface SlashCommandInfo {
+  name: string
+  description: string
+  needsArgument: boolean
+  source: 'builtin' | 'plugin' | 'skill' | string
+}
+
+export interface SlashCommandListResponse {
+  commands: SlashCommandInfo[]
+}
+
 // ── Session List ──
 
 export interface SessionListItem {

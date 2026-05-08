@@ -10,7 +10,7 @@ use astrcode_core::{
 use astrcode_protocol::{commands::ClientCommand, events::ClientNotification};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use super::CommandHandler;
+use super::{CommandHandler, ManualCompactOutcome, PromptSubmission};
 use crate::{
     agent::{AgentError, AgentTurnOutput},
     bootstrap::ServerRuntime,
@@ -57,10 +57,27 @@ impl CommandHandle {
             .map_err(|_| "command actor dropped response".to_string())?
     }
 
+    pub async fn submit_input_for_session(
+        &self,
+        session_id: SessionId,
+        text: String,
+    ) -> Result<PromptSubmission, String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(CommandMessage::SubmitInputForSession {
+                session_id,
+                text,
+                reply,
+            })
+            .map_err(|_| "command actor is unavailable".to_string())?;
+        rx.await
+            .map_err(|_| "command actor dropped response".to_string())?
+    }
+
     pub async fn compact_session(
         &self,
         session_id: SessionId,
-    ) -> Result<Option<SessionId>, String> {
+    ) -> Result<ManualCompactOutcome, String> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(CommandMessage::CompactSession { session_id, reply })
@@ -73,6 +90,18 @@ impl CommandHandle {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(CommandMessage::AbortSession { session_id, reply })
+            .map_err(|_| "command actor is unavailable".to_string())?;
+        rx.await
+            .map_err(|_| "command actor dropped response".to_string())?
+    }
+
+    pub async fn command_infos_for_session(
+        &self,
+        session_id: SessionId,
+    ) -> Result<Vec<astrcode_protocol::events::ExtensionCommandInfo>, String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(CommandMessage::ListCommandsForSession { session_id, reply })
             .map_err(|_| "command actor is unavailable".to_string())?;
         rx.await
             .map_err(|_| "command actor dropped response".to_string())?
@@ -93,13 +122,23 @@ pub(super) enum CommandMessage {
         text: String,
         reply: oneshot::Sender<Result<TurnId, String>>,
     },
+    SubmitInputForSession {
+        session_id: SessionId,
+        text: String,
+        reply: oneshot::Sender<Result<PromptSubmission, String>>,
+    },
     CompactSession {
         session_id: SessionId,
-        reply: oneshot::Sender<Result<Option<SessionId>, String>>,
+        reply: oneshot::Sender<Result<ManualCompactOutcome, String>>,
     },
     AbortSession {
         session_id: SessionId,
         reply: oneshot::Sender<Result<(), String>>,
+    },
+    ListCommandsForSession {
+        session_id: SessionId,
+        reply:
+            oneshot::Sender<Result<Vec<astrcode_protocol::events::ExtensionCommandInfo>, String>>,
     },
     AgentEvent {
         session_id: SessionId,
@@ -188,11 +227,21 @@ impl CommandHandler {
             } => {
                 let _ = reply.send(self.submit_prompt_for_session(session_id, text).await);
             },
+            CommandMessage::SubmitInputForSession {
+                session_id,
+                text,
+                reply,
+            } => {
+                let _ = reply.send(self.submit_input_for_session(session_id, text).await);
+            },
             CommandMessage::CompactSession { session_id, reply } => {
                 let _ = reply.send(self.compact_session(&session_id).await);
             },
             CommandMessage::AbortSession { session_id, reply } => {
                 let _ = reply.send(self.abort_session(&session_id).await);
+            },
+            CommandMessage::ListCommandsForSession { session_id, reply } => {
+                let _ = reply.send(self.command_infos_for_session(&session_id).await);
             },
             CommandMessage::AgentEvent {
                 session_id,

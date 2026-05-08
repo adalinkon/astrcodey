@@ -1,14 +1,19 @@
-use std::{future, sync::Arc, time::Duration};
+use std::{
+    fs, future,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use astrcode_context::{compaction::CompactResult, manager::LlmContextAssembler};
 use astrcode_core::{
     config::{ContextSettings, EffectiveConfig, LlmSettings, OpenAiApiMode},
     event::{Event, EventPayload, Phase},
     extension::{
-        Extension, ExtensionContext, ExtensionError, ExtensionEvent, HookEffect, HookMode,
-        HookSubscription,
+        Extension, ExtensionCommandResult, ExtensionContext, ExtensionError, ExtensionEvent,
+        HookEffect, HookMode, HookSubscription, SlashCommand,
     },
-    llm::{LlmContent, LlmError, LlmEvent, LlmMessage, LlmProvider, ModelLimits},
+    llm::{LlmContent, LlmError, LlmEvent, LlmMessage, LlmProvider, LlmRole, ModelLimits},
     tool::ToolDefinition,
     types::{SessionId, ToolCallId},
 };
@@ -82,6 +87,57 @@ struct InvalidSummaryLlm;
 
 struct FailSessionStartExtension;
 
+#[derive(Clone, Default)]
+struct CapturingLlm {
+    messages: Arc<Mutex<Vec<LlmMessage>>>,
+}
+
+struct StaticCommandExtension {
+    id: &'static str,
+    command_name: &'static str,
+}
+
+#[async_trait::async_trait]
+impl Extension for StaticCommandExtension {
+    fn id(&self) -> &str {
+        self.id
+    }
+
+    fn slash_commands(&self) -> Vec<SlashCommand> {
+        vec![SlashCommand {
+            name: self.command_name.into(),
+            description: "Static test command".into(),
+            args_schema: None,
+        }]
+    }
+
+    fn hook_subscriptions(&self) -> Vec<HookSubscription> {
+        vec![]
+    }
+
+    async fn on_event(
+        &self,
+        _event: ExtensionEvent,
+        _ctx: &dyn ExtensionContext,
+    ) -> Result<HookEffect, ExtensionError> {
+        Ok(HookEffect::Allow)
+    }
+
+    async fn execute_command(
+        &self,
+        command_name: &str,
+        _arguments: &str,
+        _working_dir: &str,
+        _ctx: &dyn ExtensionContext,
+    ) -> Result<ExtensionCommandResult, ExtensionError> {
+        if command_name == self.command_name {
+            return Ok(ExtensionCommandResult::display("plugin command", false));
+        }
+
+        Err(ExtensionError::NotFound(command_name.into()))
+    }
+}
+
 #[async_trait::async_trait]
 impl Extension for FailSessionStartExtension {
     fn id(&self) -> &str {
@@ -134,6 +190,32 @@ impl LlmProvider for InvalidSummaryLlm {
         let (tx, rx) = mpsc::unbounded_channel();
         let _ = tx.send(LlmEvent::ContentDelta {
             delta: "not a compact summary".into(),
+        });
+        let _ = tx.send(LlmEvent::Done {
+            finish_reason: "stop".into(),
+        });
+        Ok(rx)
+    }
+
+    fn model_limits(&self) -> ModelLimits {
+        ModelLimits {
+            max_input_tokens: 200000,
+            max_output_tokens: 1024,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for CapturingLlm {
+    async fn generate(
+        &self,
+        messages: Vec<LlmMessage>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<mpsc::UnboundedReceiver<LlmEvent>, LlmError> {
+        *self.messages.lock().unwrap() = messages;
+        let (tx, rx) = mpsc::unbounded_channel();
+        let _ = tx.send(LlmEvent::ContentDelta {
+            delta: "captured".into(),
         });
         let _ = tx.send(LlmEvent::Done {
             finish_reason: "stop".into(),
@@ -206,6 +288,31 @@ fn test_runtime_with_llm(llm_provider: Arc<dyn LlmProvider>) -> Arc<ServerRuntim
 
 fn test_runtime() -> Arc<ServerRuntime> {
     test_runtime_with_llm(Arc::new(MockLlm))
+}
+
+fn unique_workspace(name: &str) -> PathBuf {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("astrcode-{name}-{timestamp}"));
+    fs::create_dir_all(&path).unwrap();
+    path
+}
+
+fn write_project_skill(workspace: &Path, id: &str, content: &str) {
+    let skill_dir = workspace.join(".astrcode").join("skills").join(id);
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+}
+
+fn compact_child_id(outcome: ManualCompactOutcome) -> SessionId {
+    match outcome {
+        ManualCompactOutcome::Created { child_session_id } => child_session_id,
+        ManualCompactOutcome::Skipped { message } => {
+            panic!("expected compact child, compact was skipped: {message}")
+        },
+    }
 }
 
 async fn recv_event(event_rx: &mut broadcast::Receiver<ClientNotification>) -> ClientNotification {
@@ -673,7 +780,7 @@ async fn compact_command_rewrites_provider_history_without_exposing_summary() {
     let child_id = handler
         .compact_session(parent_id.clone())
         .await
-        .unwrap()
+        .map(compact_child_id)
         .unwrap();
     let continued_session_id = drain_until_compact_boundary(&mut event_rx).await;
     assert_eq!(child_id, continued_session_id);
@@ -705,6 +812,175 @@ async fn compact_command_rewrites_provider_history_without_exposing_summary() {
 }
 
 #[tokio::test]
+async fn slash_compact_uses_backend_command_without_user_message() {
+    let runtime = test_runtime_with_settings(
+        Arc::new(MockLlm),
+        astrcode_context::settings::ContextWindowSettings::default(),
+    );
+    let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(256);
+    let handler = CommandHandler::spawn_actor(Arc::clone(&runtime), event_tx);
+
+    let parent_id = handler.create_session(".".into()).await.unwrap();
+    for text in ["one", "two", "three"] {
+        handler
+            .submit_prompt_for_session(parent_id.clone(), text.into())
+            .await
+            .unwrap();
+        assert_eq!(wait_for_turn_completed(&mut event_rx).await, "stop");
+    }
+
+    let result = handler
+        .submit_input_for_session(parent_id.clone(), "/compact".into())
+        .await
+        .unwrap();
+    assert!(matches!(result, PromptSubmission::Handled { .. }));
+    let continued_session_id = drain_until_compact_boundary(&mut event_rx).await;
+
+    let continued = runtime
+        .session_manager
+        .read_model(&continued_session_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        continued.parent_session_id.as_ref().map(SessionId::as_str),
+        Some(parent_id.as_str())
+    );
+
+    let parent = runtime
+        .session_manager
+        .read_model(&parent_id)
+        .await
+        .unwrap();
+    assert!(
+        parent
+            .messages
+            .iter()
+            .all(|message| message_to_dto(message).content != "/compact")
+    );
+}
+
+#[tokio::test]
+async fn unknown_slash_command_does_not_enter_llm_or_transcript() {
+    let runtime = test_runtime();
+    let (event_tx, _) = tokio::sync::broadcast::channel(64);
+    let handler = CommandHandler::spawn_actor(Arc::clone(&runtime), event_tx);
+    let sid = handler.create_session(".".into()).await.unwrap();
+
+    let error = handler
+        .submit_input_for_session(sid.clone(), "/missing-command".into())
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, "Unknown command: /missing-command");
+    let state = runtime.session_manager.read_model(&sid).await.unwrap();
+    assert!(state.messages.is_empty());
+}
+
+#[tokio::test]
+async fn skill_slash_command_injects_transient_instructions_only() {
+    let workspace = unique_workspace("skill-slash-command");
+    write_project_skill(
+        &workspace,
+        "reviewnow",
+        "---\ndescription: Review code.\n---\nUse this skill to review code.",
+    );
+    let llm = CapturingLlm::default();
+    let captured_messages = Arc::clone(&llm.messages);
+    let runtime = test_runtime_with_llm(Arc::new(llm));
+    runtime
+        .extension_runner
+        .register(astrcode_extension_skill::extension())
+        .await;
+    let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(256);
+    let handler = CommandHandler::spawn_actor(Arc::clone(&runtime), event_tx);
+    let sid = handler
+        .create_session(workspace.to_string_lossy().into_owned())
+        .await
+        .unwrap();
+
+    let result = handler
+        .submit_input_for_session(sid.clone(), "/reviewnow src/lib.rs".into())
+        .await
+        .unwrap();
+    assert!(matches!(result, PromptSubmission::Accepted { .. }));
+    assert_eq!(wait_for_turn_completed(&mut event_rx).await, "stop");
+
+    let captured = captured_messages.lock().unwrap().clone();
+    let system_text = captured
+        .iter()
+        .filter(|message| message.role == LlmRole::System)
+        .map(|message| message_to_dto(message).content)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(system_text.contains("[Slash Command Instructions]"));
+    assert!(system_text.contains("<skill-name>reviewnow</skill-name>"));
+    assert!(system_text.contains("Invocation arguments: src/lib.rs"));
+
+    let state = runtime.session_manager.read_model(&sid).await.unwrap();
+    assert!(
+        state
+            .messages
+            .iter()
+            .any(|message| message_to_dto(message).content == "/reviewnow src/lib.rs")
+    );
+    assert!(
+        state
+            .messages
+            .iter()
+            .all(|message| !message_to_dto(message).content.contains("<skill-name>"))
+    );
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[tokio::test]
+async fn command_list_keeps_reserved_and_plugin_priority_over_skills() {
+    let workspace = unique_workspace("slash-command-priority");
+    write_project_skill(
+        &workspace,
+        "compact",
+        "---\ndescription: Skill named compact.\n---\nShould never override builtin.",
+    );
+    write_project_skill(
+        &workspace,
+        "reviewnow",
+        "---\ndescription: Skill named reviewnow.\n---\nShould not override plugin.",
+    );
+    let runtime = test_runtime();
+    runtime
+        .extension_runner
+        .register(astrcode_extension_skill::extension())
+        .await;
+    runtime
+        .extension_runner
+        .register(Arc::new(StaticCommandExtension {
+            id: "test-plugin",
+            command_name: "reviewnow",
+        }))
+        .await;
+    let (event_tx, _) = tokio::sync::broadcast::channel(64);
+    let handler = CommandHandler::spawn_actor(Arc::clone(&runtime), event_tx);
+    let sid = handler
+        .create_session(workspace.to_string_lossy().into_owned())
+        .await
+        .unwrap();
+
+    let commands = handler.command_infos_for_session(sid).await.unwrap();
+
+    let compact_commands = commands
+        .iter()
+        .filter(|command| command.name == "compact")
+        .collect::<Vec<_>>();
+    assert_eq!(compact_commands.len(), 1);
+    assert_eq!(compact_commands[0].source, "builtin");
+    let reviewnow = commands
+        .iter()
+        .find(|command| command.name == "reviewnow")
+        .expect("reviewnow command");
+    assert_eq!(reviewnow.source, "plugin");
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[tokio::test]
 async fn compact_command_compacts_existing_hidden_context_again() {
     let settings = astrcode_context::settings::ContextWindowSettings::default();
     let runtime = test_runtime_with_settings(Arc::new(MockLlm), settings);
@@ -723,7 +999,7 @@ async fn compact_command_compacts_existing_hidden_context_again() {
     let first_child_id = handler
         .compact_session(first_session_id)
         .await
-        .unwrap()
+        .map(compact_child_id)
         .unwrap();
     assert_eq!(
         first_child_id,
@@ -746,7 +1022,7 @@ async fn compact_command_compacts_existing_hidden_context_again() {
     let second_child_id = handler
         .compact_session(first_child_id)
         .await
-        .unwrap()
+        .map(compact_child_id)
         .unwrap();
     assert_eq!(
         second_child_id,
@@ -890,13 +1166,8 @@ async fn compact_command_does_not_fallback_when_summary_is_invalid() {
     }
     while event_rx.try_recv().is_ok() {}
 
-    assert!(
-        handler
-            .compact_session(sid.clone())
-            .await
-            .unwrap()
-            .is_none()
-    );
+    let error = handler.compact_session(sid.clone()).await.unwrap_err();
+    assert!(error.contains("Compaction failed"));
 
     let state = runtime.session_manager.read_model(&sid).await.unwrap();
     assert!(state.context_messages.is_empty());

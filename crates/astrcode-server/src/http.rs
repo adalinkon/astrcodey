@@ -22,7 +22,8 @@ use astrcode_protocol::{
         ConversationStreamEnvelopeDto, CreateSessionRequest, CreateSessionResponseDto,
         CurrentModelResponseDto, DeleteProjectResponseDto, ModelDto, ModelListResponseDto,
         ModelTestResponseDto, ProfileDto, PromptRequest, PromptSubmitResponse, SessionListItemDto,
-        SessionListResponseDto, UpdateActiveSelectionRequest, UpdateActiveSelectionResponseDto,
+        SessionListResponseDto, SlashCommandInfoDto, SlashCommandListResponseDto,
+        UpdateActiveSelectionRequest, UpdateActiveSelectionResponseDto,
     },
 };
 use axum::{
@@ -40,7 +41,10 @@ use serde::Deserialize;
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 
-use crate::{bootstrap::ServerRuntime, handler::CommandHandler};
+use crate::{
+    bootstrap::ServerRuntime,
+    handler::{CommandHandler, ManualCompactOutcome, PromptSubmission},
+};
 
 /// HTTP router shared state.
 #[derive(Clone)]
@@ -100,6 +104,7 @@ pub fn router(
         )
         .route("/api/sessions/{id}/stream", get(session_stream))
         .route("/api/sessions/{id}/prompt", post(submit_prompt))
+        .route("/api/sessions/{id}/commands", get(list_commands))
         .route("/api/sessions/{id}/compact", post(compact_session))
         .route("/api/sessions/{id}/abort", post(abort_session))
         .route("/api/sessions/{id}", delete(delete_session))
@@ -173,10 +178,10 @@ async fn submit_prompt(
     let session_id = SessionId::from(session_id);
     let result = state
         .handler
-        .submit_prompt_for_session(session_id.clone(), request.text)
+        .submit_input_for_session(session_id.clone(), request.text)
         .await;
     match result {
-        Ok(turn_id) => {
+        Ok(PromptSubmission::Accepted { turn_id }) => {
             tracing::info!(session_id = %session_id, turn_id = %turn_id, "prompt accepted");
             Json(PromptSubmitResponse::Accepted {
                 session_id: session_id.into_string(),
@@ -185,14 +190,42 @@ async fn submit_prompt(
             })
             .into_response()
         },
+        Ok(PromptSubmission::Handled { message }) => Json(PromptSubmitResponse::Handled {
+            session_id: session_id.into_string(),
+            message,
+        })
+        .into_response(),
         Err(error) if error.contains("already running") => {
             tracing::warn!(session_id = %session_id, "prompt rejected: turn already running");
             error_response(StatusCode::CONFLICT, "turn_running", error)
+        },
+        Err(error) if error.contains("Unknown command") => {
+            tracing::warn!(session_id = %session_id, error = %error, "prompt rejected: unknown slash command");
+            error_response(StatusCode::BAD_REQUEST, "unknown_command", error)
         },
         Err(error) => {
             tracing::error!(session_id = %session_id, error = %error, "prompt failed");
             error_response(StatusCode::INTERNAL_SERVER_ERROR, "prompt_failed", error)
         },
+    }
+}
+
+async fn list_commands(State(state): State<HttpState>, Path(session_id): Path<String>) -> Response {
+    let session_id = SessionId::from(session_id);
+    match state.handler.command_infos_for_session(session_id).await {
+        Ok(commands) => Json(SlashCommandListResponseDto {
+            commands: commands
+                .into_iter()
+                .map(|command| SlashCommandInfoDto {
+                    name: command.name,
+                    description: command.description,
+                    needs_argument: command.needs_argument,
+                    source: command.source,
+                })
+                .collect(),
+        })
+        .into_response(),
+        Err(error) => error_response(StatusCode::NOT_FOUND, "session_not_found", error),
     }
 }
 
@@ -203,11 +236,18 @@ async fn compact_session(
 ) -> Response {
     let session_id = SessionId::from(session_id);
     match state.handler.compact_session(session_id).await {
-        Ok(new_session_id) => Json(CompactSessionResponse {
+        Ok(ManualCompactOutcome::Created { child_session_id }) => Json(CompactSessionResponse {
             accepted: true,
             deferred: false,
-            new_session_id: new_session_id.map(SessionId::into_string),
+            new_session_id: Some(child_session_id.into_string()),
             message: "compact accepted".into(),
+        })
+        .into_response(),
+        Ok(ManualCompactOutcome::Skipped { message }) => Json(CompactSessionResponse {
+            accepted: false,
+            deferred: false,
+            new_session_id: None,
+            message,
         })
         .into_response(),
         Err(error) if error.contains("turn is running") => {

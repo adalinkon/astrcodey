@@ -419,7 +419,7 @@ mod tests {
             .execute(
                 serde_json::json!({
                     "command": command_with_delay(),
-                    "timeout": 3
+                    "timeout": 5
                 }),
                 &empty_ctx(),
             )

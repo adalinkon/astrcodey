@@ -41,17 +41,36 @@ struct PendingCompactContinuation {
     switch_active: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManualCompactOutcome {
+    Created { child_session_id: SessionId },
+    Skipped { message: String },
+}
+
 impl CommandHandler {
     pub(super) async fn compact_active_session(&mut self) -> Result<(), String> {
         let Some(sid) = self.active_session_id.clone() else {
             self.send_error(40400, "No active session");
             return Ok(());
         };
-        self.compact_session(&sid).await.map(|_| ())
+        match self.compact_session(&sid).await {
+            Ok(ManualCompactOutcome::Created { .. }) => Ok(()),
+            Ok(ManualCompactOutcome::Skipped { message }) => {
+                self.send_error(40000, &message);
+                Ok(())
+            },
+            Err(error) => {
+                self.send_error(-32603, &error);
+                Err(error)
+            },
+        }
     }
 
     /// 手动压缩指定会话。
-    pub async fn compact_session(&mut self, sid: &SessionId) -> Result<Option<SessionId>, String> {
+    pub async fn compact_session(
+        &mut self,
+        sid: &SessionId,
+    ) -> Result<ManualCompactOutcome, String> {
         if self.active_turns.contains_key(sid) {
             self.send_error(40900, "Cannot compact while a turn is running");
             return Err("Cannot compact while a turn is running".into());
@@ -78,8 +97,7 @@ impl CommandHandler {
             match collect_compact_instructions(&self.runtime.extension_runner, hook_ctx).await {
                 Ok(instructions) => instructions,
                 Err(error) => {
-                    self.send_error(-32603, &format!("Compaction failed: {error}"));
-                    return Ok(None);
+                    return Err(format!("Compaction failed: {error}"));
                 },
             };
         let snapshot_path = match self
@@ -99,11 +117,9 @@ impl CommandHandler {
         {
             Ok(path) => path,
             Err(error) => {
-                self.send_error(
-                    -32603,
-                    &format!("Compaction failed: could not write transcript snapshot: {error}"),
-                );
-                return Ok(None);
+                return Err(format!(
+                    "Compaction failed: could not write transcript snapshot: {error}"
+                ));
             },
         };
         let render_options = CompactSummaryRenderOptions {
@@ -124,12 +140,12 @@ impl CommandHandler {
             Err(CompactError::Skip(
                 CompactSkipReason::Empty | CompactSkipReason::NothingToCompact,
             )) => {
-                self.send_error(40000, "Nothing to compact");
-                return Ok(None);
+                return Ok(ManualCompactOutcome::Skipped {
+                    message: "Nothing to compact".into(),
+                });
             },
             Err(error) => {
-                self.send_error(-32603, &format!("Compaction failed: {error}"));
-                return Ok(None);
+                return Err(format!("Compaction failed: {error}"));
             },
         };
         enrich_post_compact_context(
@@ -146,8 +162,7 @@ impl CommandHandler {
         if let Err(error) =
             dispatch_post_compact(&self.runtime.extension_runner, hook_ctx, &compaction).await
         {
-            self.send_error(-32603, &format!("Compaction failed: {error}"));
-            return Ok(None);
+            return Err(format!("Compaction failed: {error}"));
         }
 
         let system_prompt = match &state.system_prompt {
@@ -169,7 +184,7 @@ impl CommandHandler {
                 switch_active: true,
             })
             .await?;
-        Ok(Some(child_session_id))
+        Ok(ManualCompactOutcome::Created { child_session_id })
     }
 
 

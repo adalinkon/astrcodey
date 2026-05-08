@@ -3,12 +3,15 @@
 //! 传输层无关：同时被 stdio 二进制和进程内 CLI 使用。
 //! 负责将 `ClientCommand` 路由到对应的服务方法，并通过广播通道发送通知。
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use astrcode_core::{
     config::ModelSelection,
     event::{Event, EventPayload, Phase},
-    extension::ExtensionEvent,
+    extension::{ExtensionCommandResult, ExtensionError, ExtensionEvent},
     llm::{LlmContent, LlmMessage, LlmRole},
     storage::SessionReadModel,
     tool::ToolResult,
@@ -40,6 +43,7 @@ pub(crate) mod snapshot;
 
 pub use actor::CommandHandle;
 use actor::CommandMessage;
+pub use compact::ManualCompactOutcome;
 use events::record_and_broadcast;
 #[cfg(test)]
 use snapshot::message_to_dto;
@@ -53,12 +57,80 @@ struct AgentTurnInput {
     system_prompt: String,
     history: Vec<LlmMessage>,
     text: String,
+    transient_instructions: Option<String>,
     actor_tx: mpsc::UnboundedSender<CommandMessage>,
 }
 
 struct PendingRequestedToolCall {
     call_id: String,
     tool_name: String,
+}
+
+#[derive(Debug)]
+pub enum PromptSubmission {
+    Accepted { turn_id: TurnId },
+    Handled { message: String },
+}
+
+struct ParsedSlashCommand {
+    name: String,
+    arguments: String,
+}
+
+fn parse_slash_command(text: &str) -> Option<ParsedSlashCommand> {
+    let trimmed = text.trim();
+    let body = trimmed.strip_prefix('/')?.trim();
+    if body.is_empty() {
+        return Some(ParsedSlashCommand {
+            name: String::new(),
+            arguments: String::new(),
+        });
+    }
+
+    let (name, arguments) = body
+        .split_once(char::is_whitespace)
+        .map(|(name, arguments)| (name, arguments.trim()))
+        .unwrap_or((body, ""));
+
+    Some(ParsedSlashCommand {
+        name: name.to_ascii_lowercase(),
+        arguments: arguments.to_string(),
+    })
+}
+
+fn push_command_info(
+    infos: &mut Vec<astrcode_protocol::events::ExtensionCommandInfo>,
+    seen: &mut HashSet<String>,
+    name: &str,
+    description: &str,
+    needs_argument: bool,
+    source: &str,
+) {
+    if !seen.insert(name.to_string()) {
+        return;
+    }
+    infos.push(astrcode_protocol::events::ExtensionCommandInfo {
+        name: name.into(),
+        description: description.into(),
+        needs_argument,
+        source: source.into(),
+    });
+}
+
+fn command_source(extension_id: &str) -> &'static str {
+    if extension_id == "astrcode-skill" {
+        "skill"
+    } else {
+        "plugin"
+    }
+}
+
+fn command_error_code(error: &str) -> i32 {
+    if error.contains("Unknown command") {
+        40402
+    } else {
+        -32603
+    }
 }
 
 /// 命令处理器，处理客户端命令并通过广播通道发送通知。
@@ -175,15 +247,14 @@ impl CommandHandler {
             },
 
             ClientCommand::ListExtensionCommands => {
-                let commands = self.runtime.extension_runner.collect_commands().await;
-                let infos: Vec<astrcode_protocol::events::ExtensionCommandInfo> = commands
-                    .iter()
-                    .map(|cmd| astrcode_protocol::events::ExtensionCommandInfo {
-                        name: cmd.name.clone(),
-                        description: cmd.description.clone(),
-                        needs_argument: cmd.args_schema.is_some(),
-                    })
-                    .collect();
+                let working_dir = match self.active_session_working_dir().await {
+                    Ok(working_dir) => working_dir,
+                    Err(error) => {
+                        self.send_error(40400, &error);
+                        return Ok(());
+                    },
+                };
+                let infos = self.command_infos_for_working_dir(&working_dir).await;
                 let _ = self
                     .event_tx
                     .send(ClientNotification::ExtensionCommandList { commands: infos });
@@ -194,38 +265,23 @@ impl CommandHandler {
                 arguments,
             } => {
                 let sid = self.ensure_session().await?;
-                let state = self
-                    .runtime
-                    .session_manager
-                    .read_model(&sid)
-                    .await
-                    .map_err(|e| format!("read session {sid}: {e}"))?;
-                let ext_ctx = ServerExtensionContext::new(
-                    sid.to_string(),
-                    state.working_dir.clone(),
-                    ModelSelection::simple(self.runtime.read_effective().llm.model_id.clone()),
-                );
-                match self
-                    .runtime
-                    .extension_runner
-                    .dispatch_command(&command_name, &arguments, &state.working_dir, &ext_ctx)
+                let visible_text = if arguments.trim().is_empty() {
+                    format!("/{command_name}")
+                } else {
+                    format!("/{command_name} {}", arguments.trim())
+                };
+                if let Err(error) = self
+                    .execute_slash_command_for_session(
+                        sid,
+                        ParsedSlashCommand {
+                            name: command_name,
+                            arguments,
+                        },
+                        visible_text,
+                    )
                     .await
                 {
-                    Ok(result) => {
-                        let _ = self
-                            .event_tx
-                            .send(ClientNotification::ExtensionCommandResult {
-                                command_name,
-                                content: result.content,
-                                is_error: result.is_error,
-                            });
-                    },
-                    Err(astrcode_core::extension::ExtensionError::NotFound(name)) => {
-                        self.send_error(40402, &format!("Unknown command: /{name}"));
-                    },
-                    Err(e) => {
-                        self.send_error(-32603, &format!("Command error: {e}"));
-                    },
+                    self.send_error(command_error_code(&error), &error);
                 }
             },
 
@@ -313,11 +369,31 @@ impl CommandHandler {
     /// 成功提交后，回合在独立的 tokio 任务中异步执行。
     async fn submit_prompt(&mut self, text: String) -> Result<(), String> {
         let sid = self.ensure_session().await?;
-        match self.submit_prompt_for_session(sid, text).await {
+        match self.submit_input_for_session(sid, text).await {
             Ok(_) => Ok(()),
             Err(error) if error.contains("already running") => Ok(()),
-            Err(error) => Err(error),
+            Err(error) => {
+                self.send_error(command_error_code(&error), &error);
+                Err(error)
+            },
         }
+    }
+
+    /// 向指定会话提交用户输入。斜杠命令在这里被后端统一拦截和派发。
+    pub async fn submit_input_for_session(
+        &mut self,
+        sid: SessionId,
+        text: String,
+    ) -> Result<PromptSubmission, String> {
+        if let Some(command) = parse_slash_command(&text) {
+            return self
+                .execute_slash_command_for_session(sid, command, text)
+                .await;
+        }
+
+        self.submit_prompt_for_session(sid, text)
+            .await
+            .map(|turn_id| PromptSubmission::Accepted { turn_id })
     }
 
     /// 向指定会话提交用户提示词。
@@ -329,7 +405,18 @@ impl CommandHandler {
         sid: SessionId,
         text: String,
     ) -> Result<TurnId, String> {
-        tracing::info!(session_id = %sid, text_len = text.len(), "submit_prompt_for_session");
+        self.start_turn_for_session(sid, text.clone(), text, None)
+            .await
+    }
+
+    async fn start_turn_for_session(
+        &mut self,
+        sid: SessionId,
+        visible_text: String,
+        user_text: String,
+        transient_instructions: Option<String>,
+    ) -> Result<TurnId, String> {
+        tracing::info!(session_id = %sid, text_len = user_text.len(), "submit_prompt_for_session");
         if self.active_turns.contains_key(&sid) {
             self.send_error(40900, "A turn is already running");
             return Err("A turn is already running".into());
@@ -368,7 +455,7 @@ impl CommandHandler {
             Some(&turn_id),
             EventPayload::UserMessage {
                 message_id: new_message_id(),
-                text: text.clone(),
+                text: visible_text,
             },
         )
         .await?;
@@ -383,7 +470,8 @@ impl CommandHandler {
             tool_registry: Arc::clone(&tool_registry),
             system_prompt: system_prompt.clone(),
             history,
-            text,
+            text: user_text,
+            transient_instructions,
             actor_tx: self.actor_tx.clone(),
         });
         self.active_turns.insert(
@@ -400,6 +488,152 @@ impl CommandHandler {
             },
         );
         Ok(turn_id)
+    }
+
+    async fn execute_slash_command_for_session(
+        &mut self,
+        sid: SessionId,
+        command: ParsedSlashCommand,
+        visible_text: String,
+    ) -> Result<PromptSubmission, String> {
+        if command.name == "compact" {
+            return match self.compact_session(&sid).await? {
+                ManualCompactOutcome::Created { .. } => Ok(PromptSubmission::Handled {
+                    message: "compact accepted".into(),
+                }),
+                ManualCompactOutcome::Skipped { message } => {
+                    Ok(PromptSubmission::Handled { message })
+                },
+            };
+        }
+
+        let state = self
+            .runtime
+            .session_manager
+            .read_model(&sid)
+            .await
+            .map_err(|e| format!("read session {sid}: {e}"))?;
+        let ext_ctx = ServerExtensionContext::new(
+            sid.to_string(),
+            state.working_dir.clone(),
+            ModelSelection::simple(self.runtime.read_effective().llm.model_id.clone()),
+        );
+
+        match self
+            .runtime
+            .extension_runner
+            .dispatch_command(
+                &command.name,
+                &command.arguments,
+                &state.working_dir,
+                &ext_ctx,
+            )
+            .await
+        {
+            Ok(ExtensionCommandResult::Display { content, is_error }) => {
+                let _ = self
+                    .event_tx
+                    .send(ClientNotification::ExtensionCommandResult {
+                        command_name: command.name,
+                        content,
+                        is_error,
+                    });
+                Ok(PromptSubmission::Handled {
+                    message: "command handled".into(),
+                })
+            },
+            Ok(ExtensionCommandResult::Handled { message }) => {
+                Ok(PromptSubmission::Handled { message })
+            },
+            Ok(ExtensionCommandResult::StartTurn { instructions }) => self
+                .start_turn_for_session(sid, visible_text.clone(), visible_text, Some(instructions))
+                .await
+                .map(|turn_id| PromptSubmission::Accepted { turn_id }),
+            Err(ExtensionError::NotFound(name)) => Err(format!(
+                "Unknown command: /{}",
+                name.trim_start_matches('/')
+            )),
+            Err(error) => Err(format!("Command error: {error}")),
+        }
+    }
+
+    pub async fn command_infos_for_session(
+        &self,
+        sid: &SessionId,
+    ) -> Result<Vec<astrcode_protocol::events::ExtensionCommandInfo>, String> {
+        let state = self
+            .runtime
+            .session_manager
+            .read_model(sid)
+            .await
+            .map_err(|e| format!("read session {sid}: {e}"))?;
+        Ok(self.command_infos_for_working_dir(&state.working_dir).await)
+    }
+
+    async fn command_infos_for_working_dir(
+        &self,
+        working_dir: &str,
+    ) -> Vec<astrcode_protocol::events::ExtensionCommandInfo> {
+        let mut infos = Vec::new();
+        let mut seen = HashSet::new();
+
+        push_command_info(
+            &mut infos,
+            &mut seen,
+            "compact",
+            "Compact the current session context",
+            false,
+            "builtin",
+        );
+
+        let mut extension_commands = self
+            .runtime
+            .extension_runner
+            .collect_commands_for(working_dir)
+            .await;
+        extension_commands.sort_by_key(|registered| {
+            match command_source(&registered.extension_id) {
+                "plugin" => 0,
+                "skill" => 1,
+                _ => 2,
+            }
+        });
+
+        for registered in extension_commands {
+            let source = command_source(&registered.extension_id);
+            if !seen.insert(registered.command.name.clone()) {
+                tracing::warn!(
+                    command = %registered.command.name,
+                    source,
+                    extension_id = %registered.extension_id,
+                    "slash command ignored because a higher priority command already exists"
+                );
+                continue;
+            }
+            infos.push(astrcode_protocol::events::ExtensionCommandInfo {
+                name: registered.command.name,
+                description: registered.command.description,
+                needs_argument: registered.command.args_schema.is_some(),
+                source: source.into(),
+            });
+        }
+
+        infos
+    }
+
+    async fn active_session_working_dir(&self) -> Result<String, String> {
+        let Some(sid) = self.active_session_id.clone() else {
+            return Ok(std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned());
+        };
+        self.runtime
+            .session_manager
+            .read_model(&sid)
+            .await
+            .map(|state| state.working_dir)
+            .map_err(|e| format!("read session {sid}: {e}"))
     }
 
     /// 中止当前活跃的回合，取消后台任务并记录完成事件。
@@ -605,6 +839,7 @@ impl CommandHandler {
                 system_prompt,
                 history,
                 text,
+                transient_instructions,
                 actor_tx,
             } = input;
             let current_session_id = Arc::new(tokio::sync::Mutex::new(sid.clone()));
@@ -626,6 +861,16 @@ impl CommandHandler {
             });
 
             let model_id = runtime.read_effective().llm.model_id.clone();
+            let system_prompt = transient_instructions
+                .filter(|instructions| !instructions.trim().is_empty())
+                .map(|instructions| {
+                    format!(
+                        "{system_prompt}\n\n[Slash Command Instructions]\n{}",
+                        instructions.trim()
+                    )
+                })
+                .unwrap_or(system_prompt);
+
             let agent = AgentLoop::new(
                 sid.clone(),
                 working_dir,

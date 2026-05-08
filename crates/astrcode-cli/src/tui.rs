@@ -264,6 +264,7 @@ async fn submit_current_input(state: &mut TuiState, client: &Arc<Client>) -> io:
     if input.trim().is_empty() {
         return Ok(());
     }
+    let is_slash_input = input.trim_start().starts_with('/');
 
     if let Some(command) = slash::parse(
         &input,
@@ -286,8 +287,10 @@ async fn submit_current_input(state: &mut TuiState, client: &Arc<Client>) -> io:
 
     let input = state.take_input();
     state.remember_input(&input);
-    state.push_user(&input);
-    state.mark_dirty();
+    if !is_slash_input {
+        state.push_user(&input);
+        state.mark_dirty();
+    }
 
     client
         .send_command(&ClientCommand::SubmitPrompt {

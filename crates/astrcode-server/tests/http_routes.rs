@@ -4,14 +4,17 @@ use astrcode_context::{manager::LlmContextAssembler, settings::ContextWindowSett
 use astrcode_core::{
     config::{ContextSettings, EffectiveConfig, LlmSettings, OpenAiApiMode},
     event::{Event, EventPayload},
-    llm::{LlmError, LlmEvent, LlmMessage, LlmProvider, ModelLimits},
+    llm::{LlmContent, LlmError, LlmEvent, LlmMessage, LlmProvider, ModelLimits},
     tool::{ToolDefinition, ToolResult},
     types::{SessionId, new_message_id},
 };
 use astrcode_extensions::{runner::ExtensionRunner, runtime::ExtensionRuntime};
 use astrcode_protocol::{
     events::ClientNotification,
-    http::{CompactSessionResponse, ConversationSnapshotResponseDto, CreateSessionResponseDto},
+    http::{
+        CompactSessionResponse, ConversationSnapshotResponseDto, CreateSessionResponseDto,
+        PromptSubmitResponse, SlashCommandListResponseDto,
+    },
 };
 use astrcode_server::{bootstrap::ServerRuntime, http::router, session::SessionManager};
 use astrcode_storage::in_memory::InMemoryEventStore;
@@ -368,6 +371,100 @@ async fn stream_invalid_cursor_requests_rehydrate() {
 
     let body = read_sse_until(response.into_body(), "rehydrateRequired").await;
     assert!(body.contains("rehydrateRequired"));
+}
+
+#[tokio::test]
+async fn command_list_route_exposes_backend_slash_commands() {
+    let runtime = runtime(Arc::new(ImmediateLlm));
+    let (event_tx, _) = broadcast::channel(64);
+    let app = router(Arc::clone(&runtime), event_tx);
+    let session_id = create_session(app.clone()).await;
+
+    let body = get_json::<SlashCommandListResponseDto>(
+        app,
+        &format!("/api/sessions/{session_id}/commands"),
+    )
+    .await;
+
+    let compact = body
+        .commands
+        .iter()
+        .find(|command| command.name == "compact")
+        .expect("compact command");
+    assert_eq!(compact.source, "builtin");
+    assert!(!compact.needs_argument);
+}
+
+#[tokio::test]
+async fn prompt_route_compact_returns_handled_and_streams_continuation() {
+    let runtime = runtime(Arc::new(SummaryLlm));
+    let (event_tx, _) = broadcast::channel(64);
+    let app = router(Arc::clone(&runtime), event_tx);
+    let session_id = create_session(app.clone()).await;
+    let sid = SessionId::from(session_id.clone());
+
+    for text in ["one", "two", "three"] {
+        runtime
+            .session_manager
+            .append_event(Event::new(
+                sid.clone(),
+                None,
+                EventPayload::UserMessage {
+                    message_id: new_message_id(),
+                    text: text.into(),
+                },
+            ))
+            .await
+            .unwrap();
+        runtime
+            .session_manager
+            .append_event(Event::new(
+                sid.clone(),
+                None,
+                EventPayload::AssistantMessageCompleted {
+                    message_id: new_message_id(),
+                    text: format!("answer {text}"),
+                },
+            ))
+            .await
+            .unwrap();
+    }
+
+    let stream_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/sessions/{session_id}/stream"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let response = post_json(
+        app.clone(),
+        &format!("/api/sessions/{session_id}/prompt"),
+        r#"{"text":"/compact"}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: PromptSubmitResponse = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    assert!(matches!(body, PromptSubmitResponse::Handled { .. }));
+
+    let sse = read_sse_until(stream_response.into_body(), "sessionContinued").await;
+    assert!(sse.contains("sessionContinued"));
+    assert!(
+        !runtime
+            .session_manager
+            .read_model(&sid)
+            .await
+            .unwrap()
+            .messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .any(|content| matches!(content, LlmContent::Text { text } if text == "/compact"))
+    );
 }
 
 #[tokio::test]
