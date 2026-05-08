@@ -504,10 +504,14 @@ async fn session_stream(
 
     let runtime = Arc::clone(&state.runtime);
     let live_stream = stream::unfold(
-        (rx, runtime, session_id, replay_max_seq, false),
-        |(mut rx, runtime, session_id, replay_max_seq, closing)| async move {
+        (rx, runtime, session_id, replay_max_seq, false, std::collections::VecDeque::<Result<axum::response::sse::Event, std::convert::Infallible>>::new()),
+        |(mut rx, runtime, session_id, replay_max_seq, closing, mut pending)| async move {
             if closing {
                 return None;
+            }
+
+            if let Some(item) = pending.pop_front() {
+                return Some((item, (rx, runtime, session_id, replay_max_seq, false, pending)));
             }
 
             loop {
@@ -519,29 +523,37 @@ async fn session_stream(
                         {
                             continue;
                         }
-                        let Some(delta) = event_to_delta(&event) else {
+                        let deltas = event_to_deltas(&event);
+                        if deltas.is_empty() {
                             continue;
-                        };
+                        }
                         let cursor = event_cursor(&runtime, &event).await;
-                        let item = sse_event(&ConversationStreamEnvelopeDto {
-                            session_id: session_id.to_string(),
-                            cursor: ConversationCursorDto {
-                                value: cursor.clone(),
-                            },
-                            delta,
-                        })
-                        .id(cursor);
-                        return Some((Ok(item), (rx, runtime, session_id, replay_max_seq, false)));
+                        let items: std::collections::VecDeque<_> = deltas
+                            .into_iter()
+                            .map(|delta| {
+                                Ok(sse_event(&ConversationStreamEnvelopeDto {
+                                    session_id: session_id.to_string(),
+                                    cursor: ConversationCursorDto {
+                                        value: cursor.clone(),
+                                    },
+                                    delta,
+                                })
+                                .id(cursor.clone()))
+                            })
+                            .collect();
+                        let mut items = items;
+                        let first = items.pop_front().unwrap();
+                        return Some((first, (rx, runtime, session_id, replay_max_seq, false, items)));
                     },
                     Ok(_) => {},
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         let cursor = state_cursor(&runtime, &session_id).await;
-                        let item = sse_event(&ConversationStreamEnvelopeDto {
+                        let item = Ok(sse_event(&ConversationStreamEnvelopeDto {
                             session_id: session_id.to_string(),
                             cursor: ConversationCursorDto { value: cursor },
                             delta: ConversationDeltaDto::RehydrateRequired,
-                        });
-                        return Some((Ok(item), (rx, runtime, session_id, replay_max_seq, true)));
+                        }));
+                        return Some((item, (rx, runtime, session_id, replay_max_seq, true, pending)));
                     },
                     Err(broadcast::error::RecvError::Closed) => return None,
                 }
@@ -594,62 +606,62 @@ fn conversation_to_dto(session: SessionReadModel) -> ConversationSnapshotRespons
     }
 }
 
-fn event_to_delta(event: &Event) -> Option<ConversationDeltaDto> {
+fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDto> {
     match &event.payload {
-        EventPayload::UserMessage { message_id, text } => Some(ConversationDeltaDto::AppendBlock {
+        EventPayload::UserMessage { message_id, text } => vec![ConversationDeltaDto::AppendBlock {
             block: ConversationBlockDto::User {
                 id: message_id.to_string(),
                 text: text.clone(),
             },
-        }),
+        }],
         EventPayload::AssistantMessageStarted { message_id } => {
-            Some(ConversationDeltaDto::AppendBlock {
+            vec![ConversationDeltaDto::AppendBlock {
                 block: ConversationBlockDto::Assistant {
                     id: message_id.to_string(),
                     text: String::new(),
                     status: ConversationBlockStatusDto::Streaming,
                 },
-            })
+            }]
         },
         EventPayload::AssistantTextDelta { message_id, delta } => {
-            Some(ConversationDeltaDto::PatchBlock {
+            vec![ConversationDeltaDto::PatchBlock {
                 block_id: message_id.to_string(),
                 text_delta: delta.clone(),
-            })
+            }]
         },
         EventPayload::AssistantMessageCompleted { message_id, text } => {
-            Some(ConversationDeltaDto::FinalizeBlock {
+            vec![ConversationDeltaDto::FinalizeBlock {
                 block: ConversationBlockDto::Assistant {
                     id: message_id.to_string(),
                     text: text.clone(),
                     status: ConversationBlockStatusDto::Complete,
                 },
-            })
+            }]
         },
         EventPayload::ToolCallStarted { call_id, tool_name } => {
-            Some(ConversationDeltaDto::AppendBlock {
+            vec![ConversationDeltaDto::AppendBlock {
                 block: ConversationBlockDto::ToolCall {
                     id: call_id.to_string(),
                     name: tool_name.clone(),
                     text: String::new(),
                     status: ConversationBlockStatusDto::Streaming,
                 },
-            })
+            }]
         },
         EventPayload::ToolOutputDelta {
             call_id,
             stream,
             delta,
-        } => Some(ConversationDeltaDto::ToolOutput {
+        } => vec![ConversationDeltaDto::ToolOutput {
             call_id: call_id.to_string(),
             stream: *stream,
             delta: delta.clone(),
-        }),
+        }],
         EventPayload::ToolCallCompleted {
             call_id,
             tool_name,
             result,
-        } => Some(ConversationDeltaDto::FinalizeBlock {
+        } => vec![ConversationDeltaDto::FinalizeBlock {
             block: ConversationBlockDto::ToolCall {
                 id: call_id.to_string(),
                 name: tool_name.clone(),
@@ -660,47 +672,66 @@ fn event_to_delta(event: &Event) -> Option<ConversationDeltaDto> {
                     ConversationBlockStatusDto::Complete
                 },
             },
-        }),
-        EventPayload::ErrorOccurred { message, .. } => Some(ConversationDeltaDto::AppendBlock {
+        }],
+        EventPayload::ErrorOccurred { message, .. } => vec![ConversationDeltaDto::AppendBlock {
             block: ConversationBlockDto::Error {
                 id: event.id.to_string(),
                 message: message.clone(),
             },
-        }),
+        }],
         EventPayload::CompactBoundaryCreated {
+            trigger,
+            pre_tokens,
+            post_tokens,
+            summary,
+            transcript_path,
             continued_session_id,
-            ..
-        } => Some(ConversationDeltaDto::SessionContinued {
-            parent_session_id: event.session_id.to_string(),
-            new_session_id: continued_session_id.to_string(),
-            parent_cursor: ConversationCursorDto {
-                value: event.seq.unwrap_or_default().to_string(),
-            },
-        }),
+        } => {
+            let block_id = format!("compact-{}", event.seq.unwrap_or_default());
+            vec![
+                ConversationDeltaDto::AppendBlock {
+                    block: ConversationBlockDto::CompactSummary {
+                        id: block_id,
+                        summary: summary.clone(),
+                        trigger: trigger.clone(),
+                        pre_tokens: *pre_tokens,
+                        post_tokens: *post_tokens,
+                        transcript_path: transcript_path.clone(),
+                    },
+                },
+                ConversationDeltaDto::SessionContinued {
+                    parent_session_id: event.session_id.to_string(),
+                    new_session_id: continued_session_id.to_string(),
+                    parent_cursor: ConversationCursorDto {
+                        value: event.seq.unwrap_or_default().to_string(),
+                    },
+                },
+            ]
+        },
         // Phase transitions that the client needs to know about
         EventPayload::TurnStarted
         | EventPayload::AgentRunStarted
         | EventPayload::CompactionStarted
         | EventPayload::ToolCallBackgrounded { .. }
         | EventPayload::BackgroundTaskCompleted { .. } => {
-            Some(ConversationDeltaDto::UpdateControlState {
+            vec![ConversationDeltaDto::UpdateControlState {
                 control: control_from_phase(projected_phase(&event.payload)),
-            })
+            }]
         },
         EventPayload::TurnCompleted { .. } | EventPayload::AgentRunCompleted { .. } => {
-            Some(ConversationDeltaDto::UpdateControlState {
+            vec![ConversationDeltaDto::UpdateControlState {
                 control: control_from_phase(Phase::Idle),
-            })
+            }]
         },
-        EventPayload::ThinkingDelta { delta } => Some(ConversationDeltaDto::ThinkingDelta {
+        EventPayload::ThinkingDelta { delta } => vec![ConversationDeltaDto::ThinkingDelta {
             delta: delta.clone(),
-        }),
+        }],
         // Terminal events where the client already has the block content
         EventPayload::SystemPromptConfigured { .. }
         | EventPayload::SessionContinuedFromCompaction { .. }
         | EventPayload::ToolCallArgumentsDelta { .. }
-        | EventPayload::ToolCallRequested { .. } => None,
-        _ => None,
+        | EventPayload::ToolCallRequested { .. } => vec![],
+        _ => vec![],
     }
 }
 
@@ -744,13 +775,20 @@ fn event_to_replay_delta(event: &Event) -> Option<ConversationDeltaDto> {
             },
         }),
         EventPayload::CompactBoundaryCreated {
-            continued_session_id,
+            trigger,
+            pre_tokens,
+            post_tokens,
+            summary,
+            transcript_path,
             ..
-        } => Some(ConversationDeltaDto::SessionContinued {
-            parent_session_id: event.session_id.to_string(),
-            new_session_id: continued_session_id.to_string(),
-            parent_cursor: ConversationCursorDto {
-                value: event.seq.unwrap_or_default().to_string(),
+        } => Some(ConversationDeltaDto::AppendBlock {
+            block: ConversationBlockDto::CompactSummary {
+                id: format!("compact-{}", event.seq.unwrap_or_default()),
+                summary: summary.clone(),
+                trigger: trigger.clone(),
+                pre_tokens: *pre_tokens,
+                post_tokens: *post_tokens,
+                transcript_path: transcript_path.clone(),
             },
         }),
         EventPayload::TurnCompleted { .. } => Some(ConversationDeltaDto::UpdateControlState {
@@ -917,7 +955,9 @@ mod tests {
             },
         );
 
-        let delta = event_to_delta(&event).expect("assistant completion should render");
+        let deltas = event_to_deltas(&event);
+        assert_eq!(deltas.len(), 1, "assistant completion should produce one delta");
+        let delta = deltas.into_iter().next().unwrap();
 
         match delta {
             ConversationDeltaDto::FinalizeBlock {
@@ -950,7 +990,9 @@ mod tests {
             },
         );
 
-        let delta = event_to_delta(&event).expect("tool completion should render");
+        let deltas = event_to_deltas(&event);
+        assert_eq!(deltas.len(), 1, "tool completion should produce one delta");
+        let delta = deltas.into_iter().next().unwrap();
 
         match delta {
             ConversationDeltaDto::FinalizeBlock {

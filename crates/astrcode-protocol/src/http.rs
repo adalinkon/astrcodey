@@ -224,6 +224,16 @@ pub enum ConversationBlockDto {
     Error { id: String, message: String },
     /// 系统提示。
     SystemNote { id: String, text: String },
+    /// Compact 压缩摘要。
+    CompactSummary {
+        id: String,
+        summary: String,
+        trigger: String,
+        pre_tokens: usize,
+        post_tokens: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        transcript_path: Option<String>,
+    },
 }
 
 /// conversation 块状态。

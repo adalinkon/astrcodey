@@ -151,6 +151,16 @@ export function decodeConversationBlock(value: unknown): ConversationBlock {
       return { kind, id, message: requiredString(object, 'message') }
     case 'systemNote':
       return { kind, id, text: requiredString(object, 'text') }
+    case 'compactSummary':
+      return {
+        kind,
+        id,
+        summary: requiredString(object, 'summary'),
+        trigger: requiredString(object, 'trigger'),
+        preTokens: optionalNumber(object, 'preTokens') ?? 0,
+        postTokens: optionalNumber(object, 'postTokens') ?? 0,
+        transcriptPath: optionalString(object, 'transcriptPath'),
+      }
     default:
       throw new ProtocolDecodeError(`invalid block kind ${kind}`)
   }

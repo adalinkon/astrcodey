@@ -101,6 +101,15 @@ export type ConversationBlock =
     }
   | { kind: 'error'; id: string; message: string }
   | { kind: 'systemNote'; id: string; text: string }
+  | {
+      kind: 'compactSummary'
+      id: string
+      summary: string
+      trigger: string
+      preTokens: number
+      postTokens: number
+      transcriptPath?: string
+    }
 
 export interface ConversationSnapshot {
   sessionId: string
