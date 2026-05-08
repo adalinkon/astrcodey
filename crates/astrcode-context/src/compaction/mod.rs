@@ -265,16 +265,14 @@ pub fn is_prompt_too_long_message(message: &str) -> bool {
 }
 
 fn split_compact_start(messages: &[LlmMessage]) -> Option<usize> {
-    messages
+    let has_compressible = messages
         .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(index, message)| {
-            (index > 0
-                && message.role == LlmRole::Assistant
-                && !is_synthetic_context_message(message))
-            .then_some(index)
-        })
+        .any(|m| m.role == LlmRole::Assistant && !is_synthetic_context_message(m));
+    if has_compressible && !messages.is_empty() {
+        Some(messages.len())
+    } else {
+        None
+    }
 }
 
 fn removed_visible_messages(messages: &[LlmMessage]) -> usize {
@@ -292,9 +290,6 @@ fn prepare_compact_parts(
         return Err(CompactSkipReason::Empty);
     }
     let keep_start = split_compact_start(messages).ok_or(CompactSkipReason::NothingToCompact)?;
-    if keep_start == 0 {
-        return Err(CompactSkipReason::NothingToCompact);
-    }
 
     let prefix = messages[..keep_start].to_vec();
     let prepared_input = plan::prepare_compact_input(&prefix);
@@ -536,8 +531,8 @@ The summary should preserve the compact contract and omit this scratchpad later.
         let result =
             compact_messages_with_render_options(&messages, None, &Default::default()).unwrap();
 
-        assert_eq!(result.messages_removed, 3);
-        assert_eq!(result.retained_messages.len(), 2);
+        assert_eq!(result.messages_removed, 5);
+        assert_eq!(result.retained_messages.len(), 0);
         assert!(is_compact_summary_message(&result.context_messages[0]));
         assert!(visible_message_text(&result.context_messages[0]).contains("Summary:\n"));
     }
@@ -556,8 +551,8 @@ The summary should preserve the compact contract and omit this scratchpad later.
         let result =
             compact_messages_with_render_options(&messages, None, &Default::default()).unwrap();
 
-        assert_eq!(result.retained_messages.len(), 2);
-        assert_eq!(result.messages_removed, 1);
+        assert_eq!(result.retained_messages.len(), 0);
+        assert_eq!(result.messages_removed, 3);
     }
 
     #[test]
@@ -747,7 +742,7 @@ scratchpad that should be ignored
         .await
         .unwrap();
 
-        assert_eq!(result.messages_removed, 1);
+        assert_eq!(result.messages_removed, 3);
         let request = captured.lock().unwrap();
 
         assert_eq!(request[0].role, LlmRole::System);
@@ -805,7 +800,7 @@ scratchpad that should be ignored
         .await
         .unwrap();
 
-        assert_eq!(result.messages_removed, 5);
+        assert_eq!(result.messages_removed, 7);
         let requests = requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
         assert!(

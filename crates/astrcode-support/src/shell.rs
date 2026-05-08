@@ -3,8 +3,7 @@
 //! 根据运行环境自动检测当前 Shell 类型（POSIX、PowerShell、CMD、WSL），
 //! 也支持通过 `ASTRCODE_SHELL` 环境变量手动覆盖。
 
-use std::env;
-use std::sync::OnceLock;
+use std::{env, sync::OnceLock};
 
 /// Shell 家族分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
