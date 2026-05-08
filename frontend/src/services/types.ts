@@ -112,6 +112,7 @@ export type ConversationDelta =
   | { kind: 'appendBlock'; block: ConversationBlock }
   | { kind: 'patchBlock'; blockId: string; textDelta: string }
   | { kind: 'finalizeBlock'; block: ConversationBlock }
+  | { kind: 'completeBlock'; blockId: string; text?: string }
   | { kind: 'updateControlState'; control: ConversationControlState }
   | { kind: 'rehydrateRequired' }
   | {
