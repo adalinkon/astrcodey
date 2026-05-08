@@ -492,6 +492,11 @@ impl LlmAccumulator {
                             delta: content.to_string(),
                         });
                     }
+                    if let Some(reasoning) = delta["reasoning_content"].as_str() {
+                        let _ = tx.send(LlmEvent::ThinkingDelta {
+                            delta: reasoning.to_string(),
+                        });
+                    }
                     if let Some(tool_calls) = delta["tool_calls"].as_array() {
                         for tc in tool_calls {
                             let idx = tc["index"].as_u64().unwrap_or(0);

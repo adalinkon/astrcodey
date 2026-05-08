@@ -140,6 +140,8 @@ impl LlmMessage {
 pub enum LlmEvent {
     /// 文本增量（部分响应）。
     ContentDelta { delta: String },
+    /// 推理模型思维链增量。
+    ThinkingDelta { delta: String },
     /// 工具调用已开始。
     ToolCallStart {
         /// 工具调用 ID。

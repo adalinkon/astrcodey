@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from 'react'
 import type { ConversationBlock } from '../../services/types'
 import { cn } from '../../lib/utils'
 import { emptyStateSurface } from '../../lib/styles'
+import { useAppStore } from '../../store/conversation'
 import AssistantMessage from './AssistantMessage'
 import UserMessage from './UserMessage'
 import ToolCallBlock from './ToolCallBlock'
@@ -17,22 +18,8 @@ function isAssistantLike(block: ConversationBlock): boolean {
   return block.kind === 'assistant' || block.kind === 'toolCall'
 }
 
-function renderBlock(block: ConversationBlock): React.ReactNode {
-  switch (block.kind) {
-    case 'user':
-      return <UserMessage key={block.id} block={block} />
-    case 'assistant':
-      return <AssistantMessage key={block.id} block={block} />
-    case 'toolCall':
-      return <ToolCallBlock key={block.id} block={block} />
-    case 'error':
-      return <ErrorBlock key={block.id} block={block} />
-    case 'systemNote':
-      return <SystemNote key={block.id} block={block} />
-  }
-}
-
 export default function MessageList({ blocks, sessionId }: MessageListProps) {
+  const thinkingText = useAppStore((s) => s.thinkingText)
   const listRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const shouldStickRef = useRef(true)
@@ -67,6 +54,8 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
     const prevBlock = index > 0 ? blocks[index - 1] : null
     const isContinuation =
       prevBlock !== null && isAssistantLike(block) && isAssistantLike(prevBlock)
+    const isStreamingAssistant =
+      block.kind === 'assistant' && block.status === 'streaming'
 
     return (
       <div
@@ -76,7 +65,20 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
           isContinuation && '-mt-4'
         )}
       >
-        {renderBlock(block)}
+        {block.kind === 'assistant' ? (
+          <AssistantMessage
+            block={block}
+            reasoningText={isStreamingAssistant ? thinkingText : null}
+          />
+        ) : block.kind === 'user' ? (
+          <UserMessage block={block} />
+        ) : block.kind === 'toolCall' ? (
+          <ToolCallBlock block={block} />
+        ) : block.kind === 'error' ? (
+          <ErrorBlock block={block} />
+        ) : block.kind === 'systemNote' ? (
+          <SystemNote block={block} />
+        ) : null}
       </div>
     )
   })

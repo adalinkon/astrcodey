@@ -578,9 +578,12 @@ fn event_to_delta(event: &Event) -> Option<ConversationDeltaDto> {
             })
         },
         EventPayload::AssistantMessageCompleted { message_id, text } => {
-            Some(ConversationDeltaDto::CompleteBlock {
-                block_id: message_id.to_string(),
-                text: Some(text.clone()),
+            Some(ConversationDeltaDto::FinalizeBlock {
+                block: ConversationBlockDto::Assistant {
+                    id: message_id.to_string(),
+                    text: text.clone(),
+                    status: ConversationBlockStatusDto::Complete,
+                },
             })
         },
         EventPayload::ToolCallStarted { call_id, tool_name } => {
@@ -602,12 +605,22 @@ fn event_to_delta(event: &Event) -> Option<ConversationDeltaDto> {
             stream: *stream,
             delta: delta.clone(),
         }),
-        EventPayload::ToolCallCompleted { call_id, .. } => {
-            Some(ConversationDeltaDto::CompleteBlock {
-                block_id: call_id.to_string(),
-                text: None,
-            })
-        },
+        EventPayload::ToolCallCompleted {
+            call_id,
+            tool_name,
+            result,
+        } => Some(ConversationDeltaDto::FinalizeBlock {
+            block: ConversationBlockDto::ToolCall {
+                id: call_id.to_string(),
+                name: tool_name.clone(),
+                text: result.content.clone(),
+                status: if result.is_error {
+                    ConversationBlockStatusDto::Error
+                } else {
+                    ConversationBlockStatusDto::Complete
+                },
+            },
+        }),
         EventPayload::ErrorOccurred { message, .. } => Some(ConversationDeltaDto::AppendBlock {
             block: ConversationBlockDto::Error {
                 id: event.id.to_string(),
@@ -639,10 +652,12 @@ fn event_to_delta(event: &Event) -> Option<ConversationDeltaDto> {
                 control: control_from_phase(Phase::Idle),
             })
         },
+        EventPayload::ThinkingDelta { delta } => Some(ConversationDeltaDto::ThinkingDelta {
+            delta: delta.clone(),
+        }),
         // Terminal events where the client already has the block content
         EventPayload::SystemPromptConfigured { .. }
         | EventPayload::SessionContinuedFromCompaction { .. }
-        | EventPayload::ThinkingDelta { .. }
         | EventPayload::ToolCallArgumentsDelta { .. }
         | EventPayload::ToolCallRequested { .. } => None,
         _ => None,
@@ -849,5 +864,70 @@ mod tests {
 
         assert_eq!(dto.cursor.value, "9");
         assert_eq!(dto.blocks.len(), 1);
+    }
+
+    #[test]
+    fn assistant_completion_finalizes_with_full_text() {
+        let event = Event::new(
+            "session-1".into(),
+            None,
+            EventPayload::AssistantMessageCompleted {
+                message_id: "assistant-1".into(),
+                text: "complete answer".into(),
+            },
+        );
+
+        let delta = event_to_delta(&event).expect("assistant completion should render");
+
+        match delta {
+            ConversationDeltaDto::FinalizeBlock {
+                block: ConversationBlockDto::Assistant { id, text, status },
+            } => {
+                assert_eq!(id, "assistant-1");
+                assert_eq!(text, "complete answer");
+                assert!(matches!(status, ConversationBlockStatusDto::Complete));
+            },
+            other => panic!("unexpected delta: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_completion_finalizes_with_result_content() {
+        let event = Event::new(
+            "session-1".into(),
+            None,
+            EventPayload::ToolCallCompleted {
+                call_id: "tool-1".into(),
+                tool_name: "read".into(),
+                result: astrcode_core::tool::ToolResult {
+                    call_id: "tool-1".into(),
+                    content: "file contents".into(),
+                    is_error: false,
+                    error: None,
+                    metadata: Default::default(),
+                    duration_ms: None,
+                },
+            },
+        );
+
+        let delta = event_to_delta(&event).expect("tool completion should render");
+
+        match delta {
+            ConversationDeltaDto::FinalizeBlock {
+                block:
+                    ConversationBlockDto::ToolCall {
+                        id,
+                        name,
+                        text,
+                        status,
+                    },
+            } => {
+                assert_eq!(id, "tool-1");
+                assert_eq!(name, "read");
+                assert_eq!(text, "file contents");
+                assert!(matches!(status, ConversationBlockStatusDto::Complete));
+            },
+            other => panic!("unexpected delta: {other:?}"),
+        }
     }
 }

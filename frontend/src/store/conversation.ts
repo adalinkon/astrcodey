@@ -27,6 +27,7 @@ interface ConversationState {
 
   streamAbortController: AbortController | null
   modelRefreshKey: number
+  thinkingText: string | null
 
   initServer: () => Promise<void>
   refreshSessions: () => Promise<void>
@@ -45,6 +46,68 @@ function phaseFromControl(control: ConversationControlState | null): Phase {
   return control?.phase ?? 'idle'
 }
 
+function mergeBlock(
+  current: ConversationBlock,
+  incoming: ConversationBlock
+): ConversationBlock {
+  if (current.kind === 'assistant' && incoming.kind === 'assistant') {
+    return {
+      ...incoming,
+      text: incoming.text ?? current.text,
+    }
+  }
+
+  if (current.kind === 'toolCall' && incoming.kind === 'toolCall') {
+    return {
+      ...incoming,
+      name: incoming.name ?? current.name,
+      text: incoming.text ?? current.text,
+    }
+  }
+
+  return incoming
+}
+
+function upsertBlock(
+  blocks: ConversationBlock[],
+  block: ConversationBlock
+): ConversationBlock[] {
+  const idx = blocks.findIndex((item) => item.id === block.id)
+  if (idx === -1) return [...blocks, block]
+
+  const next = [...blocks]
+  next[idx] = mergeBlock(next[idx], block)
+  return next
+}
+
+function patchAssistantBlock(
+  blocks: ConversationBlock[],
+  blockId: string,
+  textDelta: string
+): ConversationBlock[] {
+  const idx = blocks.findIndex((block) => block.id === blockId)
+  if (idx === -1) {
+    return [
+      ...blocks,
+      {
+        kind: 'assistant',
+        id: blockId,
+        text: textDelta,
+        status: 'streaming',
+      },
+    ]
+  }
+
+  const block = blocks[idx]
+  if (block.kind !== 'assistant' && block.kind !== 'toolCall') {
+    return blocks
+  }
+
+  const next = [...blocks]
+  next[idx] = { ...block, text: block.text + textDelta }
+  return next
+}
+
 export const useAppStore = create<ConversationState>((set, get) => ({
   serverPort: null,
   connectionStatus: 'disconnected',
@@ -59,6 +122,7 @@ export const useAppStore = create<ConversationState>((set, get) => ({
   phase: 'idle',
   streamAbortController: null,
   modelRefreshKey: 0,
+  thinkingText: null,
 
   initServer: async () => {
     set({ connectionStatus: 'connecting', connectionError: null })
@@ -96,12 +160,9 @@ export const useAppStore = create<ConversationState>((set, get) => ({
   },
 
   createSession: async (workingDir: string) => {
-    console.log('[store] createSession', { workingDir })
     const response = await api.createSession(workingDir)
-    console.log('[store] createSession OK, switching to', response.sessionId)
     await get().refreshSessions()
     await get().switchSession(response.sessionId)
-    console.log('[store] createSession complete')
   },
 
   deleteSession: async (sessionId: string) => {
@@ -121,6 +182,7 @@ export const useAppStore = create<ConversationState>((set, get) => ({
         cursor: null,
         phase: 'idle',
         workingDir: null,
+        thinkingText: null,
       })
     }
     await get().refreshSessions()
@@ -146,6 +208,7 @@ export const useAppStore = create<ConversationState>((set, get) => ({
         cursor: null,
         phase: 'idle',
         workingDir: null,
+        thinkingText: null,
       })
     }
     await get().refreshSessions()
@@ -166,6 +229,7 @@ export const useAppStore = create<ConversationState>((set, get) => ({
       control: null,
       cursor: null,
       phase: 'idle',
+      thinkingText: null,
     })
 
     try {
@@ -190,9 +254,7 @@ export const useAppStore = create<ConversationState>((set, get) => ({
 
   submitPrompt: async (text: string) => {
     const { activeSessionId, control } = get()
-    console.log('[store] submitPrompt', { activeSessionId, canSubmit: control?.canSubmitPrompt, text })
     if (!activeSessionId || !control?.canSubmitPrompt) {
-      console.warn('[store] submitPrompt BLOCKED', { activeSessionId, control })
       return false
     }
 
@@ -225,48 +287,28 @@ export const useAppStore = create<ConversationState>((set, get) => ({
 
     switch (delta.kind) {
       case 'appendBlock':
-        console.log('[applyDelta] appendBlock', delta.block.kind, delta.block.id, 'blocks before:', state.blocks.length)
-        set({ blocks: [...state.blocks, delta.block] })
-        console.log('[applyDelta] blocks after set:', get().blocks.length)
+        set((current) => ({
+          blocks: upsertBlock(current.blocks, delta.block),
+          ...(delta.block.kind === 'assistant' ? { thinkingText: null } : {}),
+        }))
         break
 
-      case 'patchBlock': {
-        const idx = state.blocks.findIndex(
-          (b) => 'id' in b && b.id === delta.blockId
-        )
-        if (idx === -1) {
-          console.warn('[applyDelta] patchBlock: block not found', delta.blockId, 'existing ids:', state.blocks.map(b => 'id' in b ? b.id : '?'))
-          break
-        }
-        const block = state.blocks[idx]
-        if (block.kind === 'assistant' || block.kind === 'toolCall') {
-          const next = [...state.blocks]
-          next[idx] = { ...block, text: block.text + delta.textDelta }
-          set({ blocks: next })
-        }
+      case 'patchBlock':
+        set((current) => ({
+          blocks: patchAssistantBlock(
+            current.blocks,
+            delta.blockId,
+            delta.textDelta
+          ),
+        }))
         break
-      }
 
-      case 'completeBlock': {
-        const idx = state.blocks.findIndex(
-          (b) => 'id' in b && b.id === delta.blockId
-        )
-        if (idx === -1) {
-          console.warn('[applyDelta] completeBlock: block not found', delta.blockId)
-          break
-        }
-        const block = state.blocks[idx]
-        if (block.kind === 'assistant' || block.kind === 'toolCall') {
-          const next = [...state.blocks]
-          next[idx] = {
-            ...block,
-            ...(delta.text != null ? { text: delta.text } : {}),
-            status: 'complete' as const,
-          }
-          set({ blocks: next })
-        }
+      case 'finalizeBlock':
+        set((current) => ({
+          blocks: upsertBlock(current.blocks, delta.block),
+          ...(delta.block.kind === 'assistant' ? { thinkingText: null } : {}),
+        }))
         break
-      }
 
       case 'updateControlState':
         set({
@@ -275,17 +317,25 @@ export const useAppStore = create<ConversationState>((set, get) => ({
         })
         break
 
+      case 'thinkingDelta':
+        set((current) => ({
+          thinkingText: (current.thinkingText ?? '') + delta.delta,
+        }))
+        break
+
       case 'toolOutput': {
-        const idx = state.blocks.findIndex(
-          (b) => b.kind === 'toolCall' && b.id === delta.callId
-        )
-        if (idx === -1) break
-        const block = state.blocks[idx]
-        if (block.kind !== 'toolCall') break
-        const prefix = delta.stream === 'stderr' ? '\n[stderr] ' : '\n'
-        const next = [...state.blocks]
-        next[idx] = { ...block, text: block.text + prefix + delta.delta }
-        set({ blocks: next })
+        set((current) => {
+          const idx = current.blocks.findIndex(
+            (b) => b.kind === 'toolCall' && b.id === delta.callId
+          )
+          if (idx === -1) return {}
+          const block = current.blocks[idx]
+          if (block.kind !== 'toolCall') return {}
+          const prefix = delta.stream === 'stderr' ? '\n[stderr] ' : '\n'
+          const next = [...current.blocks]
+          next[idx] = { ...block, text: block.text + prefix + delta.delta }
+          return { blocks: next }
+        })
         break
       }
 
@@ -318,7 +368,6 @@ function connectSse(
       | ((s: ConversationState) => Partial<ConversationState>)
   ) => void
 ): void {
-  console.log('[sse] connectSse', { sessionId, cursor })
   const abortController = new AbortController()
   set({ streamAbortController: abortController })
 

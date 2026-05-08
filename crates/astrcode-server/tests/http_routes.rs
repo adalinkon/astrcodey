@@ -230,10 +230,11 @@ async fn create_snapshot_then_stream_receives_live_prompt_delta() {
     .await;
     assert_eq!(accepted.status(), StatusCode::OK);
 
-    let body = read_sse_until(stream_response.into_body(), "hello from http").await;
+    let body = read_sse_until(stream_response.into_body(), "finalizeBlock").await;
     assert!(body.contains("conversation"));
     assert!(body.contains("hello"));
     assert!(body.contains("hello from http"));
+    assert!(body.contains(r#""status":"complete""#));
 
     let after = get_json::<ConversationSnapshotResponseDto>(
         router(runtime, broadcast::channel(64).0),

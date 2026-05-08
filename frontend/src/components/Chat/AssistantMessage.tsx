@@ -13,6 +13,7 @@ import { cn } from '../../lib/utils'
 
 interface AssistantMessageProps {
   block: Extract<ConversationBlock, { kind: 'assistant' }>
+  reasoningText?: string | null
 }
 
 class MarkdownGuard extends Component<
@@ -176,11 +177,13 @@ function extractThinkingBlocks(text: string): {
   return { visibleText, thinkingBlocks }
 }
 
-function AssistantMessage({ block }: AssistantMessageProps) {
-  const { visibleText, thinkingBlocks } = React.useMemo(
-    () => extractThinkingBlocks(block.text),
-    [block.text]
-  )
+function AssistantMessage({ block, reasoningText }: AssistantMessageProps) {
+  const { visibleText, thinkingBlocks } = React.useMemo(() => {
+    if (reasoningText) {
+      return { visibleText: block.text, thinkingBlocks: [reasoningText] }
+    }
+    return extractThinkingBlocks(block.text)
+  }, [block.text, reasoningText])
   const streaming = block.status === 'streaming'
 
   return (

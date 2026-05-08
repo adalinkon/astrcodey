@@ -225,6 +225,7 @@ impl ForkedProviderRunner {
         while let Some(event) = rx.recv().await {
             match event {
                 LlmEvent::ContentDelta { delta } => text.push_str(&delta),
+                LlmEvent::ThinkingDelta { delta } => text.push_str(&delta),
                 LlmEvent::Done { finish_reason } => {
                     return Ok(ForkedProviderOutput {
                         text,

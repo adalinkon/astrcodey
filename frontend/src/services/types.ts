@@ -111,7 +111,7 @@ export interface ConversationStreamEnvelope {
 export type ConversationDelta =
   | { kind: 'appendBlock'; block: ConversationBlock }
   | { kind: 'patchBlock'; blockId: string; textDelta: string }
-  | { kind: 'completeBlock'; blockId: string; text?: string }
+  | { kind: 'finalizeBlock'; block: ConversationBlock }
   | { kind: 'updateControlState'; control: ConversationControlState }
   | { kind: 'rehydrateRequired' }
   | {
@@ -126,6 +126,7 @@ export type ConversationDelta =
       stream: ToolOutputStream
       delta: string
     }
+  | { kind: 'thinkingDelta'; delta: string }
 
 // ── App State ──
 

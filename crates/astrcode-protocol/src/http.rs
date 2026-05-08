@@ -231,11 +231,8 @@ pub enum ConversationDeltaDto {
         block_id: String,
         text_delta: String,
     },
-    /// 完成 block。
-    CompleteBlock {
-        block_id: String,
-        text: Option<String>,
-    },
+    /// 用持久化后的最终内容完成或补齐 block。
+    FinalizeBlock { block: ConversationBlockDto },
     /// 控制状态更新。
     UpdateControlState {
         control: ConversationControlStateDto,
@@ -254,6 +251,8 @@ pub enum ConversationDeltaDto {
         stream: ToolOutputStream,
         delta: String,
     },
+    /// 推理模型思维链增量。
+    ThinkingDelta { delta: String },
 }
 
 /// HTTP 错误响应。
