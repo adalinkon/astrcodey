@@ -185,7 +185,9 @@ async fn consume_llm_stream(
             LlmEvent::ThinkingDelta { delta } => {
                 send_event(
                     event_tx,
-                    EventPayload::ThinkingDelta { delta: delta.clone() },
+                    EventPayload::ThinkingDelta {
+                        delta: delta.clone(),
+                    },
                 );
             },
             LlmEvent::ToolCallStart {

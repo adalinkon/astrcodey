@@ -218,14 +218,11 @@ impl EventLog {
         writer: &mut BufWriter<File>,
         path: &Path,
     ) -> Result<(), StorageError> {
-        writer
-            .flush()
-            .map_err(|e| StorageError::Io(std::io::Error::new(e.kind(), enhance_flush_error(path, e))))?;
+        writer.flush().map_err(|e| {
+            StorageError::Io(std::io::Error::new(e.kind(), enhance_flush_error(path, e)))
+        })?;
         writer.get_ref().sync_all().map_err(|e| {
-            StorageError::Io(std::io::Error::new(
-                e.kind(),
-                enhance_sync_error(path, e),
-            ))
+            StorageError::Io(std::io::Error::new(e.kind(), enhance_sync_error(path, e)))
         })
     }
 }
@@ -236,7 +233,12 @@ impl EventLog {
 /// 从后往前查找最后一个包含有效 `seq` 的事件行。
 fn last_seq_from_path(path: &Path) -> Result<u64, StorageError> {
     let file_size = fs::metadata(path)
-        .map_err(|e| StorageError::Io(std::io::Error::new(e.kind(), enhance_metadata_error(path, e))))?
+        .map_err(|e| {
+            StorageError::Io(std::io::Error::new(
+                e.kind(),
+                enhance_metadata_error(path, e),
+            ))
+        })?
         .len();
 
     if file_size == 0 {
@@ -249,8 +251,9 @@ fn last_seq_from_path(path: &Path) -> Result<u64, StorageError> {
     }
 
     let offset = file_size - TAIL_THRESHOLD;
-    let mut file =
-        File::open(path).map_err(|e| StorageError::Io(std::io::Error::new(e.kind(), enhance_open_error(path, e))))?;
+    let mut file = File::open(path).map_err(|e| {
+        StorageError::Io(std::io::Error::new(e.kind(), enhance_open_error(path, e)))
+    })?;
 
     // Check if the tail starts mid-line by examining the byte before offset.
     let started_mid_line = if offset == 0 {
@@ -259,16 +262,16 @@ fn last_seq_from_path(path: &Path) -> Result<u64, StorageError> {
         file.seek(std::io::SeekFrom::Start(offset - 1))
             .map_err(StorageError::Io)?;
         let mut previous = [0u8; 1];
-        file.read_exact(&mut previous)
-            .map_err(StorageError::Io)?;
+        file.read_exact(&mut previous).map_err(StorageError::Io)?;
         previous[0] != b'\n'
     };
     file.seek(std::io::SeekFrom::Start(offset))
         .map_err(StorageError::Io)?;
 
     let mut tail_bytes = Vec::new();
-    file.read_to_end(&mut tail_bytes)
-        .map_err(|e| StorageError::Io(std::io::Error::new(e.kind(), enhance_read_error(path, e))))?;
+    file.read_to_end(&mut tail_bytes).map_err(|e| {
+        StorageError::Io(std::io::Error::new(e.kind(), enhance_read_error(path, e)))
+    })?;
 
     // Skip the first partial line if we landed mid-line.
     if started_mid_line {
@@ -322,7 +325,8 @@ fn trim_ascii_whitespace(line: &[u8]) -> &[u8] {
 fn enhance_open_error(path: &Path, e: std::io::Error) -> String {
     match e.kind() {
         ErrorKind::PermissionDenied => format!(
-            "permission denied: cannot open session file '{}'. Check file permissions or if another process has locked it.",
+            "permission denied: cannot open session file '{}'. Check file permissions or if \
+             another process has locked it.",
             path.display()
         ),
         ErrorKind::NotFound => format!(
@@ -336,11 +340,13 @@ fn enhance_open_error(path: &Path, e: std::io::Error) -> String {
 fn enhance_read_error(path: &Path, e: std::io::Error) -> String {
     match e.kind() {
         ErrorKind::InvalidData => format!(
-            "session file '{}' contains invalid UTF-8 data. The file may be corrupted. Consider deleting this session.",
+            "session file '{}' contains invalid UTF-8 data. The file may be corrupted. Consider \
+             deleting this session.",
             path.display()
         ),
         ErrorKind::UnexpectedEof => format!(
-            "unexpected end of session file '{}'. The file may be truncated or still being written.",
+            "unexpected end of session file '{}'. The file may be truncated or still being \
+             written.",
             path.display()
         ),
         _ => format!(
@@ -352,11 +358,7 @@ fn enhance_read_error(path: &Path, e: std::io::Error) -> String {
 }
 
 fn enhance_flush_error(path: &Path, e: std::io::Error) -> String {
-    format!(
-        "failed to flush event log '{}': {}",
-        path.display(),
-        e
-    )
+    format!("failed to flush event log '{}': {}", path.display(), e)
 }
 
 fn enhance_sync_error(path: &Path, e: std::io::Error) -> String {
@@ -396,8 +398,9 @@ pub struct EventLogIterator {
 impl EventLogIterator {
     /// 从指定路径创建事件日志迭代器。
     pub fn new(path: &PathBuf) -> Result<Self, StorageError> {
-        let file = File::open(path)
-            .map_err(|e| StorageError::Io(std::io::Error::new(e.kind(), enhance_open_error(path, e))))?;
+        let file = File::open(path).map_err(|e| {
+            StorageError::Io(std::io::Error::new(e.kind(), enhance_open_error(path, e)))
+        })?;
         Ok(Self {
             reader: BufReader::new(file),
             line_number: 0,
@@ -430,7 +433,8 @@ impl Iterator for EventLogIterator {
                                 trimmed.to_string()
                             };
                             let context = format!(
-                                "failed to parse event at {}:{} (content: '{}'). The session file may be corrupted. Original error: {e}",
+                                "failed to parse event at {}:{} (content: '{}'). The session file \
+                                 may be corrupted. Original error: {e}",
                                 self.path.display(),
                                 self.line_number,
                                 preview,
@@ -439,7 +443,7 @@ impl Iterator for EventLogIterator {
                                 std::io::ErrorKind::InvalidData,
                                 context,
                             ))));
-                        }
+                        },
                     };
                     if let Err(e) = validate_event(&event, self.line_number, &self.path) {
                         return Some(Err(e));
@@ -451,7 +455,7 @@ impl Iterator for EventLogIterator {
                         e.kind(),
                         enhance_read_error(&self.path, e),
                     ))));
-                }
+                },
             }
         }
     }
@@ -535,9 +539,12 @@ impl BatchAppender {
             let line = serde_json::to_string(event)?;
             writeln!(writer, "{}", line)?;
         }
-        writer
-            .flush()
-            .map_err(|e| StorageError::Io(std::io::Error::new(e.kind(), enhance_flush_error(&self.log.path, e))))?;
+        writer.flush().map_err(|e| {
+            StorageError::Io(std::io::Error::new(
+                e.kind(),
+                enhance_flush_error(&self.log.path, e),
+            ))
+        })?;
         writer.get_ref().sync_all().map_err(|e| {
             StorageError::Io(std::io::Error::new(
                 e.kind(),
