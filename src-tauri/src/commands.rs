@@ -21,6 +21,27 @@ impl SidecarState {
     }
 }
 
+fn resolve_sidecar_path() -> Result<std::path::PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let dir = exe.parent().ok_or_else(|| "no parent dir".to_string())?;
+
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let name = format!("astrcode-http-server{suffix}");
+    let candidates = [
+        dir.join("binaries").join(&name),
+        dir.join(&name),
+    ];
+    for p in &candidates {
+        if p.is_file() {
+            return Ok(p.clone());
+        }
+    }
+    Err(format!(
+        "sidecar not found, tried: {}",
+        candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+    ))
+}
+
 #[tauri::command]
 pub async fn start_server(
     app: tauri::AppHandle,
@@ -31,10 +52,11 @@ pub async fn start_server(
 
     let addr = format!("127.0.0.1:{port}");
 
+    let sidecar_path = resolve_sidecar_path()?;
+
     let sidecar_command = app
         .shell()
-        .sidecar("binaries/astrcode-http-server")
-        .map_err(|e| e.to_string())?
+        .command(sidecar_path.to_str().ok_or_else(|| "invalid sidecar path".to_string())?)
         .env("ASTRCODE_HTTP_ADDR", &addr);
 
     let (mut rx, child) = sidecar_command
