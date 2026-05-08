@@ -9,7 +9,7 @@ import {
 } from '../../lib/styles'
 
 interface NewProjectModalProps {
-  onConfirm: (workingDir: string) => void
+  onConfirm: (workingDir: string) => Promise<void>
   onCancel: () => void
   canBrowse: boolean
   onSelectDirectory: () => Promise<string | null>
@@ -22,6 +22,8 @@ export default function NewProjectModal({
   onSelectDirectory,
 }: NewProjectModalProps) {
   const [path, setPath] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const handleSelectDirectory = useCallback(async () => {
     const dir = await onSelectDirectory()
@@ -30,12 +32,17 @@ export default function NewProjectModal({
 
   const handleSubmit = useCallback(() => {
     const trimmed = path.trim()
-    if (!trimmed) return
-    onConfirm(trimmed)
-  }, [path, onConfirm])
+    if (!trimmed || loading) return
+    setLoading(true)
+    setError(null)
+    onConfirm(trimmed).catch((err: unknown) => {
+      setError(err instanceof Error ? err.message : String(err))
+      setLoading(false)
+    })
+  }, [path, loading, onConfirm])
 
   return (
-    <div className={overlay} onClick={onCancel}>
+    <div className={overlay} onClick={loading ? undefined : onCancel}>
       <div className={dialogSurface} onClick={(e) => e.stopPropagation()}>
         <h2 className="mb-4 text-[15px] font-semibold text-text-primary">
           新建项目
@@ -51,6 +58,7 @@ export default function NewProjectModal({
               value={path}
               onChange={(e) => setPath(e.target.value)}
               placeholder="输入或选择目录路径..."
+              disabled={loading}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleSubmit()
               }}
@@ -60,6 +68,7 @@ export default function NewProjectModal({
                 type="button"
                 className={fieldButton}
                 onClick={() => void handleSelectDirectory()}
+                disabled={loading}
                 style={{ width: 'auto', whiteSpace: 'nowrap' }}
               >
                 浏览...
@@ -67,17 +76,27 @@ export default function NewProjectModal({
             )}
           </div>
         </div>
+        {error && (
+          <p className="mb-3 rounded-lg bg-danger-soft px-3 py-2 text-[12px] text-danger">
+            {error}
+          </p>
+        )}
         <div className="flex justify-end gap-2">
-          <button type="button" className={btnSecondary} onClick={onCancel}>
+          <button
+            type="button"
+            className={btnSecondary}
+            onClick={onCancel}
+            disabled={loading}
+          >
             取消
           </button>
           <button
             type="button"
             className={btnPrimary}
             onClick={handleSubmit}
-            disabled={!path.trim()}
+            disabled={!path.trim() || loading}
           >
-            创建
+            {loading ? '创建中...' : '创建'}
           </button>
         </div>
       </div>

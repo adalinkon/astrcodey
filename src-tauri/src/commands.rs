@@ -21,8 +21,17 @@ impl SidecarState {
         }
     }
 
+    pub fn port(&self) -> i32 {
+        self.port.load(Ordering::SeqCst)
+    }
+
     pub fn shutting_down(&self) {
         self.port.store(0, Ordering::SeqCst);
+        if let Ok(mut guard) = self.child.try_lock() {
+            if let Some(child) = guard.take() {
+                let _ = child.kill();
+            }
+        }
     }
 }
 

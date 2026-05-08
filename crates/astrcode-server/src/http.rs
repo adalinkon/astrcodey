@@ -38,6 +38,7 @@ use axum::{
 use futures_util::{Stream, StreamExt, stream};
 use serde::Deserialize;
 use tokio::sync::broadcast;
+use tower_http::cors::CorsLayer;
 
 use crate::{bootstrap::ServerRuntime, handler::CommandHandler};
 
@@ -93,12 +94,15 @@ pub fn router(
 
     Router::new()
         .route("/api/sessions", post(create_session).get(list_sessions))
-        .route("/api/sessions/:id/conversation", get(conversation_snapshot))
-        .route("/api/sessions/:id/stream", get(session_stream))
-        .route("/api/sessions/:id/prompt", post(submit_prompt))
-        .route("/api/sessions/:id/compact", post(compact_session))
-        .route("/api/sessions/:id/abort", post(abort_session))
-        .route("/api/sessions/:id", delete(delete_session))
+        .route(
+            "/api/sessions/{id}/conversation",
+            get(conversation_snapshot),
+        )
+        .route("/api/sessions/{id}/stream", get(session_stream))
+        .route("/api/sessions/{id}/prompt", post(submit_prompt))
+        .route("/api/sessions/{id}/compact", post(compact_session))
+        .route("/api/sessions/{id}/abort", post(abort_session))
+        .route("/api/sessions/{id}", delete(delete_session))
         .route("/api/projects", delete(delete_project))
         .route("/api/config", get(get_config))
         .route("/api/config/reload", post(reload_config))
@@ -110,6 +114,7 @@ pub fn router(
         .route("/api/models", get(list_models))
         .route("/api/models/test", post(test_model))
         .route("/api/shutdown", post(shutdown))
+        .layer(CorsLayer::permissive())
         .with_state(state)
 }
 
@@ -117,12 +122,19 @@ async fn create_session(
     State(state): State<HttpState>,
     Json(request): Json<CreateSessionRequest>,
 ) -> Response {
+    tracing::info!(working_dir = %request.working_dir, "POST /api/sessions — create_session");
     match state.handler.create_session(request.working_dir).await {
-        Ok(session_id) => Json(CreateSessionResponseDto {
-            session_id: session_id.into_string(),
-        })
-        .into_response(),
-        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "create_failed", error),
+        Ok(session_id) => {
+            tracing::info!(session_id = %session_id, "session created");
+            Json(CreateSessionResponseDto {
+                session_id: session_id.into_string(),
+            })
+            .into_response()
+        },
+        Err(error) => {
+            tracing::error!(error = %error, "create_session failed");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "create_failed", error)
+        },
     }
 }
 
@@ -157,22 +169,30 @@ async fn submit_prompt(
     Path(session_id): Path<String>,
     Json(request): Json<PromptRequest>,
 ) -> Response {
+    tracing::info!(session_id = %session_id, text_len = request.text.len(), "POST prompt submit");
     let session_id = SessionId::from(session_id);
     let result = state
         .handler
         .submit_prompt_for_session(session_id.clone(), request.text)
         .await;
     match result {
-        Ok(turn_id) => Json(PromptSubmitResponse::Accepted {
-            session_id: session_id.into_string(),
-            turn_id: turn_id.into_string(),
-            branched_from_session_id: None,
-        })
-        .into_response(),
+        Ok(turn_id) => {
+            tracing::info!(session_id = %session_id, turn_id = %turn_id, "prompt accepted");
+            Json(PromptSubmitResponse::Accepted {
+                session_id: session_id.into_string(),
+                turn_id: turn_id.into_string(),
+                branched_from_session_id: None,
+            })
+            .into_response()
+        },
         Err(error) if error.contains("already running") => {
+            tracing::warn!(session_id = %session_id, "prompt rejected: turn already running");
             error_response(StatusCode::CONFLICT, "turn_running", error)
         },
-        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "prompt_failed", error),
+        Err(error) => {
+            tracing::error!(session_id = %session_id, error = %error, "prompt failed");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "prompt_failed", error)
+        },
     }
 }
 
@@ -396,6 +416,7 @@ async fn session_stream(
     Path(session_id): Path<String>,
     Query(query): Query<StreamQuery>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+    tracing::info!(session_id = %session_id, cursor = ?query.cursor, "SSE stream connected");
     let session_id = SessionId::from(session_id);
     let rx = state.event_tx.subscribe();
     let (missed_events, replay_error) = match query.cursor.as_ref() {
@@ -556,9 +577,10 @@ fn event_to_delta(event: &Event) -> Option<ConversationDeltaDto> {
                 text_delta: delta.clone(),
             })
         },
-        EventPayload::AssistantMessageCompleted { message_id, .. } => {
+        EventPayload::AssistantMessageCompleted { message_id, text } => {
             Some(ConversationDeltaDto::CompleteBlock {
                 block_id: message_id.to_string(),
+                text: Some(text.clone()),
             })
         },
         EventPayload::ToolCallStarted { call_id, tool_name } => {
@@ -583,6 +605,7 @@ fn event_to_delta(event: &Event) -> Option<ConversationDeltaDto> {
         EventPayload::ToolCallCompleted { call_id, .. } => {
             Some(ConversationDeltaDto::CompleteBlock {
                 block_id: call_id.to_string(),
+                text: None,
             })
         },
         EventPayload::ErrorOccurred { message, .. } => Some(ConversationDeltaDto::AppendBlock {

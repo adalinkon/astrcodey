@@ -96,9 +96,12 @@ export const useAppStore = create<ConversationState>((set, get) => ({
   },
 
   createSession: async (workingDir: string) => {
+    console.log('[store] createSession', { workingDir })
     const response = await api.createSession(workingDir)
+    console.log('[store] createSession OK, switching to', response.sessionId)
     await get().refreshSessions()
     await get().switchSession(response.sessionId)
+    console.log('[store] createSession complete')
   },
 
   deleteSession: async (sessionId: string) => {
@@ -187,7 +190,11 @@ export const useAppStore = create<ConversationState>((set, get) => ({
 
   submitPrompt: async (text: string) => {
     const { activeSessionId, control } = get()
-    if (!activeSessionId || !control?.canSubmitPrompt) return false
+    console.log('[store] submitPrompt', { activeSessionId, canSubmit: control?.canSubmitPrompt, text })
+    if (!activeSessionId || !control?.canSubmitPrompt) {
+      console.warn('[store] submitPrompt BLOCKED', { activeSessionId, control })
+      return false
+    }
 
     await api.submitPrompt(activeSessionId, text)
     return true
@@ -218,14 +225,19 @@ export const useAppStore = create<ConversationState>((set, get) => ({
 
     switch (delta.kind) {
       case 'appendBlock':
+        console.log('[applyDelta] appendBlock', delta.block.kind, delta.block.id, 'blocks before:', state.blocks.length)
         set({ blocks: [...state.blocks, delta.block] })
+        console.log('[applyDelta] blocks after set:', get().blocks.length)
         break
 
       case 'patchBlock': {
         const idx = state.blocks.findIndex(
           (b) => 'id' in b && b.id === delta.blockId
         )
-        if (idx === -1) break
+        if (idx === -1) {
+          console.warn('[applyDelta] patchBlock: block not found', delta.blockId, 'existing ids:', state.blocks.map(b => 'id' in b ? b.id : '?'))
+          break
+        }
         const block = state.blocks[idx]
         if (block.kind === 'assistant' || block.kind === 'toolCall') {
           const next = [...state.blocks]
@@ -239,11 +251,18 @@ export const useAppStore = create<ConversationState>((set, get) => ({
         const idx = state.blocks.findIndex(
           (b) => 'id' in b && b.id === delta.blockId
         )
-        if (idx === -1) break
+        if (idx === -1) {
+          console.warn('[applyDelta] completeBlock: block not found', delta.blockId)
+          break
+        }
         const block = state.blocks[idx]
         if (block.kind === 'assistant' || block.kind === 'toolCall') {
           const next = [...state.blocks]
-          next[idx] = { ...block, status: 'complete' as const }
+          next[idx] = {
+            ...block,
+            ...(delta.text != null ? { text: delta.text } : {}),
+            status: 'complete' as const,
+          }
           set({ blocks: next })
         }
         break
@@ -299,6 +318,7 @@ function connectSse(
       | ((s: ConversationState) => Partial<ConversationState>)
   ) => void
 ): void {
+  console.log('[sse] connectSse', { sessionId, cursor })
   const abortController = new AbortController()
   set({ streamAbortController: abortController })
 

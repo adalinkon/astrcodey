@@ -59,7 +59,9 @@ impl ServerRuntime {
         self.effective.read().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub fn write_raw_config(&self) -> std::sync::RwLockWriteGuard<'_, astrcode_core::config::Config> {
+    pub fn write_raw_config(
+        &self,
+    ) -> std::sync::RwLockWriteGuard<'_, astrcode_core::config::Config> {
         self.raw_config.write().unwrap_or_else(|e| e.into_inner())
     }
 

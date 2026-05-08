@@ -11,14 +11,33 @@ export async function consumeSseStream(
 ): Promise<'ended' | 'aborted'> {
   const params = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
   const url = `${getBaseUrl()}/api/sessions/${encodeURIComponent(sessionId)}/stream${params}`
+  console.log('[sse] connecting', { url, cursor })
 
-  const response = await fetch(url, {
-    headers: {
-      Accept: 'text/event-stream',
-      'Cache-Control': 'no-cache',
-    },
-    signal,
-  })
+  let response: Response
+  try {
+    response = await fetch(url, {
+      headers: {
+        Accept: 'text/event-stream',
+        'Cache-Control': 'no-cache',
+      },
+      signal,
+    })
+  } catch (err) {
+    console.error('[sse] fetch failed', err)
+    throw err
+  }
+
+  console.log('[sse] response', { status: response.status, ok: response.ok })
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    console.error('[sse] non-ok response', { status: response.status, body: text })
+    throw new Error(`SSE ${response.status}: ${text}`)
+  }
+
+  if (!response.body) {
+    throw new Error('SSE response has no body')
+  }
 
   if (!response.body) {
     throw new Error('SSE response has no body')
@@ -41,9 +60,10 @@ export async function consumeSseStream(
     if (eventType === 'conversation') {
       try {
         const envelope = JSON.parse(payload) as ConversationStreamEnvelope
+        console.log('[sse] event', envelope.delta?.kind, envelope.cursor)
         onEnvelope(envelope)
-      } catch {
-        // Ignore malformed JSON
+      } catch (err) {
+        console.warn('[sse] parse error', err, payload)
       }
     }
     eventType = 'message'

@@ -49,10 +49,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export async function createSession(
   workingDir: string
 ): Promise<CreateSessionResponse> {
-  return request<CreateSessionResponse>('/api/sessions', {
-    method: 'POST',
-    body: JSON.stringify({ workingDir }),
-  })
+  console.log('[api] createSession → POST /api/sessions', { workingDir })
+  try {
+    const result = await request<CreateSessionResponse>('/api/sessions', {
+      method: 'POST',
+      body: JSON.stringify({ workingDir }),
+    })
+    console.log('[api] createSession ←', result)
+    return result
+  } catch (err) {
+    console.error('[api] createSession FAILED', err)
+    throw err
+  }
 }
 
 export async function listSessions(): Promise<SessionListResponse> {
@@ -71,13 +79,21 @@ export async function submitPrompt(
   sessionId: string,
   text: string
 ): Promise<PromptSubmitResponse> {
-  return request<PromptSubmitResponse>(
-    `/api/sessions/${encodeURIComponent(sessionId)}/prompt`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ text }),
-    }
-  )
+  console.log('[api] submitPrompt →', { sessionId, text })
+  try {
+    const result = await request<PromptSubmitResponse>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/prompt`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ text }),
+      }
+    )
+    console.log('[api] submitPrompt ←', result)
+    return result
+  } catch (err) {
+    console.error('[api] submitPrompt FAILED', err)
+    throw err
+  }
 }
 
 export async function compactSession(

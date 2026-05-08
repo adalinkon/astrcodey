@@ -257,6 +257,7 @@ impl CommandHandler {
     /// 创建新会话，分发 SessionStart 扩展事件，并固定该会话的工具和 system prompt 快照。
     pub async fn create_session(&mut self, working_dir: String) -> Result<SessionId, String> {
         let model_id = self.runtime.read_effective().llm.model_id.clone();
+        tracing::info!(working_dir = %working_dir, model_id = %model_id, "creating session");
         match self
             .runtime
             .session_manager
@@ -265,6 +266,7 @@ impl CommandHandler {
         {
             Ok(event) => {
                 self.active_session_id = Some(event.session_id.clone());
+                tracing::info!(session_id = %event.session_id, "session created, dispatching SessionStart");
                 let _ = self.event_tx.send(ClientNotification::Event(event.clone()));
                 let ext_ctx = ServerExtensionContext::new(
                     event.session_id.to_string(),
@@ -277,6 +279,7 @@ impl CommandHandler {
                     .dispatch(ExtensionEvent::SessionStart, &ext_ctx)
                     .await
                 {
+                    tracing::error!(error = %e, "SessionStart extension dispatch failed");
                     self.send_error(-32603, &e.to_string());
                     return Err(e.to_string());
                 }
@@ -285,14 +288,19 @@ impl CommandHandler {
                     .initialize_session_prompt(&event.session_id, &working_dir)
                     .await
                 {
-                    Ok(_) => Ok(event.session_id),
+                    Ok(_) => {
+                        tracing::info!(session_id = %event.session_id, "session fully initialized");
+                        Ok(event.session_id)
+                    },
                     Err(e) => {
+                        tracing::error!(session_id = %event.session_id, error = %e, "session prompt init failed");
                         self.send_error(-32603, &e);
                         Err(e)
                     },
                 }
             },
             Err(e) => {
+                tracing::error!(working_dir = %working_dir, error = %e, "session_manager.create failed");
                 self.send_error(-32603, &e.to_string());
                 Err(e.to_string())
             },
@@ -321,6 +329,7 @@ impl CommandHandler {
         sid: SessionId,
         text: String,
     ) -> Result<TurnId, String> {
+        tracing::info!(session_id = %sid, text_len = text.len(), "submit_prompt_for_session");
         if self.active_turns.contains_key(&sid) {
             self.send_error(40900, "A turn is already running");
             return Err("A turn is already running".into());

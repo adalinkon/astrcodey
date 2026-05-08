@@ -4,8 +4,8 @@
 //! 写入后不可修改。存储层在追加时分配单调递增的 `seq` 序号。
 
 use std::{
-    fs::File,
-    io::{BufRead, BufReader, BufWriter, ErrorKind, Write},
+    fs::{self, File},
+    io::{BufRead, BufReader, BufWriter, ErrorKind, Read, Seek, Write},
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -24,6 +24,26 @@ pub struct EventLog {
     next_seq: Mutex<u64>,
 }
 
+impl Drop for EventLog {
+    fn drop(&mut self) {
+        if let Ok(mut writer) = self.writer.lock() {
+            if let Err(e) = writer.flush() {
+                tracing::warn!(
+                    "Failed to flush event log '{}' on drop: {e}",
+                    self.path.display()
+                );
+                return;
+            }
+            if let Err(e) = writer.get_ref().sync_all() {
+                tracing::warn!(
+                    "Failed to sync event log '{}' on drop: {e}",
+                    self.path.display()
+                );
+            }
+        }
+    }
+}
+
 impl EventLog {
     /// Create a new event log file with an initial event.
     pub async fn create(
@@ -37,8 +57,7 @@ impl EventLog {
         let mut writer = BufWriter::new(file);
         let line = serde_json::to_string(&event)?;
         writeln!(writer, "{}", line)?;
-        // 初始事件立即刷盘，保证 create 返回后数据已持久化
-        writer.flush()?;
+        Self::flush_and_sync_writer(&mut writer, &path)?;
         Ok((
             Self {
                 path,
@@ -58,7 +77,7 @@ impl EventLog {
             )
             .into());
         }
-        let next_seq = count_lines(&path)? as u64;
+        let next_seq = last_seq_from_path(&path)?.saturating_add(1);
         // 以 append 模式打开文件，持有句柄供后续写入
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -86,7 +105,7 @@ impl EventLog {
             .map_err(|_| StorageError::LockError("event log writer lock poisoned".into()))?;
         let line = serde_json::to_string(&event)?;
         writeln!(writer, "{}", line)?;
-        writer.flush()?;
+        Self::flush_and_sync_writer(&mut writer, &self.path)?;
         *next_seq += 1;
         Ok(event)
     }
@@ -194,28 +213,195 @@ impl EventLog {
         }
         Ok((first, last))
     }
+
+    fn flush_and_sync_writer(
+        writer: &mut BufWriter<File>,
+        path: &Path,
+    ) -> Result<(), StorageError> {
+        writer
+            .flush()
+            .map_err(|e| StorageError::Io(std::io::Error::new(e.kind(), enhance_flush_error(path, e))))?;
+        writer.get_ref().sync_all().map_err(|e| {
+            StorageError::Io(std::io::Error::new(
+                e.kind(),
+                enhance_sync_error(path, e),
+            ))
+        })
+    }
 }
 
-fn count_lines(path: &Path) -> Result<usize, StorageError> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    Ok(reader.lines().count())
+/// 从 JSONL 文件尾部扫描最后一个事件的 seq。
+///
+/// 对于小文件（≤64KB）全量扫描；对于大文件只读取尾部 64KB，
+/// 从后往前查找最后一个包含有效 `seq` 的事件行。
+fn last_seq_from_path(path: &Path) -> Result<u64, StorageError> {
+    let file_size = fs::metadata(path)
+        .map_err(|e| StorageError::Io(std::io::Error::new(e.kind(), enhance_metadata_error(path, e))))?
+        .len();
+
+    if file_size == 0 {
+        return Ok(0);
+    }
+
+    const TAIL_THRESHOLD: u64 = 64 * 1024;
+    if file_size <= TAIL_THRESHOLD {
+        return scan_full_file_for_last_seq(path);
+    }
+
+    let offset = file_size - TAIL_THRESHOLD;
+    let mut file =
+        File::open(path).map_err(|e| StorageError::Io(std::io::Error::new(e.kind(), enhance_open_error(path, e))))?;
+
+    // Check if the tail starts mid-line by examining the byte before offset.
+    let started_mid_line = if offset == 0 {
+        false
+    } else {
+        file.seek(std::io::SeekFrom::Start(offset - 1))
+            .map_err(StorageError::Io)?;
+        let mut previous = [0u8; 1];
+        file.read_exact(&mut previous)
+            .map_err(StorageError::Io)?;
+        previous[0] != b'\n'
+    };
+    file.seek(std::io::SeekFrom::Start(offset))
+        .map_err(StorageError::Io)?;
+
+    let mut tail_bytes = Vec::new();
+    file.read_to_end(&mut tail_bytes)
+        .map_err(|e| StorageError::Io(std::io::Error::new(e.kind(), enhance_read_error(path, e))))?;
+
+    // Skip the first partial line if we landed mid-line.
+    if started_mid_line {
+        let Some(position) = tail_bytes.iter().position(|b| *b == b'\n') else {
+            return scan_full_file_for_last_seq(path);
+        };
+        tail_bytes = tail_bytes[position + 1..].to_vec();
+    }
+
+    // Walk backwards through lines looking for the last valid seq.
+    for line in tail_bytes.rsplit(|b| *b == b'\n') {
+        let trimmed = trim_ascii_whitespace(line);
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(seq) = parse_seq_from_line(trimmed) {
+            return Ok(seq);
+        }
+    }
+
+    scan_full_file_for_last_seq(path)
+}
+
+fn scan_full_file_for_last_seq(path: &Path) -> Result<u64, StorageError> {
+    let mut last_seq: Option<u64> = None;
+    let iterator = EventLogIterator::new(&path.to_path_buf())?;
+    for event_result in iterator {
+        let (_line_number, event) = event_result?;
+        last_seq = event.seq;
+    }
+    Ok(last_seq.unwrap_or(0))
+}
+
+fn parse_seq_from_line(line: &[u8]) -> Option<u64> {
+    let v = serde_json::from_slice::<serde_json::Value>(line).ok()?;
+    v.get("seq")?.as_u64()
+}
+
+fn trim_ascii_whitespace(line: &[u8]) -> &[u8] {
+    let start = line
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(line.len());
+    let end = line
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map_or(start, |i| i + 1);
+    &line[start..end]
+}
+
+fn enhance_open_error(path: &Path, e: std::io::Error) -> String {
+    match e.kind() {
+        ErrorKind::PermissionDenied => format!(
+            "permission denied: cannot open session file '{}'. Check file permissions or if another process has locked it.",
+            path.display()
+        ),
+        ErrorKind::NotFound => format!(
+            "session file '{}' not found. The session may have been deleted.",
+            path.display()
+        ),
+        _ => format!("failed to open session file '{}'", path.display()),
+    }
+}
+
+fn enhance_read_error(path: &Path, e: std::io::Error) -> String {
+    match e.kind() {
+        ErrorKind::InvalidData => format!(
+            "session file '{}' contains invalid UTF-8 data. The file may be corrupted. Consider deleting this session.",
+            path.display()
+        ),
+        ErrorKind::UnexpectedEof => format!(
+            "unexpected end of session file '{}'. The file may be truncated or still being written.",
+            path.display()
+        ),
+        _ => format!(
+            "failed to read session file '{}' (I/O error: {})",
+            path.display(),
+            e
+        ),
+    }
+}
+
+fn enhance_flush_error(path: &Path, e: std::io::Error) -> String {
+    format!(
+        "failed to flush event log '{}': {}",
+        path.display(),
+        e
+    )
+}
+
+fn enhance_sync_error(path: &Path, e: std::io::Error) -> String {
+    format!(
+        "failed to sync event log '{}' to disk: {}",
+        path.display(),
+        e
+    )
+}
+
+fn enhance_metadata_error(path: &Path, e: std::io::Error) -> String {
+    match e.kind() {
+        ErrorKind::PermissionDenied => format!(
+            "permission denied: cannot access session file '{}'. Check file permissions.",
+            path.display()
+        ),
+        ErrorKind::NotFound => format!(
+            "session file '{}' not found. The session may have been deleted or moved.",
+            path.display()
+        ),
+        _ => format!(
+            "failed to read metadata for session file '{}'",
+            path.display()
+        ),
+    }
 }
 
 /// 事件日志的流式迭代器，逐行读取并解析事件。
 pub struct EventLogIterator {
     reader: BufReader<File>,
-    /// 当前读取的行号（从 0 开始）
+    /// 当前读取的行号（从 1 开始，含空行），用于错误定位。
     line_number: usize,
+    /// 文件路径，用于错误消息上下文。
+    path: PathBuf,
 }
 
 impl EventLogIterator {
     /// 从指定路径创建事件日志迭代器。
     pub fn new(path: &PathBuf) -> Result<Self, StorageError> {
-        let file = File::open(path)?;
+        let file = File::open(path)
+            .map_err(|e| StorageError::Io(std::io::Error::new(e.kind(), enhance_open_error(path, e))))?;
         Ok(Self {
             reader: BufReader::new(file),
             line_number: 0,
+            path: path.clone(),
         })
     }
 }
@@ -235,15 +421,58 @@ impl Iterator for EventLogIterator {
                     if trimmed.is_empty() {
                         continue;
                     }
-                    match serde_json::from_str::<Event>(trimmed) {
-                        Ok(event) => return Some(Ok((self.line_number, event))),
-                        Err(e) => return Some(Err(StorageError::Serialization(e))),
+                    let event = match serde_json::from_str::<Event>(trimmed) {
+                        Ok(event) => event,
+                        Err(e) => {
+                            let preview = if trimmed.len() > 100 {
+                                format!("{}...", &trimmed[..100])
+                            } else {
+                                trimmed.to_string()
+                            };
+                            let context = format!(
+                                "failed to parse event at {}:{} (content: '{}'). The session file may be corrupted. Original error: {e}",
+                                self.path.display(),
+                                self.line_number,
+                                preview,
+                            );
+                            return Some(Err(StorageError::Io(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                context,
+                            ))));
+                        }
+                    };
+                    if let Err(e) = validate_event(&event, self.line_number, &self.path) {
+                        return Some(Err(e));
                     }
+                    return Some(Ok((self.line_number, event)));
                 },
-                Err(e) => return Some(Err(StorageError::Io(e))),
+                Err(e) => {
+                    return Some(Err(StorageError::Io(std::io::Error::new(
+                        e.kind(),
+                        enhance_read_error(&self.path, e),
+                    ))));
+                }
             }
         }
     }
+}
+
+fn validate_event(event: &Event, line_number: usize, path: &Path) -> Result<(), StorageError> {
+    if event.session_id.as_str().is_empty() {
+        return Err(StorageError::InvalidId(format!(
+            "event at {}:{} has empty session_id",
+            path.display(),
+            line_number,
+        )));
+    }
+    if event.timestamp.timestamp() == 0 {
+        tracing::warn!(
+            "Event at {}:{} has epoch-zero timestamp; may indicate corruption",
+            path.display(),
+            line_number,
+        );
+    }
+    Ok(())
 }
 
 /// 批量追加器，用于提高写入效率。
@@ -306,7 +535,15 @@ impl BatchAppender {
             let line = serde_json::to_string(event)?;
             writeln!(writer, "{}", line)?;
         }
-        writer.flush()?;
+        writer
+            .flush()
+            .map_err(|e| StorageError::Io(std::io::Error::new(e.kind(), enhance_flush_error(&self.log.path, e))))?;
+        writer.get_ref().sync_all().map_err(|e| {
+            StorageError::Io(std::io::Error::new(
+                e.kind(),
+                enhance_sync_error(&self.log.path, e),
+            ))
+        })?;
         // 先刷盘成功再更新 seq 和清空 buffer，避免部分写入后 seq 已前进导致事件丢失
         *next_seq = seq;
         self.buffer.clear();

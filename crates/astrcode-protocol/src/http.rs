@@ -232,7 +232,10 @@ pub enum ConversationDeltaDto {
         text_delta: String,
     },
     /// 完成 block。
-    CompleteBlock { block_id: String },
+    CompleteBlock {
+        block_id: String,
+        text: Option<String>,
+    },
     /// 控制状态更新。
     UpdateControlState {
         control: ConversationControlStateDto,

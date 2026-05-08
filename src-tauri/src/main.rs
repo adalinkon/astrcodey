@@ -17,6 +17,14 @@ fn main() {
 }
 
 fn run() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_env("ASTRCODE_LOG")
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+
     let coordinator = match InstanceCoordinator::bootstrap()? {
         InstanceBootstrap::Primary(c) => c,
         InstanceBootstrap::ActivatedExisting => return Ok(()),
@@ -55,6 +63,19 @@ fn run() -> anyhow::Result<()> {
                 coord_run.shutdown();
                 if let Some(state) = app_handle.try_state::<std::sync::Arc<commands::SidecarState>>()
                 {
+                    // Send graceful shutdown to sidecar HTTP server
+                    let port = state.port();
+                    if port > 0 {
+                        let client = reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(2))
+                            .build();
+                        if let Ok(client) = client {
+                            let url = format!("http://127.0.0.1:{port}/api/shutdown");
+                            std::thread::spawn(move || {
+                                let _ = client.post(&url).send();
+                            });
+                        }
+                    }
                     state.shutting_down();
                 }
             }
