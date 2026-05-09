@@ -50,16 +50,18 @@ export default function ModelSelector({
   }, [getCurrentModel, listAvailableModels, refreshKey])
 
   useEffect(() => {
-    if (!open) {
-      setSearchQuery('')
-      return
-    }
+    if (!open) return
     const handlePointerDown = (e: PointerEvent) => {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node))
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
         setOpen(false)
+        setSearchQuery('')
+      }
     }
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
+      if (e.key === 'Escape') {
+        setOpen(false)
+        setSearchQuery('')
+      }
     }
     document.addEventListener('pointerdown', handlePointerDown)
     window.addEventListener('keydown', handleKeyDown)
@@ -89,6 +91,7 @@ export default function ModelSelector({
 
   const handleSelect = async (profileName: string, modelId: string) => {
     setOpen(false)
+    setSearchQuery('')
     try {
       await setModel(profileName, modelId)
       const refreshed = await getCurrentModel()
@@ -104,7 +107,12 @@ export default function ModelSelector({
         type="button"
         className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-[13px] text-text-secondary transition-all duration-150 ease-out hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-60"
         onClick={() => {
-          if (!loading) setOpen((v) => !v)
+          if (!loading) {
+            setOpen((v) => {
+              if (v) setSearchQuery('')
+              return !v
+            })
+          }
         }}
         disabled={loading}
         aria-label="选择模型"

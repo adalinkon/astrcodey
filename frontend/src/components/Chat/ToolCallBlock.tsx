@@ -1,4 +1,4 @@
-import { memo, useState, useEffect } from 'react'
+import { memo, useState } from 'react'
 import type { ConversationBlock } from '../../services/types'
 import {
   pillNeutral,
@@ -37,12 +37,7 @@ function statusLabel(status: string): string {
 }
 
 function ToolCallBlock({ block }: ToolCallBlockProps) {
-  const defaultOpen = block.status === 'error'
-  const [isOpen, setIsOpen] = useState(defaultOpen)
-
-  useEffect(() => {
-    if (block.status === 'error') setIsOpen(true)
-  }, [block.status])
+  const [isOpen, setIsOpen] = useState(false)
 
   const displayText =
     block.text || (block.status === 'streaming' ? '等待输出...' : '')
@@ -50,7 +45,7 @@ function ToolCallBlock({ block }: ToolCallBlockProps) {
   return (
     <details
       className="group mb-2 ml-[var(--chat-assistant-content-offset)] block min-w-0 max-w-full animate-block-enter motion-reduce:animate-none"
-      open={isOpen}
+      open={block.status === 'error' || isOpen}
       onToggle={(e) => setIsOpen(e.currentTarget.open)}
     >
       <summary className="flex min-w-0 cursor-pointer items-center gap-2 py-1.5 font-mono text-[13px] leading-relaxed text-text-secondary list-none [&::-webkit-details-marker]:hidden hover:opacity-85">
