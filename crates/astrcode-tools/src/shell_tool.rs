@@ -2,6 +2,9 @@
 
 use std::{collections::BTreeMap, path::PathBuf, process::Stdio, time::Instant};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use astrcode_core::{
     event::{EventPayload, ToolOutputStream},
     tool::*,
@@ -118,12 +121,16 @@ impl Tool for ShellTool {
             .unwrap_or_else(|| self.working_dir.clone());
         let timeout_secs = args.timeout.unwrap_or(self.timeout_secs).min(600);
 
-        let mut child = Command::new(&shell.path)
+        let mut command = Command::new(&shell.path);
+        command
             .args(&command_args)
             .current_dir(&cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .stdin(Stdio::null())
+            .stdin(Stdio::null());
+        hide_command_window(&mut command);
+
+        let mut child = command
             .spawn()
             .map_err(|e| ToolError::Execution(format!("spawn: {e}")))?;
 
@@ -235,6 +242,15 @@ fn command_args(shell: &ShellInfo, command: &str) -> Vec<String> {
         ShellFamily::Wsl => vec!["bash".to_string(), "-lc".to_string(), command.to_string()],
     }
 }
+
+#[cfg(windows)]
+fn hide_command_window(command: &mut Command) {
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_command_window(_: &mut Command) {}
 
 #[derive(Default)]
 struct CapturedOutput {
