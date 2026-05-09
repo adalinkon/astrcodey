@@ -167,11 +167,10 @@ impl CommandHandler {
 
         let system_prompt = match &state.system_prompt {
             Some(system_prompt) => system_prompt.clone(),
-            None => {
-                self.configure_session_prompt(sid, &state.working_dir, &tool_registry, None)
-                    .await
-                    .map_err(HandlerError::Other)?
-            },
+            None => self
+                .configure_session_prompt(sid, &state.working_dir, &tool_registry, None)
+                .await
+                .map_err(HandlerError::Other)?,
         };
         let child_session_id = self
             .create_compact_continuation_child(PendingCompactContinuation {

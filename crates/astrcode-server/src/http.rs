@@ -208,7 +208,11 @@ async fn submit_prompt(
         },
         Err(error) => {
             tracing::error!(session_id = %session_id, error = %error, "prompt failed");
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "prompt_failed", error.to_string())
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "prompt_failed",
+                error.to_string(),
+            )
         },
     }
 }
@@ -248,9 +252,11 @@ async fn compact_session(
         Err(error) if matches!(error, HandlerError::CompactBlocked) => {
             error_response(StatusCode::CONFLICT, "turn_running", error.to_string())
         },
-        Err(error) => {
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "compact_failed", error.to_string())
-        },
+        Err(error) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "compact_failed",
+            error.to_string(),
+        ),
     }
 }
 
@@ -261,9 +267,11 @@ async fn abort_session(State(state): State<HttpState>, Path(session_id): Path<St
         Err(error) if matches!(error, HandlerError::NoActiveTurn) => {
             error_response(StatusCode::NOT_FOUND, "no_active_turn", error.to_string())
         },
-        Err(error) => {
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "abort_failed", error.to_string())
-        },
+        Err(error) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "abort_failed",
+            error.to_string(),
+        ),
     }
 }
 

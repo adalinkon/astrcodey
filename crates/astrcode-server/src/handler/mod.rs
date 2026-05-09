@@ -962,17 +962,13 @@ impl CommandHandler {
                                 })
                                 .is_err()
                             {
-                                Err(HandlerError::Other(
-                                    "command actor is unavailable".into(),
-                                ))
+                                Err(HandlerError::Other("command actor is unavailable".into()))
                             } else {
                                 match actor_rx.await {
                                     Ok(result) => result,
-                                    Err(_) => {
-                                        Err(HandlerError::Other(
-                                            "command actor dropped auto compact response".into(),
-                                        ))
-                                    },
+                                    Err(_) => Err(HandlerError::Other(
+                                        "command actor dropped auto compact response".into(),
+                                    )),
                                 }
                             };
                             if let Ok(child_session_id) = &result {
