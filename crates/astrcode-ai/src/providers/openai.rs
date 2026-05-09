@@ -9,7 +9,7 @@ use astrcode_core::{config::OpenAiApiMode, llm::*, tool::ToolDefinition};
 use tokio::sync::mpsc;
 
 use crate::{
-    common::build_client,
+    common::{build_client, stream_body_error, transport_error},
     retry::RetryPolicy,
     serialization::{
         chat_message_to_json, prompt_cache_retention_wire_value, responses_input_items,
@@ -40,8 +40,10 @@ pub trait ChatAccumulator: Default + Send + Sync + 'static {
 #[derive(Debug, Default)]
 struct ToolCallPartial {
     id: Option<String>,
+    emitted_call_id: Option<String>,
     name: Option<String>,
     started: bool,
+    pending_arguments: String,
 }
 
 #[derive(Debug, Default)]
@@ -50,6 +52,7 @@ struct ResponseToolCallPartial {
     name: Option<String>,
     started: bool,
     arguments_delta_seen: bool,
+    pending_arguments: String,
 }
 
 /// 标准 OpenAI 格式的流累积器。
@@ -65,6 +68,144 @@ pub struct StandardAccumulator {
 impl StandardAccumulator {
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    fn ingest_chat_tool_call_delta(
+        &mut self,
+        index: u64,
+        tool_call: &serde_json::Value,
+        tx: &mpsc::UnboundedSender<LlmEvent>,
+    ) {
+        let partial = self.tool_calls.entry(index).or_default();
+        if let Some(id) = tool_call["id"].as_str() {
+            partial.id = Some(id.to_string());
+        }
+        let Some(function) = tool_call.get("function") else {
+            return;
+        };
+        if let Some(name) = function["name"].as_str() {
+            partial.name = Some(name.to_string());
+        }
+
+        let arguments = function.get("arguments").and_then(json_argument_fragment);
+        if !partial.started {
+            if let Some(name) = partial.name.clone() {
+                let call_id = chat_tool_call_id(index, partial);
+                partial.emitted_call_id = Some(call_id.clone());
+                partial.started = true;
+                let _ = tx.send(LlmEvent::ToolCallStart {
+                    call_id: call_id.clone(),
+                    name,
+                    arguments: String::new(),
+                });
+                if !partial.pending_arguments.is_empty() {
+                    let delta = std::mem::take(&mut partial.pending_arguments);
+                    let _ = tx.send(LlmEvent::ToolCallDelta {
+                        call_id: call_id.clone(),
+                        delta,
+                    });
+                }
+            }
+        }
+
+        if let Some(arguments) = arguments {
+            if arguments.is_empty() {
+                return;
+            }
+            if partial.started {
+                let _ = tx.send(LlmEvent::ToolCallDelta {
+                    call_id: chat_tool_call_id(index, partial),
+                    delta: arguments,
+                });
+            } else {
+                partial.pending_arguments.push_str(&arguments);
+            }
+        }
+    }
+
+    fn ingest_legacy_function_call_delta(
+        &mut self,
+        function_call: &serde_json::Value,
+        tx: &mpsc::UnboundedSender<LlmEvent>,
+    ) {
+        let index = 0;
+        let partial = self.tool_calls.entry(index).or_default();
+        if partial.id.is_none() {
+            partial.id = Some("function_call".into());
+        }
+        if let Some(name) = function_call["name"].as_str() {
+            partial.name = Some(name.to_string());
+        }
+
+        let arguments = function_call
+            .get("arguments")
+            .and_then(json_argument_fragment);
+        if !partial.started {
+            if let Some(name) = partial.name.clone() {
+                let call_id = chat_tool_call_id(index, partial);
+                partial.emitted_call_id = Some(call_id.clone());
+                partial.started = true;
+                let _ = tx.send(LlmEvent::ToolCallStart {
+                    call_id: call_id.clone(),
+                    name,
+                    arguments: String::new(),
+                });
+                if !partial.pending_arguments.is_empty() {
+                    let delta = std::mem::take(&mut partial.pending_arguments);
+                    let _ = tx.send(LlmEvent::ToolCallDelta {
+                        call_id: call_id.clone(),
+                        delta,
+                    });
+                }
+            }
+        }
+
+        if let Some(arguments) = arguments {
+            if arguments.is_empty() {
+                return;
+            }
+            if partial.started {
+                let _ = tx.send(LlmEvent::ToolCallDelta {
+                    call_id: chat_tool_call_id(index, partial),
+                    delta: arguments,
+                });
+            } else {
+                partial.pending_arguments.push_str(&arguments);
+            }
+        }
+    }
+
+    fn emit_response_tool_start(
+        &mut self,
+        item_id: &str,
+        tx: &mpsc::UnboundedSender<LlmEvent>,
+    ) -> Option<String> {
+        let partial = self
+            .response_tool_items
+            .entry(item_id.to_string())
+            .or_default();
+        if partial.started {
+            return partial.call_id.clone();
+        }
+        let name = partial.name.clone()?;
+        let call_id = partial
+            .call_id
+            .clone()
+            .unwrap_or_else(|| item_id.to_string());
+        partial.started = true;
+        let _ = tx.send(LlmEvent::ToolCallStart {
+            call_id: call_id.clone(),
+            name,
+            arguments: String::new(),
+        });
+        if !partial.pending_arguments.is_empty() {
+            let delta = std::mem::take(&mut partial.pending_arguments);
+            let _ = tx.send(LlmEvent::ToolCallDelta {
+                call_id: call_id.clone(),
+                delta,
+            });
+        }
+        Some(call_id)
     }
 }
 
@@ -95,37 +236,11 @@ impl ChatAccumulator for StandardAccumulator {
                     if let Some(tool_calls) = delta["tool_calls"].as_array() {
                         for tc in tool_calls {
                             let idx = tc["index"].as_u64().unwrap_or(0);
-                            let partial = self.tool_calls.entry(idx).or_default();
-                            if let Some(id) = tc["id"].as_str() {
-                                partial.id = Some(id.to_string());
-                            }
-                            if let Some(func) = tc.get("function") {
-                                if let Some(name) = func["name"].as_str() {
-                                    partial.name = Some(name.to_string());
-                                }
-                                if !partial.started {
-                                    if let Some(name) = &partial.name {
-                                        let call_id =
-                                            partial.id.clone().unwrap_or_else(|| idx.to_string());
-                                        partial.started = true;
-                                        let _ = tx.send(LlmEvent::ToolCallStart {
-                                            call_id,
-                                            name: name.clone(),
-                                            arguments: String::new(),
-                                        });
-                                    }
-                                }
-                                if let Some(args) = func["arguments"].as_str() {
-                                    let call_id =
-                                        partial.id.clone().unwrap_or_else(|| idx.to_string());
-                                    let cleaned_args = clean_json_fragment(args);
-                                    let _ = tx.send(LlmEvent::ToolCallDelta {
-                                        call_id,
-                                        delta: cleaned_args,
-                                    });
-                                }
-                            }
+                            self.ingest_chat_tool_call_delta(idx, tc, tx);
                         }
+                    }
+                    if let Some(function_call) = delta.get("function_call") {
+                        self.ingest_legacy_function_call_delta(function_call, tx);
                     }
                 }
                 if let Some(finish) = choice["finish_reason"].as_str() {
@@ -176,61 +291,78 @@ impl ChatAccumulator for StandardAccumulator {
                 let call_id = item
                     .get("call_id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or(&item_id)
+                    .unwrap_or(item_id.as_str())
                     .to_string();
                 let name = item
                     .get("name")
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
-                let partial = self.response_tool_items.entry(item_id).or_default();
-                partial.call_id = Some(call_id.clone());
-                partial.name = Some(name.clone());
-                partial.started = true;
-                let _ = tx.send(LlmEvent::ToolCallStart {
-                    call_id,
-                    name,
-                    arguments: String::new(),
-                });
+                let partial = self.response_tool_items.entry(item_id.clone()).or_default();
+                partial.call_id = Some(call_id);
+                partial.name = Some(name);
+                let item_arguments = item.get("arguments").and_then(json_argument_fragment);
+                let started_call_id = self.emit_response_tool_start(&item_id, tx);
+                if let (Some(call_id), Some(arguments)) = (started_call_id, item_arguments) {
+                    if !arguments.is_empty() {
+                        let partial = self.response_tool_items.entry(item_id.clone()).or_default();
+                        partial.arguments_delta_seen = true;
+                        let _ = tx.send(LlmEvent::ToolCallDelta {
+                            call_id,
+                            delta: arguments,
+                        });
+                    }
+                }
             },
             "response.function_call_arguments.delta" => {
                 let item_id = event["item_id"].as_str().unwrap_or_default();
-                let call_id = self
-                    .response_tool_items
-                    .get(item_id)
-                    .and_then(|p| p.call_id.clone())
-                    .unwrap_or_else(|| item_id.to_string());
-                if let Some(delta) = event["delta"].as_str() {
-                    self.response_tool_items
+                if let Some(delta) = event.get("delta").and_then(json_argument_fragment) {
+                    if delta.is_empty() {
+                        return;
+                    }
+                    let call_id = self
+                        .response_tool_items
+                        .get(item_id)
+                        .and_then(|p| p.call_id.clone())
+                        .unwrap_or_else(|| item_id.to_string());
+                    let partial = self
+                        .response_tool_items
                         .entry(item_id.to_string())
-                        .or_default()
-                        .arguments_delta_seen = true;
-                    let _ = tx.send(LlmEvent::ToolCallDelta {
-                        call_id,
-                        delta: delta.to_string(),
-                    });
+                        .or_default();
+                    partial.arguments_delta_seen = true;
+                    if partial.started {
+                        let _ = tx.send(LlmEvent::ToolCallDelta { call_id, delta });
+                    } else {
+                        partial.pending_arguments.push_str(&delta);
+                    }
                 }
             },
             "response.function_call_arguments.done" => {
                 let item_id = event["item_id"].as_str().unwrap_or_default().to_string();
                 let partial = self.response_tool_items.entry(item_id.clone()).or_default();
+                if let Some(call_id) = event["call_id"].as_str() {
+                    partial.call_id = Some(call_id.to_string());
+                }
                 if let Some(name) = event["name"].as_str() {
                     partial.name = Some(name.to_string());
                 }
-                let call_id = partial.call_id.clone().unwrap_or(item_id);
-                if !partial.started {
-                    partial.started = true;
-                    let _ = tx.send(LlmEvent::ToolCallStart {
-                        call_id: call_id.clone(),
-                        name: partial.name.clone().unwrap_or_default(),
-                        arguments: String::new(),
-                    });
-                }
+                let fallback_call_id = partial.call_id.clone().unwrap_or_else(|| item_id.clone());
+                let call_id = if partial.started {
+                    fallback_call_id
+                } else {
+                    self.emit_response_tool_start(&item_id, tx)
+                        .unwrap_or(fallback_call_id)
+                };
+                let partial = self.response_tool_items.entry(item_id).or_default();
                 if !partial.arguments_delta_seen {
-                    if let Some(arguments) = event["arguments"].as_str() {
+                    if let Some(arguments) = event.get("arguments").and_then(json_argument_fragment)
+                    {
+                        if arguments.is_empty() {
+                            return;
+                        }
                         let _ = tx.send(LlmEvent::ToolCallDelta {
                             call_id,
-                            delta: arguments.to_string(),
+                            delta: arguments,
                         });
                     }
                 }
@@ -457,7 +589,7 @@ impl<A: ChatAccumulator> OpenAiProvider<A> {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| LlmError::Transport(e.to_string()))?;
+                .map_err(|e| transport_error("send request", &endpoint, e))?;
 
             let status = response.status();
             if status.is_success() {
@@ -497,13 +629,36 @@ impl<A: ChatAccumulator> OpenAiProvider<A> {
         tx: &mpsc::UnboundedSender<LlmEvent>,
     ) -> Result<(), LlmError> {
         use futures_util::StreamExt;
+        let endpoint = response.url().to_string();
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let content_encoding = response
+            .headers()
+            .get(reqwest::header::CONTENT_ENCODING)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         let mut stream = response.bytes_stream();
         let mut decoder = Utf8StreamDecoder::new();
         let mut accumulator = ACC::default();
         let mut line_reader = SseLineReader::new();
+        let mut bytes_read = 0usize;
 
         while let Some(chunk) = stream.next().await {
-            let bytes = chunk.map_err(|e| LlmError::Transport(e.to_string()))?;
+            let bytes = chunk.map_err(|e| {
+                stream_body_error(
+                    &endpoint,
+                    status.as_u16(),
+                    content_type.as_deref(),
+                    content_encoding.as_deref(),
+                    bytes_read,
+                    e,
+                )
+            })?;
+            bytes_read += bytes.len();
             if let Some(text) = decoder.push(&bytes) {
                 for line in line_reader.push_chunk(&text) {
                     process_sse_line(&line, &mut accumulator, api_mode, tx);
@@ -655,6 +810,22 @@ fn process_sse_line(
 
 // ─── 辅助函数 ──────────────────────────────────────────────────────────
 
+fn chat_tool_call_id(index: u64, partial: &ToolCallPartial) -> String {
+    partial
+        .emitted_call_id
+        .clone()
+        .or_else(|| partial.id.clone())
+        .unwrap_or_else(|| index.to_string())
+}
+
+fn json_argument_fragment(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(text) => Some(clean_json_fragment(text)),
+        other => serde_json::to_string(other).ok(),
+    }
+}
+
 fn trace_prompt_cache_usage(event: &serde_json::Value) {
     let usage = event
         .get("usage")
@@ -781,6 +952,132 @@ mod tests {
     }
 
     #[test]
+    fn chat_tool_call_buffers_arguments_until_name_arrives() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut acc = StandardAccumulator::default();
+
+        acc.ingest_chat_completion(
+            &serde_json::json!({
+                "choices": [{"delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": "call_1",
+                    "function": {"arguments": "{\"pattern\""}
+                }]}}]
+            }),
+            &tx,
+        );
+        acc.ingest_chat_completion(
+            &serde_json::json!({
+                "choices": [{"delta": {"tool_calls": [{
+                    "index": 0,
+                    "function": {"name": "find", "arguments": ":\"*.rs\"}"}
+                }]}}]
+            }),
+            &tx,
+        );
+
+        let events = drain_events(&mut rx);
+        assert!(events.iter().any(|e| matches!(
+            e, LlmEvent::ToolCallStart { call_id, name, arguments }
+            if call_id == "call_1" && name == "find" && arguments.is_empty()
+        )));
+        let arguments = events
+            .into_iter()
+            .filter_map(|e| match e {
+                LlmEvent::ToolCallDelta { delta, .. } => Some(delta),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(arguments, "{\"pattern\":\"*.rs\"}");
+    }
+
+    #[test]
+    fn chat_tool_call_accepts_object_arguments_from_compat_providers() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut acc = StandardAccumulator::default();
+
+        acc.ingest_chat_completion(
+            &serde_json::json!({
+                "choices": [{"delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": "call_1",
+                    "function": {"name": "grep", "arguments": {"pattern": "agent"}}
+                }]}}]
+            }),
+            &tx,
+        );
+
+        let events = drain_events(&mut rx);
+        assert!(events.iter().any(|e| matches!(
+            e, LlmEvent::ToolCallStart { name, .. } if name == "grep"
+        )));
+        assert!(events.iter().any(|e| matches!(
+            e, LlmEvent::ToolCallDelta { delta, .. } if delta == "{\"pattern\":\"agent\"}"
+        )));
+    }
+
+    #[test]
+    fn chat_tool_call_keeps_call_id_stable_if_provider_sends_id_late() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut acc = StandardAccumulator::default();
+
+        acc.ingest_chat_completion(
+            &serde_json::json!({
+                "choices": [{"delta": {"tool_calls": [{
+                    "index": 0,
+                    "function": {"name": "find"}
+                }]}}]
+            }),
+            &tx,
+        );
+        acc.ingest_chat_completion(
+            &serde_json::json!({
+                "choices": [{"delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": "late_id",
+                    "function": {"arguments": "{\"pattern\":\"*.rs\"}"}
+                }]}}]
+            }),
+            &tx,
+        );
+
+        let events = drain_events(&mut rx);
+        assert!(events.iter().any(|e| matches!(
+            e, LlmEvent::ToolCallStart { call_id, .. } if call_id == "0"
+        )));
+        assert!(events.iter().any(|e| matches!(
+            e, LlmEvent::ToolCallDelta { call_id, delta }
+            if call_id == "0" && delta == "{\"pattern\":\"*.rs\"}"
+        )));
+    }
+
+    #[test]
+    fn chat_legacy_function_call_streams_arguments() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut acc = StandardAccumulator::default();
+
+        acc.ingest_chat_completion(
+            &serde_json::json!({
+                "choices": [{"delta": {"function_call": {
+                    "name": "find",
+                    "arguments": "{\"pattern\":\"*.rs\"}"
+                }}}]
+            }),
+            &tx,
+        );
+
+        let events = drain_events(&mut rx);
+        assert!(events.iter().any(|e| matches!(
+            e, LlmEvent::ToolCallStart { call_id, name, arguments }
+            if call_id == "function_call" && name == "find" && arguments.is_empty()
+        )));
+        assert!(events.iter().any(|e| matches!(
+            e, LlmEvent::ToolCallDelta { call_id, delta }
+            if call_id == "function_call" && delta == "{\"pattern\":\"*.rs\"}"
+        )));
+    }
+
+    #[test]
     fn responses_delta_then_done_does_not_replay_arguments() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut acc = StandardAccumulator::default();
@@ -818,6 +1115,43 @@ mod tests {
     }
 
     #[test]
+    fn responses_arguments_delta_before_item_start_is_not_lost() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut acc = StandardAccumulator::default();
+
+        acc.ingest_responses(
+            &serde_json::json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "i1",
+                "delta": "{\"path\":\"Cargo.toml\"}"
+            }),
+            &tx,
+        );
+        acc.ingest_responses(
+            &serde_json::json!({
+                "type": "response.output_item.added",
+                "item": {
+                    "type": "function_call",
+                    "id": "i1",
+                    "call_id": "c1",
+                    "name": "read"
+                }
+            }),
+            &tx,
+        );
+
+        let events = drain_events(&mut rx);
+        assert!(events.iter().any(|e| matches!(
+            e, LlmEvent::ToolCallStart { call_id, name, .. }
+            if call_id == "c1" && name == "read"
+        )));
+        assert!(events.iter().any(|e| matches!(
+            e, LlmEvent::ToolCallDelta { call_id, delta }
+            if call_id == "c1" && delta == "{\"path\":\"Cargo.toml\"}"
+        )));
+    }
+
+    #[test]
     fn responses_text_delta() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut acc = StandardAccumulator::default();
@@ -852,6 +1186,27 @@ mod tests {
         assert!(events.iter().any(|e| matches!(
             e, LlmEvent::ToolCallDelta { call_id, delta }
             if call_id == "i1" && delta == "{\"path\":\"Cargo.toml\"}"
+        )));
+    }
+
+    #[test]
+    fn responses_done_accepts_object_arguments_from_compat_providers() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut acc = StandardAccumulator::default();
+
+        acc.ingest_responses(
+            &serde_json::json!({
+                "type": "response.function_call_arguments.done",
+                "item_id": "i1",
+                "name": "read",
+                "arguments": {"path": "Cargo.toml"}
+            }),
+            &tx,
+        );
+
+        let events = drain_events(&mut rx);
+        assert!(events.iter().any(|e| matches!(
+            e, LlmEvent::ToolCallDelta { delta, .. } if delta == "{\"path\":\"Cargo.toml\"}"
         )));
     }
 

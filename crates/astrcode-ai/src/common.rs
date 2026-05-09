@@ -18,7 +18,7 @@ use crate::{
 pub fn build_client(config: &LlmClientConfig) -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(config.connect_timeout_secs))
-        .timeout(std::time::Duration::from_secs(config.read_timeout_secs))
+        .read_timeout(std::time::Duration::from_secs(config.read_timeout_secs))
         .build()
         .unwrap_or_else(|e| {
             tracing::error!("Failed to create HTTP client: {e}");
@@ -54,7 +54,7 @@ pub async fn stream_with_retry(
             .json(&body)
             .send()
             .await
-            .map_err(|e| LlmError::Transport(e.to_string()))?;
+            .map_err(|e| transport_error("send request", &endpoint, e))?;
 
         let status = response.status();
         if status.is_success() {
@@ -104,7 +104,7 @@ pub async fn stream_with_event_type(
             .json(&body)
             .send()
             .await
-            .map_err(|e| LlmError::Transport(e.to_string()))?;
+            .map_err(|e| transport_error("send request", &endpoint, e))?;
 
         let status = response.status();
         if status.is_success() {
@@ -132,12 +132,27 @@ async fn parse_sse_response(
     tx: &mpsc::UnboundedSender<LlmEvent>,
     parse_line: impl Fn(&str, &mpsc::UnboundedSender<LlmEvent>),
 ) -> Result<(), LlmError> {
+    let endpoint = response.url().to_string();
+    let status = response.status();
+    let content_type = header_value(response.headers(), reqwest::header::CONTENT_TYPE);
+    let content_encoding = header_value(response.headers(), reqwest::header::CONTENT_ENCODING);
     let mut stream = response.bytes_stream();
     let mut decoder = Utf8StreamDecoder::new();
     let mut line_reader = SseLineReader::new();
+    let mut bytes_read = 0usize;
 
     while let Some(chunk) = stream.next().await {
-        let bytes = chunk.map_err(|e| LlmError::Transport(e.to_string()))?;
+        let bytes = chunk.map_err(|e| {
+            stream_body_error(
+                &endpoint,
+                status.as_u16(),
+                content_type.as_deref(),
+                content_encoding.as_deref(),
+                bytes_read,
+                e,
+            )
+        })?;
+        bytes_read += bytes.len();
         if let Some(text) = decoder.push(&bytes) {
             for line in line_reader.push_chunk(&text) {
                 process_data_line(&line, tx, &parse_line);
@@ -153,13 +168,28 @@ async fn parse_sse_response_with_event_type(
     tx: &mpsc::UnboundedSender<LlmEvent>,
     handle_event: impl Fn(&str, &serde_json::Value, &mpsc::UnboundedSender<LlmEvent>),
 ) -> Result<(), LlmError> {
+    let endpoint = response.url().to_string();
+    let status = response.status();
+    let content_type = header_value(response.headers(), reqwest::header::CONTENT_TYPE);
+    let content_encoding = header_value(response.headers(), reqwest::header::CONTENT_ENCODING);
     let mut stream = response.bytes_stream();
     let mut decoder = Utf8StreamDecoder::new();
     let mut line_reader = SseLineReader::new();
     let mut current_event_type = String::new();
+    let mut bytes_read = 0usize;
 
     while let Some(chunk) = stream.next().await {
-        let bytes = chunk.map_err(|e| LlmError::Transport(e.to_string()))?;
+        let bytes = chunk.map_err(|e| {
+            stream_body_error(
+                &endpoint,
+                status.as_u16(),
+                content_type.as_deref(),
+                content_encoding.as_deref(),
+                bytes_read,
+                e,
+            )
+        })?;
+        bytes_read += bytes.len();
         if let Some(text) = decoder.push(&bytes) {
             for line in line_reader.push_chunk(&text) {
                 if let Some(ev_type) = line.strip_prefix("event:") {
@@ -238,5 +268,176 @@ pub fn classify_error(status: u16, text: String) -> LlmError {
             status,
             message: text,
         }
+    }
+}
+
+pub fn transport_error(stage: &str, endpoint: &str, error: reqwest::Error) -> LlmError {
+    let source_chain = error_source_chain(&error);
+    let endpoint = redacted_endpoint(endpoint);
+    LlmError::Transport(format!(
+        "{stage} failed for {endpoint}: {error}{source_chain}"
+    ))
+}
+
+pub fn stream_body_error(
+    endpoint: &str,
+    status: u16,
+    content_type: Option<&str>,
+    content_encoding: Option<&str>,
+    bytes_read: usize,
+    error: reqwest::Error,
+) -> LlmError {
+    let source_chain = error_source_chain(&error);
+    let endpoint = redacted_endpoint(endpoint);
+    LlmError::Transport(format!(
+        "read streaming response body failed for {endpoint}: status={status}, content-type={}, \
+         content-encoding={}, bytes-read={bytes_read}: {error}{source_chain}",
+        content_type.unwrap_or("<missing>"),
+        content_encoding.unwrap_or("<missing>"),
+    ))
+}
+
+fn header_value(
+    headers: &reqwest::header::HeaderMap,
+    name: reqwest::header::HeaderName,
+) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+fn error_source_chain(error: &reqwest::Error) -> String {
+    let mut message = String::new();
+    let mut source = std::error::Error::source(error);
+    while let Some(error) = source {
+        message.push_str("; caused by: ");
+        message.push_str(&error.to_string());
+        source = error.source();
+    }
+    message
+}
+
+fn redacted_endpoint(endpoint: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(endpoint) else {
+        return endpoint
+            .split_once('?')
+            .map(|(base, _)| format!("{base}?<redacted>"))
+            .unwrap_or_else(|| endpoint.to_string());
+    };
+    let Some(query) = url.query() else {
+        return url.to_string();
+    };
+    if query.is_empty() {
+        return url.to_string();
+    }
+    let pairs = url
+        .query_pairs()
+        .map(|(key, value)| {
+            let redacted = is_sensitive_query_key(&key);
+            (
+                key.into_owned(),
+                if redacted {
+                    "<redacted>".to_string()
+                } else {
+                    value.into_owned()
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    url.query_pairs_mut().clear().extend_pairs(pairs);
+    url.to_string()
+}
+
+fn is_sensitive_query_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "key" | "api_key" | "apikey" | "access_token" | "token" | "authorization"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+
+    use astrcode_core::llm::LlmClientConfig;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::mpsc,
+    };
+
+    use super::*;
+
+    #[tokio::test]
+    async fn streaming_client_uses_idle_read_timeout_not_total_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\n\
+                      content-type: text/event-stream\r\n\
+                      connection: close\r\n\
+                      \r\n",
+                )
+                .await
+                .unwrap();
+            socket.write_all(b"data: first\n\n").await.unwrap();
+            socket.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            socket.write_all(b"data: second\n\n").await.unwrap();
+            socket.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            socket.write_all(b"data: third\n\n").await.unwrap();
+            socket.flush().await.unwrap();
+        });
+
+        let config = LlmClientConfig {
+            connect_timeout_secs: 1,
+            read_timeout_secs: 1,
+            ..LlmClientConfig::default()
+        };
+        let client = build_client(&config);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&lines);
+
+        stream_with_retry(
+            client,
+            format!("http://{addr}/stream"),
+            Vec::new(),
+            serde_json::json!({}),
+            RetryPolicy {
+                max_retries: 0,
+                base_delay_ms: 1,
+            },
+            tx,
+            move |line, _| {
+                captured.lock().unwrap().push(line.to_string());
+            },
+        )
+        .await
+        .unwrap();
+
+        let lines = lines.lock().unwrap().clone();
+        assert_eq!(lines, vec!["first", "second", "third"]);
+    }
+
+    #[test]
+    fn transport_errors_redact_sensitive_query_values() {
+        let endpoint = redacted_endpoint(
+            "https://generativelanguage.googleapis.com/v1/models/m:streamGenerateContent?alt=sse&key=secret",
+        );
+
+        assert!(endpoint.contains("alt=sse"));
+        assert!(endpoint.contains("key=%3Credacted%3E"));
+        assert!(!endpoint.contains("secret"));
     }
 }

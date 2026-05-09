@@ -10,7 +10,10 @@ use std::{
     sync::Mutex,
 };
 
-use astrcode_core::{event::{Event, EventPayload}, storage::StorageError};
+use astrcode_core::{
+    event::{Event, EventPayload},
+    storage::StorageError,
+};
 
 /// An append-only JSONL event log.
 ///

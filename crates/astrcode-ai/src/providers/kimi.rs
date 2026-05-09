@@ -142,7 +142,7 @@ impl KimiParser {
                 let _ = tx.send(LlmEvent::ToolCallStart {
                     call_id: call_id.clone(),
                     name,
-                    arguments: args.clone(),
+                    arguments: String::new(),
                 });
                 let _ = tx.send(LlmEvent::ToolCallDelta {
                     call_id,
@@ -339,10 +339,10 @@ mod tests {
         assert!(
             events.iter().any(
                 |e| matches!(e, LlmEvent::ToolCallStart { name, arguments, .. }
-                    if name == "find" && arguments == "{\"pattern\":\"*.rs\"}"
+                    if name == "find" && arguments.is_empty()
                 )
             ),
-            "should emit ToolCallStart with parsed arguments"
+            "should emit ToolCallStart before argument deltas"
         );
         assert!(
             events
