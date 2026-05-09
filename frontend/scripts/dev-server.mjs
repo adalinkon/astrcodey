@@ -1,18 +1,19 @@
 /**
- * Industry-standard pattern: start the dev server, poll until the HTTP port
- * responds, then let Tauri's built-in devUrl polling see it as "ready"
- * immediately.  Avoids ERR_CONNECTION_REFUSED when Vite cold-starts slowly
- * on Windows.
+ * Starts Vite dev server and blocks until the HTTP port responds.
+ *
+ * Uses the same host that Vite binds to (TAURI_DEV_HOST or localhost)
+ * so polling always hits the right address.
  */
 
 import { spawn } from 'node:child_process';
 import { request } from 'node:http';
 
+const HOST = process.env.TAURI_DEV_HOST || 'localhost';
 const PORT = 5173;
-const MAX_RETRIES = 60;
+const MAX_RETRIES = 120;
 const RETRY_MS = 500;
 
-console.log('[dev-server] Starting Vite...');
+console.log(`[dev-server] Starting Vite (host=${HOST}, port=${PORT})...`);
 
 const vite = spawn('npm', ['run', 'dev'], {
   stdio: 'inherit',
@@ -20,14 +21,14 @@ const vite = spawn('npm', ['run', 'dev'], {
 });
 
 function poll(retries = 0) {
-  // 127.0.0.1 avoids IPv6 resolution issues on Windows; port is Number not String
-  request({ hostname: '127.0.0.1', port: PORT, path: '/' }, (res) => {
+  request({ hostname: HOST, port: PORT, path: '/', family: 4 }, (res) => {
     res.resume();
-    console.log(`[dev-server] Vite ready on http://localhost:${PORT}`);
+    console.log(`[dev-server] Vite ready on http://${HOST}:${PORT}`);
   })
-    .on('error', () => {
+    .on('error', (err) => {
       if (retries >= MAX_RETRIES) {
         console.error(`[dev-server] Timed out after ${(MAX_RETRIES * RETRY_MS) / 1000}s`);
+        console.error(`[dev-server] Last error: ${err.code} — ${err.message}`);
         vite.kill();
         process.exit(1);
       }
