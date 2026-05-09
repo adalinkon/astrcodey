@@ -651,6 +651,21 @@ impl CommandHandler {
             self.send_error(40400, "No active turn");
             return Err("No active turn".into());
         };
+        
+        //扩展的TurnAborted事件
+        let ext_ctx = ServerExtensionContext::new(
+            active_turn.session_id.to_string(),
+            active_turn.working_dir.clone(),
+            ModelSelection::simple(active_turn.model_id.clone()),
+        );
+        if let Err(e) = self
+            .runtime
+            .extension_runner
+            .dispatch(ExtensionEvent::TurnAborted, &ext_ctx)
+            .await
+        {
+            tracing::warn!(error = %e, "TurnAborted extension dispatch failed");
+        }
 
         if !active_turn.handle.is_finished() {
             active_turn.handle.abort();

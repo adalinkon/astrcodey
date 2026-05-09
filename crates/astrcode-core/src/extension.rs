@@ -115,6 +115,8 @@ pub enum ExtensionEvent {
     TurnStart,
     /// 轮次结束。
     TurnEnd,
+    /// 用户中止正在运行的轮次。
+    TurnAborted,
 
     // ── 工具级别（主要钩子点） ──
     /// 工具执行前。

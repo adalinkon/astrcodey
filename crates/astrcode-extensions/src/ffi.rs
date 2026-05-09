@@ -164,6 +164,7 @@ pub const fn event_discriminant(event: ExtensionEvent) -> u8 {
         ExtensionEvent::PromptBuild => 9,
         ExtensionEvent::PreCompact => 10,
         ExtensionEvent::PostCompact => 11,
+        ExtensionEvent::TurnAborted => 12,
     }
 }
 
@@ -182,6 +183,7 @@ pub fn event_from_discriminant(d: u8) -> Option<ExtensionEvent> {
         9 => Some(ExtensionEvent::PromptBuild),
         10 => Some(ExtensionEvent::PreCompact),
         11 => Some(ExtensionEvent::PostCompact),
+        12 => Some(ExtensionEvent::TurnAborted),
         _ => None,
     }
 }
