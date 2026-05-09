@@ -52,7 +52,10 @@ export default function ModelSelector({
   useEffect(() => {
     if (!open) return
     const handlePointerDown = (e: PointerEvent) => {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+      if (
+        wrapperRef.current &&
+        !wrapperRef.current.contains(e.target as Node)
+      ) {
         setOpen(false)
         setSearchQuery('')
       }
