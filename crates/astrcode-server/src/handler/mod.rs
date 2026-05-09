@@ -72,6 +72,27 @@ pub enum PromptSubmission {
     Handled { message: String },
 }
 
+/// Structured handler error, replacing ad-hoc string matching.
+#[derive(Debug, thiserror::Error)]
+pub enum HandlerError {
+    #[error("A turn is already running")]
+    TurnAlreadyRunning,
+    #[error("No active turn")]
+    NoActiveTurn,
+    #[error("No active session")]
+    NoActiveSession,
+    #[error("Session not found: {0}")]
+    SessionNotFound(String),
+    #[error("Unknown command: /{0}")]
+    UnknownCommand(String),
+    #[error("Cannot compact while a turn is running")]
+    CompactBlocked,
+    #[error("Compaction skipped: {0}")]
+    CompactionSkipped(String),
+    #[error("{0}")]
+    Other(String),
+}
+
 struct ParsedSlashCommand {
     name: String,
     arguments: String,
@@ -125,11 +146,10 @@ fn command_source(extension_id: &str) -> &'static str {
     }
 }
 
-fn command_error_code(error: &str) -> i32 {
-    if error.contains("Unknown command") {
-        40402
-    } else {
-        -32603
+fn command_error_code(error: &HandlerError) -> i32 {
+    match error {
+        HandlerError::UnknownCommand(_) => 40402,
+        _ => -32603,
     }
 }
 
@@ -168,7 +188,7 @@ impl CommandHandler {
     ///
     /// 支持的命令包括：创建会话、提交提示词、列出会话、中止回合、
     /// 恢复/切换会话、删除会话等。
-    pub async fn handle(&mut self, cmd: ClientCommand) -> Result<(), String> {
+    pub async fn handle(&mut self, cmd: ClientCommand) -> Result<(), HandlerError> {
         match cmd {
             ClientCommand::CreateSession { working_dir } => {
                 self.create_session(working_dir).await?;
@@ -281,12 +301,12 @@ impl CommandHandler {
                     )
                     .await
                 {
-                    self.send_error(command_error_code(&error), &error);
+                    self.send_error(command_error_code(&error), &error.to_string());
                 }
             },
 
             _ => {
-                self.send_error(-32601, "Not implemented");
+                return Err(HandlerError::Other("Not implemented".into()));
             },
         }
         Ok(())
@@ -311,7 +331,7 @@ impl CommandHandler {
     }
 
     /// 创建新会话，分发 SessionStart 扩展事件，并固定该会话的工具和 system prompt 快照。
-    pub async fn create_session(&mut self, working_dir: String) -> Result<SessionId, String> {
+    pub async fn create_session(&mut self, working_dir: String) -> Result<SessionId, HandlerError> {
         let model_id = self.runtime.read_effective().llm.model_id.clone();
         tracing::info!(working_dir = %working_dir, model_id = %model_id, "creating session");
         match self
@@ -337,7 +357,7 @@ impl CommandHandler {
                 {
                     tracing::error!(error = %e, "SessionStart extension dispatch failed");
                     self.send_error(-32603, &e.to_string());
-                    return Err(e.to_string());
+                    return Err(HandlerError::Other(e.to_string()));
                 }
 
                 match self
@@ -351,14 +371,14 @@ impl CommandHandler {
                     Err(e) => {
                         tracing::error!(session_id = %event.session_id, error = %e, "session prompt init failed");
                         self.send_error(-32603, &e);
-                        Err(e)
+                        Err(HandlerError::Other(e))
                     },
                 }
             },
             Err(e) => {
                 tracing::error!(working_dir = %working_dir, error = %e, "session_manager.create failed");
                 self.send_error(-32603, &e.to_string());
-                Err(e.to_string())
+                Err(HandlerError::Other(e.to_string()))
             },
         }
     }
@@ -367,13 +387,13 @@ impl CommandHandler {
     ///
     /// 如果已有回合在运行则拒绝（返回 40900 错误）。
     /// 成功提交后，回合在独立的 tokio 任务中异步执行。
-    async fn submit_prompt(&mut self, text: String) -> Result<(), String> {
+    async fn submit_prompt(&mut self, text: String) -> Result<(), HandlerError> {
         let sid = self.ensure_session().await?;
         match self.submit_input_for_session(sid, text).await {
             Ok(_) => Ok(()),
-            Err(error) if error.contains("already running") => Ok(()),
+            Err(HandlerError::TurnAlreadyRunning) => Ok(()),
             Err(error) => {
-                self.send_error(command_error_code(&error), &error);
+                self.send_error(command_error_code(&error), &error.to_string());
                 Err(error)
             },
         }
@@ -384,7 +404,7 @@ impl CommandHandler {
         &mut self,
         sid: SessionId,
         text: String,
-    ) -> Result<PromptSubmission, String> {
+    ) -> Result<PromptSubmission, HandlerError> {
         if let Some(command) = parse_slash_command(&text) {
             return self
                 .execute_slash_command_for_session(sid, command, text)
@@ -404,7 +424,7 @@ impl CommandHandler {
         &mut self,
         sid: SessionId,
         text: String,
-    ) -> Result<TurnId, String> {
+    ) -> Result<TurnId, HandlerError> {
         self.start_turn_for_session(sid, text.clone(), text, None)
             .await
     }
@@ -415,25 +435,27 @@ impl CommandHandler {
         visible_text: String,
         user_text: String,
         transient_instructions: Option<String>,
-    ) -> Result<TurnId, String> {
+    ) -> Result<TurnId, HandlerError> {
         tracing::info!(session_id = %sid, text_len = user_text.len(), "submit_prompt_for_session");
         if self.active_turns.contains_key(&sid) {
             self.send_error(40900, "A turn is already running");
-            return Err("A turn is already running".into());
+            return Err(HandlerError::TurnAlreadyRunning);
         }
 
         self.runtime
             .session_manager
             .resume(&sid)
             .await
-            .map_err(|e| format!("Session {sid} not found: {e}"))?;
-        self.repair_stale_pending_tool_calls(&sid).await?;
+            .map_err(|e| HandlerError::SessionNotFound(format!("Session {sid} not found: {e}")))?;
+        self.repair_stale_pending_tool_calls(&sid)
+            .await
+            .map_err(HandlerError::Other)?;
         let state = self
             .runtime
             .session_manager
             .read_model(&sid)
             .await
-            .map_err(|e| format!("read session {sid}: {e}"))?;
+            .map_err(|e| HandlerError::Other(format!("read session {sid}: {e}")))?;
         let history = state.provider_messages();
         let working_dir = state.working_dir;
         let model_id = state.model_id;
@@ -441,15 +463,16 @@ impl CommandHandler {
         let tool_registry = self.ensure_tool_registry(&sid, &working_dir).await;
         let system_prompt = match system_prompt {
             Some(system_prompt) => system_prompt,
-            None => {
-                self.configure_session_prompt(&sid, &working_dir, &tool_registry, None)
-                    .await?
-            },
+            None => self
+                .configure_session_prompt(&sid, &working_dir, &tool_registry, None)
+                .await
+                .map_err(HandlerError::Other)?,
         };
         let turn_id = new_turn_id();
 
         self.record_and_broadcast(&sid, Some(&turn_id), EventPayload::TurnStarted)
-            .await?;
+            .await
+            .map_err(HandlerError::Other)?;
         self.record_and_broadcast(
             &sid,
             Some(&turn_id),
@@ -458,9 +481,11 @@ impl CommandHandler {
                 text: visible_text,
             },
         )
-        .await?;
+        .await
+        .map_err(HandlerError::Other)?;
         self.record_and_broadcast(&sid, Some(&turn_id), EventPayload::AgentRunStarted)
-            .await?;
+            .await
+            .map_err(HandlerError::Other)?;
 
         let switch_active_on_continuation = self.active_session_id.as_ref() == Some(&sid);
         let handle = self.spawn_agent_turn(AgentTurnInput {
@@ -495,7 +520,7 @@ impl CommandHandler {
         sid: SessionId,
         command: ParsedSlashCommand,
         visible_text: String,
-    ) -> Result<PromptSubmission, String> {
+    ) -> Result<PromptSubmission, HandlerError> {
         if command.name == "compact" {
             return match self.compact_session(&sid).await? {
                 ManualCompactOutcome::Created { .. } => Ok(PromptSubmission::Handled {
@@ -512,7 +537,7 @@ impl CommandHandler {
             .session_manager
             .read_model(&sid)
             .await
-            .map_err(|e| format!("read session {sid}: {e}"))?;
+            .map_err(|e| HandlerError::Other(format!("read session {sid}: {e}")))?;
         let ext_ctx = ServerExtensionContext::new(
             sid.to_string(),
             state.working_dir.clone(),
@@ -549,24 +574,23 @@ impl CommandHandler {
                 .start_turn_for_session(sid, visible_text.clone(), visible_text, Some(instructions))
                 .await
                 .map(|turn_id| PromptSubmission::Accepted { turn_id }),
-            Err(ExtensionError::NotFound(name)) => Err(format!(
-                "Unknown command: /{}",
-                name.trim_start_matches('/')
+            Err(ExtensionError::NotFound(name)) => Err(HandlerError::UnknownCommand(
+                name.trim_start_matches('/').to_string(),
             )),
-            Err(error) => Err(format!("Command error: {error}")),
+            Err(error) => Err(HandlerError::Other(format!("Command error: {error}"))),
         }
     }
 
     pub async fn command_infos_for_session(
         &self,
         sid: &SessionId,
-    ) -> Result<Vec<astrcode_protocol::events::ExtensionCommandInfo>, String> {
+    ) -> Result<Vec<astrcode_protocol::events::ExtensionCommandInfo>, HandlerError> {
         let state = self
             .runtime
             .session_manager
             .read_model(sid)
             .await
-            .map_err(|e| format!("read session {sid}: {e}"))?;
+            .map_err(|e| HandlerError::Other(format!("read session {sid}: {e}")))?;
         Ok(self.command_infos_for_working_dir(&state.working_dir).await)
     }
 
@@ -637,7 +661,7 @@ impl CommandHandler {
     }
 
     /// 中止当前活跃的回合，取消后台任务并记录完成事件。
-    async fn abort_active_turn(&mut self) -> Result<(), String> {
+    async fn abort_active_turn(&mut self) -> Result<(), HandlerError> {
         let Some(sid) = self.active_session_id.clone() else {
             self.send_error(40400, "No active turn");
             return Ok(());
@@ -646,10 +670,10 @@ impl CommandHandler {
     }
 
     /// 中止指定会话的活跃回合。
-    pub async fn abort_session(&mut self, session_id: &SessionId) -> Result<(), String> {
+    pub async fn abort_session(&mut self, session_id: &SessionId) -> Result<(), HandlerError> {
         let Some(active_turn) = self.active_turns.remove(session_id) else {
             self.send_error(40400, "No active turn");
-            return Err("No active turn".into());
+            return Err(HandlerError::NoActiveTurn);
         };
 
         // 扩展的TurnAborted事件
@@ -680,7 +704,8 @@ impl CommandHandler {
                 finish_reason: "aborted".into(),
             },
         )
-        .await?;
+        .await
+        .map_err(HandlerError::Other)?;
         record_and_broadcast(
             &self.runtime,
             &self.event_tx,
@@ -690,7 +715,8 @@ impl CommandHandler {
                 reason: "aborted".into(),
             },
         )
-        .await?;
+        .await
+        .map_err(HandlerError::Other)?;
         Ok(())
     }
 
@@ -735,7 +761,7 @@ impl CommandHandler {
 
     /// 确保存在活跃会话，如果没有则自动创建一个。
     /// 使用当前工作目录作为新会话的工作目录。
-    async fn ensure_session(&mut self) -> Result<SessionId, String> {
+    async fn ensure_session(&mut self) -> Result<SessionId, HandlerError> {
         if let Some(ref sid) = self.active_session_id {
             return Ok(sid.clone());
         }
@@ -749,7 +775,7 @@ impl CommandHandler {
             .session_manager
             .create(&wd, &model_id, 2048, None)
             .await
-            .map_err(|e| format!("create session: {e}"))?;
+            .map_err(|e| HandlerError::Other(format!("create session: {e}")))?;
 
         let sid = event.session_id.clone();
         self.active_session_id = Some(sid.clone());
@@ -763,8 +789,10 @@ impl CommandHandler {
             .extension_runner
             .dispatch(ExtensionEvent::SessionStart, &ext_ctx)
             .await
-            .map_err(|e| e.to_string())?;
-        self.initialize_session_prompt(&sid, &wd).await?;
+            .map_err(|e| HandlerError::Other(e.to_string()))?;
+        self.initialize_session_prompt(&sid, &wd)
+            .await
+            .map_err(HandlerError::Other)?;
         Ok(sid)
     }
 
@@ -924,7 +952,7 @@ impl CommandHandler {
                         } => {
                             let session_id = current_session_id.lock().await.clone();
                             let (actor_reply, actor_rx) = oneshot::channel();
-                            let result = if actor_tx
+                            let result: Result<SessionId, HandlerError> = if actor_tx
                                 .send(CommandMessage::AgentAutoCompact {
                                     session_id,
                                     turn_id,
@@ -934,19 +962,23 @@ impl CommandHandler {
                                 })
                                 .is_err()
                             {
-                                Err("command actor is unavailable".to_string())
+                                Err(HandlerError::Other(
+                                    "command actor is unavailable".into(),
+                                ))
                             } else {
                                 match actor_rx.await {
                                     Ok(result) => result,
                                     Err(_) => {
-                                        Err("command actor dropped auto compact response".into())
+                                        Err(HandlerError::Other(
+                                            "command actor dropped auto compact response".into(),
+                                        ))
                                     },
                                 }
                             };
                             if let Ok(child_session_id) = &result {
                                 *current_session_id.lock().await = child_session_id.clone();
                             }
-                            let _ = reply.send(result);
+                            let _ = reply.send(result.map_err(|e| e.to_string()));
                         },
                     }
                 }

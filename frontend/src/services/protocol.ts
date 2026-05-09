@@ -42,32 +42,17 @@ function arrayField(source: JsonObject, name: string): unknown[] {
   return value
 }
 
-function stringField(
-  source: JsonObject,
-  camelName: string,
-  snakeName?: string
-): string | null {
-  const value = source[camelName] ?? (snakeName ? source[snakeName] : undefined)
-  return typeof value === 'string' ? value : null
-}
-
-function requiredString(
-  source: JsonObject,
-  camelName: string,
-  snakeName?: string
-): string {
-  const value = stringField(source, camelName, snakeName)
-  if (value == null)
-    throw new ProtocolDecodeError(`expected string ${camelName}`)
+function requiredString(source: JsonObject, name: string): string {
+  const value = source[name]
+  if (typeof value !== 'string')
+    throw new ProtocolDecodeError(`expected string ${name}`)
   return value
 }
 
-function optionalString(
-  source: JsonObject,
-  camelName: string,
-  snakeName?: string
-): string | undefined {
-  return stringField(source, camelName, snakeName) ?? undefined
+function optionalString(source: JsonObject, name: string): string | undefined {
+  const value = source[name]
+  if (value == null || typeof value !== 'string') return undefined
+  return value
 }
 
 function requiredBoolean(source: JsonObject, name: string): boolean {
@@ -191,19 +176,11 @@ export function decodeConversationDelta(value: unknown): ConversationDelta {
     case 'patchBlock':
       return {
         kind,
-        blockId: requiredString(object, 'blockId', 'block_id'),
-        textDelta: requiredString(object, 'textDelta', 'text_delta'),
+        blockId: requiredString(object, 'blockId'),
+        textDelta: requiredString(object, 'textDelta'),
       }
     case 'finalizeBlock':
       return { kind, block: decodeConversationBlock(object.block) }
-    case 'completeBlock': {
-      const text = optionalString(object, 'text')
-      return {
-        kind,
-        blockId: requiredString(object, 'blockId', 'block_id'),
-        ...(text != null ? { text } : {}),
-      }
-    }
     case 'updateControlState':
       return { kind, control: decodeConversationControlState(object.control) }
     case 'rehydrateRequired':
@@ -211,20 +188,14 @@ export function decodeConversationDelta(value: unknown): ConversationDelta {
     case 'sessionContinued':
       return {
         kind,
-        parentSessionId: requiredString(
-          object,
-          'parentSessionId',
-          'parent_session_id'
-        ),
-        newSessionId: requiredString(object, 'newSessionId', 'new_session_id'),
-        parentCursor: decodeConversationCursor(
-          object.parentCursor ?? object.parent_cursor
-        ),
+        parentSessionId: requiredString(object, 'parentSessionId'),
+        newSessionId: requiredString(object, 'newSessionId'),
+        parentCursor: decodeConversationCursor(object.parentCursor),
       }
     case 'toolOutput':
       return {
         kind,
-        callId: requiredString(object, 'callId', 'call_id'),
+        callId: requiredString(object, 'callId'),
         stream: decodeToolOutputStream(object.stream),
         delta: requiredString(object, 'delta'),
       }
@@ -240,7 +211,7 @@ export function decodeConversationStreamEnvelope(
 ): ConversationStreamEnvelope {
   const object = decodeObject(value, 'conversation stream envelope')
   return {
-    sessionId: requiredString(object, 'sessionId', 'session_id'),
+    sessionId: requiredString(object, 'sessionId'),
     cursor: decodeConversationCursor(object.cursor),
     delta: decodeConversationDelta(object.delta),
   }

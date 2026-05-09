@@ -3,7 +3,7 @@
 //! 定义 JSON-RPC 2.0 消息的序列化/反序列化格式，
 //! 以及用于 stdio 管道通信的 JSONL（JSON Lines）帧协议。
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, ser::Error as _};
 use serde_json::{Map, Value};
 
 use crate::{commands::ClientCommand, events::ClientNotification};
@@ -104,14 +104,9 @@ pub fn command_to_jsonrpc_request(
 ) -> Result<JsonRpcMessage, serde_json::Error> {
     let mut value = serde_json::to_value(command)?;
     let Some(object) = value.as_object_mut() else {
-        return Ok(JsonRpcMessage {
-            jsonrpc: "2.0".into(),
-            id: Some(id),
-            method: Some("unknown".into()),
-            params: None,
-            result: None,
-            error: None,
-        });
+        return Err(serde_json::Error::custom(
+            "command did not serialize to a JSON object",
+        ));
     };
     let method = object
         .remove("method")
@@ -147,7 +142,9 @@ pub fn notification_to_jsonrpc_message(
 ) -> Result<JsonRpcMessage, serde_json::Error> {
     let mut value = serde_json::to_value(notification)?;
     let Some(object) = value.as_object_mut() else {
-        return Ok(event_message("unknown", &Value::Null));
+        return Err(serde_json::Error::custom(
+            "notification did not serialize to a JSON object",
+        ));
     };
     let event = object
         .remove("event")

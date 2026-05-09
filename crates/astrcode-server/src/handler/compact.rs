@@ -14,7 +14,7 @@ use astrcode_extensions::context::ServerExtensionContext;
 use astrcode_protocol::events::ClientNotification;
 use astrcode_tools::registry::ToolRegistry;
 
-use super::{CommandHandler, session_snapshot};
+use super::{CommandHandler, HandlerError, session_snapshot};
 use crate::{
     agent::{
         compact::{
@@ -48,7 +48,7 @@ pub enum ManualCompactOutcome {
 }
 
 impl CommandHandler {
-    pub(super) async fn compact_active_session(&mut self) -> Result<(), String> {
+    pub(super) async fn compact_active_session(&mut self) -> Result<(), HandlerError> {
         let Some(sid) = self.active_session_id.clone() else {
             self.send_error(40400, "No active session");
             return Ok(());
@@ -60,7 +60,7 @@ impl CommandHandler {
                 Ok(())
             },
             Err(error) => {
-                self.send_error(-32603, &error);
+                self.send_error(-32603, &error.to_string());
                 Err(error)
             },
         }
@@ -70,10 +70,10 @@ impl CommandHandler {
     pub async fn compact_session(
         &mut self,
         sid: &SessionId,
-    ) -> Result<ManualCompactOutcome, String> {
+    ) -> Result<ManualCompactOutcome, HandlerError> {
         if self.active_turns.contains_key(sid) {
             self.send_error(40900, "Cannot compact while a turn is running");
-            return Err("Cannot compact while a turn is running".into());
+            return Err(HandlerError::CompactBlocked);
         }
 
         let state = self
@@ -81,7 +81,7 @@ impl CommandHandler {
             .session_manager
             .read_model(sid)
             .await
-            .map_err(|e| format!("read session {sid}: {e}"))?;
+            .map_err(|e| HandlerError::Other(format!("read session {sid}: {e}")))?;
         let tool_registry = self.ensure_tool_registry(sid, &state.working_dir).await;
         let provider_messages = state.provider_messages();
         let tools = tool_registry.list_definitions();
@@ -97,7 +97,7 @@ impl CommandHandler {
             match collect_compact_instructions(&self.runtime.extension_runner, hook_ctx).await {
                 Ok(instructions) => instructions,
                 Err(error) => {
-                    return Err(format!("Compaction failed: {error}"));
+                    return Err(HandlerError::Other(format!("Compaction failed: {error}")));
                 },
             };
         let snapshot_path = match self
@@ -117,9 +117,9 @@ impl CommandHandler {
         {
             Ok(path) => path,
             Err(error) => {
-                return Err(format!(
+                return Err(HandlerError::Other(format!(
                     "Compaction failed: could not write transcript snapshot: {error}"
-                ));
+                )));
             },
         };
         let render_options = CompactSummaryRenderOptions {
@@ -145,7 +145,7 @@ impl CommandHandler {
                 });
             },
             Err(error) => {
-                return Err(format!("Compaction failed: {error}"));
+                return Err(HandlerError::Other(format!("Compaction failed: {error}")));
             },
         };
         enrich_post_compact_context(
@@ -162,14 +162,15 @@ impl CommandHandler {
         if let Err(error) =
             dispatch_post_compact(&self.runtime.extension_runner, hook_ctx, &compaction).await
         {
-            return Err(format!("Compaction failed: {error}"));
+            return Err(HandlerError::Other(format!("Compaction failed: {error}")));
         }
 
         let system_prompt = match &state.system_prompt {
             Some(system_prompt) => system_prompt.clone(),
             None => {
                 self.configure_session_prompt(sid, &state.working_dir, &tool_registry, None)
-                    .await?
+                    .await
+                    .map_err(HandlerError::Other)?
             },
         };
         let child_session_id = self
@@ -191,7 +192,7 @@ impl CommandHandler {
     async fn create_compact_continuation_child(
         &mut self,
         input: PendingCompactContinuation,
-    ) -> Result<SessionId, String> {
+    ) -> Result<SessionId, HandlerError> {
         let working_dir = input.working_dir.clone();
         let model_id = input.model_id.clone();
         let system_prompt = input.system_prompt.clone();
@@ -205,7 +206,8 @@ impl CommandHandler {
                 model_id: input.model_id,
             },
         )
-        .await?;
+        .await
+        .map_err(|e| HandlerError::Other(e.to_string()))?;
         let child_session_id = continuation.child_session_id.clone();
         self.session_tool_registries
             .insert(child_session_id.clone(), Arc::clone(&input.tool_registry));
@@ -222,7 +224,7 @@ impl CommandHandler {
             .extension_runner
             .dispatch(ExtensionEvent::SessionStart, &ext_ctx)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| HandlerError::Other(e.to_string()))?;
 
         let events = append_compact_continuation_events(
             &self.runtime.session_manager,
@@ -234,13 +236,15 @@ impl CommandHandler {
                 compaction: input.compaction,
             },
         )
-        .await?;
+        .await
+        .map_err(|e| HandlerError::Other(e.to_string()))?;
         if is_manual_compact {
             // Auto compact emits this from the agent loop at the real compact
             // point. Manual compact has no agent loop, so emit it here after
             // failure/skip paths are behind us and before the boundary event.
             self.record_and_broadcast(&parent_session_id, None, EventPayload::CompactionStarted)
-                .await?;
+                .await
+                .map_err(HandlerError::Other)?;
         }
         for event in events.appended_events {
             let _ = self.event_tx.send(ClientNotification::Event(event));
@@ -258,7 +262,7 @@ impl CommandHandler {
             .session_manager
             .read_model(&child_session_id)
             .await
-            .map_err(|e| format!("read session {child_session_id}: {e}"))?;
+            .map_err(|e| HandlerError::Other(format!("read session {child_session_id}: {e}")))?;
         let _ = self.event_tx.send(ClientNotification::SessionResumed {
             session_id: child_session_id.clone().into_string(),
             snapshot: session_snapshot(&child_state),
@@ -272,13 +276,13 @@ impl CommandHandler {
         turn_id: TurnId,
         trigger: CompactTrigger,
         compaction: CompactResult,
-    ) -> Result<SessionId, String> {
+    ) -> Result<SessionId, HandlerError> {
         let Some(mut active_turn) = self.active_turns.remove(&session_id) else {
-            return Err("stale auto compact transition".into());
+            return Err(HandlerError::Other("stale auto compact transition".into()));
         };
         if active_turn.turn_id != turn_id {
             self.active_turns.insert(session_id, active_turn);
-            return Err("stale auto compact transition".into());
+            return Err(HandlerError::Other("stale auto compact transition".into()));
         }
 
         let input = PendingCompactContinuation {

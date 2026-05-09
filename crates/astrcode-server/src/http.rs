@@ -22,8 +22,8 @@ use astrcode_protocol::{
         ConversationStreamEnvelopeDto, CreateSessionRequest, CreateSessionResponseDto,
         CurrentModelResponseDto, DeleteProjectResponseDto, ModelDto, ModelListResponseDto,
         ModelTestResponseDto, ProfileDto, PromptRequest, PromptSubmitResponse, SessionListItemDto,
-        SessionListResponseDto, SlashCommandInfoDto, SlashCommandListResponseDto,
-        UpdateActiveSelectionRequest, UpdateActiveSelectionResponseDto,
+        SessionListResponseDto, SlashCommandListResponseDto, UpdateActiveSelectionRequest,
+        UpdateActiveSelectionResponseDto,
     },
 };
 use axum::{
@@ -43,7 +43,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::{
     bootstrap::ServerRuntime,
-    handler::{CommandHandler, ManualCompactOutcome, PromptSubmission},
+    handler::{CommandHandler, HandlerError, ManualCompactOutcome, PromptSubmission},
 };
 
 /// HTTP router shared state.
@@ -190,17 +190,25 @@ async fn submit_prompt(
             message,
         })
         .into_response(),
-        Err(error) if error.contains("already running") => {
+        Err(HandlerError::TurnAlreadyRunning) => {
             tracing::warn!(session_id = %session_id, "prompt rejected: turn already running");
-            error_response(StatusCode::CONFLICT, "turn_running", error)
+            error_response(
+                StatusCode::CONFLICT,
+                "turn_running",
+                "A turn is already running",
+            )
         },
-        Err(error) if error.contains("Unknown command") => {
-            tracing::warn!(session_id = %session_id, error = %error, "prompt rejected: unknown slash command");
-            error_response(StatusCode::BAD_REQUEST, "unknown_command", error)
+        Err(HandlerError::UnknownCommand(cmd)) => {
+            tracing::warn!(session_id = %session_id, command = %cmd, "prompt rejected: unknown slash command");
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "unknown_command",
+                format!("Unknown command: /{cmd}"),
+            )
         },
         Err(error) => {
             tracing::error!(session_id = %session_id, error = %error, "prompt failed");
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "prompt_failed", error)
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "prompt_failed", error.to_string())
         },
     }
 }
@@ -209,15 +217,7 @@ async fn list_commands(State(state): State<HttpState>, Path(session_id): Path<St
     let session_id = SessionId::from(session_id);
     match state.handler.command_infos_for_session(session_id).await {
         Ok(commands) => Json(SlashCommandListResponseDto {
-            commands: commands
-                .into_iter()
-                .map(|command| SlashCommandInfoDto {
-                    name: command.name,
-                    description: command.description,
-                    needs_argument: command.needs_argument,
-                    source: command.source,
-                })
-                .collect(),
+            commands: commands.into_iter().map(Into::into).collect(),
         })
         .into_response(),
         Err(error) => error_response(StatusCode::NOT_FOUND, "session_not_found", error),
@@ -245,10 +245,12 @@ async fn compact_session(
             message,
         })
         .into_response(),
-        Err(error) if error.contains("turn is running") => {
-            error_response(StatusCode::CONFLICT, "turn_running", error)
+        Err(error) if matches!(error, HandlerError::CompactBlocked) => {
+            error_response(StatusCode::CONFLICT, "turn_running", error.to_string())
         },
-        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "compact_failed", error),
+        Err(error) => {
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "compact_failed", error.to_string())
+        },
     }
 }
 
@@ -256,10 +258,12 @@ async fn abort_session(State(state): State<HttpState>, Path(session_id): Path<St
     let session_id = SessionId::from(session_id);
     match state.handler.abort_session(session_id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) if error.contains("No active turn") => {
-            error_response(StatusCode::NOT_FOUND, "no_active_turn", error)
+        Err(error) if matches!(error, HandlerError::NoActiveTurn) => {
+            error_response(StatusCode::NOT_FOUND, "no_active_turn", error.to_string())
         },
-        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "abort_failed", error),
+        Err(error) => {
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "abort_failed", error.to_string())
+        },
     }
 }
 
@@ -485,8 +489,7 @@ async fn session_stream(
                     value: cursor.clone(),
                 },
                 delta,
-            })
-            .id(cursor)))
+            })))
         }
     });
     let replay_error_stream = stream::iter(replay_error.then(|| {
@@ -544,8 +547,7 @@ async fn session_stream(
                                         value: cursor.clone(),
                                     },
                                     delta,
-                                })
-                                .id(cursor.clone()))
+                                }))
                             })
                             .collect();
                         let mut items = items;
@@ -621,12 +623,6 @@ fn conversation_to_dto(session: SessionReadModel) -> ConversationSnapshotRespons
 
 fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDto> {
     match &event.payload {
-        EventPayload::UserMessage { message_id, text } => vec![ConversationDeltaDto::AppendBlock {
-            block: ConversationBlockDto::User {
-                id: message_id.to_string(),
-                text: text.clone(),
-            },
-        }],
         EventPayload::AssistantMessageStarted { message_id } => {
             vec![ConversationDeltaDto::AppendBlock {
                 block: ConversationBlockDto::Assistant {
@@ -640,15 +636,6 @@ fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDto> {
             vec![ConversationDeltaDto::PatchBlock {
                 block_id: message_id.to_string(),
                 text_delta: delta.clone(),
-            }]
-        },
-        EventPayload::AssistantMessageCompleted { message_id, text } => {
-            vec![ConversationDeltaDto::FinalizeBlock {
-                block: ConversationBlockDto::Assistant {
-                    id: message_id.to_string(),
-                    text: text.clone(),
-                    status: ConversationBlockStatusDto::Complete,
-                },
             }]
         },
         EventPayload::ToolCallStarted { call_id, tool_name } => {
@@ -670,58 +657,39 @@ fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDto> {
             stream: *stream,
             delta: delta.clone(),
         }],
-        EventPayload::ToolCallCompleted {
-            call_id,
-            tool_name,
-            result,
-        } => vec![ConversationDeltaDto::FinalizeBlock {
-            block: ConversationBlockDto::ToolCall {
-                id: call_id.to_string(),
-                name: tool_name.clone(),
-                text: result.content.clone(),
-                status: if result.is_error {
-                    ConversationBlockStatusDto::Error
-                } else {
-                    ConversationBlockStatusDto::Complete
-                },
-            },
-        }],
-        EventPayload::ErrorOccurred { message, .. } => vec![ConversationDeltaDto::AppendBlock {
-            block: ConversationBlockDto::Error {
-                id: event.id.to_string(),
-                message: message.clone(),
-            },
-        }],
-        EventPayload::CompactBoundaryCreated {
-            trigger,
-            pre_tokens,
-            post_tokens,
-            summary,
-            transcript_path,
-            continued_session_id,
-        } => {
-            let block_id = format!("compact-{}", event.seq.unwrap_or_default());
-            vec![
-                ConversationDeltaDto::AppendBlock {
-                    block: ConversationBlockDto::CompactSummary {
-                        id: block_id,
-                        summary: summary.clone(),
-                        trigger: trigger.clone(),
-                        pre_tokens: *pre_tokens,
-                        post_tokens: *post_tokens,
-                        transcript_path: transcript_path.clone(),
-                    },
-                },
-                ConversationDeltaDto::SessionContinued {
-                    parent_session_id: event.session_id.to_string(),
-                    new_session_id: continued_session_id.to_string(),
-                    parent_cursor: ConversationCursorDto {
-                        value: event.seq.unwrap_or_default().to_string(),
-                    },
-                },
-            ]
+
+        // Completed blocks — shared construction, different delta wrappers
+        EventPayload::UserMessage { .. } | EventPayload::ErrorOccurred { .. } => {
+            completed_block_from_payload(event)
+                .map(|block| ConversationDeltaDto::AppendBlock { block })
+                .into_iter()
+                .collect()
         },
-        // Phase transitions that the client needs to know about
+        EventPayload::AssistantMessageCompleted { .. } | EventPayload::ToolCallCompleted { .. } => {
+            completed_block_from_payload(event)
+                .map(|block| ConversationDeltaDto::FinalizeBlock { block })
+                .into_iter()
+                .collect()
+        },
+        EventPayload::CompactBoundaryCreated {
+            continued_session_id,
+            ..
+        } => {
+            let mut deltas: Vec<ConversationDeltaDto> = completed_block_from_payload(event)
+                .map(|block| ConversationDeltaDto::AppendBlock { block })
+                .into_iter()
+                .collect();
+            deltas.push(ConversationDeltaDto::SessionContinued {
+                parent_session_id: event.session_id.to_string(),
+                new_session_id: continued_session_id.to_string(),
+                parent_cursor: ConversationCursorDto {
+                    value: event.seq.unwrap_or_default().to_string(),
+                },
+            });
+            deltas
+        },
+
+        // Phase transitions
         EventPayload::TurnStarted
         | EventPayload::AgentRunStarted
         | EventPayload::CompactionStarted
@@ -739,7 +707,8 @@ fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDto> {
         EventPayload::ThinkingDelta { delta } => vec![ConversationDeltaDto::ThinkingDelta {
             delta: delta.clone(),
         }],
-        // Terminal events where the client already has the block content
+
+        // Events the client doesn't need as visible deltas
         EventPayload::SystemPromptConfigured { .. }
         | EventPayload::SessionContinuedFromCompaction { .. }
         | EventPayload::ToolCallArgumentsDelta { .. }
@@ -748,44 +717,38 @@ fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDto> {
     }
 }
 
-fn event_to_replay_delta(event: &Event) -> Option<ConversationDeltaDto> {
+/// Build the completed [`ConversationBlockDto`] for payloads that produce a single
+/// final block. Shared by live and replay delta functions.
+fn completed_block_from_payload(event: &Event) -> Option<ConversationBlockDto> {
     match &event.payload {
-        EventPayload::UserMessage { message_id, text } => Some(ConversationDeltaDto::AppendBlock {
-            block: ConversationBlockDto::User {
-                id: message_id.to_string(),
-                text: text.clone(),
-            },
+        EventPayload::UserMessage { message_id, text } => Some(ConversationBlockDto::User {
+            id: message_id.to_string(),
+            text: text.clone(),
         }),
         EventPayload::AssistantMessageCompleted { message_id, text } => {
-            Some(ConversationDeltaDto::AppendBlock {
-                block: ConversationBlockDto::Assistant {
-                    id: message_id.to_string(),
-                    text: text.clone(),
-                    status: ConversationBlockStatusDto::Complete,
-                },
+            Some(ConversationBlockDto::Assistant {
+                id: message_id.to_string(),
+                text: text.clone(),
+                status: ConversationBlockStatusDto::Complete,
             })
         },
         EventPayload::ToolCallCompleted {
             call_id,
             tool_name,
             result,
-        } => Some(ConversationDeltaDto::AppendBlock {
-            block: ConversationBlockDto::ToolCall {
-                id: call_id.to_string(),
-                name: tool_name.clone(),
-                text: result.content.clone(),
-                status: if result.is_error {
-                    ConversationBlockStatusDto::Error
-                } else {
-                    ConversationBlockStatusDto::Complete
-                },
+        } => Some(ConversationBlockDto::ToolCall {
+            id: call_id.to_string(),
+            name: tool_name.clone(),
+            text: result.content.clone(),
+            status: if result.is_error {
+                ConversationBlockStatusDto::Error
+            } else {
+                ConversationBlockStatusDto::Complete
             },
         }),
-        EventPayload::ErrorOccurred { message, .. } => Some(ConversationDeltaDto::AppendBlock {
-            block: ConversationBlockDto::Error {
-                id: event.id.to_string(),
-                message: message.clone(),
-            },
+        EventPayload::ErrorOccurred { message, .. } => Some(ConversationBlockDto::Error {
+            id: event.id.to_string(),
+            message: message.clone(),
         }),
         EventPayload::CompactBoundaryCreated {
             trigger,
@@ -794,39 +757,31 @@ fn event_to_replay_delta(event: &Event) -> Option<ConversationDeltaDto> {
             summary,
             transcript_path,
             ..
-        } => Some(ConversationDeltaDto::AppendBlock {
-            block: ConversationBlockDto::CompactSummary {
-                id: format!("compact-{}", event.seq.unwrap_or_default()),
+        } => {
+            let block_id = format!("compact-{}", event.seq.unwrap_or_default());
+            Some(ConversationBlockDto::CompactSummary {
+                id: block_id,
                 summary: summary.clone(),
                 trigger: trigger.clone(),
                 pre_tokens: *pre_tokens,
                 post_tokens: *post_tokens,
                 transcript_path: transcript_path.clone(),
-            },
-        }),
-        EventPayload::TurnCompleted { .. } => Some(ConversationDeltaDto::UpdateControlState {
-            control: control_from_phase(Phase::Idle),
-        }),
-        EventPayload::SessionContinuedFromCompaction { .. }
-        | EventPayload::SessionStarted { .. }
-        | EventPayload::SystemPromptConfigured { .. }
-        | EventPayload::TurnStarted
-        | EventPayload::AgentRunStarted
-        | EventPayload::AgentRunCompleted { .. }
-        | EventPayload::AssistantMessageStarted { .. }
-        | EventPayload::AssistantTextDelta { .. }
-        | EventPayload::ThinkingDelta { .. }
-        | EventPayload::ToolCallStarted { .. }
-        | EventPayload::ToolCallArgumentsDelta { .. }
-        | EventPayload::ToolCallRequested { .. }
-        | EventPayload::ToolOutputDelta { .. }
-        | EventPayload::CompactionStarted
-        | EventPayload::ToolCallBackgrounded { .. }
-        | EventPayload::BackgroundTaskOutput { .. }
-        | EventPayload::BackgroundTaskCompleted { .. }
-        | EventPayload::Custom { .. }
-        | EventPayload::SessionDeleted => None,
+            })
+        },
+        _ => None,
     }
+}
+
+fn event_to_replay_delta(event: &Event) -> Option<ConversationDeltaDto> {
+    if let Some(block) = completed_block_from_payload(event) {
+        return Some(ConversationDeltaDto::AppendBlock { block });
+    }
+    if matches!(&event.payload, EventPayload::TurnCompleted { .. }) {
+        return Some(ConversationDeltaDto::UpdateControlState {
+            control: control_from_phase(Phase::Idle),
+        });
+    }
+    None
 }
 
 fn projected_phase(payload: &EventPayload) -> Phase {

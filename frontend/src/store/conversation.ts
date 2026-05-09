@@ -298,42 +298,6 @@ export const useAppStore = create<ConversationState>((set, get) => ({
         }))
         break
 
-      case 'completeBlock':
-        set((current) => {
-          const idx = current.blocks.findIndex(
-            (block) => block.id === delta.blockId
-          )
-          if (idx === -1) {
-            if (!delta.text) return {}
-            return {
-              blocks: upsertBlock(current.blocks, {
-                kind: 'assistant',
-                id: delta.blockId,
-                text: delta.text,
-                status: 'complete',
-              }),
-              thinkingText: null,
-            }
-          }
-
-          const block = current.blocks[idx]
-          if (block.kind !== 'assistant' && block.kind !== 'toolCall') {
-            return {}
-          }
-
-          const next = [...current.blocks]
-          next[idx] = {
-            ...block,
-            ...(delta.text != null ? { text: delta.text } : {}),
-            status: 'complete',
-          }
-          return {
-            blocks: next,
-            ...(block.kind === 'assistant' ? { thinkingText: null } : {}),
-          }
-        })
-        break
-
       case 'updateControlState':
         set({
           control: delta.control,

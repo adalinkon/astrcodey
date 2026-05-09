@@ -10,7 +10,7 @@ use astrcode_core::{
 use astrcode_protocol::{commands::ClientCommand, events::ClientNotification};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use super::{CommandHandler, ManualCompactOutcome, PromptSubmission};
+use super::{CommandHandler, HandlerError, ManualCompactOutcome, PromptSubmission};
 use crate::{
     agent::{AgentError, AgentTurnOutput},
     bootstrap::ServerRuntime,
@@ -22,29 +22,29 @@ pub struct CommandHandle {
 }
 
 impl CommandHandle {
-    pub async fn handle(&self, command: ClientCommand) -> Result<(), String> {
+    pub async fn handle(&self, command: ClientCommand) -> Result<(), HandlerError> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(CommandMessage::ClientCommand { command, reply })
-            .map_err(|_| "command actor is unavailable".to_string())?;
+            .map_err(|_| HandlerError::Other("command actor is unavailable".into()))?;
         rx.await
-            .map_err(|_| "command actor dropped response".to_string())?
+            .map_err(|_| HandlerError::Other("command actor dropped response".into()))?
     }
 
-    pub async fn create_session(&self, working_dir: String) -> Result<SessionId, String> {
+    pub async fn create_session(&self, working_dir: String) -> Result<SessionId, HandlerError> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(CommandMessage::CreateSession { working_dir, reply })
-            .map_err(|_| "command actor is unavailable".to_string())?;
+            .map_err(|_| HandlerError::Other("command actor is unavailable".into()))?;
         rx.await
-            .map_err(|_| "command actor dropped response".to_string())?
+            .map_err(|_| HandlerError::Other("command actor dropped response".into()))?
     }
 
     pub async fn submit_prompt_for_session(
         &self,
         session_id: SessionId,
         text: String,
-    ) -> Result<TurnId, String> {
+    ) -> Result<TurnId, HandlerError> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(CommandMessage::SubmitPromptForSession {
@@ -52,16 +52,16 @@ impl CommandHandle {
                 text,
                 reply,
             })
-            .map_err(|_| "command actor is unavailable".to_string())?;
+            .map_err(|_| HandlerError::Other("command actor is unavailable".into()))?;
         rx.await
-            .map_err(|_| "command actor dropped response".to_string())?
+            .map_err(|_| HandlerError::Other("command actor dropped response".into()))?
     }
 
     pub async fn submit_input_for_session(
         &self,
         session_id: SessionId,
         text: String,
-    ) -> Result<PromptSubmission, String> {
+    ) -> Result<PromptSubmission, HandlerError> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(CommandMessage::SubmitInputForSession {
@@ -69,76 +69,77 @@ impl CommandHandle {
                 text,
                 reply,
             })
-            .map_err(|_| "command actor is unavailable".to_string())?;
+            .map_err(|_| HandlerError::Other("command actor is unavailable".into()))?;
         rx.await
-            .map_err(|_| "command actor dropped response".to_string())?
+            .map_err(|_| HandlerError::Other("command actor dropped response".into()))?
     }
 
     pub async fn compact_session(
         &self,
         session_id: SessionId,
-    ) -> Result<ManualCompactOutcome, String> {
+    ) -> Result<ManualCompactOutcome, HandlerError> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(CommandMessage::CompactSession { session_id, reply })
-            .map_err(|_| "command actor is unavailable".to_string())?;
+            .map_err(|_| HandlerError::Other("command actor is unavailable".into()))?;
         rx.await
-            .map_err(|_| "command actor dropped response".to_string())?
+            .map_err(|_| HandlerError::Other("command actor dropped response".into()))?
     }
 
-    pub async fn abort_session(&self, session_id: SessionId) -> Result<(), String> {
+    pub async fn abort_session(&self, session_id: SessionId) -> Result<(), HandlerError> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(CommandMessage::AbortSession { session_id, reply })
-            .map_err(|_| "command actor is unavailable".to_string())?;
+            .map_err(|_| HandlerError::Other("command actor is unavailable".into()))?;
         rx.await
-            .map_err(|_| "command actor dropped response".to_string())?
+            .map_err(|_| HandlerError::Other("command actor dropped response".into()))?
     }
 
     pub async fn command_infos_for_session(
         &self,
         session_id: SessionId,
-    ) -> Result<Vec<astrcode_protocol::events::ExtensionCommandInfo>, String> {
+    ) -> Result<Vec<astrcode_protocol::events::ExtensionCommandInfo>, HandlerError> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(CommandMessage::ListCommandsForSession { session_id, reply })
-            .map_err(|_| "command actor is unavailable".to_string())?;
+            .map_err(|_| HandlerError::Other("command actor is unavailable".into()))?;
         rx.await
-            .map_err(|_| "command actor dropped response".to_string())?
+            .map_err(|_| HandlerError::Other("command actor dropped response".into()))?
     }
 }
 
 pub(super) enum CommandMessage {
     ClientCommand {
         command: ClientCommand,
-        reply: oneshot::Sender<Result<(), String>>,
+        reply: oneshot::Sender<Result<(), HandlerError>>,
     },
     CreateSession {
         working_dir: String,
-        reply: oneshot::Sender<Result<SessionId, String>>,
+        reply: oneshot::Sender<Result<SessionId, HandlerError>>,
     },
     SubmitPromptForSession {
         session_id: SessionId,
         text: String,
-        reply: oneshot::Sender<Result<TurnId, String>>,
+        reply: oneshot::Sender<Result<TurnId, HandlerError>>,
     },
     SubmitInputForSession {
         session_id: SessionId,
         text: String,
-        reply: oneshot::Sender<Result<PromptSubmission, String>>,
+        reply: oneshot::Sender<Result<PromptSubmission, HandlerError>>,
     },
     CompactSession {
         session_id: SessionId,
-        reply: oneshot::Sender<Result<ManualCompactOutcome, String>>,
+        reply: oneshot::Sender<Result<ManualCompactOutcome, HandlerError>>,
     },
     AbortSession {
         session_id: SessionId,
-        reply: oneshot::Sender<Result<(), String>>,
+        reply: oneshot::Sender<Result<(), HandlerError>>,
     },
     ListCommandsForSession {
         session_id: SessionId,
-        reply:
-            oneshot::Sender<Result<Vec<astrcode_protocol::events::ExtensionCommandInfo>, String>>,
+        reply: oneshot::Sender<
+            Result<Vec<astrcode_protocol::events::ExtensionCommandInfo>, HandlerError>,
+        >,
     },
     AgentEvent {
         session_id: SessionId,
@@ -161,7 +162,7 @@ pub(super) enum CommandMessage {
         turn_id: TurnId,
         trigger: CompactTrigger,
         compaction: CompactResult,
-        reply: oneshot::Sender<Result<SessionId, String>>,
+        reply: oneshot::Sender<Result<SessionId, HandlerError>>,
     },
     /// 后台任务完成，需要持久化事件并广播给客户端。
     BackgroundTaskCompleted {

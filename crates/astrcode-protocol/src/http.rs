@@ -103,6 +103,17 @@ pub struct SlashCommandInfoDto {
     pub source: String,
 }
 
+impl From<crate::events::ExtensionCommandInfo> for SlashCommandInfoDto {
+    fn from(cmd: crate::events::ExtensionCommandInfo) -> Self {
+        Self {
+            name: cmd.name,
+            description: cmd.description,
+            needs_argument: cmd.needs_argument,
+            source: cmd.source,
+        }
+    }
+}
+
 /// fork 请求的冻结线缆形状。v1 route 返回 501。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

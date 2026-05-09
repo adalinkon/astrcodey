@@ -495,7 +495,7 @@ async fn client_create_session_reports_start_hook_failure() {
         .await
         .unwrap_err();
 
-    assert!(error.contains("session start failed"));
+    assert!(error.to_string().contains("session start failed"));
     let mut saw_error = false;
     while let Ok(notification) = event_rx.try_recv() {
         if let ClientNotification::Error { code, message } = notification {
@@ -656,7 +656,10 @@ async fn submit_prompt_rejects_second_running_turn() {
         .submit_prompt_for_session(sid.clone(), "second".into())
         .await
         .unwrap_err();
-    assert!(error.contains("already running"));
+    assert!(
+        matches!(error, HandlerError::TurnAlreadyRunning),
+        "expected TurnAlreadyRunning, got {error:?}"
+    );
 
     let mut saw_busy = false;
     while let Ok(notification) = event_rx.try_recv() {
@@ -701,7 +704,10 @@ async fn compact_session_rejects_running_turn_without_compaction_started() {
     while event_rx.try_recv().is_ok() {}
 
     let error = handler.compact_session(sid.clone()).await.unwrap_err();
-    assert_eq!(error, "Cannot compact while a turn is running");
+    assert!(
+        matches!(error, HandlerError::CompactBlocked),
+        "expected CompactBlocked, got {error:?}"
+    );
 
     let mut saw_conflict = false;
     while let Ok(notification) = event_rx.try_recv() {
@@ -871,7 +877,10 @@ async fn unknown_slash_command_does_not_enter_llm_or_transcript() {
         .await
         .unwrap_err();
 
-    assert_eq!(error, "Unknown command: /missing-command");
+    assert!(
+        matches!(&error, HandlerError::UnknownCommand(cmd) if cmd == "missing-command"),
+        "expected UnknownCommand(missing-command), got {error:?}"
+    );
     let state = runtime.session_manager.read_model(&sid).await.unwrap();
     assert!(state.messages.is_empty());
 }
@@ -1167,7 +1176,7 @@ async fn compact_command_does_not_fallback_when_summary_is_invalid() {
     while event_rx.try_recv().is_ok() {}
 
     let error = handler.compact_session(sid.clone()).await.unwrap_err();
-    assert!(error.contains("Compaction failed"));
+    assert!(error.to_string().contains("Compaction failed"));
 
     let state = runtime.session_manager.read_model(&sid).await.unwrap();
     assert!(state.context_messages.is_empty());
