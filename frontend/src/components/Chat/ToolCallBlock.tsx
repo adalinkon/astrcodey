@@ -47,7 +47,7 @@ function ToolCallBlock({ block }: ToolCallBlockProps) {
   const summaryLine = compactLine(
     block.arguments ||
       block.text ||
-      (block.status === 'streaming' ? '等待输出...' : '')
+      (block.status === 'streaming' ? '等待输出...' : '(无输出)')
   )
   // 展开区域：显示工具执行结果
   const resultText =

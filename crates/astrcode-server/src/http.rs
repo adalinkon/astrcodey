@@ -800,6 +800,17 @@ fn event_to_replay_delta(event: &Event) -> Option<ConversationDeltaDto> {
     if let Some(block) = completed_block_from_payload(event) {
         return Some(ConversationDeltaDto::AppendBlock { block });
     }
+    if let EventPayload::ToolCallRequested {
+        call_id,
+        tool_name,
+        arguments,
+    } = &event.payload
+    {
+        return Some(ConversationDeltaDto::PatchArguments {
+            block_id: call_id.to_string(),
+            arguments: format_args_inline(tool_name, arguments),
+        });
+    }
     if matches!(&event.payload, EventPayload::TurnCompleted { .. }) {
         return Some(ConversationDeltaDto::UpdateControlState {
             control: control_from_phase(Phase::Idle),
@@ -853,7 +864,7 @@ fn messages_to_blocks(messages: &[LlmMessage]) -> Vec<ConversationBlockDto> {
                 text: visible_message_text(message),
             }),
             LlmRole::Assistant => {
-                let text = assistant_visible_text(message);
+                let text = visible_message_text(message);
                 if !text.trim().is_empty() {
                     blocks.push(ConversationBlockDto::Assistant {
                         id,
@@ -949,7 +960,7 @@ fn push_tool_result_block(
     }
 }
 
-fn assistant_visible_text(message: &LlmMessage) -> String {
+fn visible_message_text(message: &LlmMessage) -> String {
     message
         .content
         .iter()
@@ -957,15 +968,6 @@ fn assistant_visible_text(message: &LlmMessage) -> String {
             LlmContent::ToolCall { .. } => None,
             other => Some(crate::handler::snapshot::content_to_text(other)),
         })
-        .collect::<Vec<_>>()
-        .join("")
-}
-
-fn visible_message_text(message: &LlmMessage) -> String {
-    message
-        .content
-        .iter()
-        .map(crate::handler::snapshot::content_to_text)
         .collect::<Vec<_>>()
         .join("")
 }
