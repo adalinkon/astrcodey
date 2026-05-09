@@ -1343,7 +1343,12 @@ async fn aggregate_tool_result_budget_persists_largest_inline_result() {
                 Duration::from_secs(1),
                 Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
             )),
-            context_assembler: test_context_assembler(),
+            context_assembler: Arc::new(astrcode_context::manager::LlmContextAssembler::new(
+                astrcode_context::settings::ContextWindowSettings {
+                    auto_compact_enabled: false,
+                    ..Default::default()
+                },
+            )),
             session_manager,
             auto_compact_failures: Arc::new(AutoCompactFailureTracker::default()),
             background_result_tx: None,
