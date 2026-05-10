@@ -76,10 +76,13 @@ export interface SessionListResponse {
 
 // ── Conversation Snapshot ──
 
+export type AgentSessionStatus = 'running' | 'completed' | 'failed'
+
 export interface AgentSessionLink {
   childSessionId: string
   agentName: string
   task: string
+  status: AgentSessionStatus
 }
 
 export interface ConversationCursor {

@@ -8,21 +8,22 @@ use std::{collections::BTreeMap, convert::Infallible, sync::Arc};
 use astrcode_core::{
     event::{Event, EventPayload, Phase},
     llm::{LlmContent, LlmMessage, LlmRole},
-    storage::{SessionReadModel, SessionSummary},
+    storage::{AgentSessionStatus, SessionReadModel, SessionSummary},
     types::SessionId,
 };
 use astrcode_protocol::{
     commands::ClientCommand,
     events::ClientNotification,
     http::{
-        AgentSessionLinkDto, AvailableModelDto, CompactSessionRequest, CompactSessionResponse,
-        ConfigReloadResponseDto, ConfigViewResponseDto, ConversationBlockDto,
-        ConversationBlockStatusDto, ConversationControlStateDto, ConversationCursorDto,
-        ConversationDeltaDto, ConversationErrorEnvelopeDto, ConversationSnapshotResponseDto,
-        ConversationStreamEnvelopeDto, CreateSessionRequest, CreateSessionResponseDto,
-        CurrentModelResponseDto, DeleteProjectResponseDto, ModelDto, ModelListResponseDto,
-        ModelTestResponseDto, ProfileDto, PromptRequest, PromptSubmitResponse, SessionListItemDto,
-        SessionListResponseDto, SlashCommandListResponseDto, UpdateActiveSelectionRequest,
+        AgentSessionLinkDto, AgentSessionStatusDto, AvailableModelDto, CompactSessionRequest,
+        CompactSessionResponse, ConfigReloadResponseDto, ConfigViewResponseDto,
+        ConversationBlockDto, ConversationBlockStatusDto, ConversationControlStateDto,
+        ConversationCursorDto, ConversationDeltaDto, ConversationErrorEnvelopeDto,
+        ConversationSnapshotResponseDto, ConversationStreamEnvelopeDto, CreateSessionRequest,
+        CreateSessionResponseDto, CurrentModelResponseDto, DeleteProjectResponseDto, ModelDto,
+        ModelListResponseDto, ModelTestResponseDto, ProfileDto, PromptRequest,
+        PromptSubmitResponse, SessionListItemDto, SessionListResponseDto,
+        SlashCommandListResponseDto, UpdateActiveSelectionRequest,
         UpdateActiveSelectionResponseDto,
     },
 };
@@ -606,6 +607,14 @@ fn summary_to_dto(summary: SessionSummary) -> SessionListItemDto {
     }
 }
 
+fn agent_status_to_http_dto(status: AgentSessionStatus) -> AgentSessionStatusDto {
+    match status {
+        AgentSessionStatus::Running => AgentSessionStatusDto::Running,
+        AgentSessionStatus::Completed => AgentSessionStatusDto::Completed,
+        AgentSessionStatus::Failed => AgentSessionStatusDto::Failed,
+    }
+}
+
 fn conversation_to_dto(session: SessionReadModel) -> ConversationSnapshotResponseDto {
     let can_submit_prompt = matches!(session.phase, Phase::Idle | Phase::Error);
     let title = session
@@ -635,6 +644,7 @@ fn conversation_to_dto(session: SessionReadModel) -> ConversationSnapshotRespons
                 child_session_id: link.child_session_id.to_string(),
                 agent_name: link.agent_name.clone(),
                 task: link.task.clone(),
+                status: agent_status_to_http_dto(link.status),
             })
             .collect(),
     }
@@ -719,9 +729,7 @@ fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDto> {
             }]
         },
         EventPayload::ToolCallBackgrounded {
-            call_id,
-            task_id,
-            ..
+            call_id, task_id, ..
         } => {
             vec![
                 ConversationDeltaDto::UpdateControlState {

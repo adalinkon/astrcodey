@@ -100,6 +100,19 @@ pub struct SessionListItem {
     pub parent_session_id: Option<String>,
 }
 
+/// 子 Agent 会话的运行状态。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSessionStatusDto {
+    /// 正在运行。
+    #[default]
+    Running,
+    /// 正常完成。
+    Completed,
+    /// 失败。
+    Failed,
+}
+
 /// 父会话派生的子 Agent 会话链接（线缆 DTO）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSessionLinkDto {
@@ -109,6 +122,9 @@ pub struct AgentSessionLinkDto {
     pub agent_name: String,
     /// 子 Agent 任务描述。
     pub task: String,
+    /// 子会话运行状态。
+    #[serde(default)]
+    pub status: AgentSessionStatusDto,
 }
 
 /// 会话快照，用于客户端重连或状态恢复。

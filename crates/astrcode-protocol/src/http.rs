@@ -6,6 +6,8 @@
 use astrcode_core::event::{Phase, ToolOutputStream};
 use serde::{Deserialize, Serialize};
 
+pub use crate::events::AgentSessionStatusDto;
+
 /// 新建会话请求。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -181,6 +183,9 @@ pub struct AgentSessionLinkDto {
     pub agent_name: String,
     /// 子 Agent 任务描述。
     pub task: String,
+    /// 子会话运行状态。
+    #[serde(default)]
+    pub status: AgentSessionStatusDto,
 }
 
 /// conversation 全量快照响应。

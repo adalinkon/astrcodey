@@ -590,6 +590,40 @@ impl TuiState {
                     None,
                 );
             },
+            EventPayload::AgentSessionCompleted {
+                child_session_id,
+                summary,
+                ..
+            } => {
+                self.push_message(
+                    MessageRole::System,
+                    "Agent".into(),
+                    format!(
+                        "completed ({}) — {}",
+                        super::short_id(child_session_id.as_str()),
+                        summary
+                    ),
+                    false,
+                    None,
+                );
+            },
+            EventPayload::AgentSessionFailed {
+                child_session_id,
+                error,
+                ..
+            } => {
+                self.push_message(
+                    MessageRole::System,
+                    "Agent".into(),
+                    format!(
+                        "failed ({}) — {}",
+                        super::short_id(child_session_id.as_str()),
+                        error
+                    ),
+                    false,
+                    None,
+                );
+            },
             EventPayload::TurnStarted => {
                 self.is_streaming = true;
                 self.error = None;

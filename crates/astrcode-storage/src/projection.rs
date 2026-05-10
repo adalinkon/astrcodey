@@ -5,7 +5,7 @@
 use astrcode_core::{
     event::{Event, EventPayload, Phase},
     llm::{LlmContent, LlmMessage, LlmRole},
-    storage::{AgentSessionLinkView, SessionReadModel},
+    storage::{AgentSessionLinkView, AgentSessionStatus, SessionReadModel},
     types::SessionId,
 };
 
@@ -55,7 +55,26 @@ pub(crate) fn reduce(event: &Event, model: &mut SessionReadModel) {
                 child_session_id: child_session_id.clone(),
                 agent_name: agent_name.clone(),
                 task: task.clone(),
+                status: AgentSessionStatus::Running,
             });
+        },
+        EventPayload::AgentSessionCompleted {
+            child_session_id, ..
+        }
+        | EventPayload::AgentSessionFailed {
+            child_session_id, ..
+        } => {
+            if let Some(link) = model
+                .agent_sessions
+                .iter_mut()
+                .find(|l| l.child_session_id == *child_session_id)
+            {
+                link.status = match &event.payload {
+                    EventPayload::AgentSessionCompleted { .. } => AgentSessionStatus::Completed,
+                    EventPayload::AgentSessionFailed { .. } => AgentSessionStatus::Failed,
+                    _ => unreachable!(),
+                };
+            }
         },
         EventPayload::SystemPromptConfigured { text, .. } => {
             model.system_prompt = Some(text.clone());

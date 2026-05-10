@@ -1,5 +1,6 @@
 import type {
   AgentSessionLink,
+  AgentSessionStatus,
   AvailableModel,
   CompactSessionResponse,
   ConfigView,
@@ -286,12 +287,18 @@ export function decodeConversationSnapshot(
   }
 }
 
+function decodeAgentSessionStatus(value: unknown): AgentSessionStatus {
+  if (value === 'running' || value === 'completed' || value === 'failed') return value
+  return 'running'
+}
+
 function decodeAgentSessionLink(value: unknown): AgentSessionLink {
   const object = decodeObject(value, 'agent session link')
   return {
     childSessionId: requiredString(object, 'childSessionId'),
     agentName: requiredString(object, 'agentName'),
     task: requiredString(object, 'task'),
+    status: decodeAgentSessionStatus(object.status),
   }
 }
 

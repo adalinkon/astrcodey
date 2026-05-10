@@ -109,6 +109,11 @@ export default function TopBar({
                     setAgentMenuOpen(false)
                   }}
                 >
+                  <span className={
+                    agent.status === 'running' ? 'text-accent' :
+                    agent.status === 'completed' ? 'text-green-500' :
+                    'text-red-500'
+                  }>●</span>
                   <span className="font-medium text-text-primary">{agent.agentName}</span>
                   <span className="min-w-0 flex-1 truncate text-text-secondary">{agent.task}</span>
                 </button>

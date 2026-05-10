@@ -252,43 +252,69 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                     ToolOutputStream::Stdout,
                     format!("child turn completed: {}\n", output.finish_reason),
                 );
+                // 向父会话记录子 Agent 完成状态
+                self.session_manager
+                    .append_event(Event::new(
+                        parent_session_id.clone(),
+                        None,
+                        EventPayload::AgentSessionCompleted {
+                            child_session_id: child_sid.clone(),
+                            final_session_id: final_child_sid.clone(),
+                            summary: one_line_summary(&output.text),
+                        },
+                    ))
+                    .await
+                    .map_err(|e| format!("append parent completion event: {e}"))?;
                 Ok(SpawnResult {
                     content: output.text,
                     child_session_id: final_child_sid.into_string(),
                 })
             },
-            Err(e) => Ok(SpawnResult {
-                content: {
-                    if !emitted_error {
-                        append_child_payload(
-                            self.session_manager.as_ref(),
-                            &final_child_sid,
-                            Some(&child_turn_id),
-                            EventPayload::ErrorOccurred {
-                                code: -32603,
-                                message: e.to_string(),
-                                recoverable: false,
-                            },
-                        )
-                        .await?;
-                    }
+            Err(e) => {
+                if !emitted_error {
                     append_child_payload(
                         self.session_manager.as_ref(),
                         &final_child_sid,
                         Some(&child_turn_id),
-                        EventPayload::TurnCompleted {
-                            finish_reason: "error".into(),
+                        EventPayload::ErrorOccurred {
+                            code: -32603,
+                            message: e.to_string(),
+                            recoverable: false,
                         },
                     )
                     .await?;
-                    progress.emit(
-                        ToolOutputStream::Stderr,
-                        format!("child agent error: {e}\n"),
-                    );
-                    format!("child agent error: {e}")
-                },
-                child_session_id: final_child_sid.into_string(),
-            }),
+                }
+                append_child_payload(
+                    self.session_manager.as_ref(),
+                    &final_child_sid,
+                    Some(&child_turn_id),
+                    EventPayload::TurnCompleted {
+                        finish_reason: "error".into(),
+                    },
+                )
+                .await?;
+                progress.emit(
+                    ToolOutputStream::Stderr,
+                    format!("child agent error: {e}\n"),
+                );
+                // 向父会话记录子 Agent 失败状态
+                self.session_manager
+                    .append_event(Event::new(
+                        parent_session_id.clone(),
+                        None,
+                        EventPayload::AgentSessionFailed {
+                            child_session_id: child_sid.clone(),
+                            final_session_id: final_child_sid.clone(),
+                            error: e.to_string(),
+                        },
+                    ))
+                    .await
+                    .map_err(|e| format!("append parent failure event: {e}"))?;
+                Ok(SpawnResult {
+                    content: format!("child agent error: {e}"),
+                    child_session_id: final_child_sid.into_string(),
+                })
+            },
         }
     }
 }

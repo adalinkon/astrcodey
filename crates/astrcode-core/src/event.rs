@@ -97,6 +97,30 @@ pub enum EventPayload {
         reason: String,
     },
 
+    /// 子 Agent 会话成功完成。
+    ///
+    /// 由 `ServerSessionSpawner` 在子会话 agent turn 正常结束后追加到父会话。
+    AgentSessionCompleted {
+        /// 初始子会话 ID（与 `AgentSessionSpawned` 一致）。
+        child_session_id: SessionId,
+        /// 最终完成输出的 leaf Session ID（compact 后可能不同）。
+        final_session_id: SessionId,
+        /// 子 Agent 输出摘要。
+        summary: String,
+    },
+
+    /// 子 Agent 会话失败。
+    ///
+    /// 由 `ServerSessionSpawner` 在子会话 agent turn 出错后追加到父会话。
+    AgentSessionFailed {
+        /// 初始子会话 ID。
+        child_session_id: SessionId,
+        /// 最终 leaf Session ID。
+        final_session_id: SessionId,
+        /// 错误描述。
+        error: String,
+    },
+
     /// 用户轮次开始。
     TurnStarted,
 

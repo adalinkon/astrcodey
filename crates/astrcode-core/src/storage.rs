@@ -193,6 +193,19 @@ pub struct ToolResultArtifactSlice {
     pub content: String,
 }
 
+/// 子 Agent 会话的运行状态。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSessionStatus {
+    /// 正在运行。
+    #[default]
+    Running,
+    /// 正常完成。
+    Completed,
+    /// 失败。
+    Failed,
+}
+
 /// 父会话派生的子 Agent 会话链接。
 ///
 /// 由 `AgentSessionSpawned` 事件投影而来，表达"从父看子"的关系。
@@ -204,6 +217,9 @@ pub struct AgentSessionLinkView {
     pub agent_name: String,
     /// 子 Agent 任务描述（来自 RunSession 的 user_prompt）。
     pub task: String,
+    /// 子会话运行状态。
+    #[serde(default)]
+    pub status: AgentSessionStatus,
 }
 
 /// 会话事件流的内部读模型。

@@ -1,5 +1,18 @@
-use astrcode_core::llm::{LlmContent, LlmMessage};
-use astrcode_protocol::events::{AgentSessionLinkDto, MessageDto, SessionSnapshot};
+use astrcode_core::{
+    llm::{LlmContent, LlmMessage},
+    storage::AgentSessionStatus,
+};
+use astrcode_protocol::events::{
+    AgentSessionLinkDto, AgentSessionStatusDto, MessageDto, SessionSnapshot,
+};
+
+fn agent_status_to_dto(status: AgentSessionStatus) -> AgentSessionStatusDto {
+    match status {
+        AgentSessionStatus::Running => AgentSessionStatusDto::Running,
+        AgentSessionStatus::Completed => AgentSessionStatusDto::Completed,
+        AgentSessionStatus::Failed => AgentSessionStatusDto::Failed,
+    }
+}
 
 pub(super) fn session_snapshot(
     state: &astrcode_core::storage::SessionReadModel,
@@ -17,6 +30,7 @@ pub(super) fn session_snapshot(
                 child_session_id: link.child_session_id.to_string(),
                 agent_name: link.agent_name.clone(),
                 task: link.task.clone(),
+                status: agent_status_to_dto(link.status),
             })
             .collect(),
     }
