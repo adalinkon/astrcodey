@@ -130,15 +130,48 @@ impl LlmProvider for SummaryLlm {
 }
 
 #[tokio::test]
+async fn http_routes_require_bearer_token() {
+    let runtime = runtime(Arc::new(ImmediateLlm));
+    let (event_tx, _) = broadcast::channel(64);
+    let (app, token) = router(Arc::clone(&runtime), event_tx);
+
+    let unauthorized = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/sessions")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let authorized = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/sessions")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(authorized.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn concurrent_prompt_accepts_one_and_conflicts_one() {
     let runtime = runtime(Arc::new(PendingLlm));
     let (event_tx, _) = broadcast::channel(64);
-    let app = router(Arc::clone(&runtime), event_tx);
-    let session_id = create_session(app.clone()).await;
+    let (app, token) = router(Arc::clone(&runtime), event_tx);
+    let session_id = create_session(app.clone(), &token).await;
     let prompt_uri = format!("/api/sessions/{session_id}/prompt");
 
-    let first = post_json(app.clone(), &prompt_uri, r#"{"text":"first"}"#);
-    let second = post_json(app, &prompt_uri, r#"{"text":"second"}"#);
+    let first = post_json(app.clone(), &prompt_uri, r#"{"text":"first"}"#, &token);
+    let second = post_json(app, &prompt_uri, r#"{"text":"second"}"#, &token);
 
     let (first, second) = tokio::join!(first, second);
     let statuses = [first.status(), second.status()];
@@ -157,12 +190,13 @@ async fn sse_receiver_lag_emits_rehydrate_and_closes() {
         .unwrap();
     let session_id = start.session_id.clone();
     let (event_tx, _) = broadcast::channel(1);
-    let app = router(Arc::clone(&runtime), event_tx.clone());
+    let (app, token) = router(Arc::clone(&runtime), event_tx.clone());
 
     let response = app
         .oneshot(
             Request::builder()
                 .method(Method::GET)
+                .header("authorization", format!("Bearer {token}"))
                 .uri(format!("/api/sessions/{session_id}/stream"))
                 .body(Body::empty())
                 .unwrap(),
@@ -201,12 +235,13 @@ async fn sse_receiver_lag_emits_rehydrate_and_closes() {
 async fn create_snapshot_then_stream_receives_live_prompt_delta() {
     let runtime = runtime(Arc::new(ImmediateLlm));
     let (event_tx, _) = broadcast::channel(64);
-    let app = router(Arc::clone(&runtime), event_tx);
-    let session_id = create_session(app.clone()).await;
+    let (app, token) = router(Arc::clone(&runtime), event_tx);
+    let session_id = create_session(app.clone(), &token).await;
 
     let snapshot = get_json::<ConversationSnapshotResponseDto>(
         app.clone(),
         &format!("/api/sessions/{session_id}/conversation"),
+        &token,
     )
     .await;
     assert_eq!(snapshot.session_id, session_id);
@@ -218,6 +253,7 @@ async fn create_snapshot_then_stream_receives_live_prompt_delta() {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
+                .header("authorization", format!("Bearer {token}"))
                 .uri(format!("/api/sessions/{session_id}/stream"))
                 .body(Body::empty())
                 .unwrap(),
@@ -229,6 +265,7 @@ async fn create_snapshot_then_stream_receives_live_prompt_delta() {
         app,
         &format!("/api/sessions/{session_id}/prompt"),
         r#"{"text":"hello"}"#,
+        &token,
     )
     .await;
     assert_eq!(accepted.status(), StatusCode::OK);
@@ -239,9 +276,11 @@ async fn create_snapshot_then_stream_receives_live_prompt_delta() {
     assert!(body.contains("hello from http"));
     assert!(body.contains(r#""status":"complete""#));
 
+    let (after_app, after_token) = router(runtime, broadcast::channel(64).0);
     let after = get_json::<ConversationSnapshotResponseDto>(
-        router(runtime, broadcast::channel(64).0),
+        after_app,
         &format!("/api/sessions/{session_id}/conversation"),
+        &after_token,
     )
     .await;
     assert_eq!(after.blocks.len(), 2);
@@ -251,14 +290,15 @@ async fn create_snapshot_then_stream_receives_live_prompt_delta() {
 async fn prompt_stream_returns_control_to_idle_when_turn_finishes() {
     let runtime = runtime(Arc::new(ImmediateLlm));
     let (event_tx, _) = broadcast::channel(64);
-    let app = router(Arc::clone(&runtime), event_tx);
-    let session_id = create_session(app.clone()).await;
+    let (app, token) = router(Arc::clone(&runtime), event_tx);
+    let session_id = create_session(app.clone(), &token).await;
 
     let stream_response = app
         .clone()
         .oneshot(
             Request::builder()
                 .method(Method::GET)
+                .header("authorization", format!("Bearer {token}"))
                 .uri(format!("/api/sessions/{session_id}/stream"))
                 .body(Body::empty())
                 .unwrap(),
@@ -270,6 +310,7 @@ async fn prompt_stream_returns_control_to_idle_when_turn_finishes() {
         app,
         &format!("/api/sessions/{session_id}/prompt"),
         r#"{"text":"hello"}"#,
+        &token,
     )
     .await;
     assert_eq!(accepted.status(), StatusCode::OK);
@@ -282,8 +323,8 @@ async fn prompt_stream_returns_control_to_idle_when_turn_finishes() {
 async fn stream_replays_events_after_snapshot_cursor() {
     let runtime = runtime(Arc::new(ImmediateLlm));
     let (event_tx, _) = broadcast::channel(64);
-    let app = router(Arc::clone(&runtime), event_tx.clone());
-    let session_id = create_session(app.clone()).await;
+    let (app, token) = router(Arc::clone(&runtime), event_tx.clone());
+    let session_id = create_session(app.clone(), &token).await;
     let sid = SessionId::from(session_id.clone());
 
     runtime
@@ -302,6 +343,7 @@ async fn stream_replays_events_after_snapshot_cursor() {
     let snapshot = get_json::<ConversationSnapshotResponseDto>(
         app.clone(),
         &format!("/api/sessions/{session_id}/conversation"),
+        &token,
     )
     .await;
     assert_eq!(snapshot.blocks.len(), 1);
@@ -335,6 +377,7 @@ async fn stream_replays_events_after_snapshot_cursor() {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
+                .header("authorization", format!("Bearer {token}"))
                 .uri(format!(
                     "/api/sessions/{session_id}/stream?cursor={}",
                     snapshot.cursor.value
@@ -355,13 +398,14 @@ async fn stream_replays_events_after_snapshot_cursor() {
 async fn stream_invalid_cursor_requests_rehydrate() {
     let runtime = runtime(Arc::new(ImmediateLlm));
     let (event_tx, _) = broadcast::channel(64);
-    let app = router(Arc::clone(&runtime), event_tx);
-    let session_id = create_session(app.clone()).await;
+    let (app, token) = router(Arc::clone(&runtime), event_tx);
+    let session_id = create_session(app.clone(), &token).await;
 
     let response = app
         .oneshot(
             Request::builder()
                 .method(Method::GET)
+                .header("authorization", format!("Bearer {token}"))
                 .uri(format!("/api/sessions/{session_id}/stream?cursor=invalid"))
                 .body(Body::empty())
                 .unwrap(),
@@ -377,12 +421,13 @@ async fn stream_invalid_cursor_requests_rehydrate() {
 async fn command_list_route_exposes_backend_slash_commands() {
     let runtime = runtime(Arc::new(ImmediateLlm));
     let (event_tx, _) = broadcast::channel(64);
-    let app = router(Arc::clone(&runtime), event_tx);
-    let session_id = create_session(app.clone()).await;
+    let (app, token) = router(Arc::clone(&runtime), event_tx);
+    let session_id = create_session(app.clone(), &token).await;
 
     let body = get_json::<SlashCommandListResponseDto>(
         app,
         &format!("/api/sessions/{session_id}/commands"),
+        &token,
     )
     .await;
 
@@ -399,8 +444,8 @@ async fn command_list_route_exposes_backend_slash_commands() {
 async fn prompt_route_compact_returns_handled_and_streams_continuation() {
     let runtime = runtime(Arc::new(SummaryLlm));
     let (event_tx, _) = broadcast::channel(64);
-    let app = router(Arc::clone(&runtime), event_tx);
-    let session_id = create_session(app.clone()).await;
+    let (app, token) = router(Arc::clone(&runtime), event_tx);
+    let session_id = create_session(app.clone(), &token).await;
     let sid = SessionId::from(session_id.clone());
 
     for text in ["one", "two", "three"] {
@@ -435,6 +480,7 @@ async fn prompt_route_compact_returns_handled_and_streams_continuation() {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
+                .header("authorization", format!("Bearer {token}"))
                 .uri(format!("/api/sessions/{session_id}/stream"))
                 .body(Body::empty())
                 .unwrap(),
@@ -446,6 +492,7 @@ async fn prompt_route_compact_returns_handled_and_streams_continuation() {
         app.clone(),
         &format!("/api/sessions/{session_id}/prompt"),
         r#"{"text":"/compact"}"#,
+        &token,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -471,8 +518,8 @@ async fn prompt_route_compact_returns_handled_and_streams_continuation() {
 async fn compact_route_returns_child_session_and_child_snapshot_hydrates() {
     let runtime = runtime(Arc::new(SummaryLlm));
     let (event_tx, _) = broadcast::channel(64);
-    let app = router(Arc::clone(&runtime), event_tx);
-    let session_id = create_session(app.clone()).await;
+    let (app, token) = router(Arc::clone(&runtime), event_tx);
+    let session_id = create_session(app.clone(), &token).await;
     let sid = SessionId::from(session_id.clone());
     let read_fixture = "target/post-compact-read-fixture.txt";
     fs::create_dir_all("target").unwrap();
@@ -544,6 +591,7 @@ async fn compact_route_returns_child_session_and_child_snapshot_hydrates() {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
+                .header("authorization", format!("Bearer {token}"))
                 .uri(format!("/api/sessions/{session_id}/stream"))
                 .body(Body::empty())
                 .unwrap(),
@@ -555,6 +603,7 @@ async fn compact_route_returns_child_session_and_child_snapshot_hydrates() {
         app.clone(),
         &format!("/api/sessions/{session_id}/compact"),
         r#"{}"#,
+        &token,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -591,6 +640,7 @@ async fn compact_route_returns_child_session_and_child_snapshot_hydrates() {
     let snapshot = get_json::<ConversationSnapshotResponseDto>(
         app,
         &format!("/api/sessions/{child_id}/conversation"),
+        &token,
     )
     .await;
     assert_eq!(snapshot.session_id, child_id.as_str());
@@ -598,20 +648,26 @@ async fn compact_route_returns_child_session_and_child_snapshot_hydrates() {
     let _ = fs::remove_file(read_fixture);
 }
 
-async fn create_session(app: Router) -> String {
-    let response = post_json(app, "/api/sessions", r#"{"workingDir":"."}"#).await;
+async fn create_session(app: Router, token: &str) -> String {
+    let response = post_json(app, "/api/sessions", r#"{"workingDir":"."}"#, token).await;
     assert_eq!(response.status(), StatusCode::OK);
     serde_json::from_slice::<CreateSessionResponseDto>(&body_bytes(response).await)
         .unwrap()
         .session_id
 }
 
-async fn post_json(app: Router, uri: &str, body: &'static str) -> axum::response::Response {
+async fn post_json(
+    app: Router,
+    uri: &str,
+    body: &'static str,
+    token: &str,
+) -> axum::response::Response {
     app.oneshot(
         Request::builder()
             .method(Method::POST)
             .uri(uri)
             .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
             .body(Body::from(body))
             .unwrap(),
     )
@@ -619,12 +675,13 @@ async fn post_json(app: Router, uri: &str, body: &'static str) -> axum::response
     .unwrap()
 }
 
-async fn get_json<T: serde::de::DeserializeOwned>(app: Router, uri: &str) -> T {
+async fn get_json<T: serde::de::DeserializeOwned>(app: Router, uri: &str, token: &str) -> T {
     let response = app
         .oneshot(
             Request::builder()
                 .method(Method::GET)
                 .uri(uri)
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -666,7 +723,7 @@ async fn read_sse_until(mut body: Body, needle: &str) -> String {
 fn runtime(llm_provider: Arc<dyn LlmProvider>) -> Arc<ServerRuntime> {
     Arc::new(ServerRuntime {
         session_manager: Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new()))),
-        llm_provider,
+        llm_provider: Arc::new(std::sync::RwLock::new(llm_provider)),
         context_assembler: Arc::new(LlmContextAssembler::new(ContextWindowSettings::default())),
         auto_compact_failures: Arc::new(
             astrcode_server::agent::AutoCompactFailureTracker::default(),

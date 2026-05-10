@@ -270,12 +270,9 @@ async fn duplicate_extension_tools_keep_first_registration() {
     let ctx = astrcode_core::tool::ToolExecutionContext {
         session_id: "test".into(),
         working_dir: String::new(),
-        model_id: String::new(),
-        available_tools: vec![],
         tool_call_id: None,
         event_tx: None,
-        tool_result_reader: None,
-        background_task_reader: None,
+        capabilities: Default::default(),
     };
     let result = tool_registry
         .execute("sharedTool", serde_json::json!({}), &ctx)
@@ -311,12 +308,9 @@ async fn extension_tools_are_adapted_into_tool_registry() {
     let ctx = astrcode_core::tool::ToolExecutionContext {
         session_id: "test".into(),
         working_dir: String::new(),
-        model_id: String::new(),
-        available_tools: vec![],
         tool_call_id: None,
         event_tx: None,
-        tool_result_reader: None,
-        background_task_reader: None,
+        capabilities: Default::default(),
     };
     let result = tool_registry
         .execute(

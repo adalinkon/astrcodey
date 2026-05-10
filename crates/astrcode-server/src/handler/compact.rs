@@ -126,7 +126,7 @@ impl CommandHandler {
             transcript_path: snapshot_path,
         };
         let mut compaction = match compact_with_forked_provider(
-            Arc::clone(&self.runtime.llm_provider),
+            self.runtime.read_llm_provider(),
             tools.clone(),
             &provider_messages,
             state.system_prompt.as_deref(),

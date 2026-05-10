@@ -18,7 +18,10 @@ use astrcode_core::{
     },
     types::*,
 };
-pub(crate) use payload::{compact_boundary_payload, session_continued_from_compaction_payload};
+pub(crate) use payload::{
+    agent_turn_completed_payloads, agent_turn_failed_payloads, agent_turn_started_payloads,
+    compact_boundary_payload, session_continued_from_compaction_payload,
+};
 use tokio::sync::RwLock;
 
 /// 活跃会话句柄。

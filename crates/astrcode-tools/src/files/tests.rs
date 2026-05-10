@@ -16,12 +16,9 @@ fn empty_ctx() -> ToolExecutionContext {
     ToolExecutionContext {
         session_id: String::new().into(),
         working_dir: String::new(),
-        model_id: String::new(),
-        available_tools: vec![],
         tool_call_id: None,
         event_tx: None,
-        tool_result_reader: None,
-        background_task_reader: None,
+        capabilities: ToolCapabilities::default(),
     }
 }
 
@@ -215,9 +212,12 @@ async fn read_file_reads_persisted_tool_result_path() {
     let ctx = ToolExecutionContext {
         session_id: "session-1".into(),
         tool_call_id: Some("read-result".into()),
-        tool_result_reader: Some(Arc::new(FixedToolResultReader {
-            path: artifact_path.clone(),
-        })),
+        capabilities: ToolCapabilities {
+            tool_result_reader: Some(Arc::new(FixedToolResultReader {
+                path: artifact_path.clone(),
+            })),
+            ..ToolCapabilities::default()
+        },
         ..empty_ctx()
     };
 
@@ -256,7 +256,10 @@ async fn read_file_does_not_read_other_session_tool_result_path() {
     let ctx = ToolExecutionContext {
         session_id: "session-1".into(),
         tool_call_id: Some("read-result".into()),
-        tool_result_reader: Some(Arc::new(RejectingToolResultReader)),
+        capabilities: ToolCapabilities {
+            tool_result_reader: Some(Arc::new(RejectingToolResultReader)),
+            ..ToolCapabilities::default()
+        },
         ..empty_ctx()
     };
 

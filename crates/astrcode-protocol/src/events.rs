@@ -18,27 +18,18 @@ pub enum ClientNotification {
 
     /// 会话恢复通知，携带完整快照供客户端重建状态。
     SessionResumed {
-        /// 恢复的会话 ID。
         session_id: String,
-        /// 会话的完整快照数据。
         snapshot: SessionSnapshot,
     },
 
     /// 会话列表（响应 `ListSessions` 命令）。
-    SessionList {
-        /// 所有会话的摘要信息列表。
-        sessions: Vec<SessionListItem>,
-    },
+    SessionList { sessions: Vec<SessionListItem> },
 
     /// 服务器发起的 UI 交互请求（确认、选择、输入等）。
     UiRequest {
-        /// 请求的唯一标识符，客户端响应时需回传此 ID。
         request_id: String,
-        /// UI 交互的类型。
         kind: UiRequestKind,
-        /// 展示给用户的消息文本。
         message: String,
-        /// 选项列表（仅 `Select` 类型使用）。
         #[serde(skip_serializing_if = "Option::is_none")]
         options: Option<Vec<String>>,
         /// 超时时间（秒），超时后服务器可自动处理。
@@ -47,26 +38,15 @@ pub enum ClientNotification {
     },
 
     /// 错误通知。
-    Error {
-        /// 错误码。
-        code: i32,
-        /// 错误描述信息。
-        message: String,
-    },
+    Error { code: i32, message: String },
 
     /// 插件注册的斜杠命令列表（响应 `ListExtensionCommands`）。
-    ExtensionCommandList {
-        /// 命令信息列表。
-        commands: Vec<ExtensionCommandInfo>,
-    },
+    ExtensionCommandList { commands: Vec<ExtensionCommandInfo> },
 
     /// 插件斜杠命令执行结果。
     ExtensionCommandResult {
-        /// 被执行的命令名称。
         command_name: String,
-        /// 输出文本。
         content: String,
-        /// 是否为错误结果。
         is_error: bool,
     },
 }
@@ -88,15 +68,12 @@ pub enum UiRequestKind {
 /// 会话列表中的单条会话摘要。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionListItem {
-    /// 会话的唯一标识符。
     pub session_id: String,
-    /// 会话创建时间（ISO 8601 格式）。
+    /// ISO 8601 格式。
     pub created_at: String,
-    /// 最后活跃时间（ISO 8601 格式）。
+    /// ISO 8601 格式。
     pub last_active_at: String,
-    /// 会话的工作目录路径。
     pub working_dir: String,
-    /// 父会话 ID（如果是分叉会话则有值）。
     pub parent_session_id: Option<String>,
 }
 
@@ -104,25 +81,18 @@ pub struct SessionListItem {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSessionStatusDto {
-    /// 正在运行。
     #[default]
     Running,
-    /// 正常完成。
     Completed,
-    /// 失败。
     Failed,
 }
 
-/// 父会话派生的子 Agent 会话链接（线缆 DTO）。
+/// 父会话派生的子 Agent 会话链接（JSON-RPC 线缆 DTO）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSessionLinkDto {
-    /// 子会话 ID。
     pub child_session_id: String,
-    /// 子 Agent 名称。
     pub agent_name: String,
-    /// 子 Agent 任务描述。
     pub task: String,
-    /// 子会话运行状态。
     #[serde(default)]
     pub status: AgentSessionStatusDto,
 }
@@ -130,29 +100,20 @@ pub struct AgentSessionLinkDto {
 /// 会话快照，用于客户端重连或状态恢复。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSnapshot {
-    /// 会话的唯一标识符。
     pub session_id: String,
     /// 事件日志游标，标识快照的位置。
     pub cursor: String,
-    /// 快照中的消息列表。
     pub messages: Vec<MessageDto>,
-    /// 当前使用的模型标识符。
     pub model_id: String,
-    /// 会话的工作目录路径。
     pub working_dir: String,
-    /// 父会话派生的子 Agent 会话列表。
     #[serde(default)]
     pub agent_sessions: Vec<AgentSessionLinkDto>,
 }
 
 /// 快照中的单条消息。
-///
-/// 作为线缆（wire）传输的 DTO 类型，仅包含角色和文本内容。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageDto {
-    /// 消息角色（如 `user`、`assistant`、`system`）。
     pub role: String,
-    /// 消息文本内容。
     pub content: String,
 }
 
@@ -161,9 +122,7 @@ pub struct MessageDto {
 pub struct ExtensionCommandInfo {
     /// 命令名称（不含前导斜杠 `/`）。
     pub name: String,
-    /// 人类可读的命令描述。
     pub description: String,
-    /// 是否需要参数。
     pub needs_argument: bool,
     /// 命令来源：`builtin`、`plugin` 或 `skill`。
     pub source: String,

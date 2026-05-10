@@ -9,6 +9,7 @@ use std::sync::Arc;
 use astrcode_context::manager::LlmContextAssembler;
 use astrcode_core::{
     event::{Event, EventPayload, ToolOutputStream},
+    llm::LlmProvider,
     types::{SessionId, TurnId, new_message_id, new_turn_id},
 };
 use astrcode_extensions::{
@@ -19,6 +20,7 @@ use tokio::sync::{Mutex, mpsc};
 
 use super::{
     CompactContinuationAppendInput, CompactContinuationCreateInput, SessionManager,
+    agent_turn_completed_payloads, agent_turn_failed_payloads, agent_turn_started_payloads,
     append_compact_continuation_events, create_compact_continuation_session,
 };
 use crate::{
@@ -36,7 +38,7 @@ use crate::{
 /// 扩展运行器通过此派生器创建子会话并运行 Agent 回合。
 pub(crate) struct ServerSessionSpawner {
     pub(crate) session_manager: Arc<SessionManager>,
-    pub(crate) llm: Arc<dyn astrcode_core::llm::LlmProvider>,
+    pub(crate) llm_provider: Arc<std::sync::RwLock<Arc<dyn LlmProvider>>>,
     pub(crate) context_assembler: Arc<LlmContextAssembler>,
     pub(crate) auto_compact_failures: Arc<AutoCompactFailureTracker>,
     pub(crate) background_tasks: Arc<std::sync::Mutex<BackgroundTaskManager>>,
@@ -125,24 +127,14 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
         )
         .await?;
 
-        append_child_payload(
+        append_child_progress_payloads(
             self.session_manager.as_ref(),
+            &progress,
             &child_sid,
             Some(&child_turn_id),
-            EventPayload::TurnStarted,
+            agent_turn_started_payloads(new_message_id(), user_prompt.clone()),
         )
         .await?;
-        append_child_payload(
-            self.session_manager.as_ref(),
-            &child_sid,
-            Some(&child_turn_id),
-            EventPayload::UserMessage {
-                message_id: new_message_id(),
-                text: user_prompt.clone(),
-            },
-        )
-        .await?;
-
         progress.emit(
             ToolOutputStream::Stdout,
             format!("child agent '{child_name}' started: {child_sid} using {model_id}\n"),
@@ -198,7 +190,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
             system_prompt.clone(),
             model_id.clone(),
             AgentServices {
-                llm: Arc::clone(&self.llm),
+                llm: self.read_llm_provider(),
                 tool_registry: Arc::clone(&tool_registry),
                 extension_runner: Arc::clone(&self.extension_runner),
                 context_assembler: Arc::clone(&self.context_assembler),
@@ -231,9 +223,14 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                     match signal {
                         AgentSignal::Event(payload) => {
                             let sid = current_child_sid.lock().await.clone();
-                            let _ =
-                                append_child_payload(&sm, &sid, Some(&cti), payload.clone()).await;
-                            p.forward(&payload);
+                            let _ = append_child_progress_payload(
+                                &sm,
+                                &p,
+                                &sid,
+                                Some(&cti),
+                                payload.clone(),
+                            )
+                            .await;
                         },
                         AgentSignal::AutoCompact {
                             trigger,
@@ -283,19 +280,14 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
 
         match output {
             Ok(output) => {
-                append_child_payload(
+                append_child_progress_payloads(
                     self.session_manager.as_ref(),
+                    &progress,
                     &final_child_sid,
                     Some(&child_turn_id),
-                    EventPayload::TurnCompleted {
-                        finish_reason: output.finish_reason.clone(),
-                    },
+                    agent_turn_completed_payloads(output.finish_reason.clone()),
                 )
                 .await?;
-                progress.emit(
-                    ToolOutputStream::Stdout,
-                    format!("child turn completed: {}\n", output.finish_reason),
-                );
                 // 向父会话记录子 Agent 完成状态
                 self.session_manager
                     .append_event(Event::new(
@@ -315,26 +307,15 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                 })
             },
             Err(e) => {
-                if !emitted_error {
-                    append_child_payload(
-                        self.session_manager.as_ref(),
-                        &final_child_sid,
-                        Some(&child_turn_id),
-                        EventPayload::ErrorOccurred {
-                            code: -32603,
-                            message: e.to_string(),
-                            recoverable: false,
-                        },
-                    )
-                    .await?;
-                }
-                append_child_payload(
+                append_child_progress_payloads(
                     self.session_manager.as_ref(),
+                    &progress,
                     &final_child_sid,
                     Some(&child_turn_id),
-                    EventPayload::TurnCompleted {
-                        finish_reason: "error".into(),
-                    },
+                    agent_turn_failed_payloads(
+                        (!emitted_error).then(|| e.to_string()),
+                        "error".into(),
+                    ),
                 )
                 .await?;
                 progress.emit(
@@ -360,6 +341,15 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                 })
             },
         }
+    }
+}
+
+impl ServerSessionSpawner {
+    fn read_llm_provider(&self) -> Arc<dyn LlmProvider> {
+        self.llm_provider
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 
@@ -414,6 +404,37 @@ async fn append_child_payload(
             ))
             .await
             .map_err(|e| format!("append child event: {e}"))?;
+    }
+    Ok(())
+}
+
+async fn append_child_progress_payload(
+    session_manager: &SessionManager,
+    progress: &ProgressTx,
+    child_sid: &SessionId,
+    child_turn_id: Option<&TurnId>,
+    payload: EventPayload,
+) -> Result<(), String> {
+    progress.forward(&payload);
+    if payload.is_durable() {
+        append_child_payload(session_manager, child_sid, child_turn_id, payload).await?;
+    }
+    Ok(())
+}
+
+async fn append_child_progress_payloads<I>(
+    session_manager: &SessionManager,
+    progress: &ProgressTx,
+    child_sid: &SessionId,
+    child_turn_id: Option<&TurnId>,
+    payloads: I,
+) -> Result<(), String>
+where
+    I: IntoIterator<Item = EventPayload>,
+{
+    for payload in payloads {
+        append_child_progress_payload(session_manager, progress, child_sid, child_turn_id, payload)
+            .await?;
     }
     Ok(())
 }
@@ -578,9 +599,10 @@ mod tests {
             compact_threshold_percent: 0.0,
             ..Default::default()
         };
+        let llm_provider: Arc<dyn LlmProvider> = llm;
         ServerSessionSpawner {
             session_manager,
-            llm,
+            llm_provider: Arc::new(std::sync::RwLock::new(llm_provider)),
             context_assembler: Arc::new(LlmContextAssembler::new(settings)),
             auto_compact_failures: Arc::new(AutoCompactFailureTracker::default()),
             background_tasks: Default::default(),

@@ -339,7 +339,7 @@ fn tool_call_id(ctx: &ToolExecutionContext) -> String {
 mod tests {
     use astrcode_core::{
         event::{EventPayload, ToolOutputStream},
-        tool::{Tool, ToolExecutionContext},
+        tool::{Tool, ToolCapabilities, ToolExecutionContext},
     };
     use astrcode_support::shell::{ShellFamily, ShellInfo, resolve_shell};
     use tokio::sync::mpsc;
@@ -350,12 +350,9 @@ mod tests {
         ToolExecutionContext {
             session_id: String::new().into(),
             working_dir: String::new(),
-            model_id: String::new(),
-            available_tools: vec![],
             tool_call_id: None,
             event_tx: None,
-            tool_result_reader: None,
-            background_task_reader: None,
+            capabilities: ToolCapabilities::default(),
         }
     }
 

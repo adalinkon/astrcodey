@@ -42,23 +42,30 @@ pub(crate) async fn enrich_post_compact_context(
     let working_dir = working_dir.to_string();
     let system_prompt = system_prompt.map(str::to_string);
     let tools = tools.to_vec();
-    let session_id = session_id.to_string();
+    let session_id_for_closure = session_id.to_string();
     let settings = settings.clone();
 
-    let Ok((files, notes)) = tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         collect_post_compact_context(
             &source_messages,
             &retained_messages,
             &working_dir,
-            &session_id,
+            &session_id_for_closure,
             system_prompt.as_deref(),
             &tools,
             &settings,
         )
     })
-    .await
-    else {
-        return;
+    .await;
+    let (files, notes) = match result {
+        Ok(pair) => pair,
+        Err(panic) => {
+            tracing::warn!(
+                session_id = session_id,
+                "post-compact context collection panicked, skipping enrichment: {panic}"
+            );
+            return;
+        },
     };
 
     compaction.append_post_compact_context(files, notes, &ContextWindowSettings::default());

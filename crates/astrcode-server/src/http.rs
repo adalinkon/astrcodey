@@ -5,26 +5,25 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
-    convert::Infallible,
     sync::Arc,
 };
 
 use astrcode_core::{
     event::{Event, EventPayload, Phase},
     llm::{LlmContent, LlmMessage, LlmRole},
-    storage::{AgentSessionStatus, BackgroundToolCallView, SessionReadModel, SessionSummary},
+    storage::{BackgroundToolCallView, SessionReadModel, SessionSummary},
     types::{SessionId, ToolCallId},
 };
 use astrcode_protocol::{
     commands::ClientCommand,
     events::ClientNotification,
     http::{
-        AgentSessionLinkDto, AgentSessionStatusDto, AvailableModelDto, CompactSessionRequest,
-        CompactSessionResponse, ConfigReloadResponseDto, ConfigViewResponseDto,
-        ConversationBlockDto, ConversationBlockStatusDto, ConversationControlStateDto,
-        ConversationCursorDto, ConversationDeltaDto, ConversationErrorEnvelopeDto,
-        ConversationSnapshotResponseDto, ConversationStreamEnvelopeDto, CreateSessionRequest,
-        CreateSessionResponseDto, CurrentModelResponseDto, DeleteProjectResponseDto, ModelDto,
+        AvailableModelDto, CompactSessionRequest, CompactSessionResponse, ConfigReloadResponseDto,
+        ConfigViewResponseDto, ConversationBlockDto, ConversationBlockStatusDto,
+        ConversationControlStateDto, ConversationCursorDto, ConversationDeltaDto,
+        ConversationErrorEnvelopeDto, ConversationSnapshotResponseDto,
+        ConversationStreamEnvelopeDto, CreateSessionRequest, CreateSessionResponseDto,
+        CurrentModelResponseDto, DeleteProjectResponseDto, HttpAgentSessionLinkDto, ModelDto,
         ModelListResponseDto, ModelTestResponseDto, ProfileDto, PromptRequest,
         PromptSubmitResponse, SessionListItemDto, SessionListResponseDto,
         SlashCommandListResponseDto, UpdateActiveSelectionRequest,
@@ -34,22 +33,25 @@ use astrcode_protocol::{
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderValue, Method, StatusCode, header},
+    middleware::{self, Next},
     response::{
         IntoResponse, Response,
         sse::{Event as SseEvent, KeepAlive, Sse},
     },
     routing::{delete, get, post},
 };
-use futures_util::{Stream, StreamExt, stream};
+use futures_util::{StreamExt, stream};
 use serde::Deserialize;
 use tokio::sync::broadcast;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::{
     bootstrap::ServerRuntime,
-    handler::{CommandHandler, HandlerError, ManualCompactOutcome, PromptSubmission},
+    handler::{CommandHandler, HandlerError, ManualCompactOutcome, PromptSubmission, snapshot},
 };
+
+pub const ASTRCODE_HTTP_TOKEN_ENV: &str = "ASTRCODE_HTTP_TOKEN";
 
 /// HTTP router shared state.
 #[derive(Clone)]
@@ -70,38 +72,30 @@ struct DeleteProjectParams {
     working_dir: String,
 }
 
-/// Run the HTTP/SSE server until graceful shutdown.
-pub async fn run_http_server(
-    runtime: Arc<ServerRuntime>,
-    addr: std::net::SocketAddr,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (event_tx, _) = broadcast::channel(256);
-    let shutdown_token = runtime.shutdown_token.clone();
-    let app = router(Arc::clone(&runtime), event_tx);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("HTTP server ready at http://{addr}");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            shutdown_token.cancelled().await;
-            tracing::info!("graceful shutdown triggered");
-        })
-        .await?;
-    Ok(())
-}
-
 /// Build an axum router for the HTTP/SSE API.
+///
+/// Returns `(Router, auth_token)` — the token must be passed to the frontend
+/// so it can include it in `Authorization: Bearer <token>` headers.
 pub fn router(
     runtime: Arc<ServerRuntime>,
     event_tx: broadcast::Sender<ClientNotification>,
-) -> Router {
+) -> (Router, String) {
+    let auth_token = configured_auth_token();
     let handler = CommandHandler::spawn_actor(Arc::clone(&runtime), event_tx.clone());
     let state = HttpState {
         runtime,
         handler,
         event_tx,
     };
+    let expected_bearer = format!("Bearer {auth_token}");
 
-    Router::new()
+    let allowed_origins = collect_allowed_origins();
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::list(allowed_origins))
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
+
+    let app = Router::new()
         .route("/api/sessions", post(create_session).get(list_sessions))
         .route(
             "/api/sessions/{id}/conversation",
@@ -124,8 +118,38 @@ pub fn router(
         .route("/api/models", get(list_models))
         .route("/api/models/test", post(test_model))
         .route("/api/shutdown", post(shutdown))
-        .layer(CorsLayer::permissive())
-        .with_state(state)
+        .layer(middleware::from_fn_with_state(
+            expected_bearer,
+            auth_middleware,
+        ))
+        .layer(cors)
+        .with_state(state);
+
+    (app, auth_token)
+}
+
+/// Convenience wrapper: build router and run until graceful shutdown.
+pub async fn run_http_server(
+    runtime: Arc<ServerRuntime>,
+    addr: std::net::SocketAddr,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (event_tx, _) = broadcast::channel(256);
+    let shutdown_token = runtime.shutdown_token.clone();
+    let (app, auth_token) = router(Arc::clone(&runtime), event_tx);
+    tracing::info!(
+        "Auth token: {}...{}",
+        &auth_token[..4],
+        &auth_token[auth_token.len() - 4..]
+    );
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!("HTTP server ready at http://{addr}");
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown_token.cancelled().await;
+            tracing::info!("graceful shutdown triggered");
+        })
+        .await?;
+    Ok(())
 }
 
 async fn create_session(
@@ -304,26 +328,26 @@ async fn delete_project(
                 .into_iter()
                 .filter(|s| s.working_dir == params.working_dir)
                 .collect();
-            let count = matching.len();
+            let mut deleted_count = 0usize;
             for summary in &matching {
-                if let Err(error) = state
+                match state
                     .handler
                     .handle(ClientCommand::DeleteSession {
                         session_id: summary.session_id.to_string(),
                     })
                     .await
                 {
-                    return error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "delete_project_failed",
-                        error,
-                    );
+                    Ok(()) => deleted_count += 1,
+                    Err(error) => {
+                        tracing::warn!(
+                            session_id = %summary.session_id,
+                            error = %error,
+                            "delete_project: failed to delete session, continuing"
+                        );
+                    },
                 }
             }
-            Json(DeleteProjectResponseDto {
-                deleted_count: count,
-            })
-            .into_response()
+            Json(DeleteProjectResponseDto { deleted_count }).into_response()
         },
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "list_failed", error),
     }
@@ -362,54 +386,71 @@ async fn get_config(State(state): State<HttpState>) -> Response {
 }
 
 async fn reload_config(State(state): State<HttpState>) -> Response {
-    match state.runtime.config_store.load().await {
-        Ok(config) => {
-            let active_profile = config.active_profile.clone();
-            let active_model = config.active_model.clone();
-            {
-                let mut guard = state.runtime.write_raw_config();
-                *guard = config;
-            }
-            let _ = state.runtime.sync_effective();
-            Json(ConfigReloadResponseDto {
-                active_profile,
-                active_model,
-            })
-            .into_response()
+    let config = match state.runtime.config_store.load().await {
+        Ok(c) => c,
+        Err(error) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "reload_failed",
+                error.to_string(),
+            );
         },
-        Err(error) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "reload_failed",
-            error.to_string(),
-        ),
+    };
+    let active_profile = config.active_profile.clone();
+    let active_model = config.active_model.clone();
+
+    if let Err(error) = state.runtime.apply_raw_config_and_rebuild(config) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_config",
+            format!("Reloaded config is invalid: {error}"),
+        );
     }
+
+    Json(ConfigReloadResponseDto {
+        active_profile,
+        active_model,
+    })
+    .into_response()
 }
 
 async fn update_active_selection(
     State(state): State<HttpState>,
     Json(request): Json<UpdateActiveSelectionRequest>,
 ) -> Response {
-    let updated = {
-        let mut guard = state.runtime.write_raw_config();
-        guard.active_profile = request.active_profile;
-        guard.active_model = request.active_model;
-        guard.clone()
+    let mut candidate = state.runtime.read_raw_config().clone();
+    candidate.active_profile = request.active_profile;
+    candidate.active_model = request.active_model;
+
+    // Validate before persisting.
+    if let Err(error) = candidate.clone().into_effective() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_selection",
+            error.to_string(),
+        );
     };
-    match state.runtime.config_store.save(&updated).await {
-        Ok(()) => {
-            let warning = state.runtime.sync_effective().err().map(|e| e.to_string());
-            Json(UpdateActiveSelectionResponseDto {
-                success: true,
-                warning,
-            })
-            .into_response()
-        },
-        Err(error) => error_response(
+
+    // Persist the validated candidate.
+    if let Err(error) = state.runtime.config_store.save(&candidate).await {
+        return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "save_failed",
             error.to_string(),
-        ),
+        );
     }
+
+    // apply_raw_config_and_rebuild re-validates internally; failure here after
+    // the explicit check above indicates a race or I/O issue.
+    if let Err(error) = state.runtime.apply_raw_config_and_rebuild(candidate) {
+        tracing::warn!("apply_raw_config_and_rebuild failed after save: {error}");
+    }
+
+    Json(UpdateActiveSelectionResponseDto {
+        success: true,
+        warning: None,
+    })
+    .into_response()
 }
 
 async fn get_current_model(State(state): State<HttpState>) -> Response {
@@ -443,7 +484,7 @@ async fn test_model(State(state): State<HttpState>) -> Response {
     let start = std::time::Instant::now();
     match state
         .runtime
-        .llm_provider
+        .read_llm_provider()
         .generate(vec![astrcode_core::llm::LlmMessage::user("Hi")], vec![])
         .await
     {
@@ -464,16 +505,32 @@ async fn test_model(State(state): State<HttpState>) -> Response {
 }
 
 async fn session_stream(
-    State(state): State<HttpState>,
-    Path(session_id): Path<String>,
+    State(http_state): State<HttpState>,
+    Path(raw_session_id): Path<String>,
     Query(query): Query<StreamQuery>,
-) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    tracing::info!(session_id = %session_id, cursor = ?query.cursor, "SSE stream connected");
-    let session_id = SessionId::from(session_id);
-    let rx = state.event_tx.subscribe();
+) -> Response {
+    tracing::info!(session_id = %raw_session_id, cursor = ?query.cursor, "SSE stream connected");
+    let session_id = SessionId::from(raw_session_id);
+
+    // Validate session exists before opening the stream.
+    if http_state
+        .runtime
+        .session_manager
+        .read_model(&session_id)
+        .await
+        .is_err()
+    {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "session_not_found",
+            "Session not found",
+        );
+    }
+
+    let rx = http_state.event_tx.subscribe();
     let (missed_events, replay_error) = match query.cursor.as_ref() {
         Some(cursor) if cursor.parse::<u64>().is_err() => (Vec::new(), true),
-        Some(cursor) => match state
+        Some(cursor) => match http_state
             .runtime
             .session_manager
             .replay_after(&session_id, cursor)
@@ -488,16 +545,16 @@ async fn session_stream(
         None => (Vec::new(), false),
     };
     let replay_max_seq = missed_events.iter().filter_map(|event| event.seq).max();
-    let replay_runtime = Arc::clone(&state.runtime);
+    let replay_runtime = Arc::clone(&http_state.runtime);
     let replay_session_id = session_id.clone();
     let replay_stream = stream::iter(missed_events).filter_map(move |event| {
         let runtime = Arc::clone(&replay_runtime);
-        let session_id = replay_session_id.clone();
+        let replay_sid = replay_session_id.clone();
         async move {
             let delta = event_to_replay_delta(&event)?;
             let cursor = event_cursor(&runtime, &event).await;
             Some(Ok(sse_event(&ConversationStreamEnvelopeDto {
-                session_id: session_id.to_string(),
+                session_id: replay_sid.to_string(),
                 cursor: ConversationCursorDto {
                     value: cursor.clone(),
                 },
@@ -513,19 +570,20 @@ async fn session_stream(
         }))
     }));
 
-    let runtime = Arc::clone(&state.runtime);
+    let live_runtime = Arc::clone(&http_state.runtime);
     let live_stream = stream::unfold(
         (
             rx,
-            runtime,
+            live_runtime,
             session_id,
             replay_max_seq,
             false,
             std::collections::VecDeque::<
                 Result<axum::response::sse::Event, std::convert::Infallible>,
             >::new(),
+            HashMap::<String, String>::new(),
         ),
-        |(mut rx, runtime, session_id, replay_max_seq, closing, mut pending)| async move {
+        |(mut rx, runtime, session_id, replay_max_seq, closing, mut pending, mut tool_args)| async move {
             if closing {
                 return None;
             }
@@ -533,7 +591,15 @@ async fn session_stream(
             if let Some(item) = pending.pop_front() {
                 return Some((
                     item,
-                    (rx, runtime, session_id, replay_max_seq, false, pending),
+                    (
+                        rx,
+                        runtime,
+                        session_id,
+                        replay_max_seq,
+                        false,
+                        pending,
+                        tool_args,
+                    ),
                 ));
             }
 
@@ -546,9 +612,32 @@ async fn session_stream(
                         {
                             continue;
                         }
-                        let deltas = event_to_deltas(&event);
+                        let mut deltas = event_to_deltas(&event);
                         if deltas.is_empty() {
                             continue;
+                        }
+                        // Track arguments from PatchArguments deltas.
+                        for delta in &deltas {
+                            if let ConversationDeltaDto::PatchArguments {
+                                block_id,
+                                arguments,
+                            } = delta
+                            {
+                                tool_args.insert(block_id.clone(), arguments.clone());
+                            }
+                        }
+                        // Fill in arguments for FinalizeBlock tool calls.
+                        for delta in &mut deltas {
+                            if let ConversationDeltaDto::FinalizeBlock {
+                                block: ConversationBlockDto::ToolCall { id, arguments, .. },
+                            } = delta
+                            {
+                                if arguments.is_empty() {
+                                    if let Some(args) = tool_args.remove(id) {
+                                        *arguments = args;
+                                    }
+                                }
+                            }
                         }
                         let cursor = event_cursor(&runtime, &event).await;
                         let items: std::collections::VecDeque<_> = deltas
@@ -567,7 +656,15 @@ async fn session_stream(
                         let first = items.pop_front().unwrap();
                         return Some((
                             first,
-                            (rx, runtime, session_id, replay_max_seq, false, items),
+                            (
+                                rx,
+                                runtime,
+                                session_id,
+                                replay_max_seq,
+                                false,
+                                items,
+                                tool_args,
+                            ),
                         ));
                     },
                     Ok(_) => {},
@@ -580,7 +677,15 @@ async fn session_stream(
                         }));
                         return Some((
                             item,
-                            (rx, runtime, session_id, replay_max_seq, true, pending),
+                            (
+                                rx,
+                                runtime,
+                                session_id,
+                                replay_max_seq,
+                                true,
+                                pending,
+                                tool_args,
+                            ),
                         ));
                     },
                     Err(broadcast::error::RecvError::Closed) => return None,
@@ -589,7 +694,9 @@ async fn session_stream(
         },
     );
     let stream = replay_error_stream.chain(replay_stream).chain(live_stream);
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 fn summary_to_dto(summary: SessionSummary) -> SessionListItemDto {
@@ -608,14 +715,6 @@ fn summary_to_dto(summary: SessionSummary) -> SessionListItemDto {
         parent_storage_seq: None,
         phase: summary.phase,
         first_user_message: summary.first_user_message,
-    }
-}
-
-fn agent_status_to_http_dto(status: AgentSessionStatus) -> AgentSessionStatusDto {
-    match status {
-        AgentSessionStatus::Running => AgentSessionStatusDto::Running,
-        AgentSessionStatus::Completed => AgentSessionStatusDto::Completed,
-        AgentSessionStatus::Failed => AgentSessionStatusDto::Failed,
     }
 }
 
@@ -644,11 +743,11 @@ fn conversation_to_dto(session: SessionReadModel) -> ConversationSnapshotRespons
         agent_sessions: session
             .agent_sessions
             .iter()
-            .map(|link| AgentSessionLinkDto {
+            .map(|link| HttpAgentSessionLinkDto {
                 child_session_id: link.child_session_id.to_string(),
                 agent_name: link.agent_name.clone(),
                 task: link.task.clone(),
-                status: agent_status_to_http_dto(link.status),
+                status: snapshot::agent_status_to_dto(link.status),
             })
             .collect(),
     }
@@ -847,9 +946,15 @@ fn event_to_replay_delta(event: &Event) -> Option<ConversationDeltaDto> {
         arguments,
     } = &event.payload
     {
-        return Some(ConversationDeltaDto::PatchArguments {
-            block_id: call_id.to_string(),
-            arguments: format_args_inline(tool_name, arguments),
+        return Some(ConversationDeltaDto::AppendBlock {
+            block: ConversationBlockDto::ToolCall {
+                id: call_id.to_string(),
+                name: tool_name.clone(),
+                arguments: format_args_inline(tool_name, arguments),
+                text: String::new(),
+                status: ConversationBlockStatusDto::Streaming,
+                task_id: None,
+            },
         });
     }
     if matches!(&event.payload, EventPayload::TurnCompleted { .. }) {
@@ -1074,6 +1179,68 @@ fn error_response(status: StatusCode, code: impl Into<String>, message: impl ToS
         }),
     )
         .into_response()
+}
+
+async fn auth_middleware(
+    State(expected_bearer): State<String>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let auth = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    match auth {
+        Some(v) if v == expected_bearer => next.run(request).await,
+        _ => error_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "Invalid or missing auth token",
+        ),
+    }
+}
+
+fn generate_auth_token() -> String {
+    let pid = std::process::id();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let hash = crate::bootstrap::fnv1a_hash_bytes(&pid.to_le_bytes());
+    let hash = crate::bootstrap::fnv1a_hash_bytes(&now.to_le_bytes())
+        ^ hash
+        .wrapping_mul(0x100000001b3);
+    let hash2 = hash
+        .wrapping_mul(0x5851f42d4c957f2d)
+        .wrapping_add(pid as u64);
+    format!("{hash:016x}{hash2:016x}")
+}
+
+fn configured_auth_token() -> String {
+    std::env::var(ASTRCODE_HTTP_TOKEN_ENV)
+        .ok()
+        .filter(|token| !token.trim().is_empty())
+        .unwrap_or_else(generate_auth_token)
+}
+
+fn collect_allowed_origins() -> Vec<HeaderValue> {
+    let mut origins = vec![
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000",
+    ]
+    .into_iter()
+    .filter_map(|s| s.parse::<HeaderValue>().ok())
+    .collect::<Vec<_>>();
+    if let Ok(extra) = std::env::var("ASTRCODE_CORS_ORIGINS") {
+        for origin in extra.split(',') {
+            if let Ok(hv) = origin.trim().parse::<HeaderValue>() {
+                origins.push(hv);
+            }
+        }
+    }
+    origins
 }
 
 fn session_title(working_dir: &str) -> String {

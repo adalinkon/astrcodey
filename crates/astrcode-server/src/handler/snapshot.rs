@@ -6,7 +6,7 @@ use astrcode_protocol::events::{
     AgentSessionLinkDto, AgentSessionStatusDto, MessageDto, SessionSnapshot,
 };
 
-fn agent_status_to_dto(status: AgentSessionStatus) -> AgentSessionStatusDto {
+pub(crate) fn agent_status_to_dto(status: AgentSessionStatus) -> AgentSessionStatusDto {
     match status {
         AgentSessionStatus::Running => AgentSessionStatusDto::Running,
         AgentSessionStatus::Completed => AgentSessionStatusDto::Completed,

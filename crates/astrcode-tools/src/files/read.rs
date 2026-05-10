@@ -198,7 +198,7 @@ async fn read_persisted_tool_result_path(
     path: &std::path::Path,
     args: &ReadFileArgs,
 ) -> Result<Option<ToolResult>, ToolError> {
-    let Some(reader) = ctx.tool_result_reader.as_ref() else {
+    let Some(reader) = ctx.capabilities.tool_result_reader.as_ref() else {
         return Ok(None);
     };
     let char_offset = args.char_offset.unwrap_or(0);

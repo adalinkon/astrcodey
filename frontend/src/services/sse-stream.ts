@@ -1,4 +1,4 @@
-import { getBaseUrl } from './api'
+import { authHeaders, getBaseUrl } from './api'
 import { tryDecodeConversationStreamEnvelope } from './protocol'
 import type { ConversationStreamEnvelope } from './types'
 
@@ -24,6 +24,7 @@ export async function consumeSseStream(
       headers: {
         Accept: 'text/event-stream',
         'Cache-Control': 'no-cache',
+        ...authHeaders(),
       },
       signal,
     })

@@ -141,9 +141,11 @@ export const useAppStore = create<ConversationState>((set, get) => ({
     if (bridge.isDesktopHost) {
       try {
         const { invoke } = await import('@tauri-apps/api/core')
-        const port = await invoke<number>('start_server')
-        api.setServerPort(port)
-        set({ serverPort: port })
+        const result = await invoke<{ port: number; token?: string }>(
+          'start_server'
+        )
+        api.setServerPort(result.port, result.token)
+        set({ serverPort: result.port })
       } catch (err) {
         set({
           connectionStatus: 'error',
@@ -153,6 +155,12 @@ export const useAppStore = create<ConversationState>((set, get) => ({
       }
     } else {
       api.initBaseUrl()
+      const envToken = (
+        import.meta as unknown as { env: Record<string, string> }
+      ).env?.VITE_AUTH_TOKEN
+      if (envToken) {
+        api.setAuthToken(envToken)
+      }
     }
 
     set({ connectionStatus: 'connected' })

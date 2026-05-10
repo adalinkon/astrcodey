@@ -126,28 +126,39 @@ pub enum BackgroundPolicy {
     AutoAfter { threshold_secs: u64 },
 }
 
+/// 工具调用时按需注入的会话能力。
+///
+/// 大多数工具不需要这些能力；`Default::default()` 产生全部为 `None` 的空集。
+/// 生产环境由 agent loop 在构建 `ToolExecutionContext` 时按需填充。
+#[derive(Clone, Default)]
+pub struct ToolCapabilities {
+    /// 当前使用的模型标识（仅 FFI bridge 需要）。
+    pub model_id: Option<String>,
+    /// 当前可用的工具定义列表（仅 FFI bridge 需要）。
+    pub available_tools: Option<Vec<ToolDefinition>>,
+    /// 当前 session 的工具结果 artifact 读取能力（仅 `read` 工具需要）。
+    pub tool_result_reader: Option<Arc<dyn ToolResultArtifactReader>>,
+    /// 当前 session 的后台任务查询能力（仅 `task` 工具需要）。
+    pub background_task_reader: Option<Arc<dyn BackgroundTaskReader>>,
+}
+
 /// 每次工具调用时传递的上下文。
 ///
-/// 由 Agent 在每次工具调用开始时创建，携带工具（尤其是扩展工具）
-/// 所需的当前会话状态。
+/// 由 Agent 在每次工具调用开始时创建。核心字段是每次调用都不同的
+/// 会话标识和工具调用元数据；`capabilities` 携带特定工具才需要的
+/// 可选能力，默认为空。
 #[derive(Clone)]
 pub struct ToolExecutionContext {
     /// 当前会话 ID。
     pub session_id: SessionId,
     /// 工作目录路径。
     pub working_dir: String,
-    /// 当前使用的模型标识。
-    pub model_id: String,
-    /// 当前可用的工具定义列表。
-    pub available_tools: Vec<ToolDefinition>,
     /// 当前工具调用 ID，用于工具发出隶属于自身调用的进度事件。
     pub tool_call_id: Option<String>,
     /// 当前回合事件发送器，用于工具发出非持久化进度事件。
     pub event_tx: Option<mpsc::UnboundedSender<EventPayload>>,
-    /// 当前 session 的工具结果 artifact 读取能力。
-    pub tool_result_reader: Option<Arc<dyn ToolResultArtifactReader>>,
-    /// 当前 session 的后台任务查询能力。
-    pub background_task_reader: Option<Arc<dyn BackgroundTaskReader>>,
+    /// 按需注入的会话能力。
+    pub capabilities: ToolCapabilities,
 }
 
 /// Build a metadata map from key-value pairs.
@@ -185,10 +196,21 @@ impl std::fmt::Debug for ToolExecutionContext {
         f.debug_struct("ToolExecutionContext")
             .field("session_id", &self.session_id)
             .field("working_dir", &self.working_dir)
-            .field("model_id", &self.model_id)
-            .field("available_tools", &self.available_tools)
             .field("tool_call_id", &self.tool_call_id)
             .field("event_tx", &self.event_tx.as_ref().map(|_| "<event_tx>"))
+            .field("capabilities", &self.capabilities)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ToolCapabilities {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolCapabilities")
+            .field("model_id", &self.model_id)
+            .field(
+                "available_tools",
+                &self.available_tools.as_ref().map(|t| t.len()),
+            )
             .field(
                 "tool_result_reader",
                 &self.tool_result_reader.as_ref().map(|_| "<reader>"),

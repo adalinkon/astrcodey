@@ -36,8 +36,8 @@ use crate::{
 pub struct ServerRuntime {
     /// 会话管理器，负责会话的创建、恢复、事件追加和删除
     pub session_manager: Arc<SessionManager>,
-    /// LLM 提供者，用于生成 AI 回复
-    pub llm_provider: Arc<dyn LlmProvider>,
+    /// LLM 提供者，用于生成 AI 回复（运行时可重建）
+    pub llm_provider: Arc<std::sync::RwLock<Arc<dyn LlmProvider>>>,
     /// 上下文组装器，负责窗口估算和摘要压缩
     pub context_assembler: Arc<LlmContextAssembler>,
     /// Auto compact provider 连续失败熔断状态。
@@ -71,12 +71,54 @@ impl ServerRuntime {
         self.raw_config.read().unwrap_or_else(|e| e.into_inner())
     }
 
+    pub fn read_llm_provider(&self) -> Arc<dyn LlmProvider> {
+        self.llm_provider
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn rebuild_provider_from_effective(&self) -> Result<(), String> {
+        let new_provider = {
+            let effective = self.read_effective();
+            build_provider_from_effective(&effective)
+        };
+        let mut guard = self.llm_provider.write().unwrap_or_else(|e| e.into_inner());
+        *guard = new_provider;
+        Ok(())
+    }
+
     pub fn sync_effective(&self) -> Result<(), astrcode_core::config::ResolveError> {
-        let raw = self.raw_config.read().unwrap_or_else(|e| e.into_inner());
-        let new_effective = raw.clone().into_effective()?;
-        drop(raw);
+        let new_effective = {
+            let raw = self.raw_config.read().unwrap_or_else(|e| e.into_inner());
+            raw.clone().into_effective()?
+        };
         let mut guard = self.effective.write().unwrap_or_else(|e| e.into_inner());
         *guard = new_effective;
+        Ok(())
+    }
+
+    /// Write raw config, re-resolve effective config, and rebuild the LLM provider.
+    ///
+    /// Returns `Err` if the config fails validation (`into_effective`). On success,
+    /// all three state updates are applied atomically. A provider rebuild failure
+    /// is logged but does not propagate — the raw and effective configs remain updated.
+    pub fn apply_raw_config_and_rebuild(
+        &self,
+        config: astrcode_core::config::Config,
+    ) -> Result<(), astrcode_core::config::ResolveError> {
+        let new_effective = config.clone().into_effective()?;
+        {
+            let mut guard = self.write_raw_config();
+            *guard = config;
+        }
+        {
+            let mut guard = self.effective.write().unwrap_or_else(|e| e.into_inner());
+            *guard = new_effective;
+        }
+        if let Err(e) = self.rebuild_provider_from_effective() {
+            tracing::warn!("provider rebuild after config update failed: {e}");
+        }
         Ok(())
     }
 }
@@ -129,26 +171,9 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     //
     // 根据 `provider_kind` 路由到对应的 provider 实现。
     // 后续所有主会话和子会话都会共享这个 provider。
-    let llm_config = LlmClientConfig {
-        base_url: effective.llm.base_url.clone(),
-        api_key: effective.llm.api_key.clone(),
-        connect_timeout_secs: effective.llm.connect_timeout_secs,
-        read_timeout_secs: effective.llm.read_timeout_secs,
-        max_retries: effective.llm.max_retries,
-        retry_base_delay_ms: effective.llm.retry_base_delay_ms,
-        temperature: effective.llm.temperature,
-        supports_prompt_cache_key: effective.llm.supports_prompt_cache_key,
-        prompt_cache_retention: effective.llm.prompt_cache_retention,
-        extra_headers: Default::default(),
-    };
-    let llm_provider = create_provider(
-        &effective.llm.provider_kind,
-        llm_config,
-        effective.llm.api_mode,
-        effective.llm.model_id.clone(),
-        Some(effective.llm.max_tokens),
-        Some(effective.llm.context_limit),
-    );
+    let llm_provider = Arc::new(std::sync::RwLock::new(build_provider_from_effective(
+        &effective,
+    )));
 
     // 3. 初始化上下文组装器。
     let context_settings = ContextWindowSettings {
@@ -238,7 +263,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     // 子 session 也会生成自己的工具快照，而不是复用父会话或启动期的工具表。
     extension_runner.bind(Arc::new(ServerSessionSpawner {
         session_manager: Arc::clone(&session_manager),
-        llm: Arc::clone(&llm_provider),
+        llm_provider: Arc::clone(&llm_provider),
         context_assembler: Arc::clone(&context_assembler),
         auto_compact_failures: Arc::clone(&auto_compact_failures),
         background_tasks: Arc::clone(&background_tasks),
@@ -263,6 +288,29 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
         raw_config: std::sync::RwLock::new(config),
         shutdown_token: tokio_util::sync::CancellationToken::new(),
     })
+}
+
+fn build_provider_from_effective(effective: &EffectiveConfig) -> Arc<dyn LlmProvider> {
+    let llm_config = LlmClientConfig {
+        base_url: effective.llm.base_url.clone(),
+        api_key: effective.llm.api_key.clone(),
+        connect_timeout_secs: effective.llm.connect_timeout_secs,
+        read_timeout_secs: effective.llm.read_timeout_secs,
+        max_retries: effective.llm.max_retries,
+        retry_base_delay_ms: effective.llm.retry_base_delay_ms,
+        temperature: effective.llm.temperature,
+        supports_prompt_cache_key: effective.llm.supports_prompt_cache_key,
+        prompt_cache_retention: effective.llm.prompt_cache_retention,
+        extra_headers: Default::default(),
+    };
+    create_provider(
+        &effective.llm.provider_kind,
+        llm_config,
+        effective.llm.api_mode,
+        effective.llm.model_id.clone(),
+        Some(effective.llm.max_tokens),
+        Some(effective.llm.context_limit),
+    )
 }
 
 /// 构建一个工作目录绑定的工具表快照。
@@ -378,13 +426,17 @@ pub(crate) async fn build_system_prompt_snapshot(
     Ok((system_prompt, fingerprint))
 }
 
-pub(crate) fn prompt_fingerprint(text: &str) -> String {
+pub(crate) fn fnv1a_hash_bytes(data: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
-    for byte in text.as_bytes() {
-        hash ^= u64::from(*byte);
+    for &byte in data {
+        hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    format!("{hash:016x}")
+    hash
+}
+
+pub(crate) fn prompt_fingerprint(text: &str) -> String {
+    format!("{:016x}", fnv1a_hash_bytes(text.as_bytes()))
 }
 
 #[cfg(test)]

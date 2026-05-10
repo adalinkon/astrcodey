@@ -564,8 +564,9 @@ fn truncate_for_index(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        config::ModelSelection, extension::ExtensionContext, storage::ToolResultArtifactReader,
-        tool::ToolExecutionContext,
+        config::ModelSelection,
+        extension::ExtensionContext,
+        tool::{ToolCapabilities, ToolExecutionContext},
     };
 
     use super::*;
@@ -794,11 +795,9 @@ mod tests {
         ToolExecutionContext {
             session_id: "session".into(),
             working_dir: working_dir.to_string_lossy().into_owned(),
-            model_id: "mock".into(),
-            available_tools: Vec::new(),
             tool_call_id: None,
             event_tx: None,
-            tool_result_reader: Option::<Arc<dyn ToolResultArtifactReader>>::None,
+            capabilities: ToolCapabilities::default(),
         }
     }
 

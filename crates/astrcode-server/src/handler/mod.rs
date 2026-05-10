@@ -34,6 +34,9 @@ use crate::{
         tool_types::BackgroundTaskCompletion,
     },
     bootstrap::{ServerRuntime, build_system_prompt_snapshot, build_tool_registry_snapshot},
+    session::{
+        agent_turn_completed_payloads, agent_turn_failed_payloads, agent_turn_started_payloads,
+    },
 };
 
 mod actor;
@@ -181,7 +184,6 @@ struct ActiveTurn {
     tool_registry: Arc<ToolRegistry>,
     switch_active_on_continuation: bool,
 }
-
 
 impl CommandHandler {
     /// 处理一个客户端命令，将其路由到对应的处理方法。
@@ -477,22 +479,13 @@ impl CommandHandler {
         };
         let turn_id = new_turn_id();
 
-        self.record_and_broadcast(&sid, Some(&turn_id), EventPayload::TurnStarted)
-            .await
-            .map_err(HandlerError::Other)?;
-        self.record_and_broadcast(
+        self.record_turn_payloads(
             &sid,
             Some(&turn_id),
-            EventPayload::UserMessage {
-                message_id: new_message_id(),
-                text: visible_text,
-            },
+            agent_turn_started_payloads(new_message_id(), visible_text),
         )
         .await
         .map_err(HandlerError::Other)?;
-        self.record_and_broadcast(&sid, Some(&turn_id), EventPayload::AgentRunStarted)
-            .await
-            .map_err(HandlerError::Other)?;
 
         let switch_active_on_continuation = self.active_session_id.as_ref() == Some(&sid);
         let handle = self.spawn_agent_turn(AgentTurnInput {
@@ -703,25 +696,10 @@ impl CommandHandler {
         }
         self.cleanup_background_tasks_for_session(&active_turn.session_id);
 
-        record_and_broadcast(
-            &self.runtime,
-            &self.event_tx,
+        self.record_turn_payloads(
             &active_turn.session_id,
             Some(&active_turn.turn_id),
-            EventPayload::TurnCompleted {
-                finish_reason: "aborted".into(),
-            },
-        )
-        .await
-        .map_err(HandlerError::Other)?;
-        record_and_broadcast(
-            &self.runtime,
-            &self.event_tx,
-            &active_turn.session_id,
-            Some(&active_turn.turn_id),
-            EventPayload::AgentRunCompleted {
-                reason: "aborted".into(),
-            },
+            agent_turn_completed_payloads("aborted".into()),
         )
         .await
         .map_err(HandlerError::Other)?;
@@ -922,7 +900,7 @@ impl CommandHandler {
                 system_prompt,
                 model_id,
                 AgentServices {
-                    llm: runtime.llm_provider.clone(),
+                    llm: runtime.read_llm_provider(),
                     tool_registry,
                     extension_runner: runtime.extension_runner.clone(),
                     context_assembler: runtime.context_assembler.clone(),
@@ -1014,6 +992,22 @@ impl CommandHandler {
         record_and_broadcast(&self.runtime, &self.event_tx, session_id, turn_id, payload).await
     }
 
+    async fn record_turn_payloads<I>(
+        &self,
+        session_id: &SessionId,
+        turn_id: Option<&TurnId>,
+        payloads: I,
+    ) -> Result<(), String>
+    where
+        I: IntoIterator<Item = EventPayload>,
+    {
+        for payload in payloads {
+            self.record_and_broadcast(session_id, turn_id, payload)
+                .await?;
+        }
+        Ok(())
+    }
+
     fn cleanup_background_tasks_for_session(&self, session_id: &SessionId) {
         if let Ok(mut tasks) = self.runtime.background_tasks.lock() {
             tasks.cleanup_session(session_id);
@@ -1053,20 +1047,10 @@ impl CommandHandler {
             )
             .await?;
         }
-        self.record_and_broadcast(
+        self.record_turn_payloads(
             session_id,
             None,
-            EventPayload::TurnCompleted {
-                finish_reason: "interrupted".into(),
-            },
-        )
-        .await?;
-        self.record_and_broadcast(
-            session_id,
-            None,
-            EventPayload::AgentRunCompleted {
-                reason: "interrupted".into(),
-            },
+            agent_turn_completed_payloads("interrupted".into()),
         )
         .await?;
         Ok(())
@@ -1083,21 +1067,10 @@ impl CommandHandler {
         }
         self.active_turns.remove(&session_id);
         let _ = self
-            .record_and_broadcast(
+            .record_turn_payloads(
                 &session_id,
                 Some(&turn_id),
-                EventPayload::TurnCompleted {
-                    finish_reason: output.finish_reason.clone(),
-                },
-            )
-            .await;
-        let _ = self
-            .record_and_broadcast(
-                &session_id,
-                Some(&turn_id),
-                EventPayload::AgentRunCompleted {
-                    reason: output.finish_reason,
-                },
+                agent_turn_completed_payloads(output.finish_reason),
             )
             .await;
     }
@@ -1113,35 +1086,14 @@ impl CommandHandler {
             return;
         }
         self.active_turns.remove(&session_id);
-        if !emitted_error {
-            let _ = self
-                .record_and_broadcast(
-                    &session_id,
-                    Some(&turn_id),
-                    EventPayload::ErrorOccurred {
-                        code: -32603,
-                        message: error.to_string(),
-                        recoverable: false,
-                    },
-                )
-                .await;
-        }
         let _ = self
-            .record_and_broadcast(
+            .record_turn_payloads(
                 &session_id,
                 Some(&turn_id),
-                EventPayload::TurnCompleted {
-                    finish_reason: "error".into(),
-                },
-            )
-            .await;
-        let _ = self
-            .record_and_broadcast(
-                &session_id,
-                Some(&turn_id),
-                EventPayload::AgentRunCompleted {
-                    reason: "error".into(),
-                },
+                agent_turn_failed_payloads(
+                    (!emitted_error).then(|| error.to_string()),
+                    "error".into(),
+                ),
             )
             .await;
     }

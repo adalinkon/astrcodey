@@ -12,7 +12,6 @@ pub use crate::events::AgentSessionStatusDto;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateSessionRequest {
-    /// 会话工作目录。
     pub working_dir: String,
 }
 
@@ -20,7 +19,6 @@ pub struct CreateSessionRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateSessionResponseDto {
-    /// 创建出的会话 ID。
     pub session_id: String,
 }
 
@@ -28,7 +26,6 @@ pub struct CreateSessionResponseDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptRequest {
-    /// 用户输入文本。
     pub text: String,
 }
 
@@ -42,21 +39,14 @@ pub struct PromptRequest {
 pub enum PromptSubmitResponse {
     /// 已接受并异步执行。
     Accepted {
-        /// 会话 ID。
         session_id: String,
-        /// 回合 ID。
         turn_id: String,
         /// 如果该请求隐式 fork，则记录来源。v1 总是 None。
         #[serde(skip_serializing_if = "Option::is_none")]
         branched_from_session_id: Option<String>,
     },
     /// 请求已同步处理完成。
-    Handled {
-        /// 会话 ID。
-        session_id: String,
-        /// 说明文本。
-        message: String,
-    },
+    Handled { session_id: String, message: String },
 }
 
 /// 手动 compact 请求。
@@ -72,14 +62,11 @@ pub struct CompactSessionRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactSessionResponse {
-    /// compact 是否已接受。
     pub accepted: bool,
-    /// compact 是否被延后。
     pub deferred: bool,
     /// compact continuation 创建的子会话 ID。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_session_id: Option<String>,
-    /// 说明文本。
     pub message: String,
 }
 
@@ -87,7 +74,6 @@ pub struct CompactSessionResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SlashCommandListResponseDto {
-    /// 当前会话可执行的斜杠命令。
     pub commands: Vec<SlashCommandInfoDto>,
 }
 
@@ -97,9 +83,7 @@ pub struct SlashCommandListResponseDto {
 pub struct SlashCommandInfoDto {
     /// 命令名称（不含前导斜杠 `/`）。
     pub name: String,
-    /// 人类可读描述。
     pub description: String,
-    /// 是否需要参数。
     pub needs_argument: bool,
     /// 命令来源：`builtin`、`plugin` 或 `skill`。
     pub source: String,
@@ -120,7 +104,6 @@ impl From<crate::events::ExtensionCommandInfo> for SlashCommandInfoDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ForkSessionRequest {
-    /// 可选来源 turn。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
     /// 可选来源 durable seq。
@@ -132,25 +115,17 @@ pub struct ForkSessionRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionListItemDto {
-    /// 会话 ID。
     pub session_id: String,
-    /// 工作目录。
     pub working_dir: String,
-    /// 显示名。
     pub display_name: String,
-    /// 标题。
     pub title: String,
-    /// 创建时间。
     pub created_at: String,
-    /// 更新时间。
     pub updated_at: String,
-    /// 父会话 ID。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
     /// 父会话 seq，v1 未接线。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_storage_seq: Option<u64>,
-    /// 当前阶段。
     pub phase: Phase,
     /// 首条用户消息内容，无消息时为 None。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -161,7 +136,6 @@ pub struct SessionListItemDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionListResponseDto {
-    /// 会话列表。
     pub sessions: Vec<SessionListItemDto>,
 }
 
@@ -169,21 +143,19 @@ pub struct SessionListResponseDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationCursorDto {
-    /// 最新 durable seq。
     pub value: String,
 }
 
-/// 父会话派生的子 Agent 会话链接（HTTP DTO）。
+/// 父会话派生的子 Agent 会话链接（HTTP DTO，camelCase 序列化）。
+///
+/// 与 [`events::AgentSessionLinkDto`](crate::events::AgentSessionLinkDto) 字段相同，
+/// 但 serde 使用 `camelCase` 以匹配 HTTP/SSE 线缆格式。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentSessionLinkDto {
-    /// 子会话 ID。
+pub struct HttpAgentSessionLinkDto {
     pub child_session_id: String,
-    /// 子 Agent 名称。
     pub agent_name: String,
-    /// 子 Agent 任务描述。
     pub task: String,
-    /// 子会话运行状态。
     #[serde(default)]
     pub status: AgentSessionStatusDto,
 }
@@ -192,36 +164,24 @@ pub struct AgentSessionLinkDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSnapshotResponseDto {
-    /// 会话 ID。
     pub session_id: String,
-    /// 会话标题。
     pub session_title: String,
-    /// 快照对应 cursor。
     pub cursor: ConversationCursorDto,
-    /// 当前阶段。
     pub phase: Phase,
-    /// 控制状态。
     pub control: ConversationControlStateDto,
-    /// 对话块。
     pub blocks: Vec<ConversationBlockDto>,
-    /// 父会话派生的子 Agent 会话列表。
     #[serde(default)]
-    pub agent_sessions: Vec<AgentSessionLinkDto>,
+    pub agent_sessions: Vec<HttpAgentSessionLinkDto>,
 }
 
 /// conversation 控制状态。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationControlStateDto {
-    /// 当前阶段。
     pub phase: Phase,
-    /// 是否允许提交 prompt。
     pub can_submit_prompt: bool,
-    /// 是否允许请求 compact。
     pub can_request_compact: bool,
-    /// 是否有 compact 等待中。
     pub compact_pending: bool,
-    /// 是否正在 compact。
     pub compacting: bool,
     /// 当前模式 ID，v1 暂无。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -239,15 +199,15 @@ pub struct ConversationControlStateDto {
     tag = "kind"
 )]
 pub enum ConversationBlockDto {
-    /// 用户消息。
-    User { id: String, text: String },
-    /// 助手消息。
+    User {
+        id: String,
+        text: String,
+    },
     Assistant {
         id: String,
         text: String,
         status: ConversationBlockStatusDto,
     },
-    /// 工具调用或工具结果。
     ToolCall {
         id: String,
         name: String,
@@ -260,11 +220,14 @@ pub enum ConversationBlockDto {
         #[serde(skip_serializing_if = "Option::is_none")]
         task_id: Option<String>,
     },
-    /// 错误。
-    Error { id: String, message: String },
-    /// 系统提示。
-    SystemNote { id: String, text: String },
-    /// Compact 压缩摘要。
+    Error {
+        id: String,
+        message: String,
+    },
+    SystemNote {
+        id: String,
+        text: String,
+    },
     CompactSummary {
         id: String,
         summary: String,
@@ -280,13 +243,9 @@ pub enum ConversationBlockDto {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ConversationBlockStatusDto {
-    /// 正在流式更新。
     Streaming,
-    /// 已转入后台运行。
     Backgrounded,
-    /// 已完成。
     Complete,
-    /// 失败。
     Error,
 }
 
@@ -294,11 +253,8 @@ pub enum ConversationBlockStatusDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationStreamEnvelopeDto {
-    /// 会话 ID。
     pub session_id: String,
-    /// 当前事件 cursor。
     pub cursor: ConversationCursorDto,
-    /// 增量载荷。
     pub delta: ConversationDeltaDto,
 }
 
@@ -310,22 +266,22 @@ pub struct ConversationStreamEnvelopeDto {
     tag = "kind"
 )]
 pub enum ConversationDeltaDto {
-    /// 追加 block。
-    AppendBlock { block: ConversationBlockDto },
-    /// patch block。
+    AppendBlock {
+        block: ConversationBlockDto,
+    },
     PatchBlock {
         block_id: String,
         text_delta: String,
     },
     /// 用持久化后的最终内容完成或补齐 block。
-    FinalizeBlock { block: ConversationBlockDto },
-    /// 控制状态更新。
+    FinalizeBlock {
+        block: ConversationBlockDto,
+    },
     UpdateControlState {
         control: ConversationControlStateDto,
     },
     /// 服务端检测到 receiver lag，客户端应重新拉全量 snapshot。
     RehydrateRequired,
-    /// 当前会话已经 continuation 到新的子会话。
     SessionContinued {
         parent_session_id: String,
         new_session_id: String,
@@ -333,24 +289,20 @@ pub enum ConversationDeltaDto {
     },
     /// 更新 toolCall block 的 arguments 字段（用于折叠摘要行显示参数）。
     PatchArguments {
-        /// 工具调用 block 的 ID。
         block_id: String,
-        /// 参数的格式化文本。
         arguments: String,
     },
-    /// 工具输出流增量。
     ToolOutput {
         call_id: String,
         stream: ToolOutputStream,
         delta: String,
     },
-    /// 推理模型思维链增量。
-    ThinkingDelta { delta: String },
+    ThinkingDelta {
+        delta: String,
+    },
     /// 工具调用被移入后台执行。
     ToolCallBackgrounded {
-        /// 工具调用 block 的 ID（即 call_id）。
         call_id: String,
-        /// 后台任务 ID。
         task_id: String,
     },
 }
@@ -359,9 +311,7 @@ pub enum ConversationDeltaDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationErrorEnvelopeDto {
-    /// 错误码。
     pub code: String,
-    /// 错误消息。
     pub message: String,
 }
 
@@ -369,7 +319,6 @@ pub struct ConversationErrorEnvelopeDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteProjectResponseDto {
-    /// 被删除的会话数量。
     pub deleted_count: usize,
 }
 

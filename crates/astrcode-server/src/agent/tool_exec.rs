@@ -6,7 +6,7 @@ use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
     event::EventPayload,
-    tool::{BackgroundPolicy, ToolExecutionContext, ToolResult},
+    tool::{BackgroundPolicy, ToolCapabilities, ToolExecutionContext, ToolResult},
     types::*,
 };
 use astrcode_tools::registry::ToolRegistry;
@@ -113,12 +113,14 @@ async fn execute_tool_call_blocking(
     let tool_ctx = ToolExecutionContext {
         session_id: runtime.session_id,
         working_dir: runtime.working_dir,
-        model_id: runtime.model_id,
-        available_tools: runtime.tools,
         tool_call_id: Some(call.call_id.clone()),
         event_tx: tool_event_tx,
-        tool_result_reader: runtime.tool_result_reader,
-        background_task_reader: runtime.background_task_reader,
+        capabilities: ToolCapabilities {
+            model_id: Some(runtime.model_id),
+            available_tools: Some(runtime.tools),
+            tool_result_reader: runtime.tool_result_reader,
+            background_task_reader: runtime.background_task_reader,
+        },
     };
 
     let result = match tool_registry
@@ -188,12 +190,14 @@ async fn execute_tool_call_with_background(
     let tool_ctx = ToolExecutionContext {
         session_id: runtime.session_id.clone(),
         working_dir: runtime.working_dir.clone(),
-        model_id: runtime.model_id.clone(),
-        available_tools: runtime.tools.clone(),
         tool_call_id: Some(call.call_id.clone()),
         event_tx: tool_event_tx,
-        tool_result_reader: runtime.tool_result_reader.clone(),
-        background_task_reader: runtime.background_task_reader.clone(),
+        capabilities: ToolCapabilities {
+            model_id: Some(runtime.model_id.clone()),
+            available_tools: Some(runtime.tools.clone()),
+            tool_result_reader: runtime.tool_result_reader.clone(),
+            background_task_reader: runtime.background_task_reader.clone(),
+        },
     };
 
     // 共享结果槽：exec task 写入，主线程或 watcher 读取

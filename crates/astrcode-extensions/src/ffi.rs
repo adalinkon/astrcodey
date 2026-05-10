@@ -338,13 +338,19 @@ impl FfiCtxOwned {
         tool_input: &serde_json::Value,
         ctx: &astrcode_core::tool::ToolExecutionContext,
     ) -> Self {
-        let tools_json = serde_json::to_string(&ctx.available_tools).unwrap_or_default();
+        let tools_json = serde_json::to_string(
+            ctx.capabilities
+                .available_tools
+                .as_deref()
+                .unwrap_or_default(),
+        )
+        .unwrap_or_default();
         Self::new(
             ctx.session_id.to_string(),
             working_dir.to_string(),
             tool_name.to_string(),
             tool_input.to_string(),
-            ctx.model_id.clone(),
+            ctx.capabilities.model_id.clone().unwrap_or_default(),
             tools_json,
         )
     }

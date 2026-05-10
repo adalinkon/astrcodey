@@ -29,7 +29,7 @@ async fn main() {
         });
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
     let shutdown_token = runtime.shutdown_token.clone();
-    let app = astrcode_server::http::router(runtime, event_tx);
+    let (app, auth_token) = astrcode_server::http::router(runtime, event_tx);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|error| {
@@ -38,6 +38,11 @@ async fn main() {
         });
 
     tracing::info!("HTTP server ready at http://{addr}");
+    tracing::info!(
+        "Auth token: {}...{}",
+        &auth_token[..4],
+        &auth_token[auth_token.len() - 4..]
+    );
     if let Err(error) = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_token.cancelled().await;

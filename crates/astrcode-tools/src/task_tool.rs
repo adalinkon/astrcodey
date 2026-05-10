@@ -60,6 +60,7 @@ impl Tool for TaskTool {
             .map_err(|e| ToolError::InvalidArguments(format!("invalid task args: {e}")))?;
 
         let reader = ctx
+            .capabilities
             .background_task_reader
             .as_ref()
             .ok_or_else(|| ToolError::Execution("background task reader not available".into()))?;

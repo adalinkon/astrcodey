@@ -237,7 +237,7 @@ fn test_runtime_with_settings(
 ) -> Arc<ServerRuntime> {
     Arc::new(ServerRuntime {
         session_manager: Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new()))),
-        llm_provider,
+        llm_provider: Arc::new(std::sync::RwLock::new(llm_provider)),
         context_assembler: Arc::new(LlmContextAssembler::new(context_settings.clone())),
         auto_compact_failures: Arc::new(crate::agent::AutoCompactFailureTracker::default()),
         background_tasks: Default::default(),

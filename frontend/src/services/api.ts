@@ -26,13 +26,24 @@ import type {
 } from './types'
 
 let baseUrl = ''
+let authToken = ''
 
-export function setServerPort(port: number): void {
+export function setServerPort(port: number, token?: string): void {
   baseUrl = `http://127.0.0.1:${port}`
+  if (token) authToken = token
+}
+
+export function setAuthToken(token: string): void {
+  authToken = token
 }
 
 export function getBaseUrl(): string {
   return baseUrl
+}
+
+export function authHeaders(): Record<string, string> {
+  if (!authToken) return {}
+  return { Authorization: `Bearer ${authToken}` }
 }
 
 export function initBaseUrl(): void {
@@ -43,10 +54,16 @@ export function initBaseUrl(): void {
 }
 
 async function request(path: string, init?: RequestInit): Promise<unknown> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  }
+  if (authToken) {
+    headers['Authorization'] = `Bearer ${authToken}`
+  }
   const response = await fetch(`${baseUrl}${path}`, {
     ...init,
     headers: {
-      'Content-Type': 'application/json',
+      ...headers,
       ...init?.headers,
     },
   })
@@ -147,7 +164,7 @@ export async function deleteProject(
 export async function healthCheck(): Promise<boolean> {
   try {
     const response = await fetch(`${baseUrl}/api/sessions`, {
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
     })
     return response.ok
   } catch {
