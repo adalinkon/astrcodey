@@ -21,7 +21,9 @@ function toolLabel(name: string): string {
 
 type ToolCallBlock = Extract<ConversationBlock, { kind: 'toolCall' }>
 
-function hasTaskId(block: ConversationBlock): block is ToolCallBlock & { taskId: string } {
+function hasTaskId(
+  block: ConversationBlock
+): block is ToolCallBlock & { taskId: string } {
   return block.kind === 'toolCall' && block.taskId !== undefined
 }
 
@@ -29,10 +31,7 @@ function BackgroundTaskPanel() {
   const [collapsed, setCollapsed] = useState(true)
   const blocks = useAppStore((s) => s.blocks)
 
-  const bgBlocks = useMemo(
-    () => blocks.filter(hasTaskId),
-    [blocks]
-  )
+  const bgBlocks = useMemo(() => blocks.filter(hasTaskId), [blocks])
 
   const running = useMemo(
     () => bgBlocks.filter((b) => b.status === 'backgrounded'),
@@ -40,7 +39,8 @@ function BackgroundTaskPanel() {
   )
 
   const completed = useMemo(
-    () => bgBlocks.filter((b) => b.status === 'complete' || b.status === 'error'),
+    () =>
+      bgBlocks.filter((b) => b.status === 'complete' || b.status === 'error'),
     [bgBlocks]
   )
 

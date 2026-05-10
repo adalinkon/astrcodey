@@ -263,6 +263,7 @@ impl CommandHandler {
                                 turn.handle.abort();
                             }
                         }
+                        self.cleanup_background_tasks_for_session(&session_id);
                         self.session_tool_registries.remove(&session_id);
                         if self.active_session_id.as_ref() == Some(&session_id) {
                             self.active_session_id = None;
@@ -700,6 +701,7 @@ impl CommandHandler {
         if !active_turn.handle.is_finished() {
             active_turn.handle.abort();
         }
+        self.cleanup_background_tasks_for_session(&active_turn.session_id);
 
         record_and_broadcast(
             &self.runtime,
@@ -927,7 +929,7 @@ impl CommandHandler {
                     session_manager: runtime.session_manager.clone(),
                     auto_compact_failures: runtime.auto_compact_failures.clone(),
                     background_result_tx: Some(background_result_tx),
-                    background_tasks: Default::default(),
+                    background_tasks: runtime.background_tasks.clone(),
                 },
             );
 
@@ -1010,6 +1012,12 @@ impl CommandHandler {
         payload: EventPayload,
     ) -> Result<Event, String> {
         record_and_broadcast(&self.runtime, &self.event_tx, session_id, turn_id, payload).await
+    }
+
+    fn cleanup_background_tasks_for_session(&self, session_id: &SessionId) {
+        if let Ok(mut tasks) = self.runtime.background_tasks.lock() {
+            tasks.cleanup_session(session_id);
+        }
     }
 
     fn active_turn_matches(&self, session_id: &SessionId, turn_id: &TurnId) -> bool {

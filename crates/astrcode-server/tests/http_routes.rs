@@ -671,6 +671,7 @@ fn runtime(llm_provider: Arc<dyn LlmProvider>) -> Arc<ServerRuntime> {
         auto_compact_failures: Arc::new(
             astrcode_server::agent::AutoCompactFailureTracker::default(),
         ),
+        background_tasks: Default::default(),
         extension_runner: Arc::new(ExtensionRunner::new(
             Duration::from_secs(1),
             Arc::new(ExtensionRuntime::new()),

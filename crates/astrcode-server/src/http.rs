@@ -3,13 +3,17 @@
 //! 这层只做 wire 适配：命令统一进入 [`CommandHandler`]，读接口从 storage
 //! read model 映射到 `astrcode_protocol::http` DTO。
 
-use std::{collections::BTreeMap, convert::Infallible, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    convert::Infallible,
+    sync::Arc,
+};
 
 use astrcode_core::{
     event::{Event, EventPayload, Phase},
     llm::{LlmContent, LlmMessage, LlmRole},
-    storage::{AgentSessionStatus, SessionReadModel, SessionSummary},
-    types::SessionId,
+    storage::{AgentSessionStatus, BackgroundToolCallView, SessionReadModel, SessionSummary},
+    types::{SessionId, ToolCallId},
 };
 use astrcode_protocol::{
     commands::ClientCommand,
@@ -636,7 +640,7 @@ fn conversation_to_dto(session: SessionReadModel) -> ConversationSnapshotRespons
             current_mode_id: None,
             active_turn_id: None,
         },
-        blocks: messages_to_blocks(&session.messages),
+        blocks: messages_to_blocks(&session.messages, &session.background_tool_calls),
         agent_sessions: session
             .agent_sessions
             .iter()
@@ -889,7 +893,10 @@ fn control_from_phase(phase: Phase) -> ConversationControlStateDto {
     }
 }
 
-fn messages_to_blocks(messages: &[LlmMessage]) -> Vec<ConversationBlockDto> {
+fn messages_to_blocks(
+    messages: &[LlmMessage],
+    background_tool_calls: &HashMap<ToolCallId, BackgroundToolCallView>,
+) -> Vec<ConversationBlockDto> {
     let mut blocks = Vec::new();
     let mut tool_block_indices = BTreeMap::new();
 
@@ -930,7 +937,13 @@ fn messages_to_blocks(messages: &[LlmMessage]) -> Vec<ConversationBlockDto> {
                     tool_block_indices.insert(call_id.clone(), block_index);
                 }
             },
-            LlmRole::Tool => push_tool_result_block(&mut blocks, &tool_block_indices, message, id),
+            LlmRole::Tool => push_tool_result_block(
+                &mut blocks,
+                &tool_block_indices,
+                background_tool_calls,
+                message,
+                id,
+            ),
             LlmRole::System => blocks.push(ConversationBlockDto::SystemNote {
                 id,
                 text: visible_message_text(message),
@@ -944,6 +957,7 @@ fn messages_to_blocks(messages: &[LlmMessage]) -> Vec<ConversationBlockDto> {
 fn push_tool_result_block(
     blocks: &mut Vec<ConversationBlockDto>,
     tool_block_indices: &BTreeMap<String, usize>,
+    background_tool_calls: &HashMap<ToolCallId, BackgroundToolCallView>,
     message: &LlmMessage,
     fallback_id: String,
 ) {
@@ -959,7 +973,11 @@ fn push_tool_result_block(
         else {
             continue;
         };
-        let status = if *is_error {
+        let background_call_id = ToolCallId::from(tool_call_id.as_str());
+        let background_task = background_tool_calls.get(&background_call_id);
+        let status = if background_task.is_some_and(|task| !task.completed) {
+            ConversationBlockStatusDto::Backgrounded
+        } else if *is_error {
             ConversationBlockStatusDto::Error
         } else {
             ConversationBlockStatusDto::Complete
@@ -968,11 +986,13 @@ fn push_tool_result_block(
             if let Some(ConversationBlockDto::ToolCall {
                 text,
                 status: block_status,
+                task_id,
                 ..
             }) = blocks.get_mut(*block_index)
             {
                 *text = content.clone();
                 *block_status = status;
+                *task_id = background_task.map(|task| task.task_id.to_string());
                 pushed_result = true;
                 continue;
             }
@@ -983,7 +1003,7 @@ fn push_tool_result_block(
             arguments: String::new(),
             text: content.clone(),
             status,
-            task_id: None,
+            task_id: background_task.map(|task| task.task_id.to_string()),
         });
         pushed_result = true;
     }
@@ -1202,6 +1222,46 @@ mod tests {
                 assert_eq!(arguments, "Cargo.toml");
                 assert_eq!(text, "file contents");
                 assert!(matches!(status, ConversationBlockStatusDto::Complete));
+            },
+            other => panic!("unexpected block: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn conversation_snapshot_restores_background_task_state() {
+        let mut session = astrcode_core::storage::SessionReadModel::empty("session-1".into());
+        session.working_dir = "D:/work/project".into();
+        session.messages.push(LlmMessage {
+            role: LlmRole::Assistant,
+            content: vec![LlmContent::ToolCall {
+                call_id: "tool-1".into(),
+                name: "shell".into(),
+                arguments: serde_json::json!({ "command": "npm run dev" }),
+            }],
+            name: None,
+        });
+        session.messages.push(LlmMessage::tool(
+            "shell",
+            "tool-1",
+            "Task moved to background (task: bg-1).",
+            false,
+        ));
+        session.background_tool_calls.insert(
+            "tool-1".into(),
+            BackgroundToolCallView {
+                task_id: "bg-1".into(),
+                completed: false,
+            },
+        );
+
+        let dto = conversation_to_dto(session);
+
+        match &dto.blocks[0] {
+            ConversationBlockDto::ToolCall {
+                status, task_id, ..
+            } => {
+                assert!(matches!(status, ConversationBlockStatusDto::Backgrounded));
+                assert_eq!(task_id.as_deref(), Some("bg-1"));
             },
             other => panic!("unexpected block: {other:?}"),
         }

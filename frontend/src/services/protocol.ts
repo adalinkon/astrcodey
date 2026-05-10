@@ -94,8 +94,15 @@ function decodePhase(value: unknown): Phase {
   throw new ProtocolDecodeError(`invalid phase ${String(value)}`)
 }
 
-function decodeBlockStatus(value: unknown): 'streaming' | 'complete' | 'error' | 'backgrounded' {
-  if (value === 'streaming' || value === 'complete' || value === 'error' || value === 'backgrounded') {
+function decodeBlockStatus(
+  value: unknown
+): 'streaming' | 'complete' | 'error' | 'backgrounded' {
+  if (
+    value === 'streaming' ||
+    value === 'complete' ||
+    value === 'error' ||
+    value === 'backgrounded'
+  ) {
     return value
   }
   throw new ProtocolDecodeError(`invalid block status ${String(value)}`)
@@ -284,12 +291,15 @@ export function decodeConversationSnapshot(
     phase: decodePhase(object.phase),
     control: decodeConversationControlState(object.control),
     blocks: arrayField(object, 'blocks').map(decodeConversationBlock),
-    agentSessions: arrayField(object, 'agentSessions').map(decodeAgentSessionLink),
+    agentSessions: arrayField(object, 'agentSessions').map(
+      decodeAgentSessionLink
+    ),
   }
 }
 
 function decodeAgentSessionStatus(value: unknown): AgentSessionStatus {
-  if (value === 'running' || value === 'completed' || value === 'failed') return value
+  if (value === 'running' || value === 'completed' || value === 'failed')
+    return value
   return 'running'
 }
 

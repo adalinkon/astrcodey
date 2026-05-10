@@ -4,7 +4,7 @@
 //! - [`EventStore`] trait：事件存储的统一接口
 //! - [`StorageError`]：存储操作错误类型
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -222,6 +222,15 @@ pub struct AgentSessionLinkView {
     pub status: AgentSessionStatus,
 }
 
+/// 后台化工具调用在会话投影中的状态。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackgroundToolCallView {
+    /// 后台任务 ID。
+    pub task_id: BackgroundTaskId,
+    /// 最终结果是否已经到达。
+    pub completed: bool,
+}
+
 /// 会话事件流的内部读模型。
 ///
 /// 这是 storage/domain 边界类型，不是 wire DTO。它只能由事件日志重建，并由
@@ -244,6 +253,9 @@ pub struct SessionReadModel {
     pub system_prompt: Option<String>,
     /// 尚未完成的工具调用。
     pub pending_tool_calls: HashSet<ToolCallId>,
+    /// 后台化工具调用状态，用于从快照恢复 UI 状态。
+    #[serde(default)]
+    pub background_tool_calls: HashMap<ToolCallId, BackgroundToolCallView>,
     /// 创建时间（ISO 8601）。
     pub created_at: String,
     /// 更新时间（ISO 8601）。
@@ -269,6 +281,7 @@ impl SessionReadModel {
             phase: Phase::Idle,
             system_prompt: None,
             pending_tool_calls: HashSet::new(),
+            background_tool_calls: HashMap::new(),
             created_at: String::new(),
             updated_at: String::new(),
             parent_session_id: None,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SlashCommandInfo } from '../../services/types'
 import { cn } from '../../lib/utils'
 
@@ -28,13 +28,9 @@ export default function CommandSelector({
     return options.filter(
       (opt) =>
         opt.name.toLowerCase().includes(q) ||
-        opt.description.toLowerCase().includes(q),
+        opt.description.toLowerCase().includes(q)
     )
   }, [options, query])
-
-  const resetSelection = useCallback(() => {
-    setSelectedIndex(0)
-  }, [])
 
   useEffect(() => {
     if (!visible) return
@@ -42,22 +38,23 @@ export default function CommandSelector({
     const handleKeyDown = (e: KeyboardEvent) => {
       switch (e.key) {
         case 'ArrowDown':
+          if (filteredOptions.length === 0) return
           e.preventDefault()
           e.stopPropagation()
-          setSelectedIndex(
-            (prev) => (prev + 1) % filteredOptions.length,
-          )
+          setSelectedIndex((prev) => (prev + 1) % filteredOptions.length)
           break
         case 'ArrowUp':
+          if (filteredOptions.length === 0) return
           e.preventDefault()
           e.stopPropagation()
           setSelectedIndex(
             (prev) =>
-              (prev - 1 + filteredOptions.length) % filteredOptions.length,
+              (prev - 1 + filteredOptions.length) % filteredOptions.length
           )
           break
         case 'Tab':
         case 'Enter':
+          if (filteredOptions.length === 0) return
           if (!e.shiftKey && !e.isComposing) {
             e.preventDefault()
             e.stopPropagation()
@@ -80,13 +77,9 @@ export default function CommandSelector({
   }, [visible, filteredOptions, selectedIndex, onSelect, onClose])
 
   useEffect(() => {
-    if (visible) resetSelection()
-  }, [visible, query, resetSelection])
-
-  useEffect(() => {
     if (!visible || !filteredOptions[selectedIndex]) return
     const target = panelRef.current?.querySelector(
-      `[data-index="${selectedIndex}"]`,
+      `[data-index="${selectedIndex}"]`
     )
     target?.scrollIntoView({ block: 'nearest' })
   }, [selectedIndex, visible, filteredOptions])
@@ -111,8 +104,7 @@ export default function CommandSelector({
         </div>
       ) : (
         filteredOptions.map((option, index) => {
-          const previousOption =
-            index > 0 ? filteredOptions[index - 1] : null
+          const previousOption = index > 0 ? filteredOptions[index - 1] : null
           const showHeader =
             !previousOption || previousOption.source !== option.source
           const headerText = sourceLabel(option.source)
@@ -135,7 +127,7 @@ export default function CommandSelector({
                   'w-full flex items-center justify-start gap-3 px-2 h-[34px] text-left transition-all duration-75 rounded-lg cursor-pointer',
                   index === selectedIndex
                     ? 'bg-black/5 text-text-primary'
-                    : 'text-text-secondary',
+                    : 'text-text-secondary'
                 )}
               >
                 <span
@@ -143,7 +135,7 @@ export default function CommandSelector({
                     'flex items-center justify-center shrink-0 w-4 h-4',
                     index === selectedIndex
                       ? 'text-text-primary'
-                      : 'text-text-muted',
+                      : 'text-text-muted'
                   )}
                 >
                   <CommandIcon
@@ -155,7 +147,7 @@ export default function CommandSelector({
                   <span
                     className={cn(
                       'text-[13px] shrink-0 text-inherit leading-normal',
-                      index === selectedIndex ? 'font-semibold' : 'font-medium',
+                      index === selectedIndex ? 'font-semibold' : 'font-medium'
                     )}
                   >
                     /{option.name}
@@ -166,7 +158,7 @@ export default function CommandSelector({
                         'text-[12px] truncate min-w-0 flex-1 leading-normal',
                         index === selectedIndex
                           ? 'text-text-secondary'
-                          : 'text-text-muted',
+                          : 'text-text-muted'
                       )}
                       title={option.description}
                     >
@@ -208,15 +200,12 @@ function CommandIcon({
       <svg
         className={cn(
           'h-4 w-4',
-          selected ? 'text-text-primary' : 'text-text-muted',
+          selected ? 'text-text-primary' : 'text-text-muted'
         )}
         viewBox="0 0 24 24"
         aria-hidden="true"
       >
-        <path
-          d="M13 10V3L4 14h7v7l9-11h-7z"
-          fill="currentColor"
-        />
+        <path d="M13 10V3L4 14h7v7l9-11h-7z" fill="currentColor" />
       </svg>
     )
   }
@@ -225,7 +214,7 @@ function CommandIcon({
     <svg
       className={cn(
         'h-4 w-4 fill-none',
-        selected ? 'stroke-text-primary' : 'stroke-text-muted',
+        selected ? 'stroke-text-primary' : 'stroke-text-muted'
       )}
       viewBox="0 0 24 24"
       strokeLinecap="round"

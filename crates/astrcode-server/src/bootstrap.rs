@@ -23,7 +23,7 @@ use astrcode_support::shell::resolve_shell;
 use astrcode_tools::registry::{ToolRegistry, builtin_tools};
 
 use crate::{
-    agent::AutoCompactFailureTracker,
+    agent::{AutoCompactFailureTracker, BackgroundTaskManager},
     session::{SessionManager, spawner::ServerSessionSpawner},
 };
 
@@ -42,6 +42,8 @@ pub struct ServerRuntime {
     pub context_assembler: Arc<LlmContextAssembler>,
     /// Auto compact provider 连续失败熔断状态。
     pub auto_compact_failures: Arc<AutoCompactFailureTracker>,
+    /// 跨回合共享的后台任务管理器。
+    pub background_tasks: Arc<std::sync::Mutex<BackgroundTaskManager>>,
     /// 扩展运行器，负责加载和分发扩展钩子事件
     pub extension_runner: Arc<ExtensionRunner>,
     /// 已解析的最终配置（运行时可通过 `sync_effective` 刷新）
@@ -160,6 +162,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     };
     let context_assembler = Arc::new(LlmContextAssembler::new(context_settings.clone()));
     let auto_compact_failures = Arc::new(AutoCompactFailureTracker::default());
+    let background_tasks = Arc::new(std::sync::Mutex::new(BackgroundTaskManager::default()));
 
     // 4. 确定当前项目工作目录。
     //
@@ -238,6 +241,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
         llm: Arc::clone(&llm_provider),
         context_assembler: Arc::clone(&context_assembler),
         auto_compact_failures: Arc::clone(&auto_compact_failures),
+        background_tasks: Arc::clone(&background_tasks),
         extension_runner: Arc::clone(&extension_runner),
         read_timeout_secs: effective.llm.read_timeout_secs,
     }));
@@ -252,6 +256,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
         llm_provider,
         context_assembler,
         auto_compact_failures,
+        background_tasks,
         extension_runner,
         effective: std::sync::RwLock::new(effective),
         config_store: Arc::new(config_store),

@@ -282,6 +282,8 @@ pub enum ConversationBlockDto {
 pub enum ConversationBlockStatusDto {
     /// 正在流式更新。
     Streaming,
+    /// 已转入后台运行。
+    Backgrounded,
     /// 已完成。
     Complete,
     /// 失败。

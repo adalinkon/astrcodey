@@ -54,11 +54,11 @@ export default function InputBar() {
   /** 在当前行找到光标位置的 `/` 触发上下文 */
   function findSlashTrigger(
     currentValue: string,
-    cursorPos: number,
+    cursorPos: number
   ): { triggerStart: number; triggerEnd: number; query: string } | null {
     const lineStart = Math.max(
       0,
-      currentValue.lastIndexOf('\n', cursorPos - 1) + 1,
+      currentValue.lastIndexOf('\n', cursorPos - 1) + 1
     )
     const segment = currentValue.slice(lineStart, cursorPos)
     const slashIdx = segment.lastIndexOf('/')
@@ -77,31 +77,28 @@ export default function InputBar() {
     }
   }
 
-  // ── slash trigger detection ──
-  useEffect(() => {
-    if (!activeSessionId) {
-      closeSlashTrigger()
-      return
-    }
+  const updateSlashTrigger = useCallback(
+    (currentValue: string, cursorPos: number) => {
+      if (!activeSessionId) return
 
-    const textarea = textareaRef.current
-    if (!textarea) return
-
-    const trigger = findSlashTrigger(value, textarea.selectionStart)
-    if (trigger) {
-      slashTriggerStartRef.current = trigger.triggerStart
-      slashTriggerEndRef.current = trigger.triggerEnd
-      setSlashQuery(trigger.query)
-      if (!slashTriggerVisible) {
-        setSlashTriggerVisible(true)
+      const trigger = findSlashTrigger(currentValue, cursorPos)
+      if (trigger) {
+        slashTriggerStartRef.current = trigger.triggerStart
+        slashTriggerEndRef.current = trigger.triggerEnd
+        setSlashQuery(trigger.query)
+        if (!slashTriggerVisible) {
+          setSlashLoading(true)
+          setSlashTriggerVisible(true)
+        }
+        return
       }
-      return
-    }
 
-    if (slashTriggerVisible) {
-      closeSlashTrigger()
-    }
-  }, [activeSessionId, slashTriggerVisible, value, closeSlashTrigger])
+      if (slashTriggerVisible) {
+        closeSlashTrigger()
+      }
+    },
+    [activeSessionId, slashTriggerVisible, closeSlashTrigger]
+  )
 
   // ── fetch commands when panel opens ──
   useEffect(() => {
@@ -110,7 +107,6 @@ export default function InputBar() {
     slashAbortRef.current?.abort()
     const controller = new AbortController()
     slashAbortRef.current = controller
-    setSlashLoading(true)
 
     api
       .listCommands(activeSessionId)
@@ -150,19 +146,27 @@ export default function InputBar() {
         textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`
       })
     },
-    [closeSlashTrigger, value],
+    [closeSlashTrigger, value]
   )
 
   const handleInput = useCallback(
     (event: React.ChangeEvent<HTMLTextAreaElement>) => {
-      setValue(event.target.value)
+      const nextValue = event.target.value
+      setValue(nextValue)
       const textarea = textareaRef.current
       if (!textarea) return
       textarea.style.height = 'auto'
       textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`
+      updateSlashTrigger(nextValue, textarea.selectionStart)
     },
-    []
+    [updateSlashTrigger]
   )
+
+  const handleCursorActivity = useCallback(() => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+    updateSlashTrigger(value, textarea.selectionStart)
+  }, [updateSlashTrigger, value])
 
   const submit = useCallback(async () => {
     const trimmed = value.trim()
@@ -197,7 +201,7 @@ export default function InputBar() {
         submit().catch((err) => console.error('submit failed:', err))
       }
     },
-    [submit, isComposing, slashTriggerVisible, closeSlashTrigger],
+    [submit, isComposing, slashTriggerVisible, closeSlashTrigger]
   )
 
   return (
@@ -238,7 +242,9 @@ export default function InputBar() {
                   value={value}
                   rows={1}
                   onChange={handleInput}
+                  onClick={handleCursorActivity}
                   onKeyDown={handleKeyDown}
+                  onKeyUp={handleCursorActivity}
                   onCompositionStart={() => setIsComposing(true)}
                   onCompositionEnd={() => setIsComposing(false)}
                   disabled={!activeSessionId || (!canSubmit && !isBusy)}
@@ -295,6 +301,7 @@ export default function InputBar() {
           </div>
           {activeSessionId && slashTriggerVisible && (
             <CommandSelector
+              key={`${activeSessionId}:${slashQuery}`}
               visible={slashTriggerVisible}
               options={slashOptions}
               loading={slashLoading}

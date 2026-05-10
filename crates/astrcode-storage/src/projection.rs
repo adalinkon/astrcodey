@@ -5,7 +5,7 @@
 use astrcode_core::{
     event::{Event, EventPayload, Phase},
     llm::{LlmContent, LlmMessage, LlmRole},
-    storage::{AgentSessionLinkView, AgentSessionStatus, SessionReadModel},
+    storage::{AgentSessionLinkView, AgentSessionStatus, BackgroundToolCallView, SessionReadModel},
     types::SessionId,
 };
 
@@ -44,6 +44,7 @@ pub(crate) fn reduce(event: &Event, model: &mut SessionReadModel) {
             model.context_messages.clear();
             model.system_prompt = None;
             model.pending_tool_calls.clear();
+            model.background_tool_calls.clear();
             model.agent_sessions.clear();
         },
         EventPayload::AgentSessionSpawned {
@@ -144,6 +145,23 @@ pub(crate) fn reduce(event: &Event, model: &mut SessionReadModel) {
             result,
         } => {
             model.pending_tool_calls.remove(call_id);
+            if let Some(task_id) = result
+                .metadata
+                .get("task_id")
+                .and_then(serde_json::Value::as_str)
+            {
+                model.background_tool_calls.insert(
+                    call_id.clone(),
+                    BackgroundToolCallView {
+                        task_id: task_id.into(),
+                        completed: !result
+                            .metadata
+                            .get("backgrounded")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false),
+                    },
+                );
+            }
             model.messages.push(LlmMessage {
                 role: LlmRole::Tool,
                 content: vec![LlmContent::ToolResult {

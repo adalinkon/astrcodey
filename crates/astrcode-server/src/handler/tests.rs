@@ -240,6 +240,7 @@ fn test_runtime_with_settings(
         llm_provider,
         context_assembler: Arc::new(LlmContextAssembler::new(context_settings.clone())),
         auto_compact_failures: Arc::new(crate::agent::AutoCompactFailureTracker::default()),
+        background_tasks: Default::default(),
         extension_runner: Arc::new(astrcode_extensions::runner::ExtensionRunner::new(
             Duration::from_secs(1),
             Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
