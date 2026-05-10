@@ -9,7 +9,7 @@ use std::sync::Arc;
 use astrcode_context::manager::LlmContextAssembler;
 use astrcode_core::{
     event::{Event, EventPayload, ToolOutputStream},
-    types::{SessionId, TurnId, new_message_id, new_turn_id},
+    types::{SessionId, ToolCallId, TurnId, new_message_id, new_turn_id},
 };
 use astrcode_extensions::{
     runner::ExtensionRunner,
@@ -24,7 +24,7 @@ use super::{
 use crate::{
     agent::{
         AgentLoop, AgentServices, AgentSignal, AutoCompactFailureTracker,
-        compact::compact_trigger_name, drive_agent,
+        compact::compact_trigger_name, drive_agent, tool_types::BackgroundTaskCompletion,
     },
     bootstrap::{build_system_prompt_snapshot, build_tool_registry_snapshot, prompt_fingerprint},
 };
@@ -147,6 +147,53 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
             format!("child agent '{child_name}' started: {child_sid} using {model_id}\n"),
         );
 
+        let current_child_sid = Arc::new(Mutex::new(child_sid.clone()));
+        let child_bg_final_sid = Arc::clone(&current_child_sid);
+
+        // 子会话的后台任务完成通道。
+        // watcher 通过此通道发送 BackgroundTaskCompletion，
+        // 下面的 spawned task 将其转为事件持久化到子会话存储。
+        // 注意：需要共享 current_child_sid 以便 compact continuation 后
+        // 也能正确定位最终的 leaf session。
+        let (child_bg_result_tx, mut child_bg_result_rx) =
+            mpsc::unbounded_channel::<BackgroundTaskCompletion>();
+
+        let child_bg_sm = Arc::clone(&self.session_manager);
+        let child_bg_progress = progress.clone();
+        let child_bg_turn_id = child_turn_id.clone();
+        tokio::spawn(async move {
+            while let Some(completion) = child_bg_result_rx.recv().await {
+                let sid = child_bg_final_sid.lock().await.clone();
+                // 持久化 ToolCallCompleted 到子会话
+                let _ = append_child_payload(
+                    child_bg_sm.as_ref(),
+                    &sid,
+                    Some(&child_bg_turn_id),
+                    EventPayload::ToolCallCompleted {
+                        call_id: completion.call_id.clone(),
+                        tool_name: completion.tool_name.clone(),
+                        result: completion.result.clone(),
+                    },
+                )
+                .await;
+                // 持久化 BackgroundTaskCompleted + 转发给父会话进度
+                let bg_event = EventPayload::BackgroundTaskCompleted {
+                    task_id: completion.task_id,
+                    call_id: ToolCallId::from(completion.result.call_id.clone()),
+                    tool_name: completion.tool_name,
+                    result: completion.result,
+                };
+                let _ = append_child_payload(
+                    child_bg_sm.as_ref(),
+                    &sid,
+                    Some(&child_bg_turn_id),
+                    bg_event.clone(),
+                )
+                .await;
+                child_bg_progress.forward(&bg_event);
+            }
+        });
+
         let agent = AgentLoop::new(
             child_sid.clone(),
             request.working_dir.clone(),
@@ -159,12 +206,11 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                 context_assembler: Arc::clone(&self.context_assembler),
                 session_manager: Arc::clone(&self.session_manager),
                 auto_compact_failures: Arc::clone(&self.auto_compact_failures),
-                background_result_tx: None, // 子会话暂不支持后台任务
+                background_result_tx: Some(child_bg_result_tx),
                 background_tasks: Default::default(),
             },
         );
 
-        let current_child_sid = Arc::new(Mutex::new(child_sid.clone()));
         let final_child_sid_ref = Arc::clone(&current_child_sid);
         let cti = child_turn_id.clone();
         let sm = Arc::clone(&self.session_manager);
