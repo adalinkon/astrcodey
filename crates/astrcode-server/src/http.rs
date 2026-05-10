@@ -1206,10 +1206,10 @@ fn generate_auth_token() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos() as u64;
-    let hash = crate::bootstrap::fnv1a_hash_bytes(&pid.to_le_bytes());
-    let hash = crate::bootstrap::fnv1a_hash_bytes(&now.to_le_bytes())
-        ^ hash
-        .wrapping_mul(0x100000001b3);
+    let mut data = [0u8; 12];
+    data[..4].copy_from_slice(&pid.to_le_bytes());
+    data[4..].copy_from_slice(&now.to_le_bytes());
+    let hash = crate::bootstrap::fnv1a_hash_bytes(&data);
     let hash2 = hash
         .wrapping_mul(0x5851f42d4c957f2d)
         .wrapping_add(pid as u64);
@@ -1327,7 +1327,7 @@ fn json_value_inline(value: &serde_json::Value) -> String {
     }
 }
 
-fn compact_inline(text: &str, max_chars: usize) -> String {
+pub(crate) fn compact_inline(text: &str, max_chars: usize) -> String {
     let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.chars().count() <= max_chars {
         return compact;

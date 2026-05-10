@@ -501,14 +501,7 @@ fn child_progress_delta(payload: &EventPayload) -> Option<(ToolOutputStream, Str
 }
 
 fn one_line_summary(text: &str) -> String {
-    let mut summary = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    const MAX_CHARS: usize = 160;
-    if summary.chars().count() > MAX_CHARS {
-        let truncated: String = summary.chars().take(MAX_CHARS - 1).collect();
-        summary = truncated;
-        summary.push('…');
-    }
-    summary
+    crate::http::compact_inline(text, 159)
 }
 
 #[cfg(test)]
@@ -536,6 +529,35 @@ mod tests {
 
     struct CompactThenLeafLlm {
         call_count: AtomicUsize,
+    }
+
+    struct StaticTextLlm {
+        text: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for StaticTextLlm {
+        async fn generate(
+            &self,
+            _messages: Vec<LlmMessage>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<mpsc::UnboundedReceiver<LlmEvent>, LlmError> {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let _ = tx.send(LlmEvent::ContentDelta {
+                delta: self.text.into(),
+            });
+            let _ = tx.send(LlmEvent::Done {
+                finish_reason: "stop".into(),
+            });
+            Ok(rx)
+        }
+
+        fn model_limits(&self) -> ModelLimits {
+            ModelLimits {
+                max_input_tokens: 200000,
+                max_output_tokens: 1024,
+            }
+        }
     }
 
     #[async_trait::async_trait]
@@ -710,5 +732,47 @@ mod tests {
             first_child_id, &previous_child_id,
             "spawned link should point to the original child, not the compact leaf"
         );
+    }
+
+    #[tokio::test]
+    async fn spawned_session_uses_latest_llm_provider() {
+        let session_manager = Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new())));
+        let parent = session_manager
+            .create(".", "mock", 2048, None)
+            .await
+            .unwrap();
+        let initial_provider: Arc<dyn LlmProvider> = Arc::new(StaticTextLlm { text: "old" });
+        let llm_provider = Arc::new(std::sync::RwLock::new(initial_provider));
+        let spawner = ServerSessionSpawner {
+            session_manager,
+            llm_provider: Arc::clone(&llm_provider),
+            context_assembler: Arc::new(LlmContextAssembler::new(Default::default())),
+            auto_compact_failures: Arc::new(AutoCompactFailureTracker::default()),
+            background_tasks: Default::default(),
+            extension_runner: Arc::new(ExtensionRunner::new(
+                Duration::from_secs(1),
+                Arc::new(ExtensionRuntime::new()),
+            )),
+            read_timeout_secs: 1,
+        };
+        *llm_provider.write().unwrap() = Arc::new(StaticTextLlm { text: "new" });
+
+        let result = spawner
+            .spawn(
+                parent.session_id.as_str(),
+                SpawnRequest {
+                    name: "nested".into(),
+                    system_prompt: "nested extra prompt".into(),
+                    user_prompt: "current nested prompt".into(),
+                    working_dir: ".".into(),
+                    model_preference: Some("mock".into()),
+                    tool_call_id: None,
+                    event_tx: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.content, "new");
     }
 }
