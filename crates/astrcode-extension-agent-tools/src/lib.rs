@@ -206,7 +206,7 @@ fn compact_inline(text: &str, max_chars: usize) -> String {
 const AGENT_TOOL_DESCRIPTION: &str =
     "Spawn a subagent to handle one delegated task. Choose subagent_type from the Agents section.";
 
-const AGENT_TOOL_PARAMETERS: &str = r#"{"type":"object","properties":{"description":{"type":"string","description":"Short 3-5 word description"},"prompt":{"type":"string","description":"Task for the subagent"},"subagent_type":{"type":"string","description":"Agent name from agents/ directory"},"mode":{"type":"string","enum":["single"],"default":"single"}},"required":["prompt","description"]}"#;
+const AGENT_TOOL_PARAMETERS: &str = r#"{"type":"object","properties":{"description":{"type":"string","description":"Short 3-5 word description"},"prompt":{"type":"string","description":"Task for the subagent"},"subagentType":{"type":"string","description":"Agent name from agents/ directory"},"mode":{"type":"string","enum":["single"],"default":"single"}},"required":["prompt","description"]}"#;
 
 fn agent_tool_definition() -> ToolDefinition {
     ToolDefinition {
@@ -286,7 +286,7 @@ mod tests {
         let input = json!({
             "prompt": "find the bug",
             "description": "bug hunt",
-            "subagent_type": "explore"
+            "subagentType": "explore"
         });
         let args: AgentArgs = serde_json::from_value(input).unwrap();
         assert_eq!(args.prompt, "find the bug");
@@ -313,15 +313,15 @@ mod tests {
         }];
 
         let by_name =
-            json!({ "prompt": "review", "description": "test", "subagent_type": "Code Reviewer" });
+            json!({ "prompt": "review", "description": "test", "subagentType": "Code Reviewer" });
         assert!(build_agent_run(&by_name, &agents).is_ok());
 
         let by_id =
-            json!({ "prompt": "review", "description": "test", "subagent_type": "code-reviewer" });
+            json!({ "prompt": "review", "description": "test", "subagentType": "code-reviewer" });
         assert!(build_agent_run(&by_id, &agents).is_ok());
 
         let by_unknown =
-            json!({ "prompt": "review", "description": "test", "subagent_type": "unknown" });
+            json!({ "prompt": "review", "description": "test", "subagentType": "unknown" });
         assert!(build_agent_run(&by_unknown, &agents).is_err());
     }
 }

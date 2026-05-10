@@ -15,6 +15,7 @@ use super::shared_context::{MCP_TOOL_PREFIX, TOOL_SEARCH_METADATA_KEY, TOOL_SEAR
 ///
 /// 某些 LLM 提供者（如 glm-5.1）可能生成格式不正确的 JSON。
 /// 此函数尝试修复常见问题，如：
+/// - 字符串值内包含原始控制字符（如真实换行符而非 `\n`）
 /// - 末尾缺少闭合括号
 /// - 末尾有多余的逗号
 /// - 引号不匹配
@@ -32,8 +33,9 @@ pub(super) fn parse_and_repair_json(arguments: &str, tool_name: &str) -> serde_j
         "Failed to parse tool call arguments, attempting repair"
     );
 
-    // 尝试修复策略 1：去除末尾的逗号
     let trimmed = arguments.trim();
+
+    // 尝试修复策略 1：去除末尾的逗号
     if let Some(repaired) = trimmed.strip_suffix(',') {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(repaired) {
             tracing::debug!(
@@ -44,7 +46,33 @@ pub(super) fn parse_and_repair_json(arguments: &str, tool_name: &str) -> serde_j
         }
     }
 
-    // 尝试修复策略 2：关闭截断的字符串并补全缺失的闭合括号
+    // 尝试修复策略 2：转义字符串值内的原始控制字符
+    // 某些 LLM（如 glm-5.1）会在 JSON 字符串内直接输出换行、制表符等，
+    // 这不符合 JSON 规范（控制字符必须转义）。
+    let escaped = escape_control_chars_in_json_strings(trimmed);
+    if escaped != trimmed {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&escaped) {
+            tracing::debug!(
+                tool = %tool_name,
+                "Successfully repaired JSON by escaping control characters in strings"
+            );
+            return value;
+        }
+    }
+
+    // 尝试修复策略 3：转义控制字符 + 关闭截断的字符串并补全缺失的闭合括号
+    let repaired = close_truncated_json(&escaped);
+    if repaired != escaped {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&repaired) {
+            tracing::debug!(
+                tool = %tool_name,
+                "Successfully repaired JSON by escaping control chars and closing truncated content"
+            );
+            return value;
+        }
+    }
+
+    // 尝试修复策略 4：仅关闭截断（不转义控制字符）
     let repaired = close_truncated_json(trimmed);
     if repaired != trimmed {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&repaired) {
@@ -148,6 +176,58 @@ pub(super) fn is_concrete_mcp_tool(name: &str) -> bool {
     name.starts_with(MCP_TOOL_PREFIX) && name != TOOL_SEARCH_TOOL_NAME
 }
 
+/// 将 JSON 字符串值内的原始控制字符转义为 JSON 合法形式。
+///
+/// 扫描输入，在 JSON 字符串值（双引号内）遇到未转义的控制字符时，
+/// 将其替换为对应的 JSON 转义序列（`\n`、`\r`、`\t`、`\uXXXX`）。
+/// 不在字符串内的内容（键名、括号、数字等）保持不变。
+fn escape_control_chars_in_json_strings(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut has_changes = false;
+
+    for ch in s.chars() {
+        if escape_next {
+            escape_next = false;
+            result.push(ch);
+            continue;
+        }
+        if ch == '\\' {
+            escape_next = true;
+            result.push(ch);
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            result.push(ch);
+            continue;
+        }
+        if in_string && ch.is_control() {
+            has_changes = true;
+            match ch {
+                '\n' => result.push_str("\\n"),
+                '\r' => result.push_str("\\r"),
+                '\t' => result.push_str("\\t"),
+                '\u{0008}' => result.push_str("\\b"),
+                '\u{000C}' => result.push_str("\\f"),
+                c => {
+                    // 其他控制字符用 \uXXXX 表示
+                    result.push_str(&format!("\\u{:04x}", c as u32));
+                },
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    // 快速路径：没有控制字符需要转义，直接返回原字符串
+    if !has_changes {
+        return s.to_string();
+    }
+    result
+}
+
 /// 关闭截断的 JSON：补上未闭合的字符串引号和缺失的括号。
 ///
 /// 常见场景：LLM 流式响应被中断，导致工具调用参数 JSON 被截断，
@@ -247,5 +327,54 @@ mod tests {
     fn parse_and_repair_json_returns_empty_on_garbage() {
         let result = parse_and_repair_json("not json at all {{{", "testTool");
         assert_eq!(result, serde_json::json!({}));
+    }
+
+    #[test]
+    fn escape_control_chars_escapes_raw_newlines() {
+        let input = "{\"text\": \"line1\nline2\"}";
+        let result = escape_control_chars_in_json_strings(input);
+        assert_eq!(result, r#"{"text": "line1\nline2"}"#);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["text"], "line1\nline2");
+    }
+
+    #[test]
+    fn escape_control_chars_escapes_tab_and_carriage_return() {
+        let input = "{\"text\": \"col1\tcol2\r\nend\"}";
+        let result = escape_control_chars_in_json_strings(input);
+        assert_eq!(result, r#"{"text": "col1\tcol2\r\nend"}"#);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["text"], "col1\tcol2\r\nend");
+    }
+
+    #[test]
+    fn escape_control_chars_no_change_for_valid_json() {
+        let input = r#"{"text": "already\\nescaped"}"#;
+        assert_eq!(escape_control_chars_in_json_strings(input), input);
+    }
+
+    #[test]
+    fn parse_and_repair_json_handles_raw_newlines_in_string() {
+        // Simulates what weak LLMs produce: real newlines inside JSON string values
+        let input = "{\"newStr\": \"use std::sync::Arc;\n\nuse agent::AgentConfig;\"}";
+        let result = parse_and_repair_json(input, "edit");
+        assert_eq!(result["newStr"], "use std::sync::Arc;\n\nuse agent::AgentConfig;");
+    }
+
+    #[test]
+    fn parse_and_repair_json_handles_raw_newlines_and_truncation() {
+        // Both raw newlines AND truncation
+        let input = "{\"newStr\": \"line1\nline2";
+        let result = parse_and_repair_json(input, "edit");
+        assert_eq!(result["newStr"], "line1\nline2");
+    }
+
+    #[test]
+    fn escape_control_chars_preserves_non_string_content() {
+        // Control chars outside strings should NOT be escaped
+        let input = "{\n  \"key\": \"value\"\n}";
+        // The \n between { and "key" are outside strings — should be preserved as-is
+        let result = escape_control_chars_in_json_strings(input);
+        assert_eq!(result, input);
     }
 }
