@@ -66,6 +66,7 @@ function mergeBlock(
         ? incoming.arguments
         : current.arguments,
       text: incoming.text ?? current.text,
+      taskId: incoming.taskId ?? current.taskId,
     }
   }
 
@@ -385,6 +386,7 @@ export const useAppStore = create<ConversationState>((set, get) => ({
             ...block,
             text: `Task moved to background (task: ${delta.taskId}). Result will arrive when done.`,
             status: 'backgrounded',
+            taskId: delta.taskId,
           }
           return { blocks: next }
         })

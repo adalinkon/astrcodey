@@ -134,6 +134,7 @@ export function decodeConversationBlock(value: unknown): ConversationBlock {
         arguments: requiredString(object, 'arguments'),
         text: requiredString(object, 'text'),
         status: decodeBlockStatus(object.status),
+        taskId: optionalString(object, 'taskId'),
       }
     case 'error':
       return { kind, id, message: requiredString(object, 'message') }

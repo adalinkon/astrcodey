@@ -109,6 +109,7 @@ export type ConversationBlock =
       arguments: string
       text: string
       status: BlockStatus
+      taskId?: string
     }
   | { kind: 'error'; id: string; message: string }
   | { kind: 'systemNote'; id: string; text: string }
