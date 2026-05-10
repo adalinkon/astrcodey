@@ -4,7 +4,6 @@ use astrcode_context::compaction::CompactResult;
 use astrcode_core::{
     event::EventPayload,
     extension::CompactTrigger,
-    tool::ToolResult,
     types::{SessionId, TurnId},
 };
 use astrcode_protocol::{commands::ClientCommand, events::ClientNotification};
@@ -12,7 +11,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use super::{CommandHandler, HandlerError, ManualCompactOutcome, PromptSubmission};
 use crate::{
-    agent::{AgentError, AgentTurnOutput},
+    agent::{AgentError, AgentTurnOutput, tool_types::BackgroundTaskCompletion},
     bootstrap::ServerRuntime,
 };
 
@@ -165,13 +164,7 @@ pub(super) enum CommandMessage {
         reply: oneshot::Sender<Result<SessionId, HandlerError>>,
     },
     /// 后台任务完成，需要持久化事件并广播给客户端。
-    BackgroundTaskCompleted {
-        session_id: SessionId,
-        task_id: astrcode_core::types::BackgroundTaskId,
-        call_id: astrcode_core::types::ToolCallId,
-        tool_name: String,
-        result: ToolResult,
-    },
+    BackgroundTaskCompleted(BackgroundTaskCompletion),
 }
 
 impl CommandHandler {
@@ -283,35 +276,20 @@ impl CommandHandler {
                     .await;
                 let _ = reply.send(result);
             },
-            CommandMessage::BackgroundTaskCompleted {
-                session_id,
-                task_id,
-                call_id,
-                tool_name,
-                result,
-            } => {
+            CommandMessage::BackgroundTaskCompleted(completion) => {
                 // 持久化后台任务完成事件并广播给客户端
                 let _ = self
                     .record_and_broadcast(
-                        &session_id,
+                        &completion.session_id,
                         None,
-                        EventPayload::ToolCallCompleted {
-                            call_id,
-                            tool_name: tool_name.clone(),
-                            result: result.clone(),
-                        },
+                        completion.to_tool_call_completed(),
                     )
                     .await;
                 let _ = self
                     .record_and_broadcast(
-                        &session_id,
+                        &completion.session_id,
                         None,
-                        EventPayload::BackgroundTaskCompleted {
-                            task_id,
-                            call_id: astrcode_core::types::ToolCallId::from(result.call_id.clone()),
-                            tool_name,
-                            result,
-                        },
+                        completion.to_background_task_completed(),
                     )
                     .await;
             },

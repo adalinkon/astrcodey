@@ -356,7 +356,6 @@ async fn background_tool_call(
             let _ = tx.send(BackgroundTaskCompletion {
                 session_id: bg_session_id,
                 task_id: bg_task_id.clone(),
-                call_id: ToolCallId::from(bg_call_id),
                 tool_name: bg_tool_name,
                 result,
             });

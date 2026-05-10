@@ -25,11 +25,8 @@ use crate::{event::EventPayload, storage::ToolResultArtifactReader, types::Sessi
 /// 工具通过此 trait 查询当前会话的后台任务状态。
 /// 由 agent loop 在构建 ToolExecutionContext 时注入。
 pub trait BackgroundTaskReader: Send + Sync {
-    /// 列出指定会话的所有活跃后台任务。
-    fn list_active(
-        &self,
-        session_id: &SessionId,
-    ) -> Vec<(crate::types::BackgroundTaskId, SessionId)>;
+    /// 列出指定会话的所有活跃后台任务 ID。
+    fn list_active(&self, session_id: &SessionId) -> Vec<crate::types::BackgroundTaskId>;
 
     /// 取消指定任务。返回 true 表示成功取消。
     fn cancel(&self, session_id: &SessionId, task_id: &crate::types::BackgroundTaskId) -> bool;

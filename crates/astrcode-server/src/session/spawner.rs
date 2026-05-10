@@ -9,7 +9,7 @@ use std::sync::Arc;
 use astrcode_context::manager::LlmContextAssembler;
 use astrcode_core::{
     event::{Event, EventPayload, ToolOutputStream},
-    types::{SessionId, ToolCallId, TurnId, new_message_id, new_turn_id},
+    types::{SessionId, TurnId, new_message_id, new_turn_id},
 };
 use astrcode_extensions::{
     runner::ExtensionRunner,
@@ -169,20 +169,11 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                     child_bg_sm.as_ref(),
                     &sid,
                     Some(&child_bg_turn_id),
-                    EventPayload::ToolCallCompleted {
-                        call_id: completion.call_id.clone(),
-                        tool_name: completion.tool_name.clone(),
-                        result: completion.result.clone(),
-                    },
+                    completion.to_tool_call_completed(),
                 )
                 .await;
                 // 持久化 BackgroundTaskCompleted + 转发给父会话进度
-                let bg_event = EventPayload::BackgroundTaskCompleted {
-                    task_id: completion.task_id,
-                    call_id: ToolCallId::from(completion.result.call_id.clone()),
-                    tool_name: completion.tool_name,
-                    result: completion.result,
-                };
+                let bg_event = completion.to_background_task_completed();
                 let _ = append_child_payload(
                     child_bg_sm.as_ref(),
                     &sid,

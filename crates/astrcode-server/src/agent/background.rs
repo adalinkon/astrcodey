@@ -113,13 +113,9 @@ impl BackgroundTaskReaderImpl {
 }
 
 impl BackgroundTaskReader for BackgroundTaskReaderImpl {
-    fn list_active(&self, session_id: &SessionId) -> Vec<(BackgroundTaskId, SessionId)> {
+    fn list_active(&self, session_id: &SessionId) -> Vec<BackgroundTaskId> {
         match self.manager.lock() {
-            Ok(mgr) => mgr
-                .list_active(session_id)
-                .into_iter()
-                .map(|id| (id, session_id.clone()))
-                .collect(),
+            Ok(mgr) => mgr.list_active(session_id),
             Err(_) => Vec::new(),
         }
     }

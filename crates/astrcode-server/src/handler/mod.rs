@@ -899,13 +899,7 @@ impl CommandHandler {
             let bg_actor_tx = actor_tx.clone();
             tokio::spawn(async move {
                 while let Some(completion) = background_result_rx.recv().await {
-                    let _ = bg_actor_tx.send(CommandMessage::BackgroundTaskCompleted {
-                        session_id: completion.session_id,
-                        task_id: completion.task_id,
-                        call_id: completion.call_id,
-                        tool_name: completion.tool_name,
-                        result: completion.result,
-                    });
+                    let _ = bg_actor_tx.send(CommandMessage::BackgroundTaskCompleted(completion));
                 }
             });
 

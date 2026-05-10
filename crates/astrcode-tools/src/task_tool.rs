@@ -72,7 +72,7 @@ impl Tool for TaskTool {
                 } else {
                     let lines: Vec<String> = tasks
                         .iter()
-                        .map(|(task_id, _sid)| format!("- task: {task_id}"))
+                        .map(|task_id| format!("- task: {task_id}"))
                         .collect();
                     format!("Active background tasks:\n{}", lines.join("\n"))
                 };
