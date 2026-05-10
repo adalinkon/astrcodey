@@ -628,6 +628,15 @@ fn conversation_to_dto(session: SessionReadModel) -> ConversationSnapshotRespons
             active_turn_id: None,
         },
         blocks: messages_to_blocks(&session.messages),
+        agent_sessions: session
+            .agent_sessions
+            .iter()
+            .map(|link| astrcode_protocol::http::AgentSessionLinkDto {
+                child_session_id: link.child_session_id.to_string(),
+                agent_name: link.agent_name.clone(),
+                task: link.task.clone(),
+            })
+            .collect(),
     }
 }
 
