@@ -453,6 +453,7 @@ impl ToolPipeline {
                 }
 
                 // PostToolUseFailure: 仅当结果仍为错误时触发
+                // 这是一个通知型钩子，dispatch 结果不影响工具执行流程。
                 if result.is_error {
                     let mut fail_ctx = self.shared.ext_ctx_with_tools(input.tools);
                     fail_ctx.set_post_tool_use_failure_input(PostToolUseFailureInput {
@@ -465,7 +466,8 @@ impl ToolPipeline {
                         tool_result: result.clone(),
                     });
 
-                    self.extension_runner
+                    let _outcome = self
+                        .extension_runner
                         .dispatch_tool_hook(ExtensionEvent::PostToolUseFailure, &fail_ctx)
                         .await?;
                 }

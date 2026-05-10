@@ -107,7 +107,7 @@ function BackgroundTaskPanel() {
                     : '完成'}
               </span>
               <span className="shrink-0 font-mono text-[10px] text-text-muted">
-                {block.taskId!.slice(0, 8)}
+                {block.taskId?.slice(0, 8) ?? '—'}
               </span>
             </div>
           ))}
