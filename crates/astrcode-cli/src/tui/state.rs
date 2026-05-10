@@ -9,7 +9,9 @@ use astrcode_core::{
     event::{Event, EventPayload},
     render::{RenderSpec, UI_RENDER_METADATA_KEY},
 };
-use astrcode_protocol::events::ClientNotification;
+use astrcode_protocol::events::{
+    ClientNotification, ExtensionCommandInfo, SessionListItem, SessionSnapshot,
+};
 
 use super::{
     composer::{ComposerAction, ComposerState},
@@ -452,52 +454,11 @@ impl TuiState {
     pub fn apply(&mut self, notification: &ClientNotification) {
         match notification {
             ClientNotification::Event(event) => self.apply_event(event),
-            // 会话恢复：加载快照中的消息历史
             ClientNotification::SessionResumed {
                 session_id,
                 snapshot,
-            } => {
-                self.active_session_id = Some(session_id.clone());
-                self.working_dir = snapshot.working_dir.clone();
-                self.messages.clear();
-                self.task_activity = None;
-                self.stream_scrollback.clear();
-                self.transcript_scroll = 0;
-                for message in &snapshot.messages {
-                    let role = match message.role.as_str() {
-                        "user" => MessageRole::User,
-                        "assistant" => MessageRole::Assistant,
-                        "tool" => MessageRole::Tool,
-                        _ => MessageRole::System,
-                    };
-                    let label = match role {
-                        MessageRole::User => "You",
-                        MessageRole::Assistant => "Astrcode",
-                        MessageRole::System => "System",
-                        MessageRole::Tool => "Tool",
-                        MessageRole::Error => "Error",
-                    };
-                    self.push_message(role, label.into(), message.content.clone(), false, None);
-                }
-                self.status = format!("Resumed {}", super::short_id(session_id));
-            },
-            // 会话列表更新
-            ClientNotification::SessionList { sessions } => {
-                self.available_sessions = sessions
-                    .iter()
-                    .map(|item| item.session_id.clone())
-                    .collect();
-                self.status = format!("{} session(s)", sessions.len());
-                self.push_message(
-                    MessageRole::System,
-                    "Sessions".into(),
-                    session_list_body(sessions, self.active_session_id.as_deref()),
-                    false,
-                    None,
-                );
-                self.mark_dirty();
-            },
-            // UI 请求（如确认提示等）
+            } => self.apply_session_resumed(session_id, snapshot),
+            ClientNotification::SessionList { sessions } => self.apply_session_list(sessions),
             ClientNotification::UiRequest { message, .. } => {
                 self.status = message.clone();
                 self.mark_dirty();
@@ -506,34 +467,83 @@ impl TuiState {
                 self.show_error(message);
             },
             ClientNotification::ExtensionCommandList { commands } => {
-                use super::slash::SlashCommandSpec;
-                self.extension_commands = commands
-                    .iter()
-                    .map(|info| SlashCommandSpec {
-                        name: info.name.clone(),
-                        usage: format!("/{}", info.name),
-                        description: info.description.clone(),
-                        needs_argument: info.needs_argument,
-                    })
-                    .collect();
-                self.status = format!("{} extension command(s) loaded", commands.len());
-                self.mark_dirty();
+                self.apply_extension_command_list(commands);
             },
             ClientNotification::ExtensionCommandResult {
                 command_name,
                 content,
                 is_error,
-            } => {
-                let role = if *is_error {
-                    MessageRole::Error
-                } else {
-                    MessageRole::System
-                };
-                let label = if *is_error { "Error" } else { command_name };
-                self.push_message(role, label.into(), content.clone(), false, None);
-                self.mark_dirty();
-            },
+            } => self.apply_extension_command_result(command_name, content, *is_error),
         }
+    }
+
+    fn apply_session_resumed(&mut self, session_id: &str, snapshot: &SessionSnapshot) {
+        self.active_session_id = Some(session_id.to_string());
+        self.working_dir = snapshot.working_dir.clone();
+        self.messages.clear();
+        self.task_activity = None;
+        self.stream_scrollback.clear();
+        self.transcript_scroll = 0;
+
+        for message in &snapshot.messages {
+            let role = message_role_from_snapshot(&message.role);
+            self.push_message(
+                role.clone(),
+                message_label(&role).into(),
+                message.content.clone(),
+                false,
+                None,
+            );
+        }
+        self.status = format!("Resumed {}", super::short_id(session_id));
+    }
+
+    fn apply_session_list(&mut self, sessions: &[SessionListItem]) {
+        self.available_sessions = sessions
+            .iter()
+            .map(|item| item.session_id.clone())
+            .collect();
+        self.status = format!("{} session(s)", sessions.len());
+        self.push_message(
+            MessageRole::System,
+            "Sessions".into(),
+            session_list_body(sessions, self.active_session_id.as_deref()),
+            false,
+            None,
+        );
+        self.mark_dirty();
+    }
+
+    fn apply_extension_command_list(&mut self, commands: &[ExtensionCommandInfo]) {
+        use super::slash::SlashCommandSpec;
+
+        self.extension_commands = commands
+            .iter()
+            .map(|info| SlashCommandSpec {
+                name: info.name.clone(),
+                usage: format!("/{}", info.name),
+                description: info.description.clone(),
+                needs_argument: info.needs_argument,
+            })
+            .collect();
+        self.status = format!("{} extension command(s) loaded", commands.len());
+        self.mark_dirty();
+    }
+
+    fn apply_extension_command_result(
+        &mut self,
+        command_name: &str,
+        content: &str,
+        is_error: bool,
+    ) {
+        let role = if is_error {
+            MessageRole::Error
+        } else {
+            MessageRole::System
+        };
+        let label = if is_error { "Error" } else { command_name };
+        self.push_message(role, label.into(), content.into(), false, None);
+        self.mark_dirty();
     }
 
     /// 将核心事件（EventPayload）应用到 TUI 状态。
@@ -546,351 +556,66 @@ impl TuiState {
                 working_dir,
                 model_id,
                 ..
-            } => {
-                self.active_session_id = Some(event.session_id.to_string());
-                self.working_dir = working_dir.clone();
-                self.model_name = model_id.clone();
-                self.task_activity = None;
-                self.stream_scrollback.clear();
-                self.push_message(
-                    MessageRole::System,
-                    "Session".into(),
-                    format!(
-                        "Created session {}",
-                        super::short_id(event.session_id.as_str())
-                    ),
-                    false,
-                    None,
-                );
-                self.status = "Ready".into();
-            },
+            } => self.apply_session_started(event, working_dir, model_id),
             EventPayload::SystemPromptConfigured { .. } => {
                 // Session context fact only; do not render the full system prompt in transcript.
             },
-            EventPayload::SessionDeleted => {
-                self.active_session_id = None;
-                self.status = "Session deleted".into();
-                self.mark_dirty();
-            },
+            EventPayload::SessionDeleted => self.apply_session_deleted(),
             EventPayload::AgentSessionSpawned {
                 child_session_id,
                 agent_name,
                 task,
-            } => {
-                self.push_message(
-                    MessageRole::System,
-                    "Agent".into(),
-                    format!(
-                        "spawned {} — {} ({})",
-                        agent_name,
-                        task,
-                        super::short_id(child_session_id.as_str())
-                    ),
-                    false,
-                    None,
-                );
-            },
+            } => self.apply_agent_session_spawned(child_session_id.as_str(), agent_name, task),
             EventPayload::AgentSessionCompleted {
                 child_session_id,
                 summary,
                 ..
-            } => {
-                self.push_message(
-                    MessageRole::System,
-                    "Agent".into(),
-                    format!(
-                        "completed ({}) — {}",
-                        super::short_id(child_session_id.as_str()),
-                        summary
-                    ),
-                    false,
-                    None,
-                );
-            },
+            } => self.apply_agent_session_completed(child_session_id.as_str(), summary),
             EventPayload::AgentSessionFailed {
                 child_session_id,
                 error,
                 ..
-            } => {
-                self.push_message(
-                    MessageRole::System,
-                    "Agent".into(),
-                    format!(
-                        "failed ({}) — {}",
-                        super::short_id(child_session_id.as_str()),
-                        error
-                    ),
-                    false,
-                    None,
-                );
-            },
-            EventPayload::TurnStarted => {
-                self.is_streaming = true;
-                self.error = None;
-                self.task_activity = Some(TaskActivity::new("Working"));
-                self.status = "Working".into();
-                self.mark_dirty();
-            },
+            } => self.apply_agent_session_failed(child_session_id.as_str(), error),
+            EventPayload::TurnStarted => self.apply_turn_started(),
             EventPayload::TurnCompleted { finish_reason } => {
-                self.is_streaming = false;
-                self.task_activity = None;
-                self.status = ready_status(finish_reason);
-                self.mark_dirty();
+                self.apply_turn_completed(finish_reason)
             },
             // 用户消息在按下 Enter 时已乐观推入，此处无需处理
             EventPayload::UserMessage { .. } => {},
             EventPayload::AssistantMessageStarted { message_id } => {
-                self.stream_scrollback
-                    .insert(message_id.to_string(), StreamScrollbackState::default());
-                self.scrollback_queue.push(ScrollbackEntry::StreamHeader {
-                    role: MessageRole::Assistant,
-                    label: "Astrcode".into(),
-                });
-                self.task_activity = Some(TaskActivity::new("Working"));
-                self.push_message(
-                    MessageRole::Assistant,
-                    "Astrcode".into(),
-                    String::new(),
-                    true,
-                    Some(message_id.to_string()),
-                );
+                self.apply_assistant_message_started(message_id.as_str());
             },
             EventPayload::AssistantTextDelta { message_id, delta } => {
-                if let Some(message) = self.find_message_mut(message_id.as_str()) {
-                    message.body.append_text(delta);
-                    self.mark_dirty();
-                }
-                self.push_assistant_stream_delta(message_id.as_str(), delta);
+                self.apply_assistant_text_delta(message_id.as_str(), delta);
             },
             EventPayload::AssistantMessageCompleted { message_id, text } => {
-                let streamed_to_scrollback =
-                    self.finish_assistant_stream(message_id.as_str(), text);
-                if let Some(message) = self.find_message_mut(message_id.as_str()) {
-                    message.body.set_text(text.clone());
-                    message.is_streaming = false;
-                    if !streamed_to_scrollback {
-                        let completed = message.clone();
-                        self.scrollback_queue
-                            .push(ScrollbackEntry::Message(completed));
-                    }
-                    self.mark_dirty();
-                } else {
-                    // 未找到已有消息（可能错过了 Started 事件），直接创建
-                    self.push_message(
-                        MessageRole::Assistant,
-                        "Astrcode".into(),
-                        text.clone(),
-                        false,
-                        Some(message_id.to_string()),
-                    );
-                }
+                self.apply_assistant_message_completed(message_id.as_str(), text);
             },
-            EventPayload::ThinkingDelta { delta } => {
-                self.task_activity = Some(TaskActivity::with_detail("Thinking", delta.clone()));
-                self.status = format!("Thinking · {}", delta);
-                self.mark_dirty();
-            },
+            EventPayload::ThinkingDelta { delta } => self.apply_thinking_delta(delta),
             EventPayload::ToolCallStarted { call_id, tool_name } => {
-                // 不需要在消息记录中显示的工具仅更新状态栏
-                if !tool_display::should_print_tool(tool_name) {
-                    self.task_activity = Some(TaskActivity::new(format!("Running {tool_name}")));
-                    self.status = format!("Running {}", tool_name);
-                    self.mark_dirty();
-                    return;
-                }
-                let display = tool_display::started(tool_name);
-                self.task_activity = Some(TaskActivity::new(display.label.clone()));
-                self.push_message(
-                    MessageRole::Tool,
-                    display.label,
-                    display.body,
-                    true,
-                    Some(call_id.to_string()),
-                );
+                self.apply_tool_call_started(call_id.as_str(), tool_name);
             },
             EventPayload::ToolCallArgumentsDelta { call_id, .. } => {
-                if let Some(message) = self.find_message_mut(call_id.as_str()) {
-                    let label = message.label.clone();
-                    self.task_activity = Some(TaskActivity::new(format!("Running {label}")));
-                    self.status = format!("Running {label}");
-                    self.mark_dirty();
-                }
+                self.apply_tool_call_arguments_delta(call_id.as_str());
             },
             EventPayload::ToolCallRequested {
                 call_id,
                 tool_name,
                 arguments,
-            } => {
-                if !tool_display::should_print_tool(tool_name) {
-                    self.task_activity = Some(TaskActivity::new(format!("Running {tool_name}")));
-                    self.status = format!("Running {}", tool_name);
-                    self.mark_dirty();
-                    return;
-                }
-                let display = tool_display::requested(tool_name, arguments);
-                self.task_activity = Some(TaskActivity::new(display.label.clone()));
-                if let Some(message) = self.find_message_mut(call_id.as_str()) {
-                    message.label = display.label;
-                    message.body.set_text(display.body);
-                    self.mark_dirty();
-                } else {
-                    self.push_message(
-                        MessageRole::Tool,
-                        display.label,
-                        display.body,
-                        true,
-                        Some(call_id.to_string()),
-                    );
-                }
-                // Agent 工具启动时立即写入 scrollback，避免长时间无渲染
-                if tool_name == "agent" {
-                    let snapshot = self.find_message_mut(call_id.as_str()).map(|m| m.clone());
-                    if let Some(msg) = snapshot {
-                        self.scrollback_queue.push(ScrollbackEntry::Message(msg));
-                    }
-                }
-            },
+            } => self.apply_tool_call_requested(call_id.as_str(), tool_name, arguments),
             EventPayload::ToolOutputDelta { call_id, delta, .. } => {
-                if let Some(message) = self.find_message_mut(call_id.as_str()) {
-                    let label = message.label.clone();
-                    let is_agent = label.starts_with("Task(");
-                    if is_agent {
-                        self.handle_child_agent_delta(call_id.as_str(), delta);
-                    } else {
-                        self.task_activity = Some(TaskActivity::new(format!("Receiving {label}")));
-                    }
-                    self.status = format!("Receiving {label}");
-                    self.mark_dirty();
-                }
+                self.apply_tool_output_delta(call_id.as_str(), delta);
             },
             EventPayload::ToolCallCompleted {
                 call_id,
                 tool_name,
                 result,
-            } => {
-                let render_spec = ui_render_from_metadata(&result.metadata);
-                // 隐藏工具的成功结果仅更新状态栏
-                if !tool_display::should_print_tool(tool_name)
-                    && !result.is_error
-                    && render_spec.is_none()
-                {
-                    self.task_activity = None;
-                    self.status = format!("{} completed", tool_name);
-                    self.mark_dirty();
-                    return;
-                }
-                let display = tool_display::completed(tool_name, result);
-                self.task_activity = None;
-
-                if let Some(message) = self.find_message_mut(call_id.as_str()) {
-                    if let Some(spec) = render_spec {
-                        let spec = tool_display::completed_render_spec(tool_name, spec, result);
-                        message.body.set_render(spec, result.content.clone());
-                    } else if !display.body.is_empty() && !message.body.contains_text(&display.body)
-                    {
-                        // 追加工具输出（去重）
-                        if !message.body.is_empty() {
-                            message.body.append_text("\n");
-                        }
-                        message.body.append_text(&display.body);
-                    }
-                    if result.is_error {
-                        message.role = MessageRole::Error;
-                        message.label = display.label;
-                    }
-                    message.is_streaming = false;
-                    let completed = message.clone();
-                    if tool_name == "agent" {
-                        // 先刷新子 agent 残留的助理文本
-                        if let Some(tracker) = self.child_agents.get_mut(call_id.as_str()) {
-                            Self::flush_pending_output(tracker, &mut self.scrollback_queue);
-                        }
-                        // 在完成消息前插入工具统计摘要
-                        if let Some(tracker) = self.child_agents.remove(call_id.as_str()) {
-                            if !tracker.completed_tools.is_empty() {
-                                let tools_summary = tracker.completed_tools.iter().fold(
-                                    BTreeMap::<&String, usize>::new(),
-                                    |mut acc, t| {
-                                        *acc.entry(t).or_default() += 1;
-                                        acc
-                                    },
-                                );
-                                let summary: Vec<String> = tools_summary
-                                    .into_iter()
-                                    .map(|(name, count)| {
-                                        if count > 1 {
-                                            format!("{name}({count})")
-                                        } else {
-                                            name.clone()
-                                        }
-                                    })
-                                    .collect();
-                                self.scrollback_queue.push(ScrollbackEntry::StreamText {
-                                    role: MessageRole::Tool,
-                                    text: format!(
-                                        "  {} tool(s): {}",
-                                        tracker.completed_tools.len(),
-                                        summary.join(", ")
-                                    ),
-                                });
-                            }
-                        }
-                        self.scrollback_queue.push(ScrollbackEntry::BlankLine);
-                    }
-                    self.scrollback_queue
-                        .push(ScrollbackEntry::Message(completed));
-                    self.mark_dirty();
-                } else if result.is_error {
-                    // 工具错误但无已有消息记录，创建错误消息
-                    self.push_message(
-                        MessageRole::Error,
-                        display.label,
-                        display.body,
-                        false,
-                        Some(call_id.to_string()),
-                    );
-                } else if let Some(spec) = render_spec {
-                    let spec = tool_display::completed_render_spec(tool_name, spec, result);
-                    self.push_render_message(
-                        MessageRole::Tool,
-                        display.label,
-                        spec,
-                        result.content.clone(),
-                        Some(call_id.to_string()),
-                    );
-                } else if !display.body.is_empty() {
-                    self.push_message(
-                        MessageRole::Tool,
-                        display.label,
-                        display.body,
-                        false,
-                        Some(call_id.to_string()),
-                    );
-                }
-            },
-            EventPayload::CompactionStarted => {
-                self.push_message(
-                    MessageRole::System,
-                    "System".into(),
-                    "Compacting context...".into(),
-                    true,
-                    Some("compaction".into()),
-                );
-            },
+            } => self.apply_tool_call_completed(call_id.as_str(), tool_name, result),
+            EventPayload::CompactionStarted => self.apply_compaction_started(),
             EventPayload::CompactBoundaryCreated { .. }
             | EventPayload::SessionContinuedFromCompaction { .. } => {},
-            EventPayload::AgentRunStarted => {
-                self.is_streaming = true;
-                self.task_activity = Some(TaskActivity::new("Agent running"));
-                self.status = "Agent running".into();
-                self.mark_dirty();
-            },
-            EventPayload::AgentRunCompleted { reason } => {
-                self.is_streaming = false;
-                self.task_activity = None;
-                self.status = ready_status(reason);
-                self.mark_dirty();
-            },
+            EventPayload::AgentRunStarted => self.apply_agent_run_started(),
+            EventPayload::AgentRunCompleted { reason } => self.apply_agent_run_completed(reason),
             EventPayload::ErrorOccurred { message, .. } => {
                 self.show_error(message);
             },
@@ -900,21 +625,369 @@ impl TuiState {
             },
             EventPayload::ToolCallBackgrounded {
                 tool_name, task_id, ..
-            } => {
-                self.status = format!("{tool_name} → background ({task_id})");
-                self.mark_dirty();
-            },
+            } => self.apply_background_status(format!("{tool_name} → background ({task_id})")),
             EventPayload::BackgroundTaskOutput { task_id, .. } => {
-                self.status = format!("background output ({task_id})");
-                self.mark_dirty();
+                self.apply_background_status(format!("background output ({task_id})"));
             },
             EventPayload::BackgroundTaskCompleted {
                 task_id, tool_name, ..
             } => {
-                self.status = format!("{tool_name} background done ({task_id})");
-                self.mark_dirty();
+                self.apply_background_status(format!("{tool_name} background done ({task_id})"));
             },
         }
+    }
+
+    fn apply_session_started(&mut self, event: &Event, working_dir: &str, model_id: &str) {
+        self.active_session_id = Some(event.session_id.to_string());
+        self.working_dir = working_dir.to_string();
+        self.model_name = model_id.to_string();
+        self.task_activity = None;
+        self.stream_scrollback.clear();
+        self.push_message(
+            MessageRole::System,
+            "Session".into(),
+            format!(
+                "Created session {}",
+                super::short_id(event.session_id.as_str())
+            ),
+            false,
+            None,
+        );
+        self.status = "Ready".into();
+    }
+
+    fn apply_session_deleted(&mut self) {
+        self.active_session_id = None;
+        self.status = "Session deleted".into();
+        self.mark_dirty();
+    }
+
+    fn apply_agent_session_spawned(
+        &mut self,
+        child_session_id: &str,
+        agent_name: &str,
+        task: &str,
+    ) {
+        self.push_message(
+            MessageRole::System,
+            "Agent".into(),
+            format!(
+                "spawned {} — {} ({})",
+                agent_name,
+                task,
+                super::short_id(child_session_id)
+            ),
+            false,
+            None,
+        );
+    }
+
+    fn apply_agent_session_completed(&mut self, child_session_id: &str, summary: &str) {
+        self.push_message(
+            MessageRole::System,
+            "Agent".into(),
+            format!(
+                "completed ({}) — {}",
+                super::short_id(child_session_id),
+                summary
+            ),
+            false,
+            None,
+        );
+    }
+
+    fn apply_agent_session_failed(&mut self, child_session_id: &str, error: &str) {
+        self.push_message(
+            MessageRole::System,
+            "Agent".into(),
+            format!("failed ({}) — {}", super::short_id(child_session_id), error),
+            false,
+            None,
+        );
+    }
+
+    fn apply_turn_started(&mut self) {
+        self.is_streaming = true;
+        self.error = None;
+        self.task_activity = Some(TaskActivity::new("Working"));
+        self.status = "Working".into();
+        self.mark_dirty();
+    }
+
+    fn apply_turn_completed(&mut self, finish_reason: &str) {
+        self.is_streaming = false;
+        self.task_activity = None;
+        self.status = ready_status(finish_reason);
+        self.mark_dirty();
+    }
+
+    fn apply_assistant_message_started(&mut self, message_id: &str) {
+        self.stream_scrollback
+            .insert(message_id.to_string(), StreamScrollbackState::default());
+        self.scrollback_queue.push(ScrollbackEntry::StreamHeader {
+            role: MessageRole::Assistant,
+            label: "Astrcode".into(),
+        });
+        self.task_activity = Some(TaskActivity::new("Working"));
+        self.push_message(
+            MessageRole::Assistant,
+            "Astrcode".into(),
+            String::new(),
+            true,
+            Some(message_id.to_string()),
+        );
+    }
+
+    fn apply_assistant_text_delta(&mut self, message_id: &str, delta: &str) {
+        if let Some(message) = self.find_message_mut(message_id) {
+            message.body.append_text(delta);
+            self.mark_dirty();
+        }
+        self.push_assistant_stream_delta(message_id, delta);
+    }
+
+    fn apply_assistant_message_completed(&mut self, message_id: &str, text: &str) {
+        let streamed_to_scrollback = self.finish_assistant_stream(message_id, text);
+        if let Some(message) = self.find_message_mut(message_id) {
+            message.body.set_text(text.to_string());
+            message.is_streaming = false;
+            if !streamed_to_scrollback {
+                let completed = message.clone();
+                self.scrollback_queue
+                    .push(ScrollbackEntry::Message(completed));
+            }
+            self.mark_dirty();
+        } else {
+            self.push_message(
+                MessageRole::Assistant,
+                "Astrcode".into(),
+                text.into(),
+                false,
+                Some(message_id.to_string()),
+            );
+        }
+    }
+
+    fn apply_thinking_delta(&mut self, delta: &str) {
+        self.task_activity = Some(TaskActivity::with_detail("Thinking", delta));
+        self.status = format!("Thinking · {}", delta);
+        self.mark_dirty();
+    }
+
+    fn apply_tool_call_started(&mut self, call_id: &str, tool_name: &str) {
+        if !tool_display::should_print_tool(tool_name) {
+            self.set_tool_activity("Running", tool_name);
+            return;
+        }
+
+        let display = tool_display::started(tool_name);
+        self.task_activity = Some(TaskActivity::new(display.label.clone()));
+        self.push_message(
+            MessageRole::Tool,
+            display.label,
+            display.body,
+            true,
+            Some(call_id.to_string()),
+        );
+    }
+
+    fn apply_tool_call_arguments_delta(&mut self, call_id: &str) {
+        if let Some(message) = self.find_message_mut(call_id) {
+            let label = message.label.clone();
+            self.set_tool_activity("Running", &label);
+        }
+    }
+
+    fn apply_tool_call_requested(
+        &mut self,
+        call_id: &str,
+        tool_name: &str,
+        arguments: &serde_json::Value,
+    ) {
+        if !tool_display::should_print_tool(tool_name) {
+            self.set_tool_activity("Running", tool_name);
+            return;
+        }
+
+        let display = tool_display::requested(tool_name, arguments);
+        self.task_activity = Some(TaskActivity::new(display.label.clone()));
+        if let Some(message) = self.find_message_mut(call_id) {
+            message.label = display.label;
+            message.body.set_text(display.body);
+            self.mark_dirty();
+        } else {
+            self.push_message(
+                MessageRole::Tool,
+                display.label,
+                display.body,
+                true,
+                Some(call_id.to_string()),
+            );
+        }
+
+        if tool_name == "agent" {
+            let snapshot = self
+                .find_message_mut(call_id)
+                .map(|message| message.clone());
+            if let Some(message) = snapshot {
+                self.scrollback_queue
+                    .push(ScrollbackEntry::Message(message));
+            }
+        }
+    }
+
+    fn apply_tool_output_delta(&mut self, call_id: &str, delta: &str) {
+        if let Some(message) = self.find_message_mut(call_id) {
+            let label = message.label.clone();
+            if label.starts_with("Task(") {
+                self.handle_child_agent_delta(call_id, delta);
+            } else {
+                self.task_activity = Some(TaskActivity::new(format!("Receiving {label}")));
+            }
+            self.status = format!("Receiving {label}");
+            self.mark_dirty();
+        }
+    }
+
+    fn apply_tool_call_completed(
+        &mut self,
+        call_id: &str,
+        tool_name: &str,
+        result: &astrcode_core::tool::ToolResult,
+    ) {
+        let render_spec = ui_render_from_metadata(&result.metadata);
+        if !tool_display::should_print_tool(tool_name) && !result.is_error && render_spec.is_none()
+        {
+            self.task_activity = None;
+            self.status = format!("{} completed", tool_name);
+            self.mark_dirty();
+            return;
+        }
+
+        let display = tool_display::completed(tool_name, result);
+        self.task_activity = None;
+
+        if self.complete_existing_tool_message(call_id, tool_name, result, &render_spec, &display) {
+            return;
+        }
+
+        if result.is_error {
+            self.push_message(
+                MessageRole::Error,
+                display.label,
+                display.body,
+                false,
+                Some(call_id.to_string()),
+            );
+        } else if let Some(spec) = render_spec {
+            let spec = tool_display::completed_render_spec(tool_name, spec, result);
+            self.push_render_message(
+                MessageRole::Tool,
+                display.label,
+                spec,
+                result.content.clone(),
+                Some(call_id.to_string()),
+            );
+        } else if !display.body.is_empty() {
+            self.push_message(
+                MessageRole::Tool,
+                display.label,
+                display.body,
+                false,
+                Some(call_id.to_string()),
+            );
+        }
+    }
+
+    fn complete_existing_tool_message(
+        &mut self,
+        call_id: &str,
+        tool_name: &str,
+        result: &astrcode_core::tool::ToolResult,
+        render_spec: &Option<RenderSpec>,
+        display: &tool_display::ToolDisplay,
+    ) -> bool {
+        let Some(message) = self.find_message_mut(call_id) else {
+            return false;
+        };
+
+        if let Some(spec) = render_spec.clone() {
+            let spec = tool_display::completed_render_spec(tool_name, spec, result);
+            message.body.set_render(spec, result.content.clone());
+        } else if !display.body.is_empty() && !message.body.contains_text(&display.body) {
+            if !message.body.is_empty() {
+                message.body.append_text("\n");
+            }
+            message.body.append_text(&display.body);
+        }
+        if result.is_error {
+            message.role = MessageRole::Error;
+            message.label = display.label.clone();
+        }
+        message.is_streaming = false;
+        let completed = message.clone();
+
+        if tool_name == "agent" {
+            self.flush_child_agent_completion(call_id);
+        }
+        self.scrollback_queue
+            .push(ScrollbackEntry::Message(completed));
+        self.mark_dirty();
+        true
+    }
+
+    fn flush_child_agent_completion(&mut self, call_id: &str) {
+        if let Some(tracker) = self.child_agents.get_mut(call_id) {
+            Self::flush_pending_output(tracker, &mut self.scrollback_queue);
+        }
+        if let Some(tracker) = self.child_agents.remove(call_id) {
+            if !tracker.completed_tools.is_empty() {
+                self.scrollback_queue.push(ScrollbackEntry::StreamText {
+                    role: MessageRole::Tool,
+                    text: format!(
+                        "  {} tool(s): {}",
+                        tracker.completed_tools.len(),
+                        completed_tools_summary(&tracker.completed_tools).join(", ")
+                    ),
+                });
+            }
+        }
+        self.scrollback_queue.push(ScrollbackEntry::BlankLine);
+    }
+
+    fn apply_compaction_started(&mut self) {
+        self.push_message(
+            MessageRole::System,
+            "System".into(),
+            "Compacting context...".into(),
+            true,
+            Some("compaction".into()),
+        );
+    }
+
+    fn apply_agent_run_started(&mut self) {
+        self.is_streaming = true;
+        self.task_activity = Some(TaskActivity::new("Agent running"));
+        self.status = "Agent running".into();
+        self.mark_dirty();
+    }
+
+    fn apply_agent_run_completed(&mut self, reason: &str) {
+        self.is_streaming = false;
+        self.task_activity = None;
+        self.status = ready_status(reason);
+        self.mark_dirty();
+    }
+
+    fn apply_background_status(&mut self, status: String) {
+        self.status = status;
+        self.mark_dirty();
+    }
+
+    fn set_tool_activity(&mut self, verb: &str, label: &str) {
+        self.task_activity = Some(TaskActivity::new(format!("{verb} {label}")));
+        self.status = format!("{verb} {label}");
+        self.mark_dirty();
     }
 
     /// 推入一条用户消息到消息记录。
@@ -1185,6 +1258,43 @@ fn session_list_body(
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn message_role_from_snapshot(role: &str) -> MessageRole {
+    match role {
+        "user" => MessageRole::User,
+        "assistant" => MessageRole::Assistant,
+        "tool" => MessageRole::Tool,
+        _ => MessageRole::System,
+    }
+}
+
+fn message_label(role: &MessageRole) -> &'static str {
+    match role {
+        MessageRole::User => "You",
+        MessageRole::Assistant => "Astrcode",
+        MessageRole::System => "System",
+        MessageRole::Tool => "Tool",
+        MessageRole::Error => "Error",
+    }
+}
+
+fn completed_tools_summary(completed_tools: &[String]) -> Vec<String> {
+    completed_tools
+        .iter()
+        .fold(BTreeMap::<&String, usize>::new(), |mut acc, tool| {
+            *acc.entry(tool).or_default() += 1;
+            acc
+        })
+        .into_iter()
+        .map(|(name, count)| {
+            if count > 1 {
+                format!("{name}({count})")
+            } else {
+                name.clone()
+            }
+        })
+        .collect()
 }
 
 fn ui_render_from_metadata(metadata: &BTreeMap<String, serde_json::Value>) -> Option<RenderSpec> {

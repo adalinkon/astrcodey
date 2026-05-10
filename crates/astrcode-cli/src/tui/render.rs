@@ -55,37 +55,13 @@ pub fn message_to_lines(msg: &Message, width: u16, theme: &Theme) -> Vec<Line<'s
     let content_width = width.max(1) as usize;
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    let body_style = body_style(&msg.role, theme);
-
-    // 角色前缀行
     let (role_icon, role_style) = role_icon_and_style(&msg.role, theme);
     lines.push(Line::from(vec![Span::styled(
         format!("{} {}", role_icon, msg.label),
         role_style,
     )]));
 
-    // 有 RenderSpec 时使用结构化渲染，否则 fallback 到 plain_text。
-    // 完成态 assistant 普通文本在前端本地按 block-first Markdown 解释。
-    if let Some(spec) = msg.body.render_spec() {
-        render_spec_to_lines(spec, &mut lines, content_width, theme, "  ");
-    } else {
-        let text = msg.body.plain_text();
-        if !text.trim().is_empty() {
-            if msg.role == MessageRole::Assistant && !msg.is_streaming {
-                let styles = MarkdownStyles::assistant(theme, body_style);
-                render_markdown_to_lines(text, &mut lines, content_width, "  ", styles);
-            } else {
-                let wrapped = visual_lines(text, content_width);
-                for line in wrapped {
-                    // 使用 Span::raw 来避免 styled 可能的字符处理问题
-                    lines.push(Line::from(vec![
-                        Span::styled("  ", theme.dim),
-                        Span::raw(line), // 使用 raw 而不是 styled
-                    ]));
-                }
-            }
-        }
-    }
+    push_message_body_lines(msg, content_width, theme, &mut lines);
 
     if msg.is_streaming {
         lines.push(Line::from(vec![
@@ -106,28 +82,77 @@ pub fn scrollback_entry_to_lines(
 ) -> Vec<Line<'static>> {
     match entry {
         ScrollbackEntry::Message(message) => message_to_lines(message, width, theme),
-        ScrollbackEntry::StreamHeader { role, label } => {
-            let (role_icon, role_style) = role_icon_and_style(role, theme);
-            vec![Line::from(vec![Span::styled(
-                format!("{} {}", role_icon, label),
-                role_style,
-            )])]
-        },
+        ScrollbackEntry::StreamHeader { role, label } => stream_header_to_lines(role, label, theme),
         ScrollbackEntry::StreamText { role, text } => {
-            let content_width = width.saturating_sub(2).max(1) as usize;
-            let style = body_style(role, theme);
-            visual_lines(text.trim_start(), content_width)
-                .into_iter()
-                .map(|line| {
-                    Line::from(vec![
-                        Span::styled("  ", theme.dim),
-                        Span::styled(line, style),
-                    ])
-                })
-                .collect()
+            stream_text_to_lines(role, text, width, theme)
         },
         ScrollbackEntry::BlankLine => vec![Line::from("")],
     }
+}
+
+fn push_message_body_lines(
+    msg: &Message,
+    content_width: usize,
+    theme: &Theme,
+    lines: &mut Vec<Line<'static>>,
+) {
+    if let Some(spec) = msg.body.render_spec() {
+        render_spec_to_lines(spec, lines, content_width, theme, "  ");
+        return;
+    }
+
+    let text = msg.body.plain_text();
+    if text.trim().is_empty() {
+        return;
+    }
+
+    if msg.role == MessageRole::Assistant && !msg.is_streaming {
+        let styles = MarkdownStyles::assistant(theme, body_style(&msg.role, theme));
+        render_markdown_to_lines(text, lines, content_width, "  ", styles);
+    } else {
+        push_plain_message_text_lines(text, content_width, theme, lines);
+    }
+}
+
+fn push_plain_message_text_lines(
+    text: &str,
+    content_width: usize,
+    theme: &Theme,
+    lines: &mut Vec<Line<'static>>,
+) {
+    for line in visual_lines(text, content_width) {
+        lines.push(Line::from(vec![
+            Span::styled("  ", theme.dim),
+            Span::raw(line),
+        ]));
+    }
+}
+
+fn stream_header_to_lines(role: &MessageRole, label: &str, theme: &Theme) -> Vec<Line<'static>> {
+    let (role_icon, role_style) = role_icon_and_style(role, theme);
+    vec![Line::from(vec![Span::styled(
+        format!("{} {}", role_icon, label),
+        role_style,
+    )])]
+}
+
+fn stream_text_to_lines(
+    role: &MessageRole,
+    text: &str,
+    width: u16,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let content_width = width.saturating_sub(2).max(1) as usize;
+    let style = body_style(role, theme);
+    visual_lines(text.trim_start(), content_width)
+        .into_iter()
+        .map(|line| {
+            Line::from(vec![
+                Span::styled("  ", theme.dim),
+                Span::styled(line, style),
+            ])
+        })
+        .collect()
 }
 
 fn role_icon_and_style(role: &MessageRole, theme: &Theme) -> (&'static str, Style) {
@@ -542,33 +567,11 @@ fn push_wrapped_line_with_prefix_style(
         } else {
             " ".repeat(prefix_width)
         };
-        // 调试：检查 line 是否包含意外的空格
-        #[cfg(debug_assertions)]
-        {
-            if line.contains(' ') && has_cjk_chars(line) {
-                tracing::warn!(
-                    "push_wrapped_line_with_prefix_style: CJK 文本包含空格 - prefix: '{}', line: \
-                     '{}'",
-                    prefix,
-                    line
-                );
-            }
-        }
         lines.push(Line::from(vec![
             Span::styled(p, prefix_style),
             Span::styled(line.clone(), style),
         ]));
     }
-}
-
-#[cfg(debug_assertions)]
-fn has_cjk_chars(text: &str) -> bool {
-    text.chars().any(|c| {
-        let cp = c as u32;
-        (0x4E00..=0x9FFF).contains(&cp) || // CJK Unified Ideographs
-        (0x3400..=0x4DBF).contains(&cp) || // CJK Extension A
-        (0x20000..=0x2A6DF).contains(&cp) // CJK Extension B
-    })
 }
 
 fn tone_style(tone: &RenderTone, theme: &Theme) -> Style {
@@ -656,6 +659,14 @@ fn render_footer(state: &TuiState, frame: &mut Frame<'_>, area: Rect, theme: &Th
     if area.height == 0 {
         return;
     }
+    let line = fit_line(&footer_text(state), area.width as usize);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(line, theme.footer))),
+        area,
+    );
+}
+
+fn footer_text(state: &TuiState) -> String {
     let session = state
         .active_session_id
         .as_deref()
@@ -676,14 +687,8 @@ fn render_footer(state: &TuiState, frame: &mut Frame<'_>, area: Rect, theme: &Th
     } else {
         "Enter send · Shift+Enter newline · /help"
     };
-    let line = fit_line(
-        &format!("  {model} · {cwd} · session {session}   {hints}"),
-        area.width as usize,
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(line, theme.footer))),
-        area,
-    );
+
+    format!("  {model} · {cwd} · session {session}   {hints}")
 }
 
 fn render_slash_palette(state: &TuiState, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
