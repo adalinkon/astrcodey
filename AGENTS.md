@@ -63,6 +63,12 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 ```
 
+## 回复要求
+
+每次完成修改后，回复末尾必须附带：
+- **下一步建议**：基于当前改动，接下来最值得做的事情（按优先级排列）。
+- **剩余风险**：当前改动中已知或潜在的隐患、未覆盖的边界情况。
+
 ## 重要
 
   必须遵守：

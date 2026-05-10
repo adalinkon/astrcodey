@@ -42,6 +42,16 @@ struct ShellArgs {
     /// 本次执行的超时时间（秒，最大 600）
     #[serde(default)]
     timeout: Option<u64>,
+    /// 是否立即在后台执行，不阻塞 agent loop。
+    ///
+    /// 设为 true 时，命令立刻转入后台运行，agent 收到占位结果后可继续推理。
+    /// 适用于 dev server、watcher、build 等长时间运行的任务。
+    ///
+    /// 此字段由 agent loop 的工具执行调度层在反序列化前读取（从原始 tool_input JSON），
+    /// 不在 ShellTool::execute 内部使用。
+    #[serde(default)]
+    #[expect(dead_code)]
+    run_in_background: bool,
 }
 
 #[async_trait::async_trait]
@@ -77,6 +87,11 @@ impl Tool for ShellTool {
                         "minimum": 1,
                         "maximum": 600,
                         "description": "Timeout in seconds (default from config, max 600)."
+                    },
+                    "runInBackground": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Run the command in the background immediately. Use for long-running tasks like dev servers, file watchers, or builds. When true, the agent receives a placeholder result and can continue reasoning."
                     }
                 },
                 "required": ["command"],

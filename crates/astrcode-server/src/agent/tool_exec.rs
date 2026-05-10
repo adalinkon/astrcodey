@@ -37,18 +37,42 @@ fn error_tool_result(
 ///
 /// 当工具声明了 [`BackgroundPolicy::AutoAfter`] 且执行超过阈值时，
 /// 自动将任务转入后台执行，并返回一个占位结果让 LLM 继续推理。
+///
+/// 工具参数中的 `run_in_background` 字段可以覆盖策略：
+/// - `true` → 立即后台化（阈值降为 0）
+/// - `false` → 禁止自动后台化（视为 `Never`）
+/// - 未设置 → 使用工具声明的默认策略
 pub(crate) async fn execute_tool_call(
     tool_registry: Arc<ToolRegistry>,
     runtime: ToolCallRuntimeContext,
     call: ExecutableToolCall,
 ) -> (usize, ToolResult) {
     let policy = tool_registry.background_policy(&call.name);
+    let effective_policy = resolve_effective_policy(policy, &call.tool_input);
 
-    match policy {
+    match effective_policy {
         BackgroundPolicy::Never => execute_tool_call_blocking(tool_registry, runtime, call).await,
         BackgroundPolicy::AutoAfter { threshold_secs } => {
             execute_tool_call_with_background(tool_registry, runtime, call, threshold_secs).await
         },
+    }
+}
+
+/// 根据工具声明的策略和每次调用的参数，决定实际的后台化策略。
+fn resolve_effective_policy(
+    declared: BackgroundPolicy,
+    tool_input: &serde_json::Value,
+) -> BackgroundPolicy {
+    match tool_input
+        .get("run_in_background")
+        .and_then(|v| v.as_bool())
+    {
+        // 显式请求后台化：立即转入后台（阈值 0）
+        Some(true) => BackgroundPolicy::AutoAfter { threshold_secs: 0 },
+        // 显式禁止后台化：视为 Never
+        Some(false) => BackgroundPolicy::Never,
+        // 未设置：使用工具声明的策略
+        None => declared,
     }
 }
 
@@ -272,13 +296,18 @@ async fn background_tool_call(
         "tool execution moved to background"
     );
 
+    let bg_reason = if threshold_secs == 0 {
+        "explicit".to_string()
+    } else {
+        "auto_threshold".to_string()
+    };
     send_event(
         &runtime.event_tx,
         EventPayload::ToolCallBackgrounded {
             call_id: ToolCallId::from(call_id.clone()),
             tool_name: tool_name.clone(),
             task_id: task_id.clone(),
-            reason: "auto_threshold".to_string(),
+            reason: bg_reason,
         },
     );
 
