@@ -15,7 +15,7 @@ use astrcode_protocol::{
     commands::ClientCommand,
     events::ClientNotification,
     http::{
-        AvailableModelDto, CompactSessionRequest, CompactSessionResponse, ConfigReloadResponseDto,
+        AgentSessionLinkDto, AvailableModelDto, CompactSessionRequest, CompactSessionResponse, ConfigReloadResponseDto,
         ConfigViewResponseDto, ConversationBlockDto, ConversationBlockStatusDto,
         ConversationControlStateDto, ConversationCursorDto, ConversationDeltaDto,
         ConversationErrorEnvelopeDto, ConversationSnapshotResponseDto,
@@ -631,7 +631,7 @@ fn conversation_to_dto(session: SessionReadModel) -> ConversationSnapshotRespons
         agent_sessions: session
             .agent_sessions
             .iter()
-            .map(|link| astrcode_protocol::http::AgentSessionLinkDto {
+            .map(|link| AgentSessionLinkDto {
                 child_session_id: link.child_session_id.to_string(),
                 agent_name: link.agent_name.clone(),
                 task: link.task.clone(),

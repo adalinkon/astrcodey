@@ -22,6 +22,7 @@ export default function TopBar({
 }: TopBarProps) {
   const phase = useAppStore((s) => s.phase)
   const activeSessionTitle = useAppStore((s) => s.activeSessionTitle)
+  const agentSessions = useAppStore((s) => s.agentSessions)
 
   return (
     <div className="relative z-30 flex shrink-0 items-center gap-4 border-b border-border bg-surface/92 px-[22px] py-3.5 backdrop-blur-[12px]">
@@ -63,6 +64,32 @@ export default function TopBar({
           </span>
         )}
       </div>
+      {agentSessions.length > 0 && (
+        <div className="group relative ml-auto shrink-0">
+          <span className="inline-flex items-center gap-1 rounded-full bg-accent-soft/20 px-2 py-0.5 text-xs font-medium text-accent">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+            </svg>
+            {agentSessions.length} agent{agentSessions.length > 1 ? 's' : ''}
+          </span>
+          <div className="pointer-events-none absolute right-0 top-full z-50 mt-1 min-w-[220px] rounded-lg border border-border bg-surface p-2 opacity-0 shadow-lg transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+            {agentSessions.map((agent) => (
+              <button
+                key={agent.childSessionId}
+                type="button"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-accent-soft/10"
+                onClick={() => useAppStore.getState().switchSession(agent.childSessionId)}
+              >
+                <span className="font-medium text-text-primary">{agent.agentName}</span>
+                <span className="min-w-0 flex-1 truncate text-text-secondary">{agent.task}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
