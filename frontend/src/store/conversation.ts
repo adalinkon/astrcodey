@@ -371,6 +371,25 @@ export const useAppStore = create<ConversationState>((set, get) => ({
         void get().switchSession(delta.newSessionId)
         break
       }
+
+      case 'toolCallBackgrounded': {
+        set((current) => {
+          const idx = current.blocks.findIndex(
+            (b) => b.kind === 'toolCall' && b.id === delta.callId
+          )
+          if (idx === -1) return {}
+          const block = current.blocks[idx]
+          if (block.kind !== 'toolCall') return {}
+          const next = [...current.blocks]
+          next[idx] = {
+            ...block,
+            text: `Task moved to background (task: ${delta.taskId}). Result will arrive when done.`,
+            status: 'backgrounded',
+          }
+          return { blocks: next }
+        })
+        break
+      }
     }
   },
 }))

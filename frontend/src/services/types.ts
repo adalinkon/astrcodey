@@ -8,7 +8,7 @@ export type Phase =
   | 'compacting'
   | 'error'
 export type ToolOutputStream = 'stdout' | 'stderr'
-export type BlockStatus = 'streaming' | 'complete' | 'error'
+export type BlockStatus = 'streaming' | 'complete' | 'error' | 'backgrounded'
 
 // ── Request/Response ──
 
@@ -157,6 +157,7 @@ export type ConversationDelta =
     }
   | { kind: 'thinkingDelta'; delta: string }
   | { kind: 'patchArguments'; blockId: string; arguments: string }
+  | { kind: 'toolCallBackgrounded'; callId: string; taskId: string }
 
 // ── App State ──
 

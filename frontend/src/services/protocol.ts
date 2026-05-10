@@ -93,8 +93,8 @@ function decodePhase(value: unknown): Phase {
   throw new ProtocolDecodeError(`invalid phase ${String(value)}`)
 }
 
-function decodeBlockStatus(value: unknown): 'streaming' | 'complete' | 'error' {
-  if (value === 'streaming' || value === 'complete' || value === 'error') {
+function decodeBlockStatus(value: unknown): 'streaming' | 'complete' | 'error' | 'backgrounded' {
+  if (value === 'streaming' || value === 'complete' || value === 'error' || value === 'backgrounded') {
     return value
   }
   throw new ProtocolDecodeError(`invalid block status ${String(value)}`)
@@ -208,6 +208,12 @@ export function decodeConversationDelta(value: unknown): ConversationDelta {
         kind,
         blockId: requiredString(object, 'blockId'),
         arguments: requiredString(object, 'arguments'),
+      }
+    case 'toolCallBackgrounded':
+      return {
+        kind,
+        callId: requiredString(object, 'callId'),
+        taskId: requiredString(object, 'taskId'),
       }
     default:
       throw new ProtocolDecodeError(`invalid delta kind ${kind}`)

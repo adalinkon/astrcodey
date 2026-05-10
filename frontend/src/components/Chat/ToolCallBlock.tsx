@@ -20,6 +20,8 @@ function statusPill(status: string): string {
       return pillSuccess
     case 'error':
       return pillDanger
+    case 'backgrounded':
+      return pillNeutral
     default:
       return pillNeutral
   }
@@ -31,6 +33,8 @@ function statusLabel(status: string): string {
       return '完成'
     case 'error':
       return '失败'
+    case 'backgrounded':
+      return '后台运行中'
     default:
       return '运行中'
   }

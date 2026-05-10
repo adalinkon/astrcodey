@@ -336,6 +336,13 @@ pub enum ConversationDeltaDto {
     },
     /// 推理模型思维链增量。
     ThinkingDelta { delta: String },
+    /// 工具调用被移入后台执行。
+    ToolCallBackgrounded {
+        /// 工具调用 block 的 ID（即 call_id）。
+        call_id: String,
+        /// 后台任务 ID。
+        task_id: String,
+    },
 }
 
 /// HTTP 错误响应。

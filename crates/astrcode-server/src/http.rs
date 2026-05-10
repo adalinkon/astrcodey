@@ -713,11 +713,25 @@ fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDto> {
         EventPayload::TurnStarted
         | EventPayload::AgentRunStarted
         | EventPayload::CompactionStarted
-        | EventPayload::ToolCallBackgrounded { .. }
         | EventPayload::BackgroundTaskCompleted { .. } => {
             vec![ConversationDeltaDto::UpdateControlState {
                 control: control_from_phase(projected_phase(&event.payload)),
             }]
+        },
+        EventPayload::ToolCallBackgrounded {
+            call_id,
+            task_id,
+            ..
+        } => {
+            vec![
+                ConversationDeltaDto::UpdateControlState {
+                    control: control_from_phase(projected_phase(&event.payload)),
+                },
+                ConversationDeltaDto::ToolCallBackgrounded {
+                    call_id: call_id.to_string(),
+                    task_id: task_id.to_string(),
+                },
+            ]
         },
         EventPayload::TurnCompleted { .. } | EventPayload::AgentRunCompleted { .. } => {
             vec![ConversationDeltaDto::UpdateControlState {
