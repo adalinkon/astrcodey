@@ -190,7 +190,24 @@ fn escape_control_chars_in_json_strings(s: &str) -> String {
     for ch in s.chars() {
         if escape_next {
             escape_next = false;
-            result.push(ch);
+            // 如果反斜杠后面跟的是控制字符，需要转义它
+            // 例如 LLM 输出 \ 后跟真实换行 → 变成 \\n
+            if ch.is_control() {
+                has_changes = true;
+                match ch {
+                    '\n' => result.push_str("n"),
+                    '\r' => result.push_str("r"),
+                    '\t' => result.push_str("t"),
+                    '\u{0008}' => result.push_str("b"),
+                    '\u{000C}' => result.push_str("f"),
+                    c => {
+                        // 已经有一个 \ 前缀，追加 uXXXX（去掉 \u 前缀的 u）
+                        result.push_str(&format!("u{:04x}", c as u32));
+                    },
+                }
+            } else {
+                result.push(ch);
+            }
             continue;
         }
         if ch == '\\' {
