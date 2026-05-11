@@ -44,6 +44,8 @@ enum Commands {
         #[arg(long, default_value = "127.0.0.1:3847")]
         addr: SocketAddr,
     },
+    /// 启动 ACP (Agent Client Protocol) stdio 服务器
+    Acp,
     /// 显示版本信息
     Version,
 }
@@ -88,6 +90,19 @@ async fn main() {
             };
             if let Err(e) = astrcode_server::http::run_http_server(runtime, addr).await {
                 tracing::error!("Server failed: {e}");
+                std::process::exit(1);
+            }
+        },
+        Some(Commands::Acp) => {
+            let runtime = match astrcode_server::bootstrap::bootstrap().await {
+                Ok(rt) => Arc::new(rt),
+                Err(e) => {
+                    tracing::error!("Bootstrap failed: {e}");
+                    std::process::exit(1);
+                },
+            };
+            if let Err(e) = astrcode_server::acp::run_acp_server(runtime).await {
+                tracing::error!("ACP server failed: {e}");
                 std::process::exit(1);
             }
         },

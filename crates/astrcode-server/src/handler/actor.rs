@@ -21,6 +21,14 @@ pub struct CommandHandle {
 }
 
 impl CommandHandle {
+    /// Spawn a command handler actor and return a handle to it.
+    pub fn spawn(
+        runtime: Arc<ServerRuntime>,
+        event_tx: broadcast::Sender<ClientNotification>,
+    ) -> Self {
+        CommandHandler::spawn_actor(runtime, event_tx)
+    }
+
     pub async fn handle(&self, command: ClientCommand) -> Result<(), HandlerError> {
         let (reply, rx) = oneshot::channel();
         self.tx

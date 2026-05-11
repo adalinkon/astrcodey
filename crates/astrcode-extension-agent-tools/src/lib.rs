@@ -96,11 +96,13 @@ impl Extension for AgentToolsExtension {
             "agent".to_string(),
             astrcode_core::tool::ToolPromptMetadata::new(
                 "Use `agent` for isolated responsibilities that benefit from parallel execution \
-                 or context separation. Give the child one narrow task.",
+                 or context separation. Give the child one narrow, well-defined task.",
             )
             .caveat(
-                "If your next step depends on the result, doing it yourself is usually faster; \
-                 only spawn when parallel or isolation value is clear.",
+                "When NOT to use: (1) If you need the result immediately for your next step, \
+                 doing it yourself is faster. (2) For simple file reads or targeted searches, \
+                 use Read/Grep tools directly. (3) Only spawn when parallel execution or \
+                 isolation provides clear value.",
             )
             .prompt_tag("collaboration"),
         );
@@ -223,7 +225,10 @@ fn compact_inline(text: &str, max_chars: usize) -> String {
 }
 
 const AGENT_TOOL_DESCRIPTION: &str =
-    "Spawn a subagent to handle one delegated task. Choose subagent_type from the Agents section.";
+    "Launch a specialized subagent for one narrow, delegated task. Use when parallel execution, \
+     isolation, or context separation provides clear value. If your next step depends on the \
+     result, doing it yourself is usually faster. See the [Agents] section in the system \
+     prompt for available agent types and their use cases.";
 
 const AGENT_TOOL_PARAMETERS: &str = r#"{"type":"object","properties":{"description":{"type":"string","description":"Short 3-5 word description"},"prompt":{"type":"string","description":"Task for the subagent"},"subagentType":{"type":"string","description":"Agent name from agents/ directory"},"mode":{"type":"string","enum":["single"],"default":"single"}},"required":["prompt","description"]}"#;
 
@@ -239,18 +244,23 @@ fn agent_tool_definition() -> ToolDefinition {
 }
 
 /// 将 Agent 列表格式化为模型可读的文本。
+///
+/// 格式设计原则：
+/// - 清晰的标题和格式，让 LLM 知道这是什么
+/// - 包含足够的信息让 LLM 做出选择
+/// - 简洁但自包含
 fn format_agents_for_model(agents: &[agent::AgentConfig]) -> String {
     if agents.is_empty() {
         return String::from("No agents configured.");
     }
 
-    let mut lines = Vec::with_capacity(agents.len() + 1);
+    let mut lines = Vec::with_capacity(agents.len() + 2);
     lines.push(String::from("Available agents:"));
+    lines.push(String::from("Use the agent name (first word before the colon) as subagentType."));
     for agent in agents {
-        let model = agent.model.as_deref().unwrap_or("inherit/default");
         lines.push(format!(
-            "- {}: {} (model: {})",
-            agent.name, agent.description, model
+            "- {}: {}",
+            agent.name, agent.description
         ));
     }
     lines.join("\n")
@@ -272,9 +282,12 @@ mod tests {
 
         let output = format_agents_for_model(&agents);
 
+        assert!(output.contains("Available agents:"));
+        assert!(output.contains("Use the agent name"));
         assert!(output.contains("code-reviewer"));
         assert!(output.contains("Use for behavior-focused code review"));
-        assert!(output.contains("model: opus"));
+        // 格式应该有清晰的指示说明如何选择 agent
+        assert!(output.contains("subagentType"));
     }
 
     #[test]

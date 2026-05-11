@@ -344,6 +344,13 @@ async fn execute_slash_command(
                 .map_err(io_error)?;
             state.status = "Listing sessions".into();
         },
+        slash::SlashCommand::Compact => {
+            client
+                .send_command(&ClientCommand::Compact)
+                .await
+                .map_err(io_error)?;
+            state.status = "Compacting session".into();
+        },
         slash::SlashCommand::Quit => {
             state.should_quit = true;
         },
