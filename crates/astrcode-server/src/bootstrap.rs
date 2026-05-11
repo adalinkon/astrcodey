@@ -3,7 +3,7 @@
 //! 负责在启动时初始化所有核心组件：LLM 提供者、提示词组装器、
 //! 会话管理器、扩展运行器和上下文窗口设置。
 
-use std::{sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use astrcode_ai::create_provider;
 use astrcode_context::{manager::LlmContextAssembler, settings::ContextWindowSettings};
@@ -26,6 +26,25 @@ use crate::{
     agent::{AutoCompactFailureTracker, BackgroundTaskManager},
     session::{SessionManager, spawner::ServerSessionSpawner},
 };
+
+#[derive(Clone, Default)]
+pub(crate) struct PromptFiles {
+    pub(crate) identity: Option<String>,
+    pub(crate) user_rules: Option<String>,
+    pub(crate) project_rules: Option<String>,
+}
+
+pub(crate) struct SystemPromptSnapshotInput<'a> {
+    pub(crate) extension_runner: &'a ExtensionRunner,
+    pub(crate) session_id: &'a str,
+    pub(crate) working_dir: &'a str,
+    pub(crate) model_id: &'a str,
+    pub(crate) tools: &'a [ToolDefinition],
+    pub(crate) extra_system_prompt: Option<&'a str>,
+    pub(crate) tool_prompt_metadata:
+        std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata>,
+    pub(crate) prompt_files: PromptFiles,
+}
 
 // ─── ServerRuntime ───────────────────────────────────────────────────────
 
@@ -342,22 +361,20 @@ pub(crate) async fn build_tool_registry_snapshot(
     Arc::new(tool_registry)
 }
 
-/// 构建完整的 session 级 system prompt 快照。
-///
-/// `PromptBuild` 扩展钩子、内置 prompt composer 和可选的子 agent 指令
-/// 都只在这里汇合一次。调用方应把结果写入 eventlog，后续回合直接复用。
-pub(crate) async fn build_system_prompt_snapshot(
-    extension_runner: &ExtensionRunner,
-    session_id: &str,
-    working_dir: &str,
-    model_id: &str,
-    tools: &[ToolDefinition],
-    extra_system_prompt: Option<&str>,
-    tool_prompt_metadata: std::collections::HashMap<
-        String,
-        astrcode_core::tool::ToolPromptMetadata,
-    >,
+pub(crate) async fn build_system_prompt_snapshot_with_files(
+    input: SystemPromptSnapshotInput<'_>,
 ) -> Result<(String, String), ExtensionError> {
+    let SystemPromptSnapshotInput {
+        extension_runner,
+        session_id,
+        working_dir,
+        model_id,
+        tools,
+        extra_system_prompt,
+        tool_prompt_metadata,
+        prompt_files,
+    } = input;
+
     let mut ext_ctx = ServerExtensionContext::new(
         session_id.to_string(),
         working_dir.to_string(),
@@ -404,10 +421,6 @@ pub(crate) async fn build_system_prompt_snapshot(
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     });
 
-    let identity = pipeline::load_identity_md(&pipeline::user_identity_md_path());
-    let user_rules = pipeline::load_user_rules(&pipeline::user_agents_md_path());
-    let project_rules = pipeline::load_project_rules(std::path::Path::new(working_dir));
-
     // Merge extension prompt metadata with caller-provided metadata.
     let mut merged_metadata = tool_prompt_metadata;
     merged_metadata.extend(extension_runner.collect_tool_prompt_metadata().await);
@@ -417,9 +430,9 @@ pub(crate) async fn build_system_prompt_snapshot(
         os: std::env::consts::OS.into(),
         shell: resolve_shell().name,
         date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
-        identity,
-        user_rules,
-        project_rules,
+        identity: prompt_files.identity,
+        user_rules: prompt_files.user_rules,
+        project_rules: prompt_files.project_rules,
         tools: tools.to_vec(),
         tool_prompt_metadata: merged_metadata,
         extension_blocks,
@@ -433,6 +446,25 @@ pub(crate) async fn build_system_prompt_snapshot(
         .unwrap_or_default();
     let fingerprint = prompt_fingerprint(&system_prompt);
     Ok((system_prompt, fingerprint))
+}
+
+pub(crate) async fn load_system_prompt_files(working_dir: &str) -> PromptFiles {
+    let working_dir = std::path::PathBuf::from(working_dir);
+    let fallback_dir = working_dir.clone();
+    tokio::task::spawn_blocking(move || read_system_prompt_files(&working_dir))
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(error = %error, "prompt file preload task failed; reading inline");
+            read_system_prompt_files(&fallback_dir)
+        })
+}
+
+fn read_system_prompt_files(working_dir: &Path) -> PromptFiles {
+    PromptFiles {
+        identity: pipeline::load_identity_md(&pipeline::user_identity_md_path()),
+        user_rules: pipeline::load_user_rules(&pipeline::user_agents_md_path()),
+        project_rules: pipeline::load_project_rules(working_dir),
+    }
 }
 
 pub(crate) fn fnv1a_hash_bytes(data: &[u8]) -> u64 {
@@ -500,17 +532,20 @@ mod tests {
             Duration::from_secs(1),
             Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
         );
-        let (system_prompt, fingerprint) = build_system_prompt_snapshot(
-            &runner,
-            "session-1",
-            ".",
-            "mock",
-            &[],
-            Some("child body"),
-            std::collections::HashMap::new(),
-        )
-        .await
-        .unwrap();
+        let prompt_files = load_system_prompt_files(".").await;
+        let (system_prompt, fingerprint) =
+            build_system_prompt_snapshot_with_files(SystemPromptSnapshotInput {
+                extension_runner: &runner,
+                session_id: "session-1",
+                working_dir: ".",
+                model_id: "mock",
+                tools: &[],
+                extra_system_prompt: Some("child body"),
+                tool_prompt_metadata: std::collections::HashMap::new(),
+                prompt_files,
+            })
+            .await
+            .unwrap();
 
         assert!(system_prompt.contains("child body"));
         assert!(!fingerprint.is_empty());

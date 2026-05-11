@@ -33,7 +33,10 @@ use crate::{
         AgentError, AgentLoop, AgentServices, AgentSignal, AgentTurnOutput, drive_agent,
         tool_types::BackgroundTaskCompletion,
     },
-    bootstrap::{ServerRuntime, build_system_prompt_snapshot, build_tool_registry_snapshot},
+    bootstrap::{
+        ServerRuntime, SystemPromptSnapshotInput, build_system_prompt_snapshot_with_files,
+        build_tool_registry_snapshot, load_system_prompt_files,
+    },
     session::{
         agent_turn_completed_payloads, agent_turn_failed_payloads, agent_turn_started_payloads,
     },
@@ -787,9 +790,21 @@ impl CommandHandler {
         session_id: &SessionId,
         working_dir: &str,
     ) -> Result<String, String> {
-        let tool_registry = self.refresh_tool_registry(session_id, working_dir).await;
-        self.configure_session_prompt(session_id, working_dir, &tool_registry, None)
-            .await
+        let timeout = self.runtime.read_effective().llm.read_timeout_secs;
+        let registry_fut =
+            build_tool_registry_snapshot(&self.runtime.extension_runner, working_dir, timeout);
+        let prompt_files_fut = load_system_prompt_files(working_dir);
+        let (tool_registry, prompt_files) = tokio::join!(registry_fut, prompt_files_fut);
+        self.session_tool_registries
+            .insert(session_id.clone(), Arc::clone(&tool_registry));
+        self.configure_session_prompt_with_files(
+            session_id,
+            working_dir,
+            &tool_registry,
+            None,
+            prompt_files,
+        )
+        .await
     }
 
     async fn ensure_tool_registry(
@@ -827,6 +842,25 @@ impl CommandHandler {
         tool_registry: &ToolRegistry,
         extra_system_prompt: Option<&str>,
     ) -> Result<String, String> {
+        let prompt_files = load_system_prompt_files(working_dir).await;
+        self.configure_session_prompt_with_files(
+            session_id,
+            working_dir,
+            tool_registry,
+            extra_system_prompt,
+            prompt_files,
+        )
+        .await
+    }
+
+    async fn configure_session_prompt_with_files(
+        &self,
+        session_id: &SessionId,
+        working_dir: &str,
+        tool_registry: &ToolRegistry,
+        extra_system_prompt: Option<&str>,
+        prompt_files: crate::bootstrap::PromptFiles,
+    ) -> Result<String, String> {
         let tools_with_meta = tool_registry.list_definitions_with_prompt_metadata();
         let tools: Vec<_> = tools_with_meta.iter().map(|(def, _)| def.clone()).collect();
         let tool_prompt_metadata = tools_with_meta
@@ -834,17 +868,19 @@ impl CommandHandler {
             .filter_map(|(def, meta)| meta.map(|m| (def.name, m)))
             .collect();
         let model_id = self.runtime.read_effective().llm.model_id.clone();
-        let (system_prompt, fingerprint) = build_system_prompt_snapshot(
-            &self.runtime.extension_runner,
-            session_id.as_str(),
-            working_dir,
-            &model_id,
-            &tools,
-            extra_system_prompt,
-            tool_prompt_metadata,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+        let (system_prompt, fingerprint) =
+            build_system_prompt_snapshot_with_files(SystemPromptSnapshotInput {
+                extension_runner: &self.runtime.extension_runner,
+                session_id: session_id.as_str(),
+                working_dir,
+                model_id: &model_id,
+                tools: &tools,
+                extra_system_prompt,
+                tool_prompt_metadata,
+                prompt_files,
+            })
+            .await
+            .map_err(|e| e.to_string())?;
 
         self.record_and_broadcast(
             session_id,

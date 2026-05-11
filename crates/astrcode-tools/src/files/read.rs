@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf, time::Instant};
+use std::{collections::BTreeMap, path::PathBuf, sync::OnceLock, time::Instant};
 
 use astrcode_core::{storage::StorageError, tool::*};
 use astrcode_support::hostpaths::{is_path_within, resolve_path};
@@ -45,48 +45,13 @@ struct ReadFileArgs {
 impl Tool for ReadFileTool {
     /// 返回 read 工具的定义，包含参数 schema。
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "read".into(),
-            description: "Read a known file's contents. When a previous tool result says it was \
-                          persisted, pass the saved path here to read it. This is not a directory \
-                          listing or content search tool. File paths are limited to the working \
-                          directory or the current session's tool-result artifact directory."
-                .into(),
-            origin: ToolOrigin::Builtin,
-            execution_mode: ExecutionMode::Parallel,
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Absolute or relative path to a known file, including a persisted tool-result path shown by an earlier tool result."
-                    },
-                    "maxChars": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Maximum characters to return (default 20000; persisted tool results are capped at 60000)."
-                    },
-                    "charOffset": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "description": "Character offset for continuing a truncated read."
-                    },
-                    "offset": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "description": "Starting line offset, 0-based."
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Maximum number of lines to return from offset."
-                    }
-                },
-                "required": ["path"],
-                "additionalProperties": false
-            }),
-        }
+        read_file_tool_definition().clone()
     }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Parallel
+    }
+
     /// 执行文件读取：解析路径 → 安全校验 → 读取内容 → 按行编号格式化输出。
     async fn execute(
         &self,
@@ -209,6 +174,51 @@ impl Tool for ReadFileTool {
             .always_include(true),
         )
     }
+}
+
+fn read_file_tool_definition() -> &'static ToolDefinition {
+    static DEFINITION: OnceLock<ToolDefinition> = OnceLock::new();
+    DEFINITION.get_or_init(|| ToolDefinition {
+            name: "read".into(),
+            description: "Read a known file's contents. When a previous tool result says it was \
+                          persisted, pass the saved path here to read it. This is not a directory \
+                          listing or content search tool. File paths are limited to the working \
+                          directory or the current session's tool-result artifact directory."
+                .into(),
+            origin: ToolOrigin::Builtin,
+            execution_mode: ExecutionMode::Parallel,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute or relative path to a known file, including a persisted tool-result path shown by an earlier tool result."
+                    },
+                    "maxChars": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Maximum characters to return (default 20000; persisted tool results are capped at 60000)."
+                    },
+                    "charOffset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Character offset for continuing a truncated read."
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Starting line offset, 0-based."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Maximum number of lines to return from offset."
+                    }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+        })
 }
 
 async fn read_persisted_tool_result_path(

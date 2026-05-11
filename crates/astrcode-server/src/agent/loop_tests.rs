@@ -24,9 +24,7 @@ use astrcode_core::{
 };
 use astrcode_extensions::runner::ExtensionRunner;
 use astrcode_storage::in_memory::InMemoryEventStore;
-use astrcode_support::tool_results::{
-    DEFAULT_TOOL_RESULT_INLINE_LIMIT,
-};
+use astrcode_support::tool_results::DEFAULT_TOOL_RESULT_INLINE_LIMIT;
 use tokio::{
     sync::{Barrier, mpsc, watch},
     time::{sleep, timeout},

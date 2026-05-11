@@ -11,7 +11,7 @@ use astrcode_core::{
     config::ModelSelection,
     extension::*,
     llm::LlmMessage,
-    tool::{Tool, ToolDefinition, ToolError, ToolExecutionContext, ToolResult},
+    tool::{ExecutionMode, Tool, ToolDefinition, ToolError, ToolExecutionContext, ToolResult},
 };
 use tokio::sync::RwLock;
 
@@ -517,6 +517,10 @@ struct ExtensionTool {
 impl Tool for ExtensionTool {
     fn definition(&self) -> ToolDefinition {
         self.definition.clone()
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        self.definition.execution_mode
     }
 
     /// 扩展工具的实际执行逻辑。

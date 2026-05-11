@@ -93,17 +93,30 @@ pub(super) fn parse_and_repair_json(arguments: &str, tool_name: &str) -> serde_j
     serde_json::json!({})
 }
 
-pub(super) fn provider_visible_tools(
+pub(super) fn provider_visible_tool_indexes(
     tools: &[ToolDefinition],
     active_mcp_tools: &HashSet<String>,
-) -> Vec<ToolDefinition> {
+) -> Vec<usize> {
     tools
         .iter()
+        .enumerate()
         .filter(|tool| {
-            !is_concrete_mcp_tool(&tool.name)
-                || active_mcp_tools.contains(&tool.name)
-                || tool.name == TOOL_SEARCH_TOOL_NAME
+            let name = &tool.1.name;
+            !is_concrete_mcp_tool(name)
+                || active_mcp_tools.contains(name)
+                || name == TOOL_SEARCH_TOOL_NAME
         })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+pub(super) fn clone_tools_by_index(
+    tools: &[ToolDefinition],
+    indexes: &[usize],
+) -> Vec<ToolDefinition> {
+    indexes
+        .iter()
+        .filter_map(|index| tools.get(*index))
         .cloned()
         .collect()
 }

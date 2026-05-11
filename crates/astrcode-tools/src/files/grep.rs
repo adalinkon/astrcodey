@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     io,
     path::{Path, PathBuf},
+    sync::OnceLock,
     time::Instant,
 };
 
@@ -110,76 +111,11 @@ struct GrepMatch {
 #[async_trait::async_trait]
 impl Tool for GrepTool {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "grep".into(),
-            description: "Search file contents with regex or literal text. Defaults to \
-                          outputMode=files_with_matches; use outputMode=content when matching \
-                          lines are needed. Use find for path glob search."
-                .into(),
-            origin: ToolOrigin::Builtin,
-            execution_mode: ExecutionMode::Parallel,
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "pattern": {
-                        "type": "string",
-                        "description": "Pattern to search inside file contents. Regex unless literal is true."
-                    },
-                    "literal": {
-                        "type": "boolean",
-                        "description": "Treat pattern as exact text. Use for punctuation-heavy code."
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "File or directory to search. Defaults to the working directory."
-                    },
-                    "recursive": {
-                        "type": "boolean",
-                        "description": "Search subdirectories. Defaults to true for directories."
-                    },
-                    "caseInsensitive": { "type": "boolean" },
-                    "multiline": {
-                        "type": "boolean",
-                        "description": "Enable ripgrep multiline search. Allows matches to span line breaks and makes '.' match newlines."
-                    },
-                    "maxMatches": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Maximum matches or matched files to return (default 250)."
-                    },
-                    "offset": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "description": "Number of matches to skip for pagination."
-                    },
-                    "glob": {
-                        "type": "string",
-                        "description": "Optional path filter inside path, e.g. '*.rs'. Does not replace path."
-                    },
-                    "fileType": {
-                        "type": "string",
-                        "description": "Optional file type filter, e.g. rust, typescript, markdown."
-                    },
-                    "beforeContext": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "description": "Lines of context before each content match."
-                    },
-                    "afterContext": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "description": "Lines of context after each content match."
-                    },
-                    "outputMode": {
-                        "type": "string",
-                        "enum": ["content", "files_with_matches", "count"],
-                        "description": "Output mode (default files_with_matches). Use content for matching lines."
-                    }
-                },
-                "required": ["pattern"],
-                "additionalProperties": false
-            }),
-        }
+        grep_tool_definition().clone()
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Parallel
     }
     /// 执行内容搜索：解析参数 → 编译正则 → 遍历文件 → 收集匹配 → 格式化输出。
     async fn execute(
@@ -299,6 +235,80 @@ impl Tool for GrepTool {
             .always_include(true),
         )
     }
+}
+
+fn grep_tool_definition() -> &'static ToolDefinition {
+    static DEFINITION: OnceLock<ToolDefinition> = OnceLock::new();
+    DEFINITION.get_or_init(|| ToolDefinition {
+        name: "grep".into(),
+        description: "Search file contents with regex or literal text. Defaults to \
+                      outputMode=files_with_matches; use outputMode=content when matching lines \
+                      are needed. Use find for path glob search."
+            .into(),
+        origin: ToolOrigin::Builtin,
+        execution_mode: ExecutionMode::Parallel,
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Pattern to search inside file contents. Regex unless literal is true."
+                },
+                "literal": {
+                    "type": "boolean",
+                    "description": "Treat pattern as exact text. Use for punctuation-heavy code."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "File or directory to search. Defaults to the working directory."
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "description": "Search subdirectories. Defaults to true for directories."
+                },
+                "caseInsensitive": { "type": "boolean" },
+                "multiline": {
+                    "type": "boolean",
+                    "description": "Enable ripgrep multiline search. Allows matches to span line breaks and makes '.' match newlines."
+                },
+                "maxMatches": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum matches or matched files to return (default 250)."
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Number of matches to skip for pagination."
+                },
+                "glob": {
+                    "type": "string",
+                    "description": "Optional path filter inside path, e.g. '*.rs'. Does not replace path."
+                },
+                "fileType": {
+                    "type": "string",
+                    "description": "Optional file type filter, e.g. rust, typescript, markdown."
+                },
+                "beforeContext": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Lines of context before each content match."
+                },
+                "afterContext": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Lines of context after each content match."
+                },
+                "outputMode": {
+                    "type": "string",
+                    "enum": ["content", "files_with_matches", "count"],
+                    "description": "Output mode (default files_with_matches). Use content for matching lines."
+                }
+            },
+            "required": ["pattern"],
+            "additionalProperties": false
+        }),
+    })
 }
 
 /// grep 搜索配置。

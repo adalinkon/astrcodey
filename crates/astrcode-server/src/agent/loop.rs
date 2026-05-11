@@ -48,7 +48,8 @@ use super::{
         BackgroundTaskCompletion, ExecuteToolCalls, PendingToolCall, assistant_tool_call_message,
     },
     util::{
-        activate_discovered_mcp_tools, append_deferred_mcp_tools_reminder, provider_visible_tools,
+        activate_discovered_mcp_tools, append_deferred_mcp_tools_reminder, clone_tools_by_index,
+        provider_visible_tool_indexes,
     },
 };
 
@@ -369,7 +370,8 @@ impl AgentLoop {
         let mut ext_ctx = self.shared.ext_ctx();
         let all_tools = self.tools.list_definitions();
         let mut active_mcp_tools = std::collections::HashSet::new();
-        let mut tools = provider_visible_tools(&all_tools, &active_mcp_tools);
+        let mut tool_indexes = provider_visible_tool_indexes(&all_tools, &active_mcp_tools);
+        let mut tools = clone_tools_by_index(&all_tools, &tool_indexes);
         let tool_map: std::collections::HashMap<_, _> =
             tools.iter().map(|t| (t.name.clone(), t.clone())).collect();
         ext_ctx.set_tools(tool_map);
@@ -522,7 +524,8 @@ impl AgentLoop {
                         &all_tools,
                         discovered_tools,
                     ) {
-                        tools = provider_visible_tools(&all_tools, &active_mcp_tools);
+                        tool_indexes = provider_visible_tool_indexes(&all_tools, &active_mcp_tools);
+                        tools = clone_tools_by_index(&all_tools, &tool_indexes);
                     }
                 },
             }

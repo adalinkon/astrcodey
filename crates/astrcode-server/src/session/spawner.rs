@@ -28,7 +28,10 @@ use crate::{
         AgentLoop, AgentServices, AgentSignal, AutoCompactFailureTracker, BackgroundTaskManager,
         compact::compact_trigger_name, drive_agent, tool_types::BackgroundTaskCompletion,
     },
-    bootstrap::{build_system_prompt_snapshot, build_tool_registry_snapshot, prompt_fingerprint},
+    bootstrap::{
+        SystemPromptSnapshotInput, build_system_prompt_snapshot_with_files,
+        build_tool_registry_snapshot, load_system_prompt_files, prompt_fingerprint,
+    },
 };
 
 
@@ -97,12 +100,13 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
 
         let child_turn_id = new_turn_id();
 
-        let tool_registry = build_tool_registry_snapshot(
+        let registry_fut = build_tool_registry_snapshot(
             &self.extension_runner,
             &request.working_dir,
             self.read_timeout_secs,
-        )
-        .await;
+        );
+        let prompt_files_fut = load_system_prompt_files(&request.working_dir);
+        let (tool_registry, prompt_files) = tokio::join!(registry_fut, prompt_files_fut);
 
         let prompt_tools_with_meta = tool_registry.list_definitions_with_prompt_metadata();
         let prompt_tools: Vec<_> = prompt_tools_with_meta
@@ -113,17 +117,19 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
             .into_iter()
             .filter_map(|(def, meta)| meta.map(|m| (def.name, m)))
             .collect();
-        let (system_prompt, fingerprint) = build_system_prompt_snapshot(
-            &self.extension_runner,
-            child_sid.as_str(),
-            &request.working_dir,
-            &model_id,
-            &prompt_tools,
-            Some(&request.system_prompt),
-            tool_prompt_metadata,
-        )
-        .await
-        .map_err(|e| format!("build child system prompt: {e}"))?;
+        let (system_prompt, fingerprint) =
+            build_system_prompt_snapshot_with_files(SystemPromptSnapshotInput {
+                extension_runner: &self.extension_runner,
+                session_id: child_sid.as_str(),
+                working_dir: &request.working_dir,
+                model_id: &model_id,
+                tools: &prompt_tools,
+                extra_system_prompt: Some(&request.system_prompt),
+                tool_prompt_metadata,
+                prompt_files,
+            })
+            .await
+            .map_err(|e| format!("build child system prompt: {e}"))?;
 
         append_child_payload(
             self.session_manager.as_ref(),

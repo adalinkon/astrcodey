@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf, time::Instant};
+use std::{collections::BTreeMap, path::PathBuf, sync::OnceLock, time::Instant};
 
 use astrcode_core::tool::*;
 use serde::Deserialize;
@@ -55,68 +55,11 @@ struct EditOperation {
 #[async_trait::async_trait]
 impl Tool for EditFileTool {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "edit".into(),
-            description: "Apply one or more narrow exact string replacements inside an existing \
-                          file. You MUST read the file first (using the read tool) to get the \
-                          exact current content, then copy the text you want to change as oldStr. \
-                          Never write oldStr from memory — always paste it from the read result. \
-                          oldStr must match exactly once unless replaceAll is true. Use edits for \
-                          atomic multiEdit-style changes."
-                .into(),
-            origin: ToolOrigin::Builtin,
-            execution_mode: ExecutionMode::Sequential,
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Existing UTF-8 file to edit."
-                    },
-                    "oldStr": {
-                        "type": "string",
-                        "description": "Exact text to replace. Copy this from the read tool output — never guess or reconstruct from memory."
-                    },
-                    "newStr": {
-                        "type": "string",
-                        "description": "Replacement text."
-                    },
-                    "replaceAll": {
-                        "type": "boolean",
-                        "description": "Replace every occurrence. Use only when every match should change."
-                    },
-                    "edits": {
-                        "type": "array",
-                        "description": "Atomic multiEdit operations applied in order. Do not combine with top-level oldStr/newStr.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "oldStr": {
-                                    "type": "string",
-                                    "description": "Exact text to replace."
-                                },
-                                "newStr": {
-                                    "type": "string",
-                                    "description": "Replacement text."
-                                },
-                                "replaceAll": {
-                                    "type": "boolean",
-                                    "description": "Replace every occurrence for this operation."
-                                }
-                            },
-                            "required": ["oldStr", "newStr"],
-                            "additionalProperties": false
-                        }
-                    }
-                },
-                "required": ["path"],
-                "anyOf": [
-                    { "required": ["oldStr", "newStr"] },
-                    { "required": ["edits"] }
-                ],
-                "additionalProperties": false
-            }),
-        }
+        edit_file_tool_definition().clone()
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Sequential
     }
 
     /// 执行文件编辑：解析参数 → stale file guard → 查找匹配 → 替换 → 写回 → 刷新观察快照。
@@ -183,6 +126,72 @@ impl Tool for EditFileTool {
             .always_include(true),
         )
     }
+}
+
+fn edit_file_tool_definition() -> &'static ToolDefinition {
+    static DEFINITION: OnceLock<ToolDefinition> = OnceLock::new();
+    DEFINITION.get_or_init(|| ToolDefinition {
+        name: "edit".into(),
+        description: "Apply one or more narrow exact string replacements inside an existing \
+                      file. You MUST read the file first (using the read tool) to get the exact \
+                      current content, then copy the text you want to change as oldStr. Never \
+                      write oldStr from memory — always paste it from the read result. oldStr \
+                      must match exactly once unless replaceAll is true. Use edits for atomic \
+                      multiEdit-style changes."
+            .into(),
+        origin: ToolOrigin::Builtin,
+        execution_mode: ExecutionMode::Sequential,
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Existing UTF-8 file to edit."
+                },
+                "oldStr": {
+                    "type": "string",
+                    "description": "Exact text to replace. Copy this from the read tool output — never guess or reconstruct from memory."
+                },
+                "newStr": {
+                    "type": "string",
+                    "description": "Replacement text."
+                },
+                "replaceAll": {
+                    "type": "boolean",
+                    "description": "Replace every occurrence. Use only when every match should change."
+                },
+                "edits": {
+                    "type": "array",
+                    "description": "Atomic multiEdit operations applied in order. Do not combine with top-level oldStr/newStr.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "oldStr": {
+                                "type": "string",
+                                "description": "Exact text to replace."
+                            },
+                            "newStr": {
+                                "type": "string",
+                                "description": "Replacement text."
+                            },
+                            "replaceAll": {
+                                "type": "boolean",
+                                "description": "Replace every occurrence for this operation."
+                            }
+                        },
+                        "required": ["oldStr", "newStr"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "required": ["path"],
+            "anyOf": [
+                { "required": ["oldStr", "newStr"] },
+                { "required": ["edits"] }
+            ],
+            "additionalProperties": false
+        }),
+    })
 }
 
 fn normalize_edit_operations(args: EditFileArgs) -> Result<Vec<EditOperation>, ToolError> {

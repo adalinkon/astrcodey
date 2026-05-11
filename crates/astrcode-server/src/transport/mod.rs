@@ -5,8 +5,8 @@
 
 mod stdio;
 
-use astrcode_protocol::{commands::ClientCommand, events::ClientNotification};
 pub use astrcode_protocol::transport::TransportError;
+use astrcode_protocol::{commands::ClientCommand, events::ClientNotification};
 pub use stdio::{StdioTransport, write_error_response, write_initialize_response};
 
 /// Transport trait for server communication.

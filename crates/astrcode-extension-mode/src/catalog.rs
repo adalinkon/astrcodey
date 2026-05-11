@@ -136,7 +136,8 @@ pub fn builtin_mode_specs() -> Vec<ModeSpec> {
         ModeSpec {
             id: ModeId::plan(),
             name: "Plan".into(),
-            description: "Planning mode with full tool access for producing a structured plan.".into(),
+            description: "Planning mode with full tool access for producing a structured plan."
+                .into(),
             restricted_tools: PLAN_RESTRICTED_TOOLS
                 .iter()
                 .map(|s| (*s).to_string())

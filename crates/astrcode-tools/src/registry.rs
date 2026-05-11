@@ -12,6 +12,7 @@ use astrcode_core::tool::{
 /// 使用 HashMap 按工具名索引，O(1) 查找替代 Vec 的 O(n) 线性扫描。
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
+    definitions: Vec<(ToolDefinition, Option<ToolPromptMetadata>)>,
 }
 
 impl ToolRegistry {
@@ -19,23 +20,29 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            definitions: Vec::new(),
         }
     }
 
     /// 注册一个工具。如果同名工具已存在，会覆盖并输出警告日志。
     pub fn register(&mut self, tool: Arc<dyn Tool>) {
-        let name = tool.definition().name.clone();
+        let mut definition = tool.definition();
+        definition.execution_mode = tool.execution_mode();
+        let name = definition.name.clone();
+        let prompt_metadata = tool.prompt_metadata();
         if self.tools.contains_key(&name) {
             tracing::warn!("Tool '{}' already registered, overwriting", name);
         }
         self.tools.insert(name, tool);
+        self.upsert_cached_definition(definition, prompt_metadata);
     }
 
     /// 返回所有已注册工具的定义列表。
     pub fn list_definitions(&self) -> Vec<ToolDefinition> {
-        self.list_definitions_with_prompt_metadata()
-            .into_iter()
+        self.definitions
+            .iter()
             .map(|(def, _)| def)
+            .cloned()
             .collect()
     }
 
@@ -43,17 +50,7 @@ impl ToolRegistry {
     pub fn list_definitions_with_prompt_metadata(
         &self,
     ) -> Vec<(ToolDefinition, Option<ToolPromptMetadata>)> {
-        let mut results: Vec<_> = self
-            .tools
-            .values()
-            .map(|tool| {
-                let mut definition = tool.definition();
-                definition.execution_mode = tool.execution_mode();
-                (definition, tool.prompt_metadata())
-            })
-            .collect();
-        results.sort_by(|a, b| a.0.name.cmp(&b.0.name));
-        results
+        self.definitions.clone()
     }
 
     /// 按名称执行已注册的工具。
@@ -77,19 +74,19 @@ impl ToolRegistry {
 
     /// 返回指定工具的执行模式，未找到时保守地按顺序执行处理。
     pub fn execution_mode(&self, name: &str) -> ExecutionMode {
-        self.tools
-            .get(name)
-            .map(|tool| tool.execution_mode())
+        self.definitions
+            .binary_search_by(|(definition, _)| definition.name.as_str().cmp(name))
+            .ok()
+            .map(|index| self.definitions[index].0.execution_mode)
             .unwrap_or(ExecutionMode::Sequential)
     }
 
     /// 按名称查找工具定义，未找到返回 `None`。
     pub fn find_definition(&self, name: &str) -> Option<ToolDefinition> {
-        self.tools.get(name).map(|tool| {
-            let mut definition = tool.definition();
-            definition.execution_mode = tool.execution_mode();
-            definition
-        })
+        self.definitions
+            .binary_search_by(|(definition, _)| definition.name.as_str().cmp(name))
+            .ok()
+            .map(|index| self.definitions[index].0.clone())
     }
 
     /// 按名称查询工具的后台化策略，未找到返回 `Never`。
@@ -103,6 +100,22 @@ impl ToolRegistry {
     /// Drain all registered tools into a Vec (consumes the registry).
     pub fn into_tools(self) -> Vec<std::sync::Arc<dyn Tool>> {
         self.tools.into_values().collect()
+    }
+
+    fn upsert_cached_definition(
+        &mut self,
+        definition: ToolDefinition,
+        prompt_metadata: Option<ToolPromptMetadata>,
+    ) {
+        match self
+            .definitions
+            .binary_search_by(|(cached, _)| cached.name.cmp(&definition.name))
+        {
+            Ok(index) => self.definitions[index] = (definition, prompt_metadata),
+            Err(index) => self
+                .definitions
+                .insert(index, (definition, prompt_metadata)),
+        }
     }
 }
 

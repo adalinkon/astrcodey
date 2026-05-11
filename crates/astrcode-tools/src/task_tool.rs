@@ -1,6 +1,6 @@
 //! Background task management tool — list running tasks and cancel them.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::OnceLock};
 
 use astrcode_core::{tool::*, types::BackgroundTaskId};
 use serde::Deserialize;
@@ -25,30 +25,11 @@ pub struct TaskTool;
 #[async_trait::async_trait]
 impl Tool for TaskTool {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "task".into(),
-            description: "Manage background tasks. Use 'list' to see running tasks, 'cancel' to \
-                          stop one."
-                .into(),
-            origin: ToolOrigin::Builtin,
-            execution_mode: ExecutionMode::Parallel,
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["list", "cancel"],
-                        "description": "Action to perform: 'list' shows all background tasks, 'cancel' stops a specific task."
-                    },
-                    "taskId": {
-                        "type": "string",
-                        "description": "Task ID to cancel (required for 'cancel' action)."
-                    }
-                },
-                "required": ["action"],
-                "additionalProperties": false
-            }),
-        }
+        task_tool_definition().clone()
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Parallel
     }
 
     async fn execute(
@@ -109,4 +90,32 @@ impl Tool for TaskTool {
             .prompt_tag("system"),
         )
     }
+}
+
+fn task_tool_definition() -> &'static ToolDefinition {
+    static DEFINITION: OnceLock<ToolDefinition> = OnceLock::new();
+    DEFINITION.get_or_init(|| ToolDefinition {
+        name: "task".into(),
+        description: "Manage background tasks. Use 'list' to see running tasks, 'cancel' to stop \
+                      one."
+            .into(),
+        origin: ToolOrigin::Builtin,
+        execution_mode: ExecutionMode::Parallel,
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "cancel"],
+                    "description": "Action to perform: 'list' shows all background tasks, 'cancel' stops a specific task."
+                },
+                "taskId": {
+                    "type": "string",
+                    "description": "Task ID to cancel (required for 'cancel' action)."
+                }
+            },
+            "required": ["action"],
+            "additionalProperties": false
+        }),
+    })
 }

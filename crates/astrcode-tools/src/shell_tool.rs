@@ -1,6 +1,12 @@
 //! Shell execution tool with streaming stdout/stderr and timeout.
 
-use std::{collections::BTreeMap, path::PathBuf, process::Stdio, time::Instant};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::PathBuf,
+    process::Stdio,
+    sync::{Mutex, OnceLock},
+    time::Instant,
+};
 
 use astrcode_core::{
     event::{EventPayload, ToolOutputStream},
@@ -58,46 +64,11 @@ struct ShellArgs {
 impl Tool for ShellTool {
     /// 返回 shell 工具的定义，动态显示当前系统 Shell 名称。
     fn definition(&self) -> ToolDefinition {
-        let shell = resolve_shell();
-        ToolDefinition {
-            name: "shell".into(),
-            description: format!(
-                "Execute a shell command with the default shell ({}). Returns stdout, stderr, and \
-                 exit code. Prefer file tools for reading, searching, and editing files; use \
-                 shell for commands that need the OS or project toolchain. Default timeout: {}s \
-                 (max 600s, prefer override with the timeout parameter).",
-                shell.name, self.timeout_secs,
-            ),
-            origin: ToolOrigin::Builtin,
-            execution_mode: ExecutionMode::Sequential,
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "command": { "type": "string" },
-                    "intent": {
-                        "type": "string",
-                        "description": "Short active-voice reason for running this command, useful for audit and progress display."
-                    },
-                    "cwd": {
-                        "type": "string",
-                        "description": "Working directory for this command. Prefer this over shell-level cd."
-                    },
-                    "timeout": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 600,
-                        "description": "Timeout in seconds (default from config, max 600)."
-                    },
-                    "runInBackground": {
-                        "type": "boolean",
-                        "default": false,
-                        "description": "Run the command in the background immediately. Use for long-running tasks like dev servers, file watchers, or builds. When true, the agent receives a placeholder result and can continue reasoning."
-                    }
-                },
-                "required": ["command"],
-                "additionalProperties": false
-            }),
-        }
+        shell_tool_definition(self.timeout_secs)
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Sequential
     }
 
     /// Shell 命令执行超过 timeout 一半时间后自动后台化。
@@ -243,6 +214,61 @@ impl Tool for ShellTool {
             duration_ms: Some(started_at.elapsed().as_millis() as u64),
         })
     }
+}
+
+fn shell_tool_definition(timeout_secs: u64) -> ToolDefinition {
+    static DEFINITIONS: OnceLock<Mutex<HashMap<(String, u64), ToolDefinition>>> = OnceLock::new();
+    let shell = resolve_shell();
+    let key = (shell.name.clone(), timeout_secs);
+    let mut definitions = DEFINITIONS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some(definition) = definitions.get(&key) {
+        return definition.clone();
+    }
+
+    let definition = ToolDefinition {
+        name: "shell".into(),
+        description: format!(
+            "Execute a shell command with the default shell ({}). Returns stdout, stderr, and \
+             exit code. Prefer file tools for reading, searching, and editing files; use shell \
+             for commands that need the OS or project toolchain. Default timeout: {}s (max 600s, \
+             prefer override with the timeout parameter).",
+            shell.name, timeout_secs,
+        ),
+        origin: ToolOrigin::Builtin,
+        execution_mode: ExecutionMode::Sequential,
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "command": { "type": "string" },
+                "intent": {
+                    "type": "string",
+                    "description": "Short active-voice reason for running this command, useful for audit and progress display."
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Working directory for this command. Prefer this over shell-level cd."
+                },
+                "timeout": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600,
+                    "description": "Timeout in seconds (default from config, max 600)."
+                },
+                "runInBackground": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Run the command in the background immediately. Use for long-running tasks like dev servers, file watchers, or builds. When true, the agent receives a placeholder result and can continue reasoning."
+                }
+            },
+            "required": ["command"],
+            "additionalProperties": false
+        }),
+    };
+    definitions.insert(key, definition.clone());
+    definition
 }
 
 /// 根据 Shell 类型构建命令行参数。

@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
+    sync::OnceLock,
     time::Instant,
 };
 
@@ -114,26 +115,11 @@ struct TextDocument {
 #[async_trait::async_trait]
 impl Tool for ApplyPatchTool {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "patch".into(),
-            description: "Apply a unified diff patch for coordinated multi-file changes, distant \
-                          hunks, file creation, or deletion. Use edit for a single exact \
-                          replacement."
-                .into(),
-            origin: ToolOrigin::Builtin,
-            execution_mode: ExecutionMode::Sequential,
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "patch": {
-                        "type": "string",
-                        "description": "Unified diff patch text containing one or more file changes."
-                    }
-                },
-                "required": ["patch"],
-                "additionalProperties": false
-            }),
-        }
+        apply_patch_tool_definition().clone()
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Sequential
     }
     /// 执行补丁应用：解析补丁文本 → 逐文件应用 → 汇总结果。
     ///
@@ -203,6 +189,29 @@ impl Tool for ApplyPatchTool {
             .always_include(true),
         )
     }
+}
+
+fn apply_patch_tool_definition() -> &'static ToolDefinition {
+    static DEFINITION: OnceLock<ToolDefinition> = OnceLock::new();
+    DEFINITION.get_or_init(|| ToolDefinition {
+        name: "patch".into(),
+        description: "Apply a unified diff patch for coordinated multi-file changes, distant \
+                      hunks, file creation, or deletion. Use edit for a single exact replacement."
+            .into(),
+        origin: ToolOrigin::Builtin,
+        execution_mode: ExecutionMode::Sequential,
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "patch": {
+                    "type": "string",
+                    "description": "Unified diff patch text containing one or more file changes."
+                }
+            },
+            "required": ["patch"],
+            "additionalProperties": false
+        }),
+    })
 }
 
 /// 解析统一差异格式的补丁文本，返回每个文件的补丁列表。

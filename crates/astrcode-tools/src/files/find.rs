@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     path::PathBuf,
+    sync::OnceLock,
     time::{Instant, SystemTime},
 };
 
@@ -53,48 +54,11 @@ fn default_true() -> bool {
 #[async_trait::async_trait]
 impl Tool for FindFilesTool {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "find".into(),
-            description: "Find candidate file paths by glob pattern. This searches file paths \
-                          only, not file contents. Use grep for content search and read to \
-                          inspect a known result."
-                .into(),
-            origin: ToolOrigin::Builtin,
-            execution_mode: ExecutionMode::Parallel,
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "pattern": {
-                        "type": "string",
-                        "description": "Glob pattern for paths, e.g. '*.rs', '**/*.ts', '*.{json,toml}'. Does not search file contents."
-                    },
-                    "root": {
-                        "type": "string",
-                        "description": "Directory to search from. Defaults to the working directory."
-                    },
-                    "maxResults": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Maximum number of paths to return (default 100)."
-                    },
-                    "offset": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "description": "Number of sorted paths to skip for pagination."
-                    },
-                    "respectGitignore": {
-                        "type": "boolean",
-                        "description": "Respect .gitignore-style exclusions (default true)."
-                    },
-                    "includeHidden": {
-                        "type": "boolean",
-                        "description": "Include hidden files and directories (default true)."
-                    }
-                },
-                "required": ["pattern"],
-                "additionalProperties": false
-            }),
-        }
+        find_files_tool_definition().clone()
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Parallel
     }
     /// 执行文件查找：解析 glob 模式 → 遍历匹配 → 过滤隐藏/gitignore → 按时间排序。
     async fn execute(
@@ -186,6 +150,52 @@ impl Tool for FindFilesTool {
             .always_include(true),
         )
     }
+}
+
+fn find_files_tool_definition() -> &'static ToolDefinition {
+    static DEFINITION: OnceLock<ToolDefinition> = OnceLock::new();
+    DEFINITION.get_or_init(|| ToolDefinition {
+        name: "find".into(),
+        description: "Find candidate file paths by glob pattern. This searches file paths only, \
+                      not file contents. Use grep for content search and read to inspect a known \
+                      result."
+            .into(),
+        origin: ToolOrigin::Builtin,
+        execution_mode: ExecutionMode::Parallel,
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob pattern for paths, e.g. '*.rs', '**/*.ts', '*.{json,toml}'. Does not search file contents."
+                },
+                "root": {
+                    "type": "string",
+                    "description": "Directory to search from. Defaults to the working directory."
+                },
+                "maxResults": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum number of paths to return (default 100)."
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Number of sorted paths to skip for pagination."
+                },
+                "respectGitignore": {
+                    "type": "boolean",
+                    "description": "Respect .gitignore-style exclusions (default true)."
+                },
+                "includeHidden": {
+                    "type": "boolean",
+                    "description": "Include hidden files and directories (default true)."
+                }
+            },
+            "required": ["pattern"],
+            "additionalProperties": false
+        }),
+    })
 }
 
 fn modified_unix_ms(modified: SystemTime) -> u128 {

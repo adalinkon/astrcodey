@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf, time::Instant};
+use std::{collections::BTreeMap, path::PathBuf, sync::OnceLock, time::Instant};
 
 use astrcode_core::tool::*;
 use serde::Deserialize;
@@ -30,34 +30,11 @@ struct WriteFileArgs {
 #[async_trait::async_trait]
 impl Tool for WriteFileTool {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "write".into(),
-            description: "Create a UTF-8 text file or fully replace an existing file when the \
-                          complete final content is known. Prefer edit for narrow edits to \
-                          existing files."
-                .into(),
-            origin: ToolOrigin::Builtin,
-            execution_mode: ExecutionMode::Sequential,
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Absolute or relative target path."
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Complete UTF-8 content to write. This replaces the whole file."
-                    },
-                    "createDirs": {
-                        "type": "boolean",
-                        "description": "Create missing parent directories when true."
-                    }
-                },
-                "required": ["path", "content"],
-                "additionalProperties": false
-            }),
-        }
+        write_file_tool_definition().clone()
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Sequential
     }
 
     /// 执行文件写入：解析路径 → 安全校验 → 可选创建目录 → 写入文件。
@@ -129,4 +106,36 @@ impl Tool for WriteFileTool {
             .always_include(true),
         )
     }
+}
+
+fn write_file_tool_definition() -> &'static ToolDefinition {
+    static DEFINITION: OnceLock<ToolDefinition> = OnceLock::new();
+    DEFINITION.get_or_init(|| ToolDefinition {
+        name: "write".into(),
+        description: "Create a UTF-8 text file or fully replace an existing file when the \
+                      complete final content is known. Prefer edit for narrow edits to existing \
+                      files."
+            .into(),
+        origin: ToolOrigin::Builtin,
+        execution_mode: ExecutionMode::Sequential,
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute or relative target path."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Complete UTF-8 content to write. This replaces the whole file."
+                },
+                "createDirs": {
+                    "type": "boolean",
+                    "description": "Create missing parent directories when true."
+                }
+            },
+            "required": ["path", "content"],
+            "additionalProperties": false
+        }),
+    })
 }
