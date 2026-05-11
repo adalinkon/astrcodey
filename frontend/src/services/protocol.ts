@@ -228,6 +228,11 @@ export function decodeConversationDelta(value: unknown): ConversationDelta {
         callId: requiredString(object, 'callId'),
         taskId: requiredString(object, 'taskId'),
       }
+    case 'agentSessionUpdated':
+      return {
+        kind,
+        agentSession: decodeAgentSessionLink(object.agentSession),
+      }
     default:
       throw new ProtocolDecodeError(`invalid delta kind ${kind}`)
   }

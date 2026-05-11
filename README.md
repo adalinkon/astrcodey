@@ -28,7 +28,7 @@ cargo run --bin astrcode-server
 cd frontend && npm install && npm run dev
 
 # Tauri desktop app (dev mode)
-cd frontend && npm install && npm run tauri dev
+cd frontend && npm install && npm run tauri:dev
 ```
 
 ## Architecture
@@ -159,7 +159,7 @@ Large tool results are automatically persisted to disk and replaced with preview
 | **Exec** | `cargo run -- exec "prompt"` | Headless single-shot execution, supports `--jsonl` streaming output |
 | **Server** | `cargo run --bin astrcode-server` | HTTP/SSE server with JSON-RPC, session management, real-time event streaming |
 | **Web** | `cd frontend && npm run dev` | Browser-based chat interface connected to the server via SSE |
-| **Desktop** | `cd frontend && npm run tauri dev` | Tauri desktop app (auto-launches server as sidecar) |
+| **Desktop** | `cd frontend && npm run tauri:dev` | Tauri desktop app (auto-launches server as sidecar) |
 
 ## Acknowledgments
 

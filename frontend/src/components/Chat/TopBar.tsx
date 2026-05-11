@@ -110,7 +110,7 @@ export default function TopBar({
           </button>
           {subsessionMenuOpen && (
             <div
-              className="absolute right-0 top-full z-50 mt-1 min-w-[220px] rounded-lg border border-border bg-surface p-2 shadow-lg"
+              className="absolute right-0 top-full z-50 mt-1 min-w-[220px] max-w-[360px] rounded-lg border border-border bg-surface p-2 shadow-lg"
               role="menu"
               aria-label="Subsessions"
             >

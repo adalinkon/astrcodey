@@ -431,6 +431,25 @@ export const useAppStore = create<ConversationState>((set, get) => ({
         })
         break
       }
+
+      case 'agentSessionUpdated': {
+        set((current) => {
+          const incoming = delta.agentSession
+          const idx = current.agentSessions.findIndex(
+            (s) => s.childSessionId === incoming.childSessionId
+          )
+          if (idx === -1) {
+            return { agentSessions: [...current.agentSessions, incoming] }
+          }
+          const next = [...current.agentSessions]
+          next[idx] = {
+            ...next[idx],
+            status: incoming.status,
+          }
+          return { agentSessions: next }
+        })
+        break
+      }
     }
   },
 }))

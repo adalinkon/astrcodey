@@ -875,6 +875,43 @@ fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDto> {
             }]
         },
 
+        EventPayload::AgentSessionSpawned {
+            child_session_id,
+            agent_name,
+            task,
+        } => vec![ConversationDeltaDto::AgentSessionUpdated {
+            agent_session: HttpAgentSessionLinkDto {
+                child_session_id: child_session_id.to_string(),
+                agent_name: agent_name.clone(),
+                task: task.clone(),
+                status: snapshot::agent_status_to_dto(
+                    astrcode_core::storage::AgentSessionStatus::Running,
+                ),
+            },
+        }],
+
+        EventPayload::AgentSessionCompleted { child_session_id, .. }
+        | EventPayload::AgentSessionFailed { child_session_id, .. } => {
+            vec![ConversationDeltaDto::AgentSessionUpdated {
+                agent_session: HttpAgentSessionLinkDto {
+                    child_session_id: child_session_id.to_string(),
+                    agent_name: String::new(),
+                    task: String::new(),
+                    status: match &event.payload {
+                        EventPayload::AgentSessionCompleted { .. } => {
+                            snapshot::agent_status_to_dto(
+                                astrcode_core::storage::AgentSessionStatus::Completed,
+                            )
+                        },
+                        EventPayload::AgentSessionFailed { .. } => snapshot::agent_status_to_dto(
+                            astrcode_core::storage::AgentSessionStatus::Failed,
+                        ),
+                        _ => unreachable!(),
+                    },
+                },
+            }]
+        },
+
         // Events the client doesn't need as visible deltas
         EventPayload::SystemPromptConfigured { .. }
         | EventPayload::SessionContinuedFromCompaction { .. }

@@ -308,6 +308,10 @@ pub enum ConversationDeltaDto {
         call_id: String,
         task_id: String,
     },
+    /// Agent 子会话状态变更（新增 / 完成 / 失败）。
+    AgentSessionUpdated {
+        agent_session: HttpAgentSessionLinkDto,
+    },
 }
 
 /// HTTP 错误响应。

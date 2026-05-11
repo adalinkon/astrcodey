@@ -168,6 +168,7 @@ export type ConversationDelta =
   | { kind: 'thinkingDelta'; blockId: string; delta: string }
   | { kind: 'patchArguments'; blockId: string; arguments: string }
   | { kind: 'toolCallBackgrounded'; callId: string; taskId: string }
+  | { kind: 'agentSessionUpdated'; agentSession: AgentSessionLink }
 
 // ── App State ──
 
