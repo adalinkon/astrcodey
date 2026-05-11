@@ -16,9 +16,8 @@ use serde_json::{Value, json};
 pub const TODO_WRITE_TOOL_NAME: &str = "todoWrite";
 
 const TODO_WRITE_DESCRIPTION: &str = "\
-Update the progress todo list for the current session. Use it proactively for complex multi-step \
-                                      work. Keep at most one item in_progress while actively \
-                                      working. Provide both content and activeForm for each item.";
+Persist the current progress snapshot for this session. Always send the full current snapshot, not \
+                                      a patch.";
 const PROGRESS_SCHEMA_VERSION: u32 = 1;
 const PROGRESS_FILE: &str = "progress.json";
 const REMINDER_THRESHOLD: u32 = 15;
@@ -121,10 +120,25 @@ impl Extension for TodoToolExtension {
         map.insert(
             TODO_WRITE_TOOL_NAME.to_string(),
             astrcode_core::tool::ToolPromptMetadata::new(
-                "Use proactively for complex multi-step work. Keep at most one item in_progress \
-                 while actively working.",
+                "Maintain the current progress snapshot for this branch of work.",
             )
-            .prompt_tag("planning"),
+            .caveat(
+                "Do not use for trivial one-step work, pure Q&A, or tasks that can be completed \
+                 in roughly three straightforward actions.",
+            )
+            .caveat(
+                "Keep exactly one item in `in_progress` at a time. Mark an item `in_progress` \
+                 before starting it, and mark it `completed` immediately after it is truly \
+                 finished.",
+            )
+            .example(
+                "{ todos: [{ content: \"分析现有代码结构\", status: \"in_progress\", activeForm: \
+                 \"正在分析现有代码结构\" }, { content: \"设计优化方案\", status: \"pending\", \
+                 activeForm: \"准备设计优化方案\" }, { content: \"验证优化效果\", status: \
+                 \"pending\", activeForm: \"准备验证优化效果\" }] }",
+            )
+            .prompt_tag("planning")
+            .always_include(true),
         );
         map
     }

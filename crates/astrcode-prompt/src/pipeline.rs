@@ -410,11 +410,7 @@ fn tool_summary_section(input: &SystemPromptInput) -> Option<String> {
     if !regular.is_empty() {
         lines.push("Builtin Tools".into());
         for tool in &regular {
-            lines.push(format!(
-                "- `{}`: {}",
-                tool.name,
-                one_line(&tool.description)
-            ));
+            lines.push(format!("- `{}`", tool.name));
         }
     }
 
@@ -427,11 +423,7 @@ fn tool_summary_section(input: &SystemPromptInput) -> Option<String> {
                 .into(),
         );
         for tool in &collab {
-            lines.push(format!(
-                "- `{}`: {}",
-                tool.name,
-                one_line(&tool.description)
-            ));
+            lines.push(format!("- `{}`", tool.name));
         }
     }
 
@@ -444,11 +436,7 @@ fn tool_summary_section(input: &SystemPromptInput) -> Option<String> {
         lines.push(String::new());
         lines.push("External MCP Tools".into());
         for tool in &mcp_tools {
-            lines.push(format!(
-                "- `{}`: {}",
-                tool.name,
-                one_line(&tool.description)
-            ));
+            lines.push(format!("- `{}`", tool.name));
         }
     }
 
@@ -467,11 +455,7 @@ fn tool_summary_section(input: &SystemPromptInput) -> Option<String> {
                 .into(),
         );
         for tool in &plugin_tools {
-            lines.push(format!(
-                "- `{}`: {}",
-                tool.name,
-                one_line(&tool.description)
-            ));
+            lines.push(format!("- `{}`", tool.name));
         }
     }
 
@@ -569,9 +553,6 @@ fn is_plugin_tool(tool: &ToolDefinition) -> bool {
         || (tool.origin == ToolOrigin::Bundled && !tool.name.starts_with("mcp__"))
 }
 
-fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
 
 // ─── AGENTS.md 加载（供 bootstrap 使用） ────────────────────────────────
 
@@ -704,11 +685,11 @@ mod tests {
         assert!(prompt.contains("[User Rules]\n  test rules"));
         assert!(prompt.contains("[Project Rules]\n  project rules content"));
         assert!(prompt.contains("[Tool Summary]"));
-        assert!(prompt.contains("- `read`: Read files."));
+        assert!(prompt.contains("- `read`"));
         assert!(prompt.contains("External MCP Tools"));
-        assert!(prompt.contains("- `mcp__demo__search`: Search demo server."));
+        assert!(prompt.contains("- `mcp__demo__search`"));
         assert!(prompt.contains("Plugin Tools"));
-        assert!(prompt.contains("- `plugin_lookup`: Lookup through a configured plugin."));
+        assert!(prompt.contains("- `plugin_lookup`"));
         assert!(prompt.contains("[SystemPromptInstruction]\n  extra hint"));
         assert!(prompt.contains("[Skills]\n  skill a"));
         assert!(prompt.contains("[Agents]\n  agent x"));
@@ -806,7 +787,7 @@ mod tests {
         let prompt = build_system_prompt(&input);
 
         assert!(prompt.contains("Plugin Tools"));
-        assert!(prompt.contains("- `plugin_lookup`: Lookup through a configured plugin."));
+        assert!(prompt.contains("- `plugin_lookup`"));
         assert!(prompt.contains("not plugin-tool discovery"));
         assert!(!prompt.contains("External MCP Tools"));
     }

@@ -19,7 +19,7 @@
   "tools": [
     {
       "name": "todoWrite",
-      "description": "Update the progress todo list for the current session. Use it proactively for complex multi-step work. Keep at most one item in_progress while actively working. Provide both content and activeForm for each item.",
+      "description": "Persist the current progress snapshot for this session. Always send the full current snapshot, not a patch.",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
