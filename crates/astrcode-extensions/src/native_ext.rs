@@ -9,8 +9,10 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
+
+use parking_lot::Mutex;
 
 use astrcode_core::{
     extension::{
@@ -127,7 +129,7 @@ impl NativeExtension {
         if ptr.is_null() || len == 0 {
             return;
         }
-        let callback = self.output_free.lock().ok().and_then(|free| *free);
+        let callback = self.output_free.lock().and_then(|free| *free);
         if let Some(callback) = callback {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
                 callback(ptr, len)
@@ -149,7 +151,6 @@ impl Extension for NativeExtension {
     fn hook_subscriptions(&self) -> Vec<HookSubscription> {
         self.handlers
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .map(|(event, mode, _)| HookSubscription {
                 event: event.clone(),
@@ -170,7 +171,7 @@ impl Extension for NativeExtension {
     ) -> Result<HookEffect, ExtensionError> {
         let event_disc = ffi::event_discriminant(event.clone());
         let ffi_ctx = FfiCtxOwned::from_ext_ctx(ctx);
-        let handlers = self.handlers.lock().unwrap_or_else(|e| e.into_inner());
+        let handlers = self.handlers.lock();
         // 收集匹配的回调，然后释放锁
         let callbacks: Vec<EventCallback> = handlers
             .iter()
@@ -262,7 +263,7 @@ impl Extension for NativeExtension {
 
     /// 返回此扩展注册的所有工具定义。
     fn tools(&self) -> Vec<ToolDefinition> {
-        self.tools.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.tools.lock().clone()
     }
 
     /// 执行指定名称的工具。
@@ -278,7 +279,6 @@ impl Extension for NativeExtension {
         let callback = self
             .tool_handlers
             .lock()
-            .map_err(|e| ExtensionError::Internal(e.to_string()))?
             .get(tool_name)
             .copied();
         let Some(callback) = callback else {
@@ -360,7 +360,6 @@ impl Extension for NativeExtension {
     fn slash_commands(&self) -> Vec<astrcode_core::extension::SlashCommand> {
         self.commands
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
 }
@@ -406,7 +405,6 @@ unsafe extern "C" fn ffi_on(
     user_data!(api)
         .handlers
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
         .push((event, mode, callback));
 }
 
@@ -429,7 +427,6 @@ unsafe extern "C" fn ffi_register_tool(
     user_data!(api)
         .tools
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
         .push(ToolDefinition {
             name,
             description: desc,
@@ -447,7 +444,8 @@ unsafe extern "C" fn ffi_register_tool_handler(
     callback: ToolCallback,
 ) {
     let name = ffi::read_ffi_str(name_ptr, name_len);
-    if let Ok(mut handlers) = user_data!(api).tool_handlers.lock() {
+    {
+        let mut handlers = user_data!(api).tool_handlers.lock();
         handlers.insert(name, callback);
     }
 }
@@ -465,7 +463,6 @@ unsafe extern "C" fn ffi_register_command(
     user_data!(api)
         .commands
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
         .push(astrcode_core::extension::SlashCommand {
             name,
             description: desc,
@@ -478,7 +475,8 @@ unsafe extern "C" fn ffi_register_output_free_handler(
     api: *const ExtensionApi,
     callback: OutputFreeCallback,
 ) {
-    if let Ok(mut output_free) = user_data!(api).output_free.lock() {
+    {
+        let mut output_free = user_data!(api).output_free.lock();
         *output_free = Some(callback);
     }
 }

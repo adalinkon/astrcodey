@@ -14,6 +14,7 @@ use astrcode_core::{
     prompt::{ExtensionPromptBlock, ExtensionSection, PromptProvider, SystemPromptInput},
     tool::ToolDefinition,
 };
+use parking_lot::{Mutex, RwLock};
 use astrcode_extensions::{
     context::ServerExtensionContext, loader::ExtensionLoader, runner::ExtensionRunner,
 };
@@ -56,45 +57,42 @@ pub struct ServerRuntime {
     /// 会话管理器，负责会话的创建、恢复、事件追加和删除
     pub session_manager: Arc<SessionManager>,
     /// LLM 提供者，用于生成 AI 回复（运行时可重建）
-    pub llm_provider: Arc<std::sync::RwLock<Arc<dyn LlmProvider>>>,
+    pub llm_provider: Arc<RwLock<Arc<dyn LlmProvider>>>,
     /// 上下文组装器，负责窗口估算和摘要压缩
     pub context_assembler: Arc<LlmContextAssembler>,
     /// Auto compact provider 连续失败熔断状态。
     pub auto_compact_failures: Arc<AutoCompactFailureTracker>,
     /// 跨回合共享的后台任务管理器。
-    pub background_tasks: Arc<std::sync::Mutex<BackgroundTaskManager>>,
+    pub background_tasks: Arc<Mutex<BackgroundTaskManager>>,
     /// 扩展运行器，负责加载和分发扩展钩子事件
     pub extension_runner: Arc<ExtensionRunner>,
     /// 已解析的最终配置（运行时可通过 `sync_effective` 刷新）
-    pub effective: std::sync::RwLock<EffectiveConfig>,
+    pub effective: RwLock<EffectiveConfig>,
     /// 配置持久化存储，用于运行时读写配置
     pub config_store: Arc<dyn astrcode_core::config::ConfigStore>,
     /// 原始配置（用于设置面板展示 profile 列表等）
-    pub raw_config: std::sync::RwLock<astrcode_core::config::Config>,
+    pub raw_config: RwLock<astrcode_core::config::Config>,
     /// 触发后通知 HTTP server 执行 graceful shutdown
     pub shutdown_token: tokio_util::sync::CancellationToken,
 }
 
 impl ServerRuntime {
-    pub fn read_effective(&self) -> std::sync::RwLockReadGuard<'_, EffectiveConfig> {
-        self.effective.read().unwrap_or_else(|e| e.into_inner())
+    pub fn read_effective(&self) -> parking_lot::RwLockReadGuard<'_, EffectiveConfig> {
+        self.effective.read()
     }
 
     pub fn write_raw_config(
         &self,
-    ) -> std::sync::RwLockWriteGuard<'_, astrcode_core::config::Config> {
-        self.raw_config.write().unwrap_or_else(|e| e.into_inner())
+    ) -> parking_lot::RwLockWriteGuard<'_, astrcode_core::config::Config> {
+        self.raw_config.write()
     }
 
-    pub fn read_raw_config(&self) -> std::sync::RwLockReadGuard<'_, astrcode_core::config::Config> {
-        self.raw_config.read().unwrap_or_else(|e| e.into_inner())
+    pub fn read_raw_config(&self) -> parking_lot::RwLockReadGuard<'_, astrcode_core::config::Config> {
+        self.raw_config.read()
     }
 
     pub fn read_llm_provider(&self) -> Arc<dyn LlmProvider> {
-        self.llm_provider
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.llm_provider.read().clone()
     }
 
     pub fn rebuild_provider_from_effective(&self) -> Result<(), String> {
@@ -102,17 +100,17 @@ impl ServerRuntime {
             let effective = self.read_effective();
             build_provider_from_effective(&effective)
         };
-        let mut guard = self.llm_provider.write().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.llm_provider.write();
         *guard = new_provider;
         Ok(())
     }
 
     pub fn sync_effective(&self) -> Result<(), astrcode_core::config::ResolveError> {
         let new_effective = {
-            let raw = self.raw_config.read().unwrap_or_else(|e| e.into_inner());
+            let raw = self.raw_config.read();
             raw.clone().into_effective()?
         };
-        let mut guard = self.effective.write().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.effective.write();
         *guard = new_effective;
         Ok(())
     }
@@ -132,7 +130,7 @@ impl ServerRuntime {
             *guard = config;
         }
         {
-            let mut guard = self.effective.write().unwrap_or_else(|e| e.into_inner());
+            let mut guard = self.effective.write();
             *guard = new_effective;
         }
         if let Err(e) = self.rebuild_provider_from_effective() {
@@ -190,7 +188,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     //
     // 根据 `provider_kind` 路由到对应的 provider 实现。
     // 后续所有主会话和子会话都会共享这个 provider。
-    let llm_provider = Arc::new(std::sync::RwLock::new(build_provider_from_effective(
+    let llm_provider = Arc::new(RwLock::new(build_provider_from_effective(
         &effective,
     )));
 
@@ -206,7 +204,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     };
     let context_assembler = Arc::new(LlmContextAssembler::new(context_settings.clone()));
     let auto_compact_failures = Arc::new(AutoCompactFailureTracker::default());
-    let background_tasks = Arc::new(std::sync::Mutex::new(BackgroundTaskManager::default()));
+    let background_tasks = Arc::new(Mutex::new(BackgroundTaskManager::default()));
 
     // 4. 确定当前项目工作目录。
     //
@@ -302,9 +300,9 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
         auto_compact_failures,
         background_tasks,
         extension_runner,
-        effective: std::sync::RwLock::new(effective),
+        effective: RwLock::new(effective),
         config_store: Arc::new(config_store),
-        raw_config: std::sync::RwLock::new(config),
+        raw_config: RwLock::new(config),
         shutdown_token: tokio_util::sync::CancellationToken::new(),
     })
 }

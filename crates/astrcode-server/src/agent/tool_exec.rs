@@ -4,6 +4,8 @@
 
 use std::{sync::Arc, time::Instant};
 
+use parking_lot::Mutex;
+
 use astrcode_core::{
     event::EventPayload,
     tool::{BackgroundPolicy, ToolCapabilities, ToolError, ToolExecutionContext, ToolResult},
@@ -240,7 +242,7 @@ async fn execute_tool_call_with_background(
     };
 
     // 共享结果槽：exec task 写入，主线程或 watcher 读取
-    let result_slot = Arc::new(std::sync::Mutex::new(
+    let result_slot = Arc::new(Mutex::new(
         None::<Result<ToolResult, astrcode_core::tool::ToolError>>,
     ));
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
@@ -251,7 +253,7 @@ async fn execute_tool_call_with_background(
     let slot_writer = Arc::clone(&result_slot);
     let exec_handle = tokio::spawn(async move {
         let result = tool_registry.execute(&name, tool_input, &tool_ctx).await;
-        *slot_writer.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
+        *slot_writer.lock() = Some(result);
         let _ = done_tx.send(());
         let _ = exec_complete_tx.send(());
     });
@@ -262,7 +264,6 @@ async fn execute_tool_call_with_background(
             // 在阈值内完成
             let result = result_slot
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
                 .take()
                 .expect("done_tx sent but no result");
             match result {
@@ -316,7 +317,7 @@ async fn execute_tool_call_with_background(
 async fn background_tool_call(
     exec_handle: tokio::task::JoinHandle<()>,
     exec_complete_rx: tokio::sync::oneshot::Receiver<()>,
-    result_slot: Arc<std::sync::Mutex<Option<Result<ToolResult, astrcode_core::tool::ToolError>>>>,
+    result_slot: Arc<Mutex<Option<Result<ToolResult, astrcode_core::tool::ToolError>>>>,
     runtime: ToolCallRuntimeContext,
     call: ExecutableToolCall,
     threshold_secs: u64,
@@ -363,7 +364,7 @@ async fn background_tool_call(
         // 等待 exec 完成（或被 cancel abort 导致 oneshot 断开）
         let _ = exec_complete_rx.await;
 
-        let raw = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let raw = result_slot.lock().take();
         let mut result = match raw {
             Some(Ok(mut r)) => {
                 r.call_id = bg_call_id.clone();

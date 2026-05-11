@@ -34,9 +34,10 @@ const SYSTEM_RULES: &str = "All text you output outside of tool use is displayed
 const TASK_GUIDELINES: &str =
     "Do not add features, refactor, or make improvements beyond what was asked.\n\nDo not add \
      error handling, fallbacks, or validation for scenarios that cannot happen. Validate only at \
-     system boundaries (user input, external APIs).\n\nDefault to writing no comments. Only add \
-     one when the WHY is non-obvious: a hidden constraint, a subtle invariant, or a workaround \
-     for a specific bug.\n\nBe careful not to introduce security vulnerabilities (command \
+     system boundaries (user input, external APIs).\n\nAdd comments only where code is not \
+     self-evident on first reading. Always explain the WHY when it is non-obvious: a hidden \
+     constraint, a subtle invariant, or a workaround for a specific bug. Do not restate what \
+     clear naming already conveys.\n\nBe careful not to introduce security vulnerabilities (command \
      injection, XSS, SQL injection). If you notice insecure code you wrote, fix it \
      immediately.\n\nNever commit secrets, API keys, or credentials. If you encounter them in \
      code, flag it to the user immediately.\n\nVerify before reporting completion: run tests, \

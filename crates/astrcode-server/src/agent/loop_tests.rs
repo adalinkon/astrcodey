@@ -1293,10 +1293,7 @@ async fn large_tool_result_is_persisted_before_next_llm_call() {
     })]);
     let captured_messages = Arc::new(Mutex::new(Vec::new()));
     let session_manager = Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new())));
-    let start = session_manager
-        .create(".", "mock", 2048, None)
-        .await
-        .unwrap();
+    let start = session_manager.create(".", "mock", None).await.unwrap();
     let session_id = start.session_id.clone();
 
     let agent_loop = AgentLoop::new(
@@ -1358,10 +1355,7 @@ async fn read_file_tool_result_is_persisted_when_exceeds_limit() {
     })]);
     let captured_messages = Arc::new(Mutex::new(Vec::new()));
     let session_manager = Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new())));
-    let start = session_manager
-        .create(".", "mock", 2048, None)
-        .await
-        .unwrap();
+    let start = session_manager.create(".", "mock", None).await.unwrap();
 
     let agent_loop = AgentLoop::new(
         start.session_id,
@@ -1437,10 +1431,7 @@ async fn aggregate_tool_result_budget_persists_largest_inline_result() {
     ]);
     let captured_messages = Arc::new(Mutex::new(Vec::new()));
     let session_manager = Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new())));
-    let start = session_manager
-        .create(".", "mock", 2048, None)
-        .await
-        .unwrap();
+    let start = session_manager.create(".", "mock", None).await.unwrap();
     let calls = vec![
         ("call-1", "big1"),
         ("call-2", "big2"),

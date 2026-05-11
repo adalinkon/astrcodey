@@ -41,6 +41,7 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 astrcode-log = { path = "../astrcode-log" }
 notify = "8.2.0"
+parking_lot = "0.12"
 axum = "0.8.9"
 futures-util = "0.3"
 tokio-util = "0.7"

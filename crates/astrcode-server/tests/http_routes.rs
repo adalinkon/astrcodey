@@ -185,7 +185,7 @@ async fn sse_receiver_lag_emits_rehydrate_and_closes() {
     let runtime = runtime(Arc::new(ImmediateLlm));
     let start = runtime
         .session_manager
-        .create(".", "mock-model", 2048, None)
+        .create(".", "mock-model", None)
         .await
         .unwrap();
     let session_id = start.session_id.clone();

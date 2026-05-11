@@ -6,8 +6,10 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
+
+use parking_lot::Mutex;
 
 use astrcode_core::{
     config::ModelSelection,
@@ -146,7 +148,7 @@ impl ServerExtensionContext {
 
     /// 取出所有待处理的工具注册（消费式取出）。
     pub fn take_pending_tools(&mut self) -> Vec<ToolDefinition> {
-        std::mem::take(&mut *self.pending_tools.lock().unwrap_or_else(|e| e.into_inner()))
+        std::mem::take(&mut *self.pending_tools.lock())
     }
 
     /// 构建当前上下文的轻量级快照，可跨线程共享。
@@ -292,13 +294,12 @@ impl ExtensionContext for ServerExtensionContext {
     fn register_tool(&self, def: ToolDefinition) {
         self.pending_tools
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(def);
+                        .push(def);
     }
 
     /// 取出所有已注册的工具定义（消费式取出）
     fn drain_registered_tools(&self) -> Vec<ToolDefinition> {
-        std::mem::take(&mut *self.pending_tools.lock().unwrap_or_else(|e| e.into_inner()))
+        std::mem::take(&mut *self.pending_tools.lock())
     }
 
     fn provider_messages(&self) -> Option<Vec<LlmMessage>> {

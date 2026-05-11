@@ -28,6 +28,7 @@ futures = "0.3"
 astrcode-log = { path = "../astrcode-log" }
 tracing = { workspace = true }
 libc = "0.2"
+parking_lot = "0.12"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

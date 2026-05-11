@@ -16,6 +16,7 @@ use astrcode_extensions::{
     runner::ExtensionRunner,
     runtime::{SpawnRequest, SpawnResult},
 };
+use parking_lot::{Mutex as StdMutex, RwLock};
 use tokio::sync::{Mutex, mpsc};
 
 use super::{
@@ -41,10 +42,10 @@ use crate::{
 /// 扩展运行器通过此派生器创建子会话并运行 Agent 回合。
 pub(crate) struct ServerSessionSpawner {
     pub(crate) session_manager: Arc<SessionManager>,
-    pub(crate) llm_provider: Arc<std::sync::RwLock<Arc<dyn LlmProvider>>>,
+    pub(crate) llm_provider: Arc<RwLock<Arc<dyn LlmProvider>>>,
     pub(crate) context_assembler: Arc<LlmContextAssembler>,
     pub(crate) auto_compact_failures: Arc<AutoCompactFailureTracker>,
-    pub(crate) background_tasks: Arc<std::sync::Mutex<BackgroundTaskManager>>,
+    pub(crate) background_tasks: Arc<StdMutex<BackgroundTaskManager>>,
     pub(crate) extension_runner: Arc<ExtensionRunner>,
     pub(crate) read_timeout_secs: u64,
 }
@@ -73,12 +74,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
 
         let create_event = self
             .session_manager
-            .create(
-                &request.working_dir,
-                &model_id,
-                2048,
-                Some(&parent_session_id),
-            )
+            .create(&request.working_dir, &model_id, Some(&parent_session_id))
             .await
             .map_err(|e| format!("create child session: {e}"))?;
 
@@ -361,10 +357,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
 
 impl ServerSessionSpawner {
     fn read_llm_provider(&self) -> Arc<dyn LlmProvider> {
-        self.llm_provider
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.llm_provider.read().clone()
     }
 }
 
@@ -654,10 +647,7 @@ mod tests {
     #[tokio::test]
     async fn spawned_session_auto_compact_returns_leaf_child() {
         let session_manager = Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new())));
-        let parent = session_manager
-            .create(".", "mock", 2048, None)
-            .await
-            .unwrap();
+        let parent = session_manager.create(".", "mock", None).await.unwrap();
         let llm = Arc::new(CompactThenLeafLlm {
             call_count: AtomicUsize::new(0),
         });
@@ -752,10 +742,7 @@ mod tests {
     #[tokio::test]
     async fn spawned_session_uses_latest_llm_provider() {
         let session_manager = Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new())));
-        let parent = session_manager
-            .create(".", "mock", 2048, None)
-            .await
-            .unwrap();
+        let parent = session_manager.create(".", "mock", None).await.unwrap();
         let initial_provider: Arc<dyn LlmProvider> = Arc::new(StaticTextLlm { text: "old" });
         let llm_provider = Arc::new(std::sync::RwLock::new(initial_provider));
         let spawner = ServerSessionSpawner {

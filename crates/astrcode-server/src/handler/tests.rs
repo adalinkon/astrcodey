@@ -422,7 +422,7 @@ async fn record_and_broadcast_updates_projection_before_broadcast() {
     let runtime = test_runtime();
     let start_event = runtime
         .session_manager
-        .create(".", "mock-model", 2048, None)
+        .create(".", "mock-model", None)
         .await
         .unwrap();
     let sid = start_event.session_id.clone();
@@ -541,7 +541,7 @@ async fn submit_prompt_configures_missing_session_system_prompt() {
     let runtime = test_runtime();
     let start_event = runtime
         .session_manager
-        .create(".", "mock-model", 2048, None)
+        .create(".", "mock-model", None)
         .await
         .unwrap();
     let sid = start_event.session_id.clone();
@@ -593,7 +593,7 @@ async fn stale_pending_tool_calls_are_repaired_on_explicit_repair() {
     let runtime = test_runtime();
     let start = runtime
         .session_manager
-        .create(".", "mock", 2048, None)
+        .create(".", "mock", None)
         .await
         .unwrap();
     let sid = start.session_id.clone();

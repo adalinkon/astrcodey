@@ -6,10 +6,12 @@
 use std::{
     io::{BufRead, BufReader, Write},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
 };
+
+use parking_lot::Mutex;
 
 use astrcode_protocol::{
     commands::ClientCommand,
@@ -184,7 +186,7 @@ impl StdioClientTransport {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let message = command_to_jsonrpc_request(cmd, id)?;
         let line = to_jsonl_line(&message)?;
-        let mut stdin = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stdin = self.stdin.lock();
         stdin.write_all(line.as_bytes())?;
         stdin.flush()?;
         Ok(())

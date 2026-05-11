@@ -14,3 +14,4 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 dirs = "6"
 libloading = "0.9.0"
+parking_lot = "0.12"

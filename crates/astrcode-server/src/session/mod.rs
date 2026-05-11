@@ -52,7 +52,6 @@ impl SessionManager {
         &self,
         working_dir: &str,
         model_id: &str,
-        _capacity: usize,
         parent_session_id: Option<&SessionId>,
     ) -> Result<Event, SessionError> {
         let sid = new_session_id();
@@ -237,7 +236,6 @@ pub(crate) async fn create_compact_continuation_session(
         .create(
             &input.working_dir,
             &input.model_id,
-            2048,
             Some(&input.parent_session_id),
         )
         .await

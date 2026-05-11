@@ -148,7 +148,7 @@ pub struct AgentServices {
     pub session_manager: Arc<SessionManager>,
     pub auto_compact_failures: Arc<AutoCompactFailureTracker>,
     pub background_result_tx: Option<mpsc::UnboundedSender<BackgroundTaskCompletion>>,
-    pub background_tasks: Arc<std::sync::Mutex<super::background::BackgroundTaskManager>>,
+    pub background_tasks: Arc<parking_lot::Mutex<super::background::BackgroundTaskManager>>,
 }
 
 /// 消费 LLM 事件流直到完成或积累工具调用。
@@ -876,17 +876,17 @@ mod tests;
 /// 生命周期与 session 一致（由 `AgentLoop::new` 创建，随 `AgentLoop` 销毁）。
 #[derive(Default)]
 struct InMemoryFileObservationStore {
-    observations: std::sync::Mutex<std::collections::HashMap<String, FileObservation>>,
+    observations: parking_lot::Mutex<std::collections::HashMap<String, FileObservation>>,
 }
 
 impl FileObservationStore for InMemoryFileObservationStore {
     fn remember(&self, observation: FileObservation) {
-        let mut map = self.observations.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self.observations.lock();
         map.insert(observation.path.clone(), observation);
     }
 
     fn load(&self, path: &str) -> Option<FileObservation> {
-        let map = self.observations.lock().unwrap_or_else(|e| e.into_inner());
+        let map = self.observations.lock();
         map.get(path).cloned()
     }
 }

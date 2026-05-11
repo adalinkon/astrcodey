@@ -349,7 +349,7 @@ impl CommandHandler {
         match self
             .runtime
             .session_manager
-            .create(&working_dir, &model_id, 2048, None)
+            .create(&working_dir, &model_id, None)
             .await
         {
             Ok(event) => {
@@ -762,7 +762,7 @@ impl CommandHandler {
         let event = self
             .runtime
             .session_manager
-            .create(&wd, &model_id, 2048, None)
+            .create(&wd, &model_id, None)
             .await
             .map_err(|e| HandlerError::Other(format!("create session: {e}")))?;
 

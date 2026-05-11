@@ -9,7 +9,7 @@ use std::{
     io,
     pin::Pin,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll},
@@ -17,6 +17,7 @@ use std::{
 
 use crossterm::event::{Event, EventStream as CrosstermEventStream};
 use futures::Stream;
+use parking_lot::Mutex;
 pub use stream::{EventStream, TuiEvent};
 
 /// 事件代理：共享的 crossterm EventStream。
@@ -41,7 +42,7 @@ impl EventBroker {
         &self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<io::Result<Event>>> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.state.lock();
         match &mut *state {
             BrokerState::Start => {
                 *state = BrokerState::Running(CrosstermEventStream::new());

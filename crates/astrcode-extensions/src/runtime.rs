@@ -5,11 +5,12 @@
 //! 实际的会话创建能力。
 
 use std::sync::{
-    Arc, Mutex, RwLock,
+    Arc,
     atomic::{AtomicU32, Ordering},
 };
 
 use astrcode_core::{event::EventPayload, tool::ToolDefinition};
+use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc;
 
 /// 通用的会话创建原语。由服务器实现，由 runner 持有，扩展不可见。
@@ -91,20 +92,17 @@ impl ExtensionRuntime {
 
     /// 绑定实际的会话创建器。在服务器启动后调用一次。
     pub fn bind(&self, spawner: Arc<dyn SessionSpawner>) {
-        *self.spawner.write().unwrap_or_else(|e| e.into_inner()) = Some(spawner);
+        *self.spawner.write() = Some(spawner);
     }
 
     /// 将工具注册加入队列。在 NativeExtension 的 factory() 调用期间使用。
     pub fn register_tool(&self, def: ToolDefinition) {
-        self.pending_tools
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(def);
+        self.pending_tools.lock().push(def);
     }
 
     /// 取出所有待处理的工具注册（消费式取出）。
     pub fn take_pending_tools(&self) -> Vec<ToolDefinition> {
-        std::mem::take(&mut *self.pending_tools.lock().unwrap_or_else(|e| e.into_inner()))
+        std::mem::take(&mut *self.pending_tools.lock())
     }
 
     /// 执行子会话的一轮对话。如果 `bind()` 尚未调用则返回错误。
@@ -116,7 +114,7 @@ impl ExtensionRuntime {
         request: SpawnRequest,
     ) -> Result<SpawnResult, String> {
         let spawner = {
-            let guard = self.spawner.read().unwrap_or_else(|e| e.into_inner());
+            let guard = self.spawner.read();
             match &*guard {
                 Some(s) => Arc::clone(s),
                 None => {
