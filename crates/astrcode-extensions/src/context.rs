@@ -4,12 +4,7 @@
 //! 以读为主的会话和服务访问能力。扩展不能直接修改会话状态，
 //! 必须通过钩子和事件发射机制进行交互。
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
-
-use parking_lot::Mutex;
+use std::{collections::HashMap, sync::Arc};
 
 use astrcode_core::{
     config::ModelSelection,
@@ -21,6 +16,7 @@ use astrcode_core::{
     llm::LlmMessage,
     tool::ToolDefinition,
 };
+use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
 /// [`ExtensionContext`] 的具体实现。
@@ -292,9 +288,7 @@ impl ExtensionContext for ServerExtensionContext {
 
     /// 注册一个工具定义到待处理列表
     fn register_tool(&self, def: ToolDefinition) {
-        self.pending_tools
-            .lock()
-                        .push(def);
+        self.pending_tools.lock().push(def);
     }
 
     /// 取出所有已注册的工具定义（消费式取出）

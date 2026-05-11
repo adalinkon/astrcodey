@@ -1051,7 +1051,10 @@ impl CommandHandler {
     }
 
     fn cleanup_background_tasks_for_session(&self, session_id: &SessionId) {
-        self.runtime.background_tasks.lock().cleanup_session(session_id);
+        self.runtime
+            .background_tasks
+            .lock()
+            .cleanup_session(session_id);
     }
 
     fn active_turn_matches(&self, session_id: &SessionId, turn_id: &TurnId) -> bool {

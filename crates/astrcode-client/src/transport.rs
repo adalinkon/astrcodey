@@ -11,8 +11,6 @@ use std::{
     },
 };
 
-use parking_lot::Mutex;
-
 use astrcode_protocol::{
     commands::ClientCommand,
     events::ClientNotification,
@@ -22,6 +20,7 @@ use astrcode_protocol::{
     },
     version::{ClientInfo, InitializeRequest, InitializeResponse},
 };
+use parking_lot::Mutex;
 
 /// 客户端与服务端之间的传输层接口。
 ///

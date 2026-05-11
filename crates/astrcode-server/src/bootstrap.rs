@@ -14,7 +14,6 @@ use astrcode_core::{
     prompt::{ExtensionPromptBlock, ExtensionSection, PromptProvider, SystemPromptInput},
     tool::ToolDefinition,
 };
-use parking_lot::{Mutex, RwLock};
 use astrcode_extensions::{
     context::ServerExtensionContext, loader::ExtensionLoader, runner::ExtensionRunner,
 };
@@ -22,6 +21,7 @@ use astrcode_prompt::{composer::PromptComposer, pipeline};
 use astrcode_storage::config_store::FileConfigStore;
 use astrcode_support::shell::resolve_shell;
 use astrcode_tools::registry::{ToolRegistry, builtin_tools};
+use parking_lot::{Mutex, RwLock};
 
 use crate::{
     agent::{AutoCompactFailureTracker, BackgroundTaskManager},
@@ -87,7 +87,9 @@ impl ServerRuntime {
         self.raw_config.write()
     }
 
-    pub fn read_raw_config(&self) -> parking_lot::RwLockReadGuard<'_, astrcode_core::config::Config> {
+    pub fn read_raw_config(
+        &self,
+    ) -> parking_lot::RwLockReadGuard<'_, astrcode_core::config::Config> {
         self.raw_config.read()
     }
 
@@ -188,9 +190,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     //
     // 根据 `provider_kind` 路由到对应的 provider 实现。
     // 后续所有主会话和子会话都会共享这个 provider。
-    let llm_provider = Arc::new(RwLock::new(build_provider_from_effective(
-        &effective,
-    )));
+    let llm_provider = Arc::new(RwLock::new(build_provider_from_effective(&effective)));
 
     // 3. 初始化上下文组装器。
     let context_settings = ContextWindowSettings {

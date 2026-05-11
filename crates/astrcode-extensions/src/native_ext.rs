@@ -7,12 +7,7 @@
 //! 本结构体实现了 `Extension` trait，将 `on_event()` 委托给工厂调用期间
 //! 注册的 FFI 回调。
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
-
-use parking_lot::Mutex;
+use std::{collections::HashMap, sync::Arc};
 
 use astrcode_core::{
     extension::{
@@ -21,6 +16,7 @@ use astrcode_core::{
     },
     tool::{ExecutionMode, ToolDefinition, ToolOrigin, ToolResult},
 };
+use parking_lot::Mutex;
 
 use crate::ffi::{
     self, EventCallback, ExtensionApi, FfiCtxOwned, OutputFreeCallback, ToolCallback,
@@ -276,11 +272,7 @@ impl Extension for NativeExtension {
         working_dir: &str,
         ctx: &astrcode_core::tool::ToolExecutionContext,
     ) -> Result<ToolResult, ExtensionError> {
-        let callback = self
-            .tool_handlers
-            .lock()
-            .get(tool_name)
-            .copied();
+        let callback = self.tool_handlers.lock().get(tool_name).copied();
         let Some(callback) = callback else {
             return Err(ExtensionError::NotFound(tool_name.into()));
         };
@@ -358,9 +350,7 @@ impl Extension for NativeExtension {
 
     /// 返回此扩展注册的所有斜杠命令。
     fn slash_commands(&self) -> Vec<astrcode_core::extension::SlashCommand> {
-        self.commands
-            .lock()
-            .clone()
+        self.commands.lock().clone()
     }
 }
 
@@ -424,16 +414,13 @@ unsafe extern "C" fn ffi_register_tool(
     // 解析参数 JSON，失败时使用空对象
     let params: serde_json::Value =
         serde_json::from_str(&params_json).unwrap_or(serde_json::json!({}));
-    user_data!(api)
-        .tools
-        .lock()
-        .push(ToolDefinition {
-            name,
-            description: desc,
-            parameters: params,
-            origin: ToolOrigin::Extension,
-            execution_mode: ExecutionMode::Sequential,
-        });
+    user_data!(api).tools.lock().push(ToolDefinition {
+        name,
+        description: desc,
+        parameters: params,
+        origin: ToolOrigin::Extension,
+        execution_mode: ExecutionMode::Sequential,
+    });
 }
 
 /// FFI `register_tool_handler` 回调实现：注册工具执行处理器。

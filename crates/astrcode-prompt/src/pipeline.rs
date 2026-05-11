@@ -37,8 +37,8 @@ const TASK_GUIDELINES: &str =
      system boundaries (user input, external APIs).\n\nAdd comments only where code is not \
      self-evident on first reading. Always explain the WHY when it is non-obvious: a hidden \
      constraint, a subtle invariant, or a workaround for a specific bug. Do not restate what \
-     clear naming already conveys.\n\nBe careful not to introduce security vulnerabilities (command \
-     injection, XSS, SQL injection). If you notice insecure code you wrote, fix it \
+     clear naming already conveys.\n\nBe careful not to introduce security vulnerabilities \
+     (command injection, XSS, SQL injection). If you notice insecure code you wrote, fix it \
      immediately.\n\nNever commit secrets, API keys, or credentials. If you encounter them in \
      code, flag it to the user immediately.\n\nVerify before reporting completion: run tests, \
      check the build. If you cannot verify, say so explicitly rather than claiming \

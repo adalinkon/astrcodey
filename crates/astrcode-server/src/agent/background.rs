@@ -5,12 +5,11 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use parking_lot::Mutex;
-
 use astrcode_core::{
     tool::{BackgroundTaskReader, ToolResult},
     types::{BackgroundTaskId, SessionId},
 };
+use parking_lot::Mutex;
 
 struct RunningTask {
     session_id: SessionId,
