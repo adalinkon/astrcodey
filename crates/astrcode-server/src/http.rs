@@ -890,8 +890,12 @@ fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDto> {
             },
         }],
 
-        EventPayload::AgentSessionCompleted { child_session_id, .. }
-        | EventPayload::AgentSessionFailed { child_session_id, .. } => {
+        EventPayload::AgentSessionCompleted {
+            child_session_id, ..
+        }
+        | EventPayload::AgentSessionFailed {
+            child_session_id, ..
+        } => {
             vec![ConversationDeltaDto::AgentSessionUpdated {
                 agent_session: HttpAgentSessionLinkDto {
                     child_session_id: child_session_id.to_string(),
