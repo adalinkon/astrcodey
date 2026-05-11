@@ -401,8 +401,6 @@ impl AgentLoop {
         let mut all_tool_results: Vec<astrcode_core::tool::ToolResult> = Vec::new();
         let return_auto_compaction = event_tx.is_none();
         let mut auto_compaction: Option<AgentCompactContinuation> = None;
-        // 跟踪已发射的可见文本，防止中间 tool-call 块的文本被 final 块重复渲染
-        let mut emitted_visible: Option<String> = None;
 
         loop {
             let (system_messages, prepared_context, compacted) = self
@@ -480,15 +478,26 @@ impl AgentLoop {
                     message_started,
                 } => {
                     let thinking_text = non_empty_thinking_text(thinking_text);
-                    let completed_text = text.inspect(|t| {
-                        final_text.push_str(t);
-                    });
-                    if completed_text.is_some() || thinking_text.is_some() {
-                        let visible_text = completed_text.as_deref().unwrap_or_default();
+                    let visible_text = text.as_deref().unwrap_or_default();
+                    if !visible_text.is_empty() {
+                        final_text.push_str(visible_text);
+                    }
+                    if text.is_some() || thinking_text.is_some() {
                         messages.push(assistant_message_with_thinking(
                             visible_text,
                             thinking_text.clone(),
                         ));
+                    }
+
+                    if message_started {
+                        send_event(
+                            &event_tx,
+                            EventPayload::AssistantMessageCompleted {
+                                message_id,
+                                text: visible_text.to_string(),
+                                thinking_text,
+                            },
+                        );
                     }
 
                     self.dispatch_after_provider_response(&ext_ctx).await?;
@@ -514,27 +523,6 @@ impl AgentLoop {
                         discovered_tools,
                     ) {
                         tools = provider_visible_tools(&all_tools, &active_mcp_tools);
-                    }
-
-                    if (completed_text.is_some() || thinking_text.is_some()) && message_started {
-                        let visible_text = completed_text.as_deref().unwrap_or_default();
-                        let should_emit = visible_text.is_empty()
-                            || emitted_visible.as_ref().is_none_or(|prev| {
-                                !prev.contains(visible_text) && visible_text.len() > prev.len()
-                            });
-                        if should_emit {
-                            if !visible_text.is_empty() {
-                                emitted_visible = Some(visible_text.to_string());
-                            }
-                            send_event(
-                                &event_tx,
-                                EventPayload::AssistantMessageCompleted {
-                                    message_id,
-                                    text: visible_text.to_string(),
-                                    thinking_text,
-                                },
-                            );
-                        }
                     }
                 },
             }
