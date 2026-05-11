@@ -302,6 +302,11 @@ impl SessionReadModel {
         );
         messages.extend(self.context_messages.clone());
         messages.extend(self.messages.clone());
+        messages = messages
+            .into_iter()
+            .map(LlmMessage::provider_visible)
+            .filter(LlmMessage::has_provider_visible_content)
+            .collect();
         normalize_tool_call_messages(&mut messages);
         messages
     }
@@ -471,6 +476,7 @@ mod tests {
                 arguments: serde_json::json!({"path": "a.rs"}),
             }],
             name: None,
+            thinking_text: None,
         });
         model.messages.push(LlmMessage {
             role: LlmRole::Assistant,
@@ -480,6 +486,7 @@ mod tests {
                 arguments: serde_json::json!({"path": "b.rs"}),
             }],
             name: None,
+            thinking_text: None,
         });
         model.messages.push(LlmMessage {
             role: LlmRole::Tool,
@@ -489,6 +496,7 @@ mod tests {
                 is_error: false,
             }],
             name: Some("read".into()),
+            thinking_text: None,
         });
         model.messages.push(LlmMessage {
             role: LlmRole::Tool,
@@ -498,6 +506,7 @@ mod tests {
                 is_error: false,
             }],
             name: Some("read".into()),
+            thinking_text: None,
         });
 
         let messages = model.provider_messages();
@@ -513,5 +522,30 @@ mod tests {
         assert_eq!(tool_calls.len(), 2);
         assert_eq!(messages[2].role, LlmRole::Tool);
         assert_eq!(messages[3].role, LlmRole::Tool);
+    }
+
+    #[test]
+    fn provider_messages_strip_display_only_thinking() {
+        let mut model = SessionReadModel::empty("session-test".into());
+        model.messages.push(LlmMessage::user("hello"));
+
+        let mut thinking_only = LlmMessage::assistant("");
+        thinking_only.thinking_text = Some("private reasoning".into());
+        model.messages.push(thinking_only);
+
+        let mut visible_answer = LlmMessage::assistant("answer");
+        visible_answer.thinking_text = Some("more reasoning".into());
+        model.messages.push(visible_answer);
+
+        let messages = model.provider_messages();
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, LlmRole::User);
+        assert_eq!(messages[1].role, LlmRole::Assistant);
+        assert_eq!(messages[1].thinking_text, None);
+        assert!(matches!(
+            &messages[1].content[0],
+            LlmContent::Text { text } if text == "answer"
+        ));
     }
 }

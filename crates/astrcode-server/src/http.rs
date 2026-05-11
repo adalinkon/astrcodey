@@ -764,6 +764,7 @@ fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDto> {
                 block: ConversationBlockDto::Assistant {
                     id: message_id.to_string(),
                     text: String::new(),
+                    thinking_text: None,
                     status: ConversationBlockStatusDto::Streaming,
                 },
             }]
@@ -854,9 +855,12 @@ fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDto> {
                 control: control_from_phase(Phase::Idle),
             }]
         },
-        EventPayload::ThinkingDelta { delta } => vec![ConversationDeltaDto::ThinkingDelta {
-            delta: delta.clone(),
-        }],
+        EventPayload::ThinkingDelta { message_id, delta } => {
+            vec![ConversationDeltaDto::ThinkingDelta {
+                block_id: message_id.to_string(),
+                delta: delta.clone(),
+            }]
+        },
 
         // ToolCallRequested — 将参数写入 block.arguments 作为折叠摘要行
         EventPayload::ToolCallRequested {
@@ -887,13 +891,16 @@ fn completed_block_from_payload(event: &Event) -> Option<ConversationBlockDto> {
             id: message_id.to_string(),
             text: text.clone(),
         }),
-        EventPayload::AssistantMessageCompleted { message_id, text } => {
-            Some(ConversationBlockDto::Assistant {
-                id: message_id.to_string(),
-                text: text.clone(),
-                status: ConversationBlockStatusDto::Complete,
-            })
-        },
+        EventPayload::AssistantMessageCompleted {
+            message_id,
+            text,
+            thinking_text,
+        } => Some(ConversationBlockDto::Assistant {
+            id: message_id.to_string(),
+            text: text.clone(),
+            thinking_text: thinking_text.clone(),
+            status: ConversationBlockStatusDto::Complete,
+        }),
         EventPayload::ToolCallCompleted {
             call_id,
             tool_name,
@@ -1018,10 +1025,11 @@ fn messages_to_blocks(
             }),
             LlmRole::Assistant => {
                 let text = visible_message_text(message);
-                if !text.trim().is_empty() {
+                if !text.trim().is_empty() || message.thinking_text.is_some() {
                     blocks.push(ConversationBlockDto::Assistant {
                         id,
                         text,
+                        thinking_text: message.thinking_text.clone(),
                         status: ConversationBlockStatusDto::Complete,
                     });
                 }
@@ -1371,6 +1379,7 @@ mod tests {
                 arguments: serde_json::json!({ "path": "Cargo.toml" }),
             }],
             name: None,
+            thinking_text: None,
         });
         session
             .messages
@@ -1410,6 +1419,7 @@ mod tests {
                 arguments: serde_json::json!({ "command": "npm run dev" }),
             }],
             name: None,
+            thinking_text: None,
         });
         session.messages.push(LlmMessage::tool(
             "shell",
@@ -1478,6 +1488,7 @@ mod tests {
             EventPayload::AssistantMessageCompleted {
                 message_id: "assistant-1".into(),
                 text: "complete answer".into(),
+                thinking_text: None,
             },
         );
 
@@ -1491,11 +1502,40 @@ mod tests {
 
         match delta {
             ConversationDeltaDto::FinalizeBlock {
-                block: ConversationBlockDto::Assistant { id, text, status },
+                block:
+                    ConversationBlockDto::Assistant {
+                        id,
+                        text,
+                        thinking_text: _,
+                        status,
+                    },
             } => {
                 assert_eq!(id, "assistant-1");
                 assert_eq!(text, "complete answer");
                 assert!(matches!(status, ConversationBlockStatusDto::Complete));
+            },
+            other => panic!("unexpected delta: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn thinking_delta_targets_assistant_block() {
+        let event = Event::new(
+            "session-1".into(),
+            None,
+            EventPayload::ThinkingDelta {
+                message_id: "assistant-1".into(),
+                delta: "reasoning".into(),
+            },
+        );
+
+        let deltas = event_to_deltas(&event);
+
+        assert_eq!(deltas.len(), 1);
+        match &deltas[0] {
+            ConversationDeltaDto::ThinkingDelta { block_id, delta } => {
+                assert_eq!(block_id, "assistant-1");
+                assert_eq!(delta, "reasoning");
             },
             other => panic!("unexpected delta: {other:?}"),
         }

@@ -1087,6 +1087,7 @@ async fn auto_compact_switches_active_session_to_continuation_child() {
                 EventPayload::AssistantMessageCompleted {
                     message_id: new_message_id(),
                     text: format!("old answer {index} {}", "y ".repeat(20)),
+                    thinking_text: None,
                 },
             ))
             .await

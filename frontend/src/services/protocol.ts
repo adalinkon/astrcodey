@@ -211,7 +211,11 @@ export function decodeConversationDelta(value: unknown): ConversationDelta {
         delta: requiredString(object, 'delta'),
       }
     case 'thinkingDelta':
-      return { kind, delta: requiredString(object, 'delta') }
+      return {
+        kind,
+        blockId: requiredString(object, 'blockId'),
+        delta: requiredString(object, 'delta'),
+      }
     case 'patchArguments':
       return {
         kind,

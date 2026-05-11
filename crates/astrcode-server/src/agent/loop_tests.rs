@@ -466,6 +466,11 @@ struct ToolCallsThenFinalLlm {
     captured_messages: Arc<Mutex<Vec<LlmMessage>>>,
 }
 
+struct ThinkingToolCallThenFinalLlm {
+    call_count: AtomicUsize,
+    captured_messages: Arc<Mutex<Vec<LlmMessage>>>,
+}
+
 #[async_trait::async_trait]
 impl LlmProvider for ToolCallsThenFinalLlm {
     async fn generate(
@@ -483,6 +488,47 @@ impl LlmProvider for ToolCallsThenFinalLlm {
                     arguments: serde_json::json!({}).to_string(),
                 });
             }
+            let _ = tx.send(LlmEvent::Done {
+                finish_reason: "tool_calls".into(),
+            });
+        } else {
+            *self.captured_messages.lock().unwrap() = messages;
+            let _ = tx.send(LlmEvent::ContentDelta {
+                delta: "done".into(),
+            });
+            let _ = tx.send(LlmEvent::Done {
+                finish_reason: "stop".into(),
+            });
+        }
+        Ok(rx)
+    }
+
+    fn model_limits(&self) -> ModelLimits {
+        ModelLimits {
+            max_input_tokens: 1024,
+            max_output_tokens: 1024,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for ThinkingToolCallThenFinalLlm {
+    async fn generate(
+        &self,
+        messages: Vec<LlmMessage>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<mpsc::UnboundedReceiver<LlmEvent>, LlmError> {
+        let call_count = self.call_count.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = mpsc::unbounded_channel();
+        if call_count == 0 {
+            let _ = tx.send(LlmEvent::ThinkingDelta {
+                delta: "checking before tool".into(),
+            });
+            let _ = tx.send(LlmEvent::ToolCallStart {
+                call_id: "call-1".into(),
+                name: "shell".into(),
+                arguments: serde_json::json!({"command": "echo ok"}).to_string(),
+            });
             let _ = tx.send(LlmEvent::Done {
                 finish_reason: "tool_calls".into(),
             });
@@ -813,6 +859,14 @@ fn tool_result_contents(messages: &[LlmMessage]) -> Vec<String> {
         .collect()
 }
 
+fn is_empty_text_assistant(message: &LlmMessage) -> bool {
+    message.role == LlmRole::Assistant
+        && message
+            .content
+            .iter()
+            .all(|content| matches!(content, LlmContent::Text { text } if text.trim().is_empty()))
+}
+
 fn message_text_contains(messages: &[LlmMessage], needle: &str) -> bool {
     messages.iter().any(|message| {
         message
@@ -985,6 +1039,74 @@ async fn tool_search_result_activates_mcp_tool_for_next_provider_request() {
     assert!(captured[0].iter().any(|name| name == TOOL_SEARCH_TOOL_NAME));
     assert!(!captured[0].iter().any(|name| name == mcp_tool_name));
     assert!(captured[1].iter().any(|name| name == mcp_tool_name));
+}
+
+#[tokio::test]
+async fn thinking_only_tool_call_turn_completes_scoped_assistant_block() {
+    let captured_messages = Arc::new(Mutex::new(Vec::new()));
+    let tool_registry = test_registry(vec![Arc::new(StaticResultTool {
+        definition: test_tool_definition("shell"),
+        result: success_tool_result("ok"),
+    })]);
+
+    let agent_loop = AgentLoop::new(
+        "session-1".into(),
+        ".".into(),
+        String::new(),
+        "mock".into(),
+        test_services(
+            Arc::new(ThinkingToolCallThenFinalLlm {
+                call_count: AtomicUsize::new(0),
+                captured_messages: Arc::clone(&captured_messages),
+            }),
+            tool_registry,
+            default_extension_runner(),
+        ),
+    );
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+
+    agent_loop
+        .process_prompt("run tool", vec![], Some(event_tx))
+        .await
+        .unwrap();
+
+    let mut thinking_message_id = None;
+    let mut completed_thinking_block = false;
+    while let Ok(signal) = event_rx.try_recv() {
+        match signal {
+            AgentSignal::Event(EventPayload::ThinkingDelta { message_id, delta }) => {
+                assert_eq!(delta, "checking before tool");
+                thinking_message_id = Some(message_id);
+            },
+            AgentSignal::Event(EventPayload::AssistantMessageCompleted {
+                message_id,
+                text,
+                thinking_text,
+            }) if thinking_text.as_deref() == Some("checking before tool") => {
+                assert_eq!(text, "");
+                assert_eq!(Some(&message_id), thinking_message_id.as_ref());
+                completed_thinking_block = true;
+            },
+            _ => {},
+        }
+    }
+
+    assert!(
+        completed_thinking_block,
+        "thinking-only tool call turn should complete a durable assistant block"
+    );
+
+    let captured = captured_messages.lock().unwrap();
+    assert!(
+        captured
+            .iter()
+            .all(|message| message.thinking_text.is_none()),
+        "provider-visible follow-up messages must not contain display-only thinking"
+    );
+    assert!(
+        !captured.iter().any(is_empty_text_assistant),
+        "thinking-only display block must not be sent back as an empty assistant message"
+    );
 }
 
 #[tokio::test]

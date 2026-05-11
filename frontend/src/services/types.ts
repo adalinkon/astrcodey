@@ -101,7 +101,13 @@ export interface ConversationControlState {
 
 export type ConversationBlock =
   | { kind: 'user'; id: string; text: string }
-  | { kind: 'assistant'; id: string; text: string; status: BlockStatus }
+  | {
+      kind: 'assistant'
+      id: string
+      text: string
+      thinkingText?: string
+      status: BlockStatus
+    }
   | {
       kind: 'toolCall'
       id: string
@@ -159,7 +165,7 @@ export type ConversationDelta =
       stream: ToolOutputStream
       delta: string
     }
-  | { kind: 'thinkingDelta'; delta: string }
+  | { kind: 'thinkingDelta'; blockId: string; delta: string }
   | { kind: 'patchArguments'; blockId: string; arguments: string }
   | { kind: 'toolCallBackgrounded'; callId: string; taskId: string }
 

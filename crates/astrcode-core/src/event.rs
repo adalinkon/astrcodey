@@ -156,12 +156,17 @@ pub enum EventPayload {
     AssistantMessageCompleted {
         /// 消息唯一标识。
         message_id: MessageId,
-        /// 完整的消息文本。
+        /// 完整的消息文本（不含 thinking）。
         text: String,
+        /// 推理模型的思维链内容。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thinking_text: Option<String>,
     },
 
     /// 思考过程的文本增量（用于推理模型的思维链）。
     ThinkingDelta {
+        /// 所属助手消息唯一标识。
+        message_id: MessageId,
         /// 本次增量文本。
         delta: String,
     },
@@ -448,6 +453,14 @@ mod tests {
             "CompactionStarted is live UI state only"
         );
         assert!(
+            !EventPayload::ThinkingDelta {
+                message_id: "m1".into(),
+                delta: "thinking".into(),
+            }
+            .is_durable(),
+            "ThinkingDelta is live UI state only"
+        );
+        assert!(
             !EventPayload::ToolCallStarted {
                 call_id: "c1".into(),
                 tool_name: "shell".into(),
@@ -562,6 +575,22 @@ mod tests {
         assert!(!start.is_durable(), "ToolCallStarted is live UI state only");
         assert!(request.is_durable());
         assert_ne!(start, request);
+    }
+
+    #[test]
+    fn thinking_delta_serializes_message_owner() {
+        let payload = EventPayload::ThinkingDelta {
+            message_id: "assistant-1".into(),
+            delta: "reasoning".into(),
+        };
+
+        let value = serde_json::to_value(&payload).unwrap();
+        let round_trip: EventPayload = serde_json::from_value(value.clone()).unwrap();
+
+        assert_eq!(value["type"], "thinking_delta");
+        assert_eq!(value["message_id"], "assistant-1");
+        assert_eq!(value["delta"], "reasoning");
+        assert_eq!(round_trip, payload);
     }
 
     #[test]

@@ -368,6 +368,7 @@ async fn stream_replays_events_after_snapshot_cursor() {
             EventPayload::AssistantMessageCompleted {
                 message_id: "missed-assistant".into(),
                 text: "completed response after snapshot".into(),
+                thinking_text: None,
             },
         ))
         .await
@@ -469,6 +470,7 @@ async fn prompt_route_compact_returns_handled_and_streams_continuation() {
                 EventPayload::AssistantMessageCompleted {
                     message_id: new_message_id(),
                     text: format!("answer {text}"),
+                    thinking_text: None,
                 },
             ))
             .await
@@ -580,6 +582,7 @@ async fn compact_route_returns_child_session_and_child_snapshot_hydrates() {
                 EventPayload::AssistantMessageCompleted {
                     message_id: new_message_id(),
                     text: format!("answer {text}"),
+                    thinking_text: None,
                 },
             ))
             .await

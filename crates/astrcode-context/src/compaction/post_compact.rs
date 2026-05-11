@@ -212,6 +212,7 @@ mod tests {
                 arguments: json!({ "path": path }),
             }],
             name: None,
+            thinking_text: None,
         }
     }
 

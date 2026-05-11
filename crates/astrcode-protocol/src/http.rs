@@ -206,6 +206,8 @@ pub enum ConversationBlockDto {
     Assistant {
         id: String,
         text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thinking_text: Option<String>,
         status: ConversationBlockStatusDto,
     },
     ToolCall {
@@ -298,6 +300,7 @@ pub enum ConversationDeltaDto {
         delta: String,
     },
     ThinkingDelta {
+        block_id: String,
         delta: String,
     },
     /// 工具调用被移入后台执行。
@@ -437,7 +440,13 @@ mod tests {
 
         match &envelopes[1].delta {
             ConversationDeltaDto::FinalizeBlock {
-                block: ConversationBlockDto::Assistant { id, text, status },
+                block:
+                    ConversationBlockDto::Assistant {
+                        id,
+                        text,
+                        thinking_text: _,
+                        status,
+                    },
             } => {
                 assert_eq!(id, "assistant-1");
                 assert_eq!(text, "complete answer");
@@ -462,5 +471,26 @@ mod tests {
         assert!(encoded.contains("\"textDelta\""));
         assert!(!encoded.contains("block_id"));
         assert!(!encoded.contains("text_delta"));
+    }
+
+    #[test]
+    fn thinking_delta_uses_block_id_wire_name() {
+        let delta = ConversationDeltaDto::ThinkingDelta {
+            block_id: "assistant-1".into(),
+            delta: "reasoning".into(),
+        };
+
+        let encoded = serde_json::to_string(&delta).unwrap();
+        assert!(encoded.contains("\"blockId\""));
+        assert!(!encoded.contains("block_id"));
+
+        let decoded: ConversationDeltaDto = serde_json::from_str(&encoded).unwrap();
+        match decoded {
+            ConversationDeltaDto::ThinkingDelta { block_id, delta } => {
+                assert_eq!(block_id, "assistant-1");
+                assert_eq!(delta, "reasoning");
+            },
+            other => panic!("unexpected delta: {other:?}"),
+        }
     }
 }

@@ -93,8 +93,14 @@ pub(crate) fn reduce(event: &Event, model: &mut SessionReadModel) {
         EventPayload::AssistantMessageStarted { .. } => {
             model.phase = Phase::Streaming;
         },
-        EventPayload::AssistantMessageCompleted { text, .. } => {
-            model.messages.push(LlmMessage::assistant(text));
+        EventPayload::AssistantMessageCompleted {
+            text,
+            thinking_text,
+            ..
+        } => {
+            let mut msg = LlmMessage::assistant(text);
+            msg.thinking_text = thinking_text.clone();
+            model.messages.push(msg);
             model.phase = Phase::Idle;
         },
         // ToolCallStarted is non-durable and only used for live UI state.
@@ -128,6 +134,7 @@ pub(crate) fn reduce(event: &Event, model: &mut SessionReadModel) {
                         role: LlmRole::Assistant,
                         content: vec![tool_call],
                         name: None,
+                        thinking_text: None,
                     });
                 }
             } else {
@@ -135,6 +142,7 @@ pub(crate) fn reduce(event: &Event, model: &mut SessionReadModel) {
                     role: LlmRole::Assistant,
                     content: vec![tool_call],
                     name: None,
+                    thinking_text: None,
                 });
             }
             model.phase = Phase::CallingTool;
@@ -170,6 +178,7 @@ pub(crate) fn reduce(event: &Event, model: &mut SessionReadModel) {
                     is_error: result.is_error,
                 }],
                 name: Some(tool_name.clone()),
+                thinking_text: None,
             });
             model.phase = if model.pending_tool_calls.is_empty() {
                 Phase::Thinking

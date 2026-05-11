@@ -588,10 +588,14 @@ impl TuiState {
             EventPayload::AssistantTextDelta { message_id, delta } => {
                 self.apply_assistant_text_delta(message_id.as_str(), delta);
             },
-            EventPayload::AssistantMessageCompleted { message_id, text } => {
+            EventPayload::AssistantMessageCompleted {
+                message_id,
+                text,
+                thinking_text: _,
+            } => {
                 self.apply_assistant_message_completed(message_id.as_str(), text);
             },
-            EventPayload::ThinkingDelta { delta } => self.apply_thinking_delta(delta),
+            EventPayload::ThinkingDelta { delta, .. } => self.apply_thinking_delta(delta),
             EventPayload::ToolCallStarted { call_id, tool_name } => {
                 self.apply_tool_call_started(call_id.as_str(), tool_name);
             },
@@ -1479,6 +1483,7 @@ mod tests {
             EventPayload::AssistantMessageCompleted {
                 message_id: "msg-1".into(),
                 text: "first line\nsecond".into(),
+                thinking_text: None,
             },
         );
 
@@ -1526,6 +1531,7 @@ mod tests {
             EventPayload::AssistantMessageCompleted {
                 message_id: "msg-1".into(),
                 text: "# Title\n- item".into(),
+                thinking_text: None,
             },
         );
 

@@ -57,12 +57,14 @@ use super::{
 enum StreamOutcome {
     Complete {
         text: String,
+        thinking_text: String,
         finish_reason: String,
         message_id: MessageId,
         message_started: bool,
     },
     ToolCalls {
         text: Option<String>,
+        thinking_text: String,
         tool_calls: Vec<PendingToolCall>,
         message_id: MessageId,
         message_started: bool,
@@ -165,15 +167,7 @@ async fn consume_llm_stream(
     while let Some(event) = rx.recv().await {
         match event {
             LlmEvent::ContentDelta { delta } => {
-                if !message_started {
-                    send_event(
-                        event_tx,
-                        EventPayload::AssistantMessageStarted {
-                            message_id: message_id.clone(),
-                        },
-                    );
-                    message_started = true;
-                }
+                ensure_assistant_message_started(event_tx, &message_id, &mut message_started);
                 send_event(
                     event_tx,
                     EventPayload::AssistantTextDelta {
@@ -184,9 +178,11 @@ async fn consume_llm_stream(
                 current_text.push_str(&delta);
             },
             LlmEvent::ThinkingDelta { delta } => {
+                ensure_assistant_message_started(event_tx, &message_id, &mut message_started);
                 send_event(
                     event_tx,
                     EventPayload::ThinkingDelta {
+                        message_id: message_id.clone(),
                         delta: delta.clone(),
                     },
                 );
@@ -244,26 +240,23 @@ async fn consume_llm_stream(
                 );
             },
             LlmEvent::Done { finish_reason } => {
-                let final_text = if thinking_text.is_empty() {
-                    current_text
-                } else {
-                    format!("<think-block>\n{thinking_text}\n</think-block>\n\n{current_text}")
-                };
                 if tool_calls.is_empty() {
                     return Ok(StreamOutcome::Complete {
-                        text: final_text,
+                        text: current_text,
+                        thinking_text: std::mem::take(&mut thinking_text),
                         finish_reason,
                         message_id,
                         message_started,
                     });
                 }
-                let text = if final_text.is_empty() {
+                let text = if current_text.is_empty() {
                     None
                 } else {
-                    Some(final_text)
+                    Some(current_text)
                 };
                 return Ok(StreamOutcome::ToolCalls {
                     text,
+                    thinking_text: std::mem::take(&mut thinking_text),
                     tool_calls,
                     message_id,
                     message_started,
@@ -287,40 +280,43 @@ async fn consume_llm_stream(
     Err(AgentError::Internal("LLM stream ended unexpectedly".into()))
 }
 
-/// 从文本中剥离 `<think-block>...</think-block>`，返回纯可见文本。
-/// 兼容kimi
-///
-/// 使用深度计数正确处理嵌套标签。
-fn strip_think_block(text: &str) -> String {
-    let open_tag = "<think-block>";
-    let close_tag = "</think-block>";
-    let mut result = String::with_capacity(text.len());
-    let mut depth = 0usize;
-    let mut pos = 0;
-    let bytes = text.as_bytes();
-
-    while pos < text.len() {
-        // Check for opening tag
-        if bytes[pos..].starts_with(open_tag.as_bytes()) {
-            depth += 1;
-            pos += open_tag.len();
-            continue;
-        }
-        // Check for closing tag
-        if bytes[pos..].starts_with(close_tag.as_bytes()) {
-            depth = depth.saturating_sub(1);
-            pos += close_tag.len();
-            continue;
-        }
-        // Only emit characters outside any think-block
-        let ch = text[pos..].chars().next().unwrap();
-        if depth == 0 {
-            result.push(ch);
-        }
-        pos += ch.len_utf8();
+fn ensure_assistant_message_started(
+    event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
+    message_id: &MessageId,
+    message_started: &mut bool,
+) {
+    if *message_started {
+        return;
     }
+    send_event(
+        event_tx,
+        EventPayload::AssistantMessageStarted {
+            message_id: message_id.clone(),
+        },
+    );
+    *message_started = true;
+}
 
-    result.trim().to_string()
+fn non_empty_thinking_text(thinking_text: String) -> Option<String> {
+    if thinking_text.is_empty() {
+        None
+    } else {
+        Some(thinking_text)
+    }
+}
+
+fn assistant_message_with_thinking(text: &str, thinking_text: Option<String>) -> LlmMessage {
+    let mut message = LlmMessage::assistant(text);
+    message.thinking_text = thinking_text;
+    message
+}
+
+fn provider_visible_messages(messages: Vec<LlmMessage>) -> Vec<LlmMessage> {
+    messages
+        .into_iter()
+        .map(LlmMessage::provider_visible)
+        .filter(LlmMessage::has_provider_visible_content)
+        .collect()
 }
 
 impl AgentLoop {
@@ -442,17 +438,26 @@ impl AgentLoop {
             match outcome {
                 StreamOutcome::Complete {
                     text,
+                    thinking_text,
                     finish_reason,
                     message_id,
                     message_started,
                 } => {
-                    if !text.is_empty() {
-                        messages.push(LlmMessage::assistant(&text));
+                    let thinking_text = non_empty_thinking_text(thinking_text);
+                    if !text.is_empty() || thinking_text.is_some() {
+                        messages.push(assistant_message_with_thinking(
+                            &text,
+                            thinking_text.clone(),
+                        ));
                         final_text.push_str(&text);
                         if message_started {
                             send_event(
                                 &event_tx,
-                                EventPayload::AssistantMessageCompleted { message_id, text },
+                                EventPayload::AssistantMessageCompleted {
+                                    message_id,
+                                    text,
+                                    thinking_text,
+                                },
                             );
                         }
                     }
@@ -469,14 +474,22 @@ impl AgentLoop {
                 },
                 StreamOutcome::ToolCalls {
                     text,
+                    thinking_text,
                     tool_calls,
                     message_id,
                     message_started,
                 } => {
+                    let thinking_text = non_empty_thinking_text(thinking_text);
                     let completed_text = text.inspect(|t| {
-                        messages.push(LlmMessage::assistant(t));
                         final_text.push_str(t);
                     });
+                    if completed_text.is_some() || thinking_text.is_some() {
+                        let visible_text = completed_text.as_deref().unwrap_or_default();
+                        messages.push(assistant_message_with_thinking(
+                            visible_text,
+                            thinking_text.clone(),
+                        ));
+                    }
 
                     self.dispatch_after_provider_response(&ext_ctx).await?;
 
@@ -503,19 +516,24 @@ impl AgentLoop {
                         tools = provider_visible_tools(&all_tools, &active_mcp_tools);
                     }
 
-                    if let Some(text) = completed_text {
-                        if message_started {
-                            let visible = strip_think_block(&text);
-                            let should_emit = emitted_visible.as_ref().is_none_or(|prev| {
-                                !prev.contains(visible.as_str()) && visible.len() > prev.len()
+                    if (completed_text.is_some() || thinking_text.is_some()) && message_started {
+                        let visible_text = completed_text.as_deref().unwrap_or_default();
+                        let should_emit = visible_text.is_empty()
+                            || emitted_visible.as_ref().is_none_or(|prev| {
+                                !prev.contains(visible_text) && visible_text.len() > prev.len()
                             });
-                            if should_emit {
-                                send_event(
-                                    &event_tx,
-                                    EventPayload::AssistantMessageCompleted { message_id, text },
-                                );
-                                emitted_visible = Some(visible);
+                        if should_emit {
+                            if !visible_text.is_empty() {
+                                emitted_visible = Some(visible_text.to_string());
                             }
+                            send_event(
+                                &event_tx,
+                                EventPayload::AssistantMessageCompleted {
+                                    message_id,
+                                    text: visible_text.to_string(),
+                                    thinking_text,
+                                },
+                            );
                         }
                     }
                 },
@@ -694,7 +712,8 @@ impl AgentLoop {
         context_messages: Vec<LlmMessage>,
         tools: &[ToolDefinition],
     ) -> Result<Vec<LlmMessage>, AgentError> {
-        let mut send_messages = [system_messages, context_messages].concat();
+        let mut send_messages =
+            provider_visible_messages([system_messages, context_messages].concat());
         let mut ext_ctx = self.shared.ext_ctx_with_tools(tools);
         ext_ctx.set_provider_messages(send_messages.clone());
         match self
@@ -709,7 +728,7 @@ impl AgentLoop {
                 Err(AgentError::Internal(reason))
             },
             ProviderHookOutcome::ModifiedMessages { messages } => {
-                send_messages = messages;
+                send_messages = provider_visible_messages(messages);
                 Ok(send_messages)
             },
             ProviderHookOutcome::Allow => Ok(send_messages),

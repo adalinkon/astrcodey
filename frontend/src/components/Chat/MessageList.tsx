@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef } from 'react'
 import type { ConversationBlock } from '../../services/types'
 import { cn } from '../../lib/utils'
 import { emptyStateSurface } from '../../lib/styles'
-import { useAppStore } from '../../store/conversation'
 import AssistantMessage from './AssistantMessage'
 import UserMessage from './UserMessage'
 import ToolCallBlock from './ToolCallBlock'
@@ -19,7 +18,6 @@ function isAssistantLike(block: ConversationBlock): boolean {
 }
 
 export default function MessageList({ blocks, sessionId }: MessageListProps) {
-  const thinkingText = useAppStore((s) => s.thinkingText)
   const listRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const shouldStickRef = useRef(true)
@@ -54,8 +52,6 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
     const prevBlock = index > 0 ? blocks[index - 1] : null
     const isContinuation =
       prevBlock !== null && isAssistantLike(block) && isAssistantLike(prevBlock)
-    const isStreamingAssistant =
-      block.kind === 'assistant' && block.status === 'streaming'
 
     return (
       <div
@@ -68,7 +64,7 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
         {block.kind === 'assistant' ? (
           <AssistantMessage
             block={block}
-            reasoningText={isStreamingAssistant ? thinkingText : null}
+            reasoningText={block.thinkingText ?? null}
           />
         ) : block.kind === 'user' ? (
           <UserMessage block={block} />

@@ -28,7 +28,6 @@ interface ConversationState {
 
   streamAbortController: AbortController | null
   modelRefreshKey: number
-  thinkingText: string | null
   agentSessions: AgentSessionLink[]
 
   initServer: () => Promise<void>
@@ -55,6 +54,7 @@ function mergeBlock(
     return {
       ...incoming,
       text: incoming.text ?? current.text,
+      thinkingText: incoming.thinkingText ?? current.thinkingText,
     }
   }
 
@@ -116,6 +116,38 @@ function patchAssistantBlock(
   return next
 }
 
+function patchAssistantThinking(
+  blocks: ConversationBlock[],
+  blockId: string,
+  delta: string
+): ConversationBlock[] {
+  if (!blockId || !delta) return blocks
+
+  const idx = blocks.findIndex((block) => block.id === blockId)
+  if (idx === -1) {
+    return [
+      ...blocks,
+      {
+        kind: 'assistant',
+        id: blockId,
+        text: '',
+        thinkingText: delta,
+        status: 'streaming',
+      },
+    ]
+  }
+
+  const block = blocks[idx]
+  if (block.kind !== 'assistant') return blocks
+
+  const next = [...blocks]
+  next[idx] = {
+    ...block,
+    thinkingText: (block.thinkingText ?? '') + delta,
+  }
+  return next
+}
+
 export const useAppStore = create<ConversationState>((set, get) => ({
   serverPort: null,
   connectionStatus: 'disconnected',
@@ -130,7 +162,6 @@ export const useAppStore = create<ConversationState>((set, get) => ({
   phase: 'idle',
   streamAbortController: null,
   modelRefreshKey: 0,
-  thinkingText: null,
   agentSessions: [],
 
   initServer: async () => {
@@ -199,7 +230,6 @@ export const useAppStore = create<ConversationState>((set, get) => ({
         cursor: null,
         phase: 'idle',
         workingDir: null,
-        thinkingText: null,
         agentSessions: [],
       })
     }
@@ -226,7 +256,6 @@ export const useAppStore = create<ConversationState>((set, get) => ({
         cursor: null,
         phase: 'idle',
         workingDir: null,
-        thinkingText: null,
         agentSessions: [],
       })
     }
@@ -248,7 +277,6 @@ export const useAppStore = create<ConversationState>((set, get) => ({
       control: null,
       cursor: null,
       phase: 'idle',
-      thinkingText: null,
       agentSessions: [],
     })
 
@@ -297,7 +325,6 @@ export const useAppStore = create<ConversationState>((set, get) => ({
       case 'appendBlock':
         set((current) => ({
           blocks: upsertBlock(current.blocks, delta.block),
-          ...(delta.block.kind === 'assistant' ? { thinkingText: null } : {}),
         }))
         // 新用户消息到达时刷新侧边栏标题
         if (delta.block.kind === 'user') {
@@ -318,7 +345,6 @@ export const useAppStore = create<ConversationState>((set, get) => ({
       case 'finalizeBlock':
         set((current) => ({
           blocks: upsertBlock(current.blocks, delta.block),
-          ...(delta.block.kind === 'assistant' ? { thinkingText: null } : {}),
         }))
         break
 
@@ -331,7 +357,11 @@ export const useAppStore = create<ConversationState>((set, get) => ({
 
       case 'thinkingDelta':
         set((current) => ({
-          thinkingText: (current.thinkingText ?? '') + delta.delta,
+          blocks: patchAssistantThinking(
+            current.blocks,
+            delta.blockId,
+            delta.delta
+          ),
         }))
         break
 
