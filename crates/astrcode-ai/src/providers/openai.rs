@@ -228,7 +228,12 @@ impl ChatAccumulator for StandardAccumulator {
                             delta: content.to_string(),
                         });
                     }
-                    if let Some(reasoning) = delta["reasoning_content"].as_str() {
+                    if let Some(reasoning) = delta
+                        .get("reasoning_content")
+                        .or_else(|| delta.get("reasoning"))
+                        .or_else(|| delta.get("thinking"))
+                        .and_then(|value| value.as_str())
+                    {
                         let _ = tx.send(LlmEvent::ThinkingDelta {
                             delta: reasoning.to_string(),
                         });
@@ -271,6 +276,13 @@ impl ChatAccumulator for StandardAccumulator {
             "response.output_text.delta" => {
                 if let Some(delta) = event["delta"].as_str() {
                     let _ = tx.send(LlmEvent::ContentDelta {
+                        delta: delta.to_string(),
+                    });
+                }
+            },
+            "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+                if let Some(delta) = event["delta"].as_str() {
+                    let _ = tx.send(LlmEvent::ThinkingDelta {
                         delta: delta.to_string(),
                     });
                 }
@@ -482,9 +494,7 @@ impl<A: ChatAccumulator> OpenAiProvider<A> {
             body["tools"] = tools_to_json(tools);
             body["tool_choice"] = serde_json::json!("auto");
         }
-        if let Some(t) = self.config.temperature {
-            body["temperature"] = serde_json::json!(t);
-        }
+        self.apply_temperature(&mut body);
         self.apply_prompt_cache_fields(&mut body, messages, tools);
 
         body
@@ -524,12 +534,19 @@ impl<A: ChatAccumulator> OpenAiProvider<A> {
             body["parallel_tool_calls"] = serde_json::json!(true);
             body["tools"] = responses_tools_json(tools);
         }
-        if let Some(t) = self.config.temperature {
-            body["temperature"] = serde_json::json!(t);
-        }
+        self.apply_temperature(&mut body);
         self.apply_prompt_cache_fields(&mut body, messages, tools);
 
         body
+    }
+
+    fn apply_temperature(&self, body: &mut serde_json::Value) {
+        if self.config.reasoning {
+            return;
+        }
+        if let Some(t) = self.config.temperature {
+            body["temperature"] = serde_json::json!(t);
+        }
     }
 
     fn apply_prompt_cache_fields(
@@ -739,76 +756,122 @@ fn process_sse_line(
     api_mode: OpenAiApiMode,
     tx: &mpsc::UnboundedSender<LlmEvent>,
 ) {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let Some(after_prefix) = trimmed.strip_prefix("data:") else {
+        return;
+    };
+    let data = after_prefix.trim_start();
+    if data == "[DONE]" {
+        emit_done_once(accumulator, tx);
+        return;
+    }
+
+    process_sse_data(data, accumulator, api_mode, tx);
+}
+
+fn emit_done_once(accumulator: &mut impl ChatAccumulator, tx: &mpsc::UnboundedSender<LlmEvent>) {
+    if accumulator.done_sent() {
+        return;
+    }
+    accumulator.mark_done();
+    let _ = tx.send(LlmEvent::Done {
+        finish_reason: "stop".into(),
+    });
+}
+
+fn process_sse_data(
+    data: &str,
+    accumulator: &mut impl ChatAccumulator,
+    api_mode: OpenAiApiMode,
+    tx: &mpsc::UnboundedSender<LlmEvent>,
+) {
+    if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
+        ingest_sse_event(&event, accumulator, api_mode, tx);
+        return;
+    }
+
+    let cleaned: String = data
+        .chars()
+        .filter(|c| !c.is_control() || c.is_whitespace())
+        .collect();
+    if cleaned != data {
+        if let Ok(event) = serde_json::from_str::<serde_json::Value>(&cleaned) {
+            ingest_sse_event(&event, accumulator, api_mode, tx);
+            return;
+        }
+    }
+
+    let api_mode_name = match api_mode {
+        OpenAiApiMode::ChatCompletions => "Chat Completions",
+        OpenAiApiMode::Responses => "Responses",
+    };
+    tracing::warn!(
+        "Failed to parse {} SSE data: {} bytes, preview: {:?}",
+        api_mode_name,
+        data.len(),
+        &data[..data.len().min(80)]
+    );
+}
+
+fn ingest_sse_event(
+    event: &serde_json::Value,
+    accumulator: &mut impl ChatAccumulator,
+    api_mode: OpenAiApiMode,
+    tx: &mpsc::UnboundedSender<LlmEvent>,
+) {
+    if emit_stream_error(event, accumulator, tx) {
+        return;
+    }
     match api_mode {
-        OpenAiApiMode::ChatCompletions => {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                return;
-            }
-            let Some(after_prefix) = trimmed.strip_prefix("data:") else {
-                return;
-            };
-            let data = after_prefix.trim_start();
-            if data == "[DONE]" {
-                if !accumulator.done_sent() {
-                    accumulator.mark_done();
-                    let _ = tx.send(LlmEvent::Done {
-                        finish_reason: "stop".into(),
-                    });
-                }
-                return;
-            }
-            if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
-                accumulator.ingest_chat_completion(&event, tx);
-            } else {
-                let cleaned: String = data
-                    .chars()
-                    .filter(|c| !c.is_control() || c.is_whitespace())
-                    .collect();
-                if cleaned != data {
-                    if let Ok(event) = serde_json::from_str::<serde_json::Value>(&cleaned) {
-                        accumulator.ingest_chat_completion(&event, tx);
-                        return;
-                    }
-                }
-                tracing::warn!(
-                    "Failed to parse SSE data as JSON: {} bytes, preview: {:?}",
-                    data.len(),
-                    &data[..data.len().min(80)]
-                );
-            }
-        },
-        OpenAiApiMode::Responses => {
-            if line.is_empty() {
-                return;
-            }
-            if let Some(after_prefix) = line.strip_prefix("data:") {
-                let data = after_prefix.trim_start();
-                if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
-                    accumulator.ingest_responses(&event, tx);
-                } else {
-                    let cleaned: String = data
-                        .chars()
-                        .filter(|c| !c.is_control() || c.is_whitespace())
-                        .collect();
-                    if cleaned != data {
-                        if let Ok(event) = serde_json::from_str::<serde_json::Value>(&cleaned) {
-                            accumulator.ingest_responses(&event, tx);
-                            return;
-                        }
-                    }
-                    tracing::warn!(
-                        "Failed to parse Responses SSE data: {} bytes, preview: {:?}",
-                        data.len(),
-                        &data[..data.len().min(80)]
-                    );
-                }
-            }
-        },
+        OpenAiApiMode::ChatCompletions => accumulator.ingest_chat_completion(event, tx),
+        OpenAiApiMode::Responses => accumulator.ingest_responses(event, tx),
     }
 }
 
 // ─── 辅助函数 ──────────────────────────────────────────────────────────
+
+fn emit_stream_error(
+    event: &serde_json::Value,
+    accumulator: &mut impl ChatAccumulator,
+    tx: &mpsc::UnboundedSender<LlmEvent>,
+) -> bool {
+    if !is_stream_error_event(event) {
+        return false;
+    }
+
+    accumulator.mark_done();
+    let _ = tx.send(LlmEvent::Error {
+        message: stream_error_message(event).unwrap_or_else(|| event.to_string()),
+    });
+    true
+}
+
+fn is_stream_error_event(event: &serde_json::Value) -> bool {
+    event.get("error").is_some_and(|value| !value.is_null())
+        || event
+            .pointer("/response/error")
+            .is_some_and(|value| !value.is_null())
+        || event.get("type").and_then(|value| value.as_str()) == Some("error")
+        || event.get("type").and_then(|value| value.as_str()) == Some("response.failed")
+}
+
+fn stream_error_message(event: &serde_json::Value) -> Option<String> {
+    event
+        .pointer("/error/message")
+        .or_else(|| event.pointer("/response/error/message"))
+        .or_else(|| event.get("message"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            event
+                .get("error")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+}
 
 fn chat_tool_call_id(index: u64, partial: &ToolCallPartial) -> String {
     partial
@@ -952,6 +1015,26 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_request_omits_temperature() {
+        let config = LlmClientConfig {
+            temperature: Some(0.2),
+            reasoning: true,
+            ..LlmClientConfig::default()
+        };
+        let p = StandardProvider::new(
+            config,
+            OpenAiApiMode::ChatCompletions,
+            "reasoning-model".into(),
+            Some(1024),
+            Some(8192),
+        );
+
+        let body = p.build_request_body(&[LlmMessage::user("hi")], &[]);
+
+        assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
     fn chat_tool_call_buffers_arguments_until_name_arrives() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut acc = StandardAccumulator::default();
@@ -1017,6 +1100,34 @@ mod tests {
     }
 
     #[test]
+    fn chat_stream_accepts_reasoning_aliases_from_compat_providers() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut acc = StandardAccumulator::default();
+
+        acc.ingest_chat_completion(
+            &serde_json::json!({
+                "choices": [{"delta": {"reasoning": "plan"}}]
+            }),
+            &tx,
+        );
+        acc.ingest_chat_completion(
+            &serde_json::json!({
+                "choices": [{"delta": {"thinking": " more"}}]
+            }),
+            &tx,
+        );
+
+        let reasoning = drain_events(&mut rx)
+            .into_iter()
+            .filter_map(|event| match event {
+                LlmEvent::ThinkingDelta { delta } => Some(delta),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(reasoning, "plan more");
+    }
+
+    #[test]
     fn chat_tool_call_keeps_call_id_stable_if_provider_sends_id_late() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut acc = StandardAccumulator::default();
@@ -1075,6 +1186,46 @@ mod tests {
             e, LlmEvent::ToolCallDelta { call_id, delta }
             if call_id == "function_call" && delta == "{\"pattern\":\"*.rs\"}"
         )));
+    }
+
+    #[test]
+    fn streaming_error_payload_emits_error_without_done() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut acc = StandardAccumulator::default();
+
+        process_sse_line(
+            r#"data: {"error":{"message":"compat provider rejected request"}}"#,
+            &mut acc,
+            OpenAiApiMode::ChatCompletions,
+            &tx,
+        );
+
+        let events = drain_events(&mut rx);
+        assert!(matches!(
+            events.as_slice(),
+            [LlmEvent::Error { message }] if message == "compat provider rejected request"
+        ));
+        assert!(acc.done_sent());
+    }
+
+    #[test]
+    fn streaming_null_error_payload_is_not_treated_as_error() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut acc = StandardAccumulator::default();
+
+        process_sse_line(
+            r#"data: {"error":null,"choices":[{"delta":{"content":"ok"}}]}"#,
+            &mut acc,
+            OpenAiApiMode::ChatCompletions,
+            &tx,
+        );
+
+        let events = drain_events(&mut rx);
+        assert!(matches!(
+            events.as_slice(),
+            [LlmEvent::ContentDelta { delta }] if delta == "ok"
+        ));
+        assert!(!acc.done_sent());
     }
 
     #[test]
@@ -1165,6 +1316,30 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, LlmEvent::ContentDelta { delta } if delta == "hi"))
         );
+    }
+
+    #[test]
+    fn responses_stream_accepts_reasoning_delta_and_done_marker() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut acc = StandardAccumulator::default();
+
+        process_sse_line(
+            r#"data: {"type":"response.reasoning_summary_text.delta","delta":"thinking"}"#,
+            &mut acc,
+            OpenAiApiMode::Responses,
+            &tx,
+        );
+        process_sse_line("data: [DONE]", &mut acc, OpenAiApiMode::Responses, &tx);
+
+        let events = drain_events(&mut rx);
+        assert!(matches!(
+            events.as_slice(),
+            [
+                LlmEvent::ThinkingDelta { delta },
+                LlmEvent::Done { finish_reason }
+            ] if delta == "thinking" && finish_reason == "stop"
+        ));
+        assert!(acc.done_sent());
     }
 
     #[test]

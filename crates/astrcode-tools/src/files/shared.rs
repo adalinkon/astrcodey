@@ -82,7 +82,8 @@ pub(super) fn collect_candidate_files(
         builder.max_depth(Some(1));
     }
     let skip_vcs = options.skip_vcs_dirs;
-    let skip_build = options.skip_build_output && !path_contains_component(root, BUILD_OUTPUT_DIR_NAMES);
+    let skip_build =
+        options.skip_build_output && !path_contains_component(root, BUILD_OUTPUT_DIR_NAMES);
     builder.filter_entry(move |entry| !should_skip_entry(entry, skip_vcs, skip_build));
 
     let mut files = Vec::new();

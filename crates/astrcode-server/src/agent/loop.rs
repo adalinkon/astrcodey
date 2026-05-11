@@ -484,20 +484,13 @@ impl AgentLoop {
                     if !visible_text.is_empty() {
                         final_text.push_str(visible_text);
                     }
-                    if text.is_some() || reasoning_content.is_some() {
-                        messages.push(assistant_message_with_thinking(
-                            visible_text,
-                            reasoning_content.clone(),
-                        ));
-                    }
-
                     if message_started {
                         send_event(
                             &event_tx,
                             EventPayload::AssistantMessageCompleted {
                                 message_id,
                                 text: visible_text.to_string(),
-                                reasoning_content,
+                                reasoning_content: reasoning_content.clone(),
                             },
                         );
                     }
@@ -508,7 +501,11 @@ impl AgentLoop {
                         .tools
                         .prepare_tool_calls(&tool_calls, &tools, &event_tx)
                         .await?;
-                    messages.push(assistant_tool_call_message(&prepared_tool_calls));
+                    messages.push(assistant_tool_call_message(
+                        &prepared_tool_calls,
+                        visible_text,
+                        reasoning_content,
+                    ));
                     let discovered_tools = self
                         .tools
                         .execute_and_commit(ExecuteToolCalls {

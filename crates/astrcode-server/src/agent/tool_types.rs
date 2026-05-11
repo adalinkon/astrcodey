@@ -154,19 +154,28 @@ pub(crate) fn send_tool_requested(
 }
 
 /// 将本轮 assistant 产生的工具调用整理成 LLM 历史消息。
-pub(crate) fn assistant_tool_call_message(prepared: &[PreparedToolCall]) -> LlmMessage {
+pub(crate) fn assistant_tool_call_message(
+    prepared: &[PreparedToolCall],
+    text: &str,
+    reasoning_content: Option<String>,
+) -> LlmMessage {
+    let mut content = Vec::with_capacity(prepared.len() + usize::from(!text.is_empty()));
+    if !text.is_empty() {
+        content.push(LlmContent::Text {
+            text: text.to_string(),
+        });
+    }
+    content.extend(prepared.iter().map(|call| LlmContent::ToolCall {
+        call_id: call.call_id.clone(),
+        name: call.name.clone(),
+        arguments: call.tool_input.clone(),
+    }));
+
     LlmMessage {
         role: LlmRole::Assistant,
-        content: prepared
-            .iter()
-            .map(|call| LlmContent::ToolCall {
-                call_id: call.call_id.clone(),
-                name: call.name.clone(),
-                arguments: call.tool_input.clone(),
-            })
-            .collect(),
+        content,
         name: None,
-        reasoning_content: None,
+        reasoning_content,
     }
 }
 

@@ -569,7 +569,7 @@ impl FileSystemSessionRepository {
 mod tests {
     use astrcode_core::{
         event::EventPayload,
-        llm::{LlmMessage, LlmRole},
+        llm::{LlmContent, LlmMessage, LlmRole},
         storage::CompactSnapshotInput,
         types::{new_message_id, project_key_from_path},
     };
@@ -1071,6 +1071,70 @@ mod tests {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             projects_base,
         }
+    }
+
+    #[tokio::test]
+    async fn reasoning_tool_call_events_rebuild_single_assistant_message() {
+        use astrcode_core::types::ToolCallId;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo = test_repo(temp_dir.path().join("projects"));
+        let session_id = SessionId::from("session-reasoning-tool");
+        repo.create_session(&session_id, ".", "mock", None)
+            .await
+            .unwrap();
+        repo.append_event(Event::new(
+            session_id.clone(),
+            None,
+            EventPayload::UserMessage {
+                message_id: new_message_id(),
+                text: "read file".into(),
+            },
+        ))
+        .await
+        .unwrap();
+        repo.append_event(Event::new(
+            session_id.clone(),
+            None,
+            EventPayload::AssistantMessageCompleted {
+                message_id: new_message_id(),
+                text: "checking".into(),
+                reasoning_content: Some("private reasoning".into()),
+            },
+        ))
+        .await
+        .unwrap();
+        repo.append_event(Event::new(
+            session_id.clone(),
+            None,
+            EventPayload::ToolCallRequested {
+                call_id: ToolCallId::from("call_1"),
+                tool_name: "read".into(),
+                arguments: serde_json::json!({"path": "a.rs"}),
+            },
+        ))
+        .await
+        .unwrap();
+
+        let model = repo.session_read_model(&session_id).await.unwrap();
+
+        assert_eq!(model.messages.len(), 2);
+        let assistant = &model.messages[1];
+        assert_eq!(assistant.role, LlmRole::Assistant);
+        assert_eq!(
+            assistant.reasoning_content.as_deref(),
+            Some("private reasoning")
+        );
+        assert!(matches!(
+            &assistant.content[0],
+            LlmContent::Text { text } if text == "checking"
+        ));
+        assert!(
+            assistant
+                .content
+                .iter()
+                .any(|content| matches!(content, LlmContent::ToolCall { .. }))
+        );
     }
 
     #[tokio::test]

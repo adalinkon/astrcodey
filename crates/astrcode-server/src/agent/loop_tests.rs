@@ -1095,11 +1095,20 @@ async fn thinking_only_tool_call_turn_completes_scoped_assistant_block() {
     );
 
     let captured = captured_messages.lock().unwrap();
-    assert!(
-        captured
-            .iter()
-            .all(|message| message.reasoning_content.is_none()),
-        "provider-visible follow-up messages must not contain display-only thinking"
+    let assistant_tool_message = captured
+        .iter()
+        .find(|message| {
+            message.role == LlmRole::Assistant
+                && message
+                    .content
+                    .iter()
+                    .any(|content| matches!(content, LlmContent::ToolCall { .. }))
+        })
+        .expect("tool call turn should be replayed as an assistant message");
+    assert_eq!(
+        assistant_tool_message.reasoning_content.as_deref(),
+        Some("checking before tool"),
+        "DeepSeek thinking tool turns must pass reasoning_content back with tool_calls"
     );
     assert!(
         !captured.iter().any(is_empty_text_assistant),

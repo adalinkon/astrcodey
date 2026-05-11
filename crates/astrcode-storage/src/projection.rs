@@ -114,17 +114,11 @@ pub(crate) fn reduce(event: &Event, model: &mut SessionReadModel) {
                 name: tool_name.clone(),
                 arguments: arguments.clone(),
             };
-            // Merge into the previous assistant message if it already contains
-            // tool calls from the same batch.  OpenAI requires all parallel tool
-            // calls to live in a single assistant message; splitting them across
-            // consecutive assistant messages triggers a 400 protocol error.
+            // Merge into the previous assistant message for this model sub-turn.
+            // DeepSeek thinking mode requires reasoning_content and tool_calls to
+            // be replayed on the same assistant message after tool use.
             if let Some(last) = model.messages.last_mut() {
-                if last.role == LlmRole::Assistant
-                    && last
-                        .content
-                        .iter()
-                        .any(|c| matches!(c, LlmContent::ToolCall { .. }))
-                {
+                if last.role == LlmRole::Assistant {
                     last.content.push(tool_call);
                 } else {
                     model.messages.push(LlmMessage {

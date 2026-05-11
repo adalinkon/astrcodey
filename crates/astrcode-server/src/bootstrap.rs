@@ -318,6 +318,7 @@ fn build_provider_from_effective(effective: &EffectiveConfig) -> Arc<dyn LlmProv
         max_retries: effective.llm.max_retries,
         retry_base_delay_ms: effective.llm.retry_base_delay_ms,
         temperature: effective.llm.temperature,
+        reasoning: effective.llm.reasoning,
         supports_prompt_cache_key: effective.llm.supports_prompt_cache_key,
         prompt_cache_retention: effective.llm.prompt_cache_retention,
         extra_headers: Default::default(),

@@ -396,44 +396,31 @@ pub enum StorageError {
     Unsupported(String),
 }
 
-/// 将连续的 assistant 消息中包含 `ToolCall` 的合并为一条消息。
+/// 将连续的 assistant/tool-call 消息合并为一条协议完整的消息。
 ///
 /// OpenAI Chat Completions API 要求同一个 turn 中的所有 tool_calls
-/// 必须在一条 assistant 消息中；连续多条带 `tool_calls` 的 assistant 消息
-/// 会导致 400 协议错误。此函数作为防御性归一化步骤，确保即使上游 projection
-/// 或旧 snapshot 产生了分离的消息，发给 provider 的也是正确格式。
+/// 必须在一条 assistant 消息中。DeepSeek thinking mode 还要求执行过工具
+/// 的 assistant turn 在后续请求中同时带回 `reasoning_content` 和 tool_calls。
+/// 此函数作为防御性归一化步骤，兼容旧 snapshot 中拆分的 assistant 消息。
 fn normalize_tool_call_messages(messages: &mut Vec<LlmMessage>) {
     use crate::llm::{LlmContent, LlmRole};
     let mut i = 0;
-    while i < messages.len() {
-        if messages[i].role != LlmRole::Assistant
-            || !messages[i]
+    while i + 1 < messages.len() {
+        let next_has_tool_calls = messages[i + 1].role == LlmRole::Assistant
+            && messages[i + 1]
                 .content
                 .iter()
-                .any(|c| matches!(c, LlmContent::ToolCall { .. }))
-        {
+                .any(|c| matches!(c, LlmContent::ToolCall { .. }));
+        if messages[i].role != LlmRole::Assistant || !next_has_tool_calls {
             i += 1;
             continue;
         }
-        let mut j = i + 1;
-        while j < messages.len()
-            && messages[j].role == LlmRole::Assistant
-            && messages[j]
-                .content
-                .iter()
-                .any(|c| matches!(c, LlmContent::ToolCall { .. }))
-        {
-            j += 1;
+
+        let next = messages.remove(i + 1);
+        messages[i].content.extend(next.content);
+        if messages[i].reasoning_content.is_none() {
+            messages[i].reasoning_content = next.reasoning_content;
         }
-        if j > i + 1 {
-            let mut merged = messages[i].content.clone();
-            for msg in messages.iter().take(j).skip(i + 1) {
-                merged.extend(msg.content.iter().cloned());
-            }
-            messages[i].content = merged;
-            messages.drain((i + 1)..j);
-        }
-        i += 1;
     }
 }
 
@@ -525,6 +512,44 @@ mod tests {
     }
 
     #[test]
+    fn provider_messages_merges_reasoning_assistant_with_tool_calls() {
+        let mut model = SessionReadModel::empty("session-test".into());
+        model.messages.push(LlmMessage::user("look at this"));
+        let mut thinking = LlmMessage::assistant("checking");
+        thinking.reasoning_content = Some("private reasoning".into());
+        model.messages.push(thinking);
+        model.messages.push(LlmMessage {
+            role: LlmRole::Assistant,
+            content: vec![LlmContent::ToolCall {
+                call_id: "call_1".into(),
+                name: "read".into(),
+                arguments: serde_json::json!({"path": "a.rs"}),
+            }],
+            name: None,
+            reasoning_content: None,
+        });
+
+        let messages = model.provider_messages();
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].role, LlmRole::Assistant);
+        assert_eq!(
+            messages[1].reasoning_content.as_deref(),
+            Some("private reasoning")
+        );
+        assert!(matches!(
+            &messages[1].content[0],
+            LlmContent::Text { text } if text == "checking"
+        ));
+        assert!(
+            messages[1]
+                .content
+                .iter()
+                .any(|content| matches!(content, LlmContent::ToolCall { .. }))
+        );
+    }
+
+    #[test]
     fn provider_messages_preserve_reasoning_content() {
         let mut model = SessionReadModel::empty("session-test".into());
         model.messages.push(LlmMessage::user("hello"));
@@ -543,7 +568,10 @@ mod tests {
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[0].role, LlmRole::User);
         assert_eq!(messages[1].role, LlmRole::Assistant);
-        assert_eq!(messages[1].reasoning_content, Some("private reasoning".into()));
+        assert_eq!(
+            messages[1].reasoning_content,
+            Some("private reasoning".into())
+        );
         assert_eq!(messages[2].role, LlmRole::Assistant);
         assert_eq!(messages[2].reasoning_content, Some("more reasoning".into()));
         assert!(matches!(

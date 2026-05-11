@@ -665,7 +665,10 @@ async fn find_skips_build_output_dirs_by_default() {
     .expect("seed target");
     std::fs::create_dir_all(temp.path().join("node_modules").join("pkg")).expect("create nm");
     std::fs::write(
-        temp.path().join("node_modules").join("pkg").join("index.js"),
+        temp.path()
+            .join("node_modules")
+            .join("pkg")
+            .join("index.js"),
         "",
     )
     .expect("seed nm");
@@ -674,10 +677,7 @@ async fn find_skips_build_output_dirs_by_default() {
     };
 
     let result = tool
-        .execute(
-            serde_json::json!({ "pattern": "**/*" }),
-            &empty_ctx(),
-        )
+        .execute(serde_json::json!({ "pattern": "**/*" }), &empty_ctx())
         .await
         .expect("find should execute");
 

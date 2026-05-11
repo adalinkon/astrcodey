@@ -88,12 +88,10 @@ pub(crate) fn chat_message_to_json(message: &LlmMessage) -> serde_json::Value {
                 .collect();
             let mut obj = serde_json::json!({
                 "role": "assistant",
-                "content": "",
+                "content": chat_content_to_json(&message.content),
                 "tool_calls": tool_calls
             });
-            if let Some(ref rc) = message.reasoning_content {
-                obj["reasoning_content"] = serde_json::json!(rc);
-            }
+            set_reasoning_content(&mut obj, &message.reasoning_content);
             obj
         },
         _ => {
@@ -108,9 +106,7 @@ pub(crate) fn chat_message_to_json(message: &LlmMessage) -> serde_json::Value {
                 "content": chat_content_to_json(&message.content),
             });
             if matches!(message.role, LlmRole::Assistant) {
-                if let Some(ref rc) = message.reasoning_content {
-                    obj["reasoning_content"] = serde_json::json!(rc);
-                }
+                set_reasoning_content(&mut obj, &message.reasoning_content);
             }
             if matches!(message.role, LlmRole::Tool) {
                 if let Some(ref name) = message.name {
@@ -119,6 +115,12 @@ pub(crate) fn chat_message_to_json(message: &LlmMessage) -> serde_json::Value {
             }
             obj
         },
+    }
+}
+
+fn set_reasoning_content(obj: &mut serde_json::Value, reasoning_content: &Option<String>) {
+    if let Some(rc) = reasoning_content {
+        obj["reasoning_content"] = serde_json::json!(rc);
     }
 }
 
@@ -318,5 +320,38 @@ pub(crate) trait ContentMapper {
             parts.push(Self::empty());
         }
         Self::wrap_assistant(parts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use astrcode_core::llm::{LlmContent, LlmMessage, LlmRole};
+
+    use super::chat_message_to_json;
+
+    #[test]
+    fn chat_tool_call_message_preserves_content_and_reasoning_content() {
+        let message = LlmMessage {
+            role: LlmRole::Assistant,
+            content: vec![
+                LlmContent::Text {
+                    text: "checking".into(),
+                },
+                LlmContent::ToolCall {
+                    call_id: "call_1".into(),
+                    name: "read".into(),
+                    arguments: serde_json::json!({"path": "a.rs"}),
+                },
+            ],
+            name: None,
+            reasoning_content: Some("private reasoning".into()),
+        };
+
+        let value = chat_message_to_json(&message);
+
+        assert_eq!(value["role"], "assistant");
+        assert_eq!(value["content"], "checking");
+        assert_eq!(value["reasoning_content"], "private reasoning");
+        assert_eq!(value["tool_calls"][0]["id"], "call_1");
     }
 }

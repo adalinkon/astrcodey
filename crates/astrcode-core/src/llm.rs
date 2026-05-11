@@ -155,7 +155,9 @@ impl LlmMessage {
         }) {
             return true;
         }
-        self.reasoning_content.as_ref().map_or(false, |r| !r.trim().is_empty())
+        self.reasoning_content
+            .as_ref()
+            .is_some_and(|r| !r.trim().is_empty())
     }
 }
 
@@ -272,6 +274,8 @@ pub struct LlmClientConfig {
     pub retry_base_delay_ms: u64,
     /// 采样温度（0.0-2.0），None 使用 API 默认值。
     pub temperature: Option<f32>,
+    /// 当前模型是否为 reasoning/thinking 模式。
+    pub reasoning: bool,
     /// 当前 provider 是否支持 OpenAI `prompt_cache_key`。
     pub supports_prompt_cache_key: bool,
     /// 可选的 OpenAI prompt cache retention。
@@ -290,6 +294,7 @@ impl Default for LlmClientConfig {
             max_retries: 2,
             retry_base_delay_ms: 250,
             temperature: None,
+            reasoning: false,
             supports_prompt_cache_key: false,
             prompt_cache_retention: None,
             extra_headers: std::collections::HashMap::new(),
