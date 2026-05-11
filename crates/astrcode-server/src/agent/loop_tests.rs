@@ -775,6 +775,13 @@ fn test_context_assembler() -> Arc<astrcode_context::manager::LlmContextAssemble
     ))
 }
 
+fn default_extension_runner() -> Arc<ExtensionRunner> {
+    Arc::new(ExtensionRunner::new(
+        Duration::from_secs(1),
+        Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
+    ))
+}
+
 fn test_services<L>(
     llm: Arc<L>,
     tool_registry: Arc<ToolRegistry>,
@@ -897,10 +904,7 @@ async fn parallel_tools_in_same_batch_overlap() {
                 captured_messages: Arc::new(Mutex::new(Vec::new())),
             }),
             tool_registry,
-            Arc::new(ExtensionRunner::new(
-                Duration::from_secs(1),
-                Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
-            )),
+            default_extension_runner(),
         ),
     );
 
@@ -967,10 +971,7 @@ async fn tool_search_result_activates_mcp_tool_for_next_provider_request() {
                 captured_tool_names: Arc::clone(&captured_tool_names),
             }),
             tool_registry,
-            Arc::new(ExtensionRunner::new(
-                Duration::from_secs(1),
-                Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
-            )),
+            default_extension_runner(),
         ),
     );
 
@@ -1022,10 +1023,7 @@ async fn sequential_tool_splits_parallel_batches() {
                 captured_messages: Arc::new(Mutex::new(Vec::new())),
             }),
             tool_registry,
-            Arc::new(ExtensionRunner::new(
-                Duration::from_secs(1),
-                Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
-            )),
+            default_extension_runner(),
         ),
     );
 
@@ -1069,10 +1067,7 @@ async fn completed_parallel_batch_is_committed_before_later_sequential_tool_fini
                 captured_messages: Arc::new(Mutex::new(Vec::new())),
             }),
             tool_registry,
-            Arc::new(ExtensionRunner::new(
-                Duration::from_secs(1),
-                Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
-            )),
+            default_extension_runner(),
         ),
     );
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
@@ -1144,10 +1139,7 @@ async fn parallel_results_are_committed_in_model_order() {
                 captured_messages: Arc::clone(&captured_messages),
             }),
             tool_registry,
-            Arc::new(ExtensionRunner::new(
-                Duration::from_secs(1),
-                Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
-            )),
+            default_extension_runner(),
         ),
     );
 
@@ -1190,10 +1182,7 @@ async fn large_tool_result_is_persisted_before_next_llm_call() {
                 captured_messages: Arc::clone(&captured_messages),
             }),
             tool_registry,
-            extension_runner: Arc::new(ExtensionRunner::new(
-                Duration::from_secs(1),
-                Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
-            )),
+            extension_runner: default_extension_runner(),
             context_assembler: test_context_assembler(),
             session_manager: Arc::clone(&session_manager),
             auto_compact_failures: Arc::new(AutoCompactFailureTracker::default()),
@@ -1257,10 +1246,7 @@ async fn read_file_tool_result_is_persisted_when_exceeds_limit() {
                 captured_messages: Arc::clone(&captured_messages),
             }),
             tool_registry,
-            extension_runner: Arc::new(ExtensionRunner::new(
-                Duration::from_secs(1),
-                Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
-            )),
+            extension_runner: default_extension_runner(),
             context_assembler: test_context_assembler(),
             session_manager,
             auto_compact_failures: Arc::new(AutoCompactFailureTracker::default()),
@@ -1339,10 +1325,7 @@ async fn aggregate_tool_result_budget_persists_largest_inline_result() {
                 captured_messages: Arc::clone(&captured_messages),
             }),
             tool_registry,
-            extension_runner: Arc::new(ExtensionRunner::new(
-                Duration::from_secs(1),
-                Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
-            )),
+            extension_runner: default_extension_runner(),
             context_assembler: Arc::new(astrcode_context::manager::LlmContextAssembler::new(
                 astrcode_context::settings::ContextWindowSettings {
                     auto_compact_enabled: false,
@@ -1398,10 +1381,7 @@ async fn parallel_failure_does_not_drop_sibling_result() {
                 captured_messages: Arc::clone(&captured_messages),
             }),
             tool_registry,
-            Arc::new(ExtensionRunner::new(
-                Duration::from_secs(1),
-                Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
-            )),
+            default_extension_runner(),
         ),
     );
 
@@ -1491,10 +1471,7 @@ async fn session_system_prompt_is_sent_to_llm() {
                 messages: Arc::clone(&captured_messages),
             }),
             Arc::new(ToolRegistry::new()),
-            Arc::new(ExtensionRunner::new(
-                Duration::from_secs(1),
-                Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
-            )),
+            default_extension_runner(),
         ),
     );
 
@@ -1682,10 +1659,7 @@ async fn auto_compact_circuit_skips_forked_provider_after_repeated_failures() {
         AgentServices {
             llm: llm.clone(),
             tool_registry: Arc::new(ToolRegistry::new()),
-            extension_runner: Arc::new(ExtensionRunner::new(
-                Duration::from_secs(1),
-                Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
-            )),
+            extension_runner: default_extension_runner(),
             context_assembler,
             session_manager: Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new()))),
             auto_compact_failures,
@@ -1732,10 +1706,7 @@ async fn compact_tool_call_is_not_executed() {
             test_registry(vec![Arc::new(PanicIfExecutedTool {
                 executed: Arc::clone(&executed),
             })]),
-            Arc::new(ExtensionRunner::new(
-                Duration::from_secs(1),
-                Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
-            )),
+            default_extension_runner(),
         ),
     );
     let mut history = Vec::new();
@@ -1775,10 +1746,7 @@ async fn prompt_too_long_returns_recoverable_error_without_same_session_compact(
         test_services(
             llm.clone(),
             Arc::new(ToolRegistry::new()),
-            Arc::new(ExtensionRunner::new(
-                Duration::from_secs(1),
-                Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
-            )),
+            default_extension_runner(),
         ),
     );
     let mut history = Vec::new();

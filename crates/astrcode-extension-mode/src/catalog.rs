@@ -54,16 +54,7 @@ pub const EXIT_REVIEW_CHECKLIST: &[&str] = &[
 ];
 
 /// Tools blocked in plan mode.
-const PLAN_RESTRICTED_TOOLS: &[&str] = &[
-    "write",
-    "edit",
-    "patch",
-    "shell",
-    "mcp",
-    "todoWrite",
-    "agent",
-    "skill",
-];
+const PLAN_RESTRICTED_TOOLS: &[&str] = &[];
 
 /// Declarative definition of an agent running mode.
 #[derive(Debug, Clone)]
@@ -145,12 +136,12 @@ pub fn builtin_mode_specs() -> Vec<ModeSpec> {
         ModeSpec {
             id: ModeId::plan(),
             name: "Plan".into(),
-            description: "Planning mode with read-only tools and no delegation.".into(),
+            description: "Planning mode with full tool access for producing a structured plan.".into(),
             restricted_tools: PLAN_RESTRICTED_TOOLS
                 .iter()
                 .map(|s| (*s).to_string())
                 .collect(),
-            allow_delegation: false,
+            allow_delegation: true,
             allowed_transitions: transitions,
             requires_plan_artifact: true,
             exit_review_passes: 1,
@@ -175,20 +166,16 @@ mod tests {
     }
 
     #[test]
-    fn plan_mode_restricts_write_tools() {
+    fn plan_mode_has_no_restricted_tools() {
         let catalog = builtin_catalog();
         let plan = catalog.get(&ModeId::plan()).unwrap();
-        assert!(plan.restricted_tools.contains("write"));
-        assert!(plan.restricted_tools.contains("edit"));
-        assert!(plan.restricted_tools.contains("shell"));
-        assert!(!plan.restricted_tools.contains("read"));
-        assert!(!plan.restricted_tools.contains("grep"));
+        assert!(plan.restricted_tools.is_empty());
     }
 
     #[test]
-    fn plan_mode_disallows_delegation() {
+    fn plan_mode_allows_delegation() {
         let catalog = builtin_catalog();
-        assert!(!catalog.get(&ModeId::plan()).unwrap().allow_delegation);
+        assert!(catalog.get(&ModeId::plan()).unwrap().allow_delegation);
     }
 
     #[test]

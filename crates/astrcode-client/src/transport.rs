@@ -57,28 +57,7 @@ pub trait ClientTransport: Send + Sync {
     ) -> Result<tokio::sync::broadcast::Receiver<ClientNotification>, TransportError>;
 }
 
-/// 传输层错误类型。
-#[derive(Debug, thiserror::Error)]
-pub enum TransportError {
-    /// I/O 错误（读写失败等）。
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    /// JSON 序列化/反序列化错误。
-    #[error("Serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
-    /// 连接建立失败。
-    #[error("Connection error: {0}")]
-    Connection(String),
-    /// 事件流已断开。
-    #[error("Stream disconnected")]
-    StreamDisconnected,
-    /// 服务端返回的业务错误。
-    #[error("Server error: {0}")]
-    Server(String),
-    /// 服务端返回了不符合预期的响应。
-    #[error("Unexpected response")]
-    UnexpectedResponse,
-}
+pub use astrcode_protocol::transport::TransportError;
 
 /// 基于 stdio 的传输层实现，通过子进程与 astrcode 服务端通信。
 ///

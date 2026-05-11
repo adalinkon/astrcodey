@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use crate::{
     common::{build_client, stream_with_event_type},
     retry::RetryPolicy,
+    serialization::ContentMapper,
 };
 
 pub struct AnthropicProvider {
@@ -74,10 +75,10 @@ impl AnthropicProvider {
                     }
                 },
                 LlmRole::User => {
-                    api_messages.push(convert_user_message(msg));
+                    api_messages.push(AnthropicMapper::map_user(msg));
                 },
                 LlmRole::Assistant => {
-                    api_messages.push(convert_assistant_message(msg));
+                    api_messages.push(AnthropicMapper::map_assistant(msg));
                 },
                 LlmRole::Tool => {
                     let block = convert_tool_result_block(msg);
@@ -280,71 +281,54 @@ fn process_anthropic_event(
 
 // ─── Message conversion ──────────────────────────────────────────────────
 
-fn convert_user_message(msg: &LlmMessage) -> serde_json::Value {
-    let mut blocks: Vec<serde_json::Value> = Vec::new();
-    for content in &msg.content {
-        match content {
-            LlmContent::Text { text } => {
-                blocks.push(serde_json::json!({"type": "text", "text": text}));
-            },
-            LlmContent::Image { base64, media_type } => {
-                blocks.push(serde_json::json!({
-                    "type": "image",
-                    "source": {"type": "base64", "data": base64, "media_type": media_type}
-                }));
-            },
-            LlmContent::ToolResult {
-                tool_call_id,
-                content,
-                is_error,
-            } => {
-                blocks.push(serde_json::json!({
-                    "type": "tool_result",
-                    "tool_use_id": tool_call_id,
-                    "content": content,
-                    "is_error": is_error,
-                }));
-            },
-            _ => {},
-        }
-    }
-    if blocks.is_empty() {
-        blocks.push(serde_json::json!({"type": "text", "text": ""}));
-    }
-    serde_json::json!({"role": "user", "content": blocks})
-}
+struct AnthropicMapper;
 
-fn convert_assistant_message(msg: &LlmMessage) -> serde_json::Value {
-    let mut blocks: Vec<serde_json::Value> = Vec::new();
-    for content in &msg.content {
-        match content {
-            LlmContent::Text { text } => {
-                blocks.push(serde_json::json!({"type": "text", "text": text}));
-            },
-            LlmContent::ToolCall {
-                call_id,
-                name,
-                arguments,
-            } => {
-                let args_str = match arguments {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                blocks.push(serde_json::json!({
-                    "type": "tool_use",
-                    "id": call_id,
-                    "name": name,
-                    "input": serde_json::from_str::<serde_json::Value>(&args_str)
-                        .unwrap_or(serde_json::json!({}))
-                }));
-            },
-            _ => {},
-        }
+impl ContentMapper for AnthropicMapper {
+    fn text(text: &str) -> serde_json::Value {
+        serde_json::json!({"type": "text", "text": text})
     }
-    if blocks.is_empty() {
-        blocks.push(serde_json::json!({"type": "text", "text": ""}));
+
+    fn image(base64: &str, media_type: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "image",
+            "source": {"type": "base64", "data": base64, "media_type": media_type}
+        })
     }
-    serde_json::json!({"role": "assistant", "content": blocks})
+
+    fn tool_call(call_id: &str, name: &str, arguments: &serde_json::Value) -> serde_json::Value {
+        let args_str = match arguments {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        serde_json::json!({
+            "type": "tool_use",
+            "id": call_id,
+            "name": name,
+            "input": serde_json::from_str::<serde_json::Value>(&args_str)
+                .unwrap_or(serde_json::json!({}))
+        })
+    }
+
+    fn tool_result(id: &str, content: &str, is_error: bool) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "type": "tool_result",
+            "tool_use_id": id,
+            "content": content,
+            "is_error": is_error,
+        }))
+    }
+
+    fn empty() -> serde_json::Value {
+        serde_json::json!({"type": "text", "text": ""})
+    }
+
+    fn wrap_user(parts: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({"role": "user", "content": parts})
+    }
+
+    fn wrap_assistant(parts: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({"role": "assistant", "content": parts})
+    }
 }
 
 fn convert_tool_result_block(msg: &LlmMessage) -> serde_json::Value {
@@ -395,7 +379,7 @@ mod tests {
     #[test]
     fn user_message_converts_text() {
         let msg = LlmMessage::user("hello");
-        let json = convert_user_message(&msg);
+        let json = AnthropicMapper::map_user(&msg);
         assert_eq!(json["role"], "user");
         assert_eq!(json["content"][0]["type"], "text");
         assert_eq!(json["content"][0]["text"], "hello");
@@ -412,7 +396,7 @@ mod tests {
             }],
             name: None,
         };
-        let json = convert_assistant_message(&msg);
+        let json = AnthropicMapper::map_assistant(&msg);
         let block = &json["content"][0];
         assert_eq!(block["type"], "tool_use");
         assert_eq!(block["id"], "call_1");
@@ -430,7 +414,7 @@ mod tests {
         ];
         for msg in &msgs {
             match msg.role {
-                LlmRole::Assistant => api_messages.push(convert_assistant_message(msg)),
+                LlmRole::Assistant => api_messages.push(AnthropicMapper::map_assistant(msg)),
                 LlmRole::Tool => {
                     let block = convert_tool_result_block(msg);
                     if let Some(last) = api_messages.last_mut() {

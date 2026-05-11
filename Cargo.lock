@@ -216,6 +216,7 @@ name = "astrcode-extension-mcp"
 version = "0.1.0"
 dependencies = [
  "astrcode-core",
+ "astrcode-protocol",
  "astrcode-support",
  "async-trait",
  "serde",
@@ -307,6 +308,7 @@ dependencies = [
  "astrcode-core",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

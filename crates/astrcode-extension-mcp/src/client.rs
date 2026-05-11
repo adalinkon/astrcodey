@@ -114,7 +114,7 @@ pub(crate) enum McpClientError {
     },
     #[error("MCP server returned JSON-RPC error {code}: {message}; stderr tail: {stderr}")]
     Rpc {
-        code: i64,
+        code: i32,
         message: String,
         stderr: String,
     },

@@ -2,7 +2,7 @@
 //!
 //! Provides a mode system that controls agent behavior at runtime:
 //! - **Code mode** (default): full tool access, allows delegation. No prompt injection needed.
-//! - **Plan mode**: read-only tools, no delegation, produces a structured plan artifact.
+//! - **Plan mode**: full tool access, produces a structured plan artifact.
 //!
 //! Mode instructions are injected via `BeforeProviderRequest` as user messages on transition,
 //! keeping the system prompt stable so KV cache is preserved across mode switches.

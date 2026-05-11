@@ -1,3 +1,4 @@
+use astrcode_protocol::framing::JsonRpcError;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -10,12 +11,6 @@ pub(crate) struct JsonRpcResponse {
     pub(crate) result: Option<Value>,
     #[serde(default)]
     pub(crate) error: Option<JsonRpcError>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct JsonRpcError {
-    pub(crate) code: i64,
-    pub(crate) message: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -2,7 +2,7 @@
 //!
 //! 涵盖传输层错误、服务端错误、认证错误、序列化错误等客户端可能遇到的异常情况。
 
-use crate::transport::TransportError;
+use astrcode_protocol::transport::TransportError;
 
 /// 客户端操作中可能产生的错误。
 #[derive(Debug, thiserror::Error)]

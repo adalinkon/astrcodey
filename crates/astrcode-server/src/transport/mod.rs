@@ -6,6 +6,7 @@
 mod stdio;
 
 use astrcode_protocol::{commands::ClientCommand, events::ClientNotification};
+pub use astrcode_protocol::transport::TransportError;
 pub use stdio::{StdioTransport, write_error_response, write_initialize_response};
 
 /// Transport trait for server communication.
@@ -23,16 +24,4 @@ pub trait ServerTransport: Send + Sync {
     async fn initialize(
         &mut self,
     ) -> Result<astrcode_protocol::version::InitializeRequest, TransportError>;
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum TransportError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("Serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
-    #[error("Connection closed")]
-    Disconnected,
-    #[error("Unsupported protocol version: {0}")]
-    UnsupportedVersion(u32),
 }

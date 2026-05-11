@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use crate::{
     common::{build_client, stream_with_retry},
     retry::RetryPolicy,
+    serialization::ContentMapper,
 };
 
 pub struct GeminiProvider {
@@ -78,11 +79,11 @@ impl GeminiProvider {
                 },
                 LlmRole::Assistant => {
                     flush_tool_results(&mut pending_tool_results, &mut contents);
-                    contents.push(convert_assistant_to_gemini(msg));
+                    contents.push(GeminiMapper::map_assistant(msg));
                 },
                 LlmRole::User => {
                     flush_tool_results(&mut pending_tool_results, &mut contents);
-                    contents.push(convert_user_to_gemini(msg));
+                    contents.push(GeminiMapper::map_user(msg));
                 },
                 LlmRole::Tool => {
                     pending_tool_results.push(convert_tool_result_to_gemini(msg));
@@ -219,54 +220,44 @@ fn process_gemini_chunk(event: &serde_json::Value, tx: &mpsc::UnboundedSender<Ll
 
 // ─── Message conversion ──────────────────────────────────────────────────
 
-fn convert_user_to_gemini(msg: &LlmMessage) -> serde_json::Value {
-    let mut parts: Vec<serde_json::Value> = Vec::new();
-    for content in &msg.content {
-        match content {
-            LlmContent::Text { text } => {
-                parts.push(serde_json::json!({"text": text}));
-            },
-            LlmContent::Image { base64, media_type } => {
-                parts.push(serde_json::json!({
-                    "inlineData": {"mimeType": media_type, "data": base64}
-                }));
-            },
-            _ => {},
-        }
-    }
-    if parts.is_empty() {
-        parts.push(serde_json::json!({"text": ""}));
-    }
-    serde_json::json!({"role": "user", "parts": parts})
-}
+struct GeminiMapper;
 
-fn convert_assistant_to_gemini(msg: &LlmMessage) -> serde_json::Value {
-    let mut parts: Vec<serde_json::Value> = Vec::new();
-    for content in &msg.content {
-        match content {
-            LlmContent::Text { text } => {
-                parts.push(serde_json::json!({"text": text}));
-            },
-            LlmContent::ToolCall {
-                name, arguments, ..
-            } => {
-                let args = match arguments {
-                    serde_json::Value::String(s) => {
-                        serde_json::from_str(s).unwrap_or(serde_json::json!({}))
-                    },
-                    other => other.clone(),
-                };
-                parts.push(serde_json::json!({
-                    "functionCall": {"name": name, "args": args}
-                }));
-            },
-            _ => {},
-        }
+impl ContentMapper for GeminiMapper {
+    fn text(text: &str) -> serde_json::Value {
+        serde_json::json!({"text": text})
     }
-    if parts.is_empty() {
-        parts.push(serde_json::json!({"text": ""}));
+
+    fn image(base64: &str, media_type: &str) -> serde_json::Value {
+        serde_json::json!({
+            "inlineData": {"mimeType": media_type, "data": base64}
+        })
     }
-    serde_json::json!({"role": "model", "parts": parts})
+
+    fn tool_call(_call_id: &str, name: &str, arguments: &serde_json::Value) -> serde_json::Value {
+        let args = match arguments {
+            serde_json::Value::String(s) => {
+                serde_json::from_str(s).unwrap_or(serde_json::json!({}))
+            },
+            other => other.clone(),
+        };
+        serde_json::json!({"functionCall": {"name": name, "args": args}})
+    }
+
+    fn tool_result(_: &str, _: &str, _: bool) -> Option<serde_json::Value> {
+        None
+    }
+
+    fn empty() -> serde_json::Value {
+        serde_json::json!({"text": ""})
+    }
+
+    fn wrap_user(parts: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({"role": "user", "parts": parts})
+    }
+
+    fn wrap_assistant(parts: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({"role": "model", "parts": parts})
+    }
 }
 
 fn convert_tool_result_to_gemini(msg: &LlmMessage) -> serde_json::Value {
@@ -320,7 +311,7 @@ mod tests {
     #[test]
     fn gemini_maps_assistant_to_model_role() {
         let msg = LlmMessage::assistant("hi");
-        let json = convert_assistant_to_gemini(&msg);
+        let json = GeminiMapper::map_assistant(&msg);
         assert_eq!(json["role"], "model");
         assert_eq!(json["parts"][0]["text"], "hi");
     }
@@ -336,7 +327,7 @@ mod tests {
             }],
             name: None,
         };
-        let json = convert_assistant_to_gemini(&msg);
+        let json = GeminiMapper::map_assistant(&msg);
         let fc = &json["parts"][0]["functionCall"];
         assert_eq!(fc["name"], "read");
         assert_eq!(fc["args"]["path"], "foo.rs");
@@ -346,7 +337,7 @@ mod tests {
     fn gemini_tool_results_pack_into_single_user_turn() {
         let mut contents: Vec<serde_json::Value> = Vec::new();
         let mut pending: Vec<serde_json::Value> = Vec::new();
-        contents.push(convert_assistant_to_gemini(&LlmMessage::assistant(
+        contents.push(GeminiMapper::map_assistant(&LlmMessage::assistant(
             "checking",
         )));
         pending.push(convert_tool_result_to_gemini(&LlmMessage::tool(

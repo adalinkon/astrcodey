@@ -9,4 +9,5 @@ pub mod commands;
 pub mod events;
 pub mod framing;
 pub mod http;
+pub mod transport;
 pub mod version;
