@@ -10,8 +10,8 @@ use std::{
 };
 
 use astrcode_context::{
+    ContextSettings,
     compaction::{CompactResult, PostCompactFile, PostCompactNote, recent_read_paths},
-    settings::ContextWindowSettings,
     token_usage::truncate_text_to_tokens,
 };
 use astrcode_core::{
@@ -35,7 +35,7 @@ pub(crate) async fn enrich_post_compact_context(
     working_dir: &str,
     system_prompt: Option<&str>,
     tools: &[ToolDefinition],
-    settings: &ContextWindowSettings,
+    settings: &ContextSettings,
 ) {
     let source_messages = source_messages.to_vec();
     let retained_messages = compaction.retained_messages.clone();
@@ -45,16 +45,19 @@ pub(crate) async fn enrich_post_compact_context(
     let session_id_for_closure = session_id.to_string();
     let settings = settings.clone();
 
-    let result = tokio::task::spawn_blocking(move || {
-        collect_post_compact_context(
-            &source_messages,
-            &retained_messages,
-            &working_dir,
-            &session_id_for_closure,
-            system_prompt.as_deref(),
-            &tools,
-            &settings,
-        )
+    let result = tokio::task::spawn_blocking({
+        let settings = settings.clone();
+        move || {
+            collect_post_compact_context(
+                &source_messages,
+                &retained_messages,
+                &working_dir,
+                &session_id_for_closure,
+                system_prompt.as_deref(),
+                &tools,
+                &settings,
+            )
+        }
     })
     .await;
     let (files, notes) = match result {
@@ -68,7 +71,7 @@ pub(crate) async fn enrich_post_compact_context(
         },
     };
 
-    compaction.append_post_compact_context(files, notes, &ContextWindowSettings::default());
+    compaction.append_post_compact_context(files, notes, &settings);
 }
 
 fn collect_post_compact_context(
@@ -78,7 +81,7 @@ fn collect_post_compact_context(
     session_id: &str,
     system_prompt: Option<&str>,
     tools: &[ToolDefinition],
-    settings: &ContextWindowSettings,
+    settings: &ContextSettings,
 ) -> (Vec<PostCompactFile>, Vec<PostCompactNote>) {
     let working_dir = PathBuf::from(working_dir);
     let files = fresh_recent_read_files(source_messages, retained_messages, &working_dir, settings);
@@ -104,7 +107,7 @@ fn fresh_recent_read_files(
     source_messages: &[LlmMessage],
     retained_messages: &[LlmMessage],
     working_dir: &Path,
-    settings: &ContextWindowSettings,
+    settings: &ContextSettings,
 ) -> Vec<PostCompactFile> {
     recent_read_paths(source_messages, retained_messages, settings)
         .into_iter()
@@ -382,7 +385,7 @@ mod tests {
             temp.to_str().unwrap(),
             None,
             &[],
-            &ContextWindowSettings::default(),
+            &ContextSettings::default(),
         )
         .await;
 
@@ -432,7 +435,7 @@ mod tests {
             transcript_path: None,
         };
 
-        let settings = ContextWindowSettings::default();
+        let settings = ContextSettings::default();
         let (files, notes) = collect_post_compact_context(
             &messages,
             &compaction.retained_messages,

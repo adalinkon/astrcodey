@@ -4,11 +4,10 @@ use std::collections::{HashMap, HashSet};
 
 use astrcode_core::llm::{LlmContent, LlmMessage, LlmRole};
 
+use crate::ContextSettings;
+
 use super::assemble::collapse_compaction_whitespace;
-use crate::{
-    settings::ContextWindowSettings,
-    token_usage::{estimate_text_tokens, truncate_text_to_tokens},
-};
+use crate::token_usage::{estimate_text_tokens, truncate_text_to_tokens};
 
 const POST_COMPACT_CONTEXT_MARKER: &str = "<post_compact_context>";
 const POST_COMPACT_CONTEXT_END: &str = "</post_compact_context>";
@@ -41,7 +40,7 @@ pub(crate) fn is_post_compact_context_message(message: &LlmMessage) -> bool {
 pub fn recent_read_paths(
     source_messages: &[LlmMessage],
     retained_messages: &[LlmMessage],
-    settings: &ContextWindowSettings,
+    settings: &ContextSettings,
 ) -> Vec<String> {
     let retained_paths = read_paths(retained_messages);
     let mut seen_paths = HashSet::new();
@@ -62,7 +61,7 @@ pub fn recent_read_paths(
 pub fn post_compact_context_message(
     files: Vec<PostCompactFile>,
     notes: Vec<PostCompactNote>,
-    settings: &ContextWindowSettings,
+    settings: &ContextSettings,
 ) -> Option<LlmMessage> {
     let files = budget_files(files, settings);
     if files.is_empty() && notes.is_empty() {
@@ -73,10 +72,7 @@ pub fn post_compact_context_message(
     )))
 }
 
-fn budget_files(
-    files: Vec<PostCompactFile>,
-    settings: &ContextWindowSettings,
-) -> Vec<PostCompactFile> {
+fn budget_files(files: Vec<PostCompactFile>, settings: &ContextSettings) -> Vec<PostCompactFile> {
     let mut used_tokens = 0usize;
     let mut kept = Vec::new();
     for file in files.into_iter().take(settings.post_compact_max_files) {
@@ -228,7 +224,7 @@ mod tests {
     }
 
     fn render(files: Vec<PostCompactFile>) -> String {
-        let settings = ContextWindowSettings::default();
+        let settings = ContextSettings::default();
         let message = post_compact_context_message(files, Vec::new(), &settings).unwrap();
         message_text(&message)
     }
@@ -237,8 +233,8 @@ mod tests {
         LlmMessage::tool("read", call_id, content, false)
     }
 
-    fn default_settings() -> ContextWindowSettings {
-        ContextWindowSettings::default()
+    fn default_settings() -> ContextSettings {
+        ContextSettings::default()
     }
 
     #[test]

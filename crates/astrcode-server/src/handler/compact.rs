@@ -155,7 +155,7 @@ impl CommandHandler {
             &state.working_dir,
             state.system_prompt.as_deref(),
             &tools,
-            &astrcode_context::settings::ContextWindowSettings::default(),
+            self.runtime.context_assembler.settings(),
         )
         .await;
 

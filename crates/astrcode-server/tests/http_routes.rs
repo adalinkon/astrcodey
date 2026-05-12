@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, fs, sync::Arc, time::Duration};
 
-use astrcode_context::{manager::LlmContextAssembler, settings::ContextWindowSettings};
+use astrcode_context::{ContextSettings, manager::LlmContextAssembler};
 use astrcode_core::{
-    config::{ContextSettings, EffectiveConfig, LlmSettings, OpenAiApiMode},
+    config::{EffectiveConfig, LlmSettings, OpenAiApiMode},
     event::{Event, EventPayload},
     llm::{LlmContent, LlmError, LlmEvent, LlmMessage, LlmProvider, ModelLimits},
     tool::{ToolDefinition, ToolResult},
@@ -727,7 +727,7 @@ fn runtime(llm_provider: Arc<dyn LlmProvider>) -> Arc<ServerRuntime> {
     Arc::new(ServerRuntime {
         session_manager: Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new()))),
         llm_provider: Arc::new(parking_lot::RwLock::new(llm_provider)),
-        context_assembler: Arc::new(LlmContextAssembler::new(ContextWindowSettings::default())),
+        context_assembler: Arc::new(LlmContextAssembler::new(ContextSettings::default())),
         auto_compact_failures: Arc::new(
             astrcode_server::agent::AutoCompactFailureTracker::default(),
         ),

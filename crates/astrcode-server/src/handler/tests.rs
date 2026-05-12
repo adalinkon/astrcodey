@@ -233,7 +233,7 @@ impl LlmProvider for CapturingLlm {
 
 fn test_runtime_with_settings(
     llm_provider: Arc<dyn LlmProvider>,
-    context_settings: astrcode_context::settings::ContextWindowSettings,
+    context_settings: astrcode_context::ContextSettings,
 ) -> Arc<ServerRuntime> {
     Arc::new(ServerRuntime {
         session_manager: Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new()))),
@@ -284,7 +284,7 @@ fn test_runtime_with_settings(
 fn test_runtime_with_llm(llm_provider: Arc<dyn LlmProvider>) -> Arc<ServerRuntime> {
     test_runtime_with_settings(
         llm_provider,
-        astrcode_context::settings::ContextWindowSettings::default(),
+        astrcode_context::ContextSettings::default(),
     )
 }
 
@@ -771,7 +771,7 @@ async fn stale_agent_finish_after_abort_is_ignored() {
 
 #[tokio::test]
 async fn compact_command_rewrites_provider_history_without_exposing_summary() {
-    let settings = astrcode_context::settings::ContextWindowSettings::default();
+    let settings = astrcode_context::ContextSettings::default();
     let runtime = test_runtime_with_settings(Arc::new(MockLlm), settings);
     let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(256);
     let handler = CommandHandler::spawn_actor(Arc::clone(&runtime), event_tx);
@@ -823,7 +823,7 @@ async fn compact_command_rewrites_provider_history_without_exposing_summary() {
 async fn slash_compact_uses_backend_command_without_user_message() {
     let runtime = test_runtime_with_settings(
         Arc::new(MockLlm),
-        astrcode_context::settings::ContextWindowSettings::default(),
+        astrcode_context::ContextSettings::default(),
     );
     let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(256);
     let handler = CommandHandler::spawn_actor(Arc::clone(&runtime), event_tx);
@@ -993,7 +993,7 @@ async fn command_list_keeps_reserved_and_plugin_priority_over_skills() {
 
 #[tokio::test]
 async fn compact_command_compacts_existing_hidden_context_again() {
-    let settings = astrcode_context::settings::ContextWindowSettings::default();
+    let settings = astrcode_context::ContextSettings::default();
     let runtime = test_runtime_with_settings(Arc::new(MockLlm), settings);
     let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(512);
     let handler = CommandHandler::spawn_actor(Arc::clone(&runtime), event_tx);
@@ -1058,7 +1058,7 @@ async fn compact_command_compacts_existing_hidden_context_again() {
 
 #[tokio::test]
 async fn auto_compact_switches_active_session_to_continuation_child() {
-    let settings = astrcode_context::settings::ContextWindowSettings {
+    let settings = astrcode_context::ContextSettings {
         compact_threshold_percent: 0.0,
         ..Default::default()
     };

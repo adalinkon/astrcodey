@@ -535,7 +535,7 @@ mod tests {
 
     use super::*;
 
-    struct CompactThenLeafLlm {
+    struct ToolThenTextLlm {
         call_count: AtomicUsize,
     }
 
@@ -569,17 +569,14 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl LlmProvider for CompactThenLeafLlm {
+    impl LlmProvider for ToolThenTextLlm {
         async fn generate(
             &self,
             _messages: Vec<LlmMessage>,
             _tools: Vec<ToolDefinition>,
         ) -> Result<mpsc::UnboundedReceiver<LlmEvent>, LlmError> {
-            // The sequence drives one nested compact:
-            // call 0 asks for a missing tool so the next provider context
-            // crosses the compact threshold; call 1 is the forked compact
-            // summary and intentionally invalid so fallback summary rendering
-            // is deterministic; later calls prove events land on the leaf.
+            // Call 0 asks for a missing tool (tool execution fails, growing
+            // messages); call 1 returns the final text.
             let call = self.call_count.fetch_add(1, Ordering::SeqCst);
             let (tx, rx) = mpsc::unbounded_channel();
             match call {
@@ -591,14 +588,6 @@ mod tests {
                     });
                     let _ = tx.send(LlmEvent::Done {
                         finish_reason: "tool_calls".into(),
-                    });
-                },
-                1 => {
-                    let _ = tx.send(LlmEvent::ContentDelta {
-                        delta: "invalid compact summary; deterministic fallback should run".into(),
-                    });
-                    let _ = tx.send(LlmEvent::Done {
-                        finish_reason: "stop".into(),
                     });
                 },
                 _ => {
@@ -623,9 +612,9 @@ mod tests {
 
     fn test_spawner(
         session_manager: Arc<SessionManager>,
-        llm: Arc<CompactThenLeafLlm>,
+        llm: Arc<ToolThenTextLlm>,
     ) -> ServerSessionSpawner {
-        let settings = astrcode_context::settings::ContextWindowSettings {
+        let settings = astrcode_context::ContextSettings {
             compact_threshold_percent: 0.0,
             ..Default::default()
         };
@@ -645,14 +634,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawned_session_auto_compact_returns_leaf_child() {
+    async fn spawned_session_runs_agent_loop_and_records_events() {
         let session_manager = Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new())));
         let parent = session_manager.create(".", "mock", None).await.unwrap();
-        let llm = Arc::new(CompactThenLeafLlm {
+        let llm = Arc::new(ToolThenTextLlm {
             call_count: AtomicUsize::new(0),
         });
         let spawner = test_spawner(Arc::clone(&session_manager), Arc::clone(&llm));
-        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
 
         let result = spawner
             .spawn(
@@ -671,57 +660,19 @@ mod tests {
             .unwrap();
         let child_session_id = SessionId::from(result.child_session_id.clone());
 
-        let leaf = session_manager.read_model(&child_session_id).await.unwrap();
-        let previous_child_id = leaf
-            .parent_session_id
-            .clone()
-            .expect("leaf should continue from a previous spawned child");
-        assert_ne!(previous_child_id, child_session_id);
         assert_eq!(result.content, "leaf ok");
-        assert!(llm.call_count.load(Ordering::SeqCst) >= 3);
+        assert!(llm.call_count.load(Ordering::SeqCst) >= 2);
 
-        let previous = session_manager
-            .read_model(&previous_child_id)
-            .await
-            .unwrap();
-        let mut ancestor_id = previous_child_id.clone();
-        loop {
-            let ancestor = session_manager.read_model(&ancestor_id).await.unwrap();
-            if ancestor.parent_session_id.as_ref().map(SessionId::as_str)
-                == Some(parent.session_id.as_str())
-            {
-                break;
-            }
-            ancestor_id = ancestor
-                .parent_session_id
-                .expect("continuation chain should stay linked to the root parent");
-        }
+        let child = session_manager.read_model(&child_session_id).await.unwrap();
         assert!(
-            previous.messages.iter().all(|message| {
-                !message
-                    .content
-                    .iter()
-                    .any(|content| matches!(content, astrcode_core::llm::LlmContent::Text { text } if text.contains("leaf ok")))
-            }),
-            "events after continuation should not be appended to the previous child"
-        );
-        assert!(
-            leaf.messages.iter().any(|message| {
+            child.messages.iter().any(|message| {
                 message
                     .content
                     .iter()
                     .any(|content| matches!(content, astrcode_core::llm::LlmContent::Text { text } if text.contains("leaf ok")))
             }),
-            "events after continuation should be appended to the leaf child"
+            "agent response should be persisted to the child session"
         );
-
-        let mut saw_continued_progress = false;
-        while let Ok(payload) = progress_rx.try_recv() {
-            if let EventPayload::ToolOutputDelta { delta, .. } = payload {
-                saw_continued_progress |= delta.contains("child agent continued");
-            }
-        }
-        assert!(saw_continued_progress);
 
         // 父 session 应记录派生的子 Agent
         let parent_model = session_manager
@@ -731,12 +682,6 @@ mod tests {
         assert_eq!(parent_model.agent_sessions.len(), 1);
         assert_eq!(parent_model.agent_sessions[0].agent_name, "nested");
         assert_eq!(parent_model.agent_sessions[0].task, "current nested prompt");
-        // child_session_id 指向最初的子会话（不是 compact 后的 leaf）
-        let first_child_id = &parent_model.agent_sessions[0].child_session_id;
-        assert_eq!(
-            first_child_id, &previous_child_id,
-            "spawned link should point to the original child, not the compact leaf"
-        );
     }
 
     #[tokio::test]

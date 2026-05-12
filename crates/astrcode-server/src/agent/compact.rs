@@ -12,11 +12,11 @@ use std::{
 };
 
 use astrcode_context::{
+    ContextSettings,
     compaction::{
         CompactError, CompactResult, CompactSkipReason, CompactSummaryRenderOptions,
         compact_messages_with_request,
     },
-    settings::ContextWindowSettings,
 };
 use astrcode_core::{
     config::ModelSelection,
@@ -290,7 +290,7 @@ pub(crate) async fn compact_with_forked_provider(
     tools: Vec<ToolDefinition>,
     messages: &[LlmMessage],
     system_prompt: Option<&str>,
-    settings: &ContextWindowSettings,
+    settings: &ContextSettings,
     custom_instructions: &[String],
     render_options: &CompactSummaryRenderOptions,
 ) -> Result<CompactResult, CompactError> {

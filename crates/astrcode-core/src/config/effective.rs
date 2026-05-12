@@ -71,3 +71,18 @@ pub struct ContextSettings {
     /// 单个恢复文件的最大 token 数。
     pub post_compact_max_tokens_per_file: usize,
 }
+
+impl Default for ContextSettings {
+    fn default() -> Self {
+        Self {
+            auto_compact_enabled: super::defaults::DEFAULT_COMPACT_AUTO_ENABLED,
+            compact_threshold_percent: super::defaults::DEFAULT_COMPACT_THRESHOLD_PERCENT,
+            compact_max_retry_attempts: super::defaults::DEFAULT_COMPACT_MAX_RETRY_ATTEMPTS,
+            compact_max_output_tokens: super::defaults::DEFAULT_COMPACT_MAX_OUTPUT_TOKENS,
+            post_compact_max_files: super::defaults::DEFAULT_POST_COMPACT_MAX_FILES,
+            post_compact_token_budget: super::defaults::DEFAULT_POST_COMPACT_TOKEN_BUDGET,
+            post_compact_max_tokens_per_file:
+                super::defaults::DEFAULT_POST_COMPACT_MAX_TOKENS_PER_FILE,
+        }
+    }
+}

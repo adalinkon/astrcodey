@@ -3,8 +3,9 @@
 //! 模板文件定义九段 summary contract；本模块只负责把模式、修复反馈、
 //! hook/custom 指令和运行时 system prompt 填入模板。
 
+use crate::ContextSettings;
+
 use super::plan::CompactPromptMode;
-use crate::settings::ContextWindowSettings;
 
 const BASE_COMPACT_PROMPT_TEMPLATE: &str = include_str!("../templates/compact/base.md");
 const INCREMENTAL_COMPACT_PROMPT_TEMPLATE: &str =
@@ -13,7 +14,7 @@ const INCREMENTAL_COMPACT_PROMPT_TEMPLATE: &str =
 pub(crate) fn render_compact_contract(
     system_prompt: Option<&str>,
     mode: &CompactPromptMode,
-    settings: &ContextWindowSettings,
+    settings: &ContextSettings,
     contract_repair_feedback: Option<&str>,
     custom_instructions: &[String],
 ) -> String {
@@ -57,7 +58,7 @@ pub(crate) fn render_compact_contract(
 /// 因此 compact 指令必须作为最后一条 user message 注入。
 pub(crate) fn render_compact_request(
     mode: &CompactPromptMode,
-    settings: &ContextWindowSettings,
+    settings: &ContextSettings,
     contract_repair_feedback: Option<&str>,
     custom_instructions: &[String],
 ) -> String {

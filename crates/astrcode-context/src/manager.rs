@@ -1,8 +1,9 @@
 use astrcode_core::llm::{LlmMessage, ModelLimits};
 
+use crate::ContextSettings;
+
 use crate::{
     compaction::{CompactResult, CompactSkipReason, compact_messages_with_render_options},
-    settings::ContextWindowSettings,
     token_usage::{build_prompt_snapshot, should_compact},
 };
 
@@ -35,12 +36,12 @@ pub struct PreparedContext {
 /// 它负责 token gate 与 compact pipeline；不持有 provider/model limits，
 /// 避免模型切换后沿用旧窗口。
 pub struct LlmContextAssembler {
-    settings: ContextWindowSettings,
+    settings: ContextSettings,
 }
 
 impl LlmContextAssembler {
     /// 创建上下文组装器；settings 是稳定策略，模型窗口由每次 request 输入提供。
-    pub fn new(settings: ContextWindowSettings) -> Self {
+    pub fn new(settings: ContextSettings) -> Self {
         Self { settings }
     }
 
@@ -77,7 +78,7 @@ impl LlmContextAssembler {
         self.settings.auto_compact_enabled
     }
 
-    pub fn settings(&self) -> &ContextWindowSettings {
+    pub fn settings(&self) -> &ContextSettings {
         &self.settings
     }
 
@@ -127,7 +128,7 @@ mod tests {
 
     #[test]
     fn prepare_messages_uses_current_model_limits_each_call() {
-        let assembler = LlmContextAssembler::new(ContextWindowSettings::default());
+        let assembler = LlmContextAssembler::new(ContextSettings::default());
         let messages = vec![
             LlmMessage::user("old user ".repeat(400)),
             LlmMessage::assistant("old answer ".repeat(400)),

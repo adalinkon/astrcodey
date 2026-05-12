@@ -12,10 +12,9 @@ use std::future::Future;
 
 use astrcode_core::llm::{LlmContent, LlmError, LlmMessage, LlmRole};
 
-use crate::{
-    settings::ContextWindowSettings,
-    token_usage::{estimate_request_tokens, estimate_text_tokens},
-};
+use crate::ContextSettings;
+
+use crate::token_usage::{estimate_request_tokens, estimate_text_tokens};
 
 const COMPACT_SUMMARY_MARKER: &str = "<compact_summary>";
 const COMPACT_SUMMARY_END: &str = "</compact_summary>";
@@ -62,7 +61,7 @@ impl CompactResult {
         &mut self,
         files: Vec<PostCompactFile>,
         notes: Vec<PostCompactNote>,
-        settings: &crate::settings::ContextWindowSettings,
+        settings: &ContextSettings,
     ) {
         if let Some(message) = post_compact::post_compact_context_message(files, notes, settings) {
             self.context_messages.push(message);
@@ -145,7 +144,7 @@ pub fn compact_messages_with_render_options(
 pub async fn compact_messages_with_request<F, Fut>(
     messages: &[LlmMessage],
     system_prompt: Option<&str>,
-    settings: &ContextWindowSettings,
+    settings: &ContextSettings,
     custom_instructions: &[String],
     render_options: &CompactSummaryRenderOptions,
     mut request_text: F,
@@ -268,11 +267,22 @@ fn split_compact_start(messages: &[LlmMessage]) -> Option<usize> {
     let has_compressible = messages
         .iter()
         .any(|m| m.role == LlmRole::Assistant && !is_synthetic_context_message(m));
-    if has_compressible && !messages.is_empty() {
-        Some(messages.len())
-    } else {
-        None
+    if !has_compressible || messages.is_empty() {
+        return None;
     }
+
+    // Retain the last non-synthetic user turn and everything after it
+    // (tool results, assistant responses in the same round).
+    let last_user_idx = messages.iter().enumerate().rev().find_map(|(i, m)| {
+        (m.role == LlmRole::User && !is_synthetic_context_message(m)).then_some(i)
+    })?;
+
+    // Nothing to compact if the only non-synthetic content is the last user turn.
+    if last_user_idx == 0 {
+        return None;
+    }
+
+    Some(last_user_idx)
 }
 
 fn removed_visible_messages(messages: &[LlmMessage]) -> usize {
@@ -312,7 +322,7 @@ fn prepare_compact_parts(
 fn request_messages(
     prepared_input: &PreparedCompactInput,
     system_prompt: Option<&str>,
-    settings: &ContextWindowSettings,
+    settings: &ContextSettings,
     repair_feedback: Option<&str>,
     custom_instructions: &[String],
 ) -> Vec<LlmMessage> {
@@ -531,8 +541,9 @@ The summary should preserve the compact contract and omit this scratchpad later.
         let result =
             compact_messages_with_render_options(&messages, None, &Default::default()).unwrap();
 
-        assert_eq!(result.messages_removed, 5);
-        assert_eq!(result.retained_messages.len(), 0);
+        assert_eq!(result.messages_removed, 4);
+        assert_eq!(result.retained_messages.len(), 1);
+        assert_eq!(visible_message_text(&result.retained_messages[0]), "recent");
         assert!(is_compact_summary_message(&result.context_messages[0]));
         assert!(visible_message_text(&result.context_messages[0]).contains("Summary:\n"));
     }
@@ -551,8 +562,12 @@ The summary should preserve the compact contract and omit this scratchpad later.
         let result =
             compact_messages_with_render_options(&messages, None, &Default::default()).unwrap();
 
-        assert_eq!(result.retained_messages.len(), 0);
-        assert_eq!(result.messages_removed, 3);
+        assert_eq!(result.retained_messages.len(), 1);
+        assert_eq!(
+            visible_message_text(&result.retained_messages[0]),
+            "recent real"
+        );
+        assert_eq!(result.messages_removed, 2);
     }
 
     #[test]
@@ -672,7 +687,7 @@ scratchpad that should be ignored
 
     #[test]
     fn compact_template_contains_required_nine_section_contract() {
-        let settings = ContextWindowSettings::default();
+        let settings = ContextSettings::default();
         let prompt = prompt::render_compact_contract(
             Some("system prompt"),
             &plan::CompactPromptMode::Fresh,
@@ -702,7 +717,7 @@ scratchpad that should be ignored
 
     #[test]
     fn compact_repair_prompt_preserves_analysis_then_summary_contract() {
-        let settings = ContextWindowSettings::default();
+        let settings = ContextSettings::default();
         let prompt = prompt::render_compact_contract(
             None,
             &plan::CompactPromptMode::Fresh,
@@ -719,7 +734,7 @@ scratchpad that should be ignored
 
     #[tokio::test]
     async fn compact_request_closure_receives_forked_prompt() {
-        let settings = ContextWindowSettings::default();
+        let settings = ContextSettings::default();
         let messages = vec![
             LlmMessage::user("old user"),
             LlmMessage::assistant("old answer"),
@@ -742,7 +757,7 @@ scratchpad that should be ignored
         .await
         .unwrap();
 
-        assert_eq!(result.messages_removed, 3);
+        assert_eq!(result.messages_removed, 2);
         let request = captured.lock().unwrap();
 
         assert_eq!(request[0].role, LlmRole::System);
@@ -759,7 +774,7 @@ scratchpad that should be ignored
 
     #[tokio::test]
     async fn compact_request_renders_tool_results_as_transcript_text() {
-        let settings = ContextWindowSettings::default();
+        let settings = ContextSettings::default();
         let messages = vec![
             LlmMessage::user("read a file"),
             LlmMessage {
@@ -774,6 +789,7 @@ scratchpad that should be ignored
             },
             LlmMessage::tool("read", "call-read", "pub fn compact_fixture() {}", false),
             LlmMessage::assistant("The file defines compact_fixture."),
+            LlmMessage::user("current request"),
         ];
         let captured = Arc::new(Mutex::new(Vec::new()));
         let captured_for_request = Arc::clone(&captured);
@@ -805,7 +821,7 @@ scratchpad that should be ignored
 
     #[tokio::test]
     async fn compact_prompt_too_long_drops_oldest_api_round_and_retries() {
-        let settings = ContextWindowSettings::default();
+        let settings = ContextSettings::default();
         let messages = vec![
             LlmMessage::user("round one user"),
             LlmMessage::assistant("round one assistant"),
@@ -846,7 +862,7 @@ scratchpad that should be ignored
         .await
         .unwrap();
 
-        assert_eq!(result.messages_removed, 7);
+        assert_eq!(result.messages_removed, 6);
         let requests = requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
         assert!(

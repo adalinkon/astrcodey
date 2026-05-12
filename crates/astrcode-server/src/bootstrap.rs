@@ -6,7 +6,7 @@
 use std::{path::Path, sync::Arc, time::Duration};
 
 use astrcode_ai::create_provider;
-use astrcode_context::{manager::LlmContextAssembler, settings::ContextWindowSettings};
+use astrcode_context::manager::LlmContextAssembler;
 use astrcode_core::{
     config::{ConfigStore, EffectiveConfig, ModelSelection},
     extension::ExtensionError,
@@ -193,16 +193,8 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     let llm_provider = Arc::new(RwLock::new(build_provider_from_effective(&effective)));
 
     // 3. 初始化上下文组装器。
-    let context_settings = ContextWindowSettings {
-        auto_compact_enabled: effective.context.auto_compact_enabled,
-        compact_threshold_percent: effective.context.compact_threshold_percent,
-        compact_max_retry_attempts: effective.context.compact_max_retry_attempts,
-        compact_max_output_tokens: effective.context.compact_max_output_tokens,
-        post_compact_max_files: effective.context.post_compact_max_files,
-        post_compact_token_budget: effective.context.post_compact_token_budget,
-        post_compact_max_tokens_per_file: effective.context.post_compact_max_tokens_per_file,
-    };
-    let context_assembler = Arc::new(LlmContextAssembler::new(context_settings.clone()));
+    let context_settings = effective.context.clone();
+    let context_assembler = Arc::new(LlmContextAssembler::new(context_settings));
     let auto_compact_failures = Arc::new(AutoCompactFailureTracker::default());
     let background_tasks = Arc::new(Mutex::new(BackgroundTaskManager::default()));
 
