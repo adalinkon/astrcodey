@@ -225,7 +225,6 @@ fn pre_tool_use_context(command: &str) -> PreToolUseContext {
         model: astrcode_core::config::ModelSelection::simple("test-model"),
         tool_name: "shell".into(),
         tool_input: serde_json::json!({ "command": command }),
-        config: HashMap::new(),
         available_tools: vec![],
     }
 }
@@ -362,7 +361,6 @@ async fn extension_context_snapshot_works_for_nonblocking() {
         session_id: "test-session".into(),
         working_dir: "/tmp".into(),
         model: astrcode_core::config::ModelSelection::simple("test-model"),
-        config: HashMap::new(),
     };
 
     runner
@@ -382,7 +380,6 @@ async fn dispatch_with_no_registered_extensions_is_noop() {
         session_id: "empty".into(),
         working_dir: "/tmp".into(),
         model: astrcode_core::config::ModelSelection::simple("noop"),
-        config: HashMap::new(),
     };
     runner
         .emit_lifecycle(astrcode_core::extension::ExtensionEvent::SessionStart, ctx)
@@ -403,7 +400,6 @@ async fn extension_subscribes_only_to_matching_events() {
         session_id: "test-session".into(),
         working_dir: "/tmp".into(),
         model: astrcode_core::config::ModelSelection::simple("test-model"),
-        config: HashMap::new(),
     };
     // SessionStart should pass through without blocking.
     runner
