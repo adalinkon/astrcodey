@@ -255,7 +255,9 @@ fn format_agents_for_model(agents: &[agent::AgentConfig]) -> String {
     }
 
     let mut lines = Vec::with_capacity(agents.len() + 2);
-    lines.push(String::from("Available agents (use the name before the colon as subagentType):"));
+    lines.push(String::from(
+        "Available agents (use the name before the colon as subagentType):",
+    ));
     for agent in agents {
         lines.push(format!("- {}: {}", agent.name, agent.description));
     }

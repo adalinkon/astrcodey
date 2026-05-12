@@ -735,10 +735,7 @@ fn conversation_to_dto(session: SessionReadModel) -> ConversationSnapshotRespons
         .first_user_message()
         .unwrap_or_else(|| session_title(&session.working_dir));
 
-    let mut blocks = messages_to_blocks(
-        &session.messages,
-        &session.background_tool_calls,
-    );
+    let mut blocks = messages_to_blocks(&session.messages, &session.background_tool_calls);
     for boundary in &session.compact_boundaries {
         blocks.push(ConversationBlockDto::CompactSummary {
             id: format!("compact-{}", boundary.seq),
