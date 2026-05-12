@@ -9,14 +9,12 @@ use astrcode_ai::create_provider;
 use astrcode_context::manager::LlmContextAssembler;
 use astrcode_core::{
     config::{ConfigStore, EffectiveConfig, ModelSelection},
-    extension::ExtensionError,
+    extension::{ExtensionError, PromptBuildContext},
     llm::{LlmClientConfig, LlmProvider},
     prompt::{ExtensionPromptBlock, ExtensionSection, PromptProvider, SystemPromptInput},
     tool::ToolDefinition,
 };
-use astrcode_extensions::{
-    context::ServerExtensionContext, loader::ExtensionLoader, runner::ExtensionRunner,
-};
+use astrcode_extensions::{loader::ExtensionLoader, runner::ExtensionRunner};
 use astrcode_prompt::{composer::PromptComposer, pipeline};
 use astrcode_storage::config_store::FileConfigStore;
 use astrcode_support::shell::resolve_shell;
@@ -338,7 +336,7 @@ pub(crate) async fn build_tool_registry_snapshot(
     // Extensions override builtins, and earlier registered extensions keep
     // precedence over later registered extensions with the same tool name.
     for tool in extension_runner
-        .collect_tool_adapters(working_dir)
+        .collect_tool_adapters_typed(working_dir)
         .await
         .into_iter()
         .rev()
@@ -363,20 +361,16 @@ pub(crate) async fn build_system_prompt_snapshot_with_files(
         prompt_files,
     } = input;
 
-    let mut ext_ctx = ServerExtensionContext::new(
-        session_id.to_string(),
-        working_dir.to_string(),
-        ModelSelection::simple(model_id),
-    );
-    ext_ctx.set_tools(
-        tools
-            .iter()
-            .map(|tool| (tool.name.clone(), tool.clone()))
-            .collect(),
-    );
+    let prompt_ctx = PromptBuildContext {
+        session_id: session_id.to_string(),
+        working_dir: working_dir.to_string(),
+        model: ModelSelection::simple(model_id),
+        tools: tools.to_vec(),
+        config: std::collections::HashMap::new(),
+    };
 
     let contributions = extension_runner
-        .collect_prompt_contributions(&ext_ctx)
+        .collect_prompt_contributions_typed(prompt_ctx)
         .await?;
 
     let mut extension_blocks = Vec::new();
@@ -411,7 +405,7 @@ pub(crate) async fn build_system_prompt_snapshot_with_files(
 
     // Merge extension prompt metadata with caller-provided metadata.
     let mut merged_metadata = tool_prompt_metadata;
-    merged_metadata.extend(extension_runner.collect_tool_prompt_metadata().await);
+    merged_metadata.extend(extension_runner.collect_tool_prompt_metadata_typed().await);
 
     let input = SystemPromptInput {
         working_dir: working_dir.to_string(),
@@ -473,8 +467,8 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use astrcode_core::{
-        extension::{Extension, ExtensionContext, ExtensionError, ExtensionEvent, HookEffect},
-        tool::{ToolDefinition, ToolOrigin},
+        extension::{Extension, Registrar, ToolHandler},
+        tool::{ExecutionMode, ToolDefinition, ToolOrigin, ToolResult},
     };
 
     use super::*;
@@ -491,26 +485,32 @@ mod tests {
             self.id
         }
 
-        fn hook_subscriptions(&self) -> Vec<astrcode_core::extension::HookSubscription> {
-            Vec::new()
+        fn register(&self, reg: &mut Registrar) {
+            reg.tool(
+                ToolDefinition {
+                    name: self.tool_name.into(),
+                    description: self.description.into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                    origin: ToolOrigin::Extension,
+                    execution_mode: ExecutionMode::Sequential,
+                },
+                Arc::new(StaticToolHandler),
+            );
         }
+    }
 
-        async fn on_event(
+    struct StaticToolHandler;
+
+    #[async_trait::async_trait]
+    impl ToolHandler for StaticToolHandler {
+        async fn execute(
             &self,
-            _event: ExtensionEvent,
-            _ctx: &dyn ExtensionContext,
-        ) -> Result<HookEffect, ExtensionError> {
-            Ok(HookEffect::Allow)
-        }
-
-        fn tools(&self) -> Vec<ToolDefinition> {
-            vec![ToolDefinition {
-                name: self.tool_name.into(),
-                description: self.description.into(),
-                parameters: serde_json::json!({"type": "object"}),
-                origin: ToolOrigin::Extension,
-                execution_mode: astrcode_core::tool::ExecutionMode::Sequential,
-            }]
+            tool_name: &str,
+            _arguments: serde_json::Value,
+            _working_dir: &str,
+            _ctx: &astrcode_core::tool::ToolExecutionContext,
+        ) -> Result<ToolResult, astrcode_core::extension::ExtensionError> {
+            Err(astrcode_core::extension::ExtensionError::NotFound(tool_name.into()))
         }
     }
 

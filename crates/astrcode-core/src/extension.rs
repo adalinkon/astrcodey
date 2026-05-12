@@ -1,20 +1,17 @@
-//! 扩展与钩子系统类型定义。
+//! 扩展系统类型定义。
 //!
 //! 扩展是 astrcode 的主要扩展机制。技能（Skills）、Agent 配置文件、
 //! 自定义工具、斜杠命令等都是通过扩展来实现的。
 //!
 //! 本模块定义了：
-//! - [`Extension`] trait：扩展的核心接口
-//! - [`ExtensionEvent`]：扩展可订阅的生命周期事件
-//! - [`HookMode`] / [`HookEffect`]：钩子的执行模式和返回结果
-//! - [`ExtensionContext`]：扩展可访问的受限上下文
-//! - [`ExtensionToolOutcome`]：扩展工具的声明式结果
+//! - [`Extension`] trait：扩展的核心接口（`id` + `register`）
+//! - [`Registrar`]：扩展注册能力的构建器
+//! - 类型化的处理器 trait 和上下文结构体
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
     config::ModelSelection,
-    event_bus::EventBus,
     tool::{ToolDefinition, ToolPromptMetadata, ToolResult},
 };
 
@@ -29,80 +26,8 @@ pub trait Extension: Send + Sync {
     /// 返回扩展的唯一标识符。
     fn id(&self) -> &str;
 
-    /// 返回此扩展订阅的事件、钩子模式及事件级优先级。
-    fn hook_subscriptions(&self) -> Vec<HookSubscription>;
-
-    /// 处理事件。
-    ///
-    /// 返回 [`HookEffect`] 以允许、阻止或修改操作。
-    async fn on_event(
-        &self,
-        event: ExtensionEvent,
-        ctx: &dyn ExtensionContext,
-    ) -> Result<HookEffect, ExtensionError>;
-
-    /// 可选：返回此扩展注册的工具列表。
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![]
-    }
-
-    /// 可选：返回绑定到指定工作目录的工具列表。
-    ///
-    /// 默认复用静态 `tools()`，需要按项目配置动态发现工具的扩展可覆盖此方法。
-    async fn tools_for(&self, working_dir: &str) -> Vec<ToolDefinition> {
-        let _ = working_dir;
-        self.tools()
-    }
-
-    /// 可选：执行 `tools()` 返回的某个工具。
-    ///
-    /// 默认实现返回 `NotFound` 错误，保持仅元数据的扩展有效。
-    /// 运行器会将可执行扩展工具适配到正常的工具管道中。
-    /// `ctx` 携带每次调用的会话上下文（session_id、model、可用工具）。
-    async fn execute_tool(
-        &self,
-        tool_name: &str,
-        _arguments: serde_json::Value,
-        _working_dir: &str,
-        _ctx: &crate::tool::ToolExecutionContext,
-    ) -> Result<ToolResult, ExtensionError> {
-        Err(ExtensionError::NotFound(tool_name.into()))
-    }
-
-    /// 可选：返回此扩展注册的斜杠命令列表。
-    fn slash_commands(&self) -> Vec<SlashCommand> {
-        vec![]
-    }
-
-    /// 可选：返回绑定到指定工作目录的斜杠命令列表。
-    ///
-    /// 默认复用静态 `slash_commands()`，需要按项目动态发现命令的扩展可覆盖此方法。
-    async fn slash_commands_for(&self, working_dir: &str) -> Vec<SlashCommand> {
-        let _ = working_dir;
-        self.slash_commands()
-    }
-
-    /// 可选：执行此扩展注册的斜杠命令。
-    ///
-    /// 当用户在 TUI 输入 `/command_name arguments` 时调用。
-    /// 默认返回 `NotFound`，保持仅声明元数据的扩展有效。
-    async fn execute_command(
-        &self,
-        command_name: &str,
-        _arguments: &str,
-        _working_dir: &str,
-        _ctx: &dyn ExtensionContext,
-    ) -> Result<ExtensionCommandResult, ExtensionError> {
-        Err(ExtensionError::NotFound(command_name.into()))
-    }
-
-    /// 返回此扩展注册工具的结构化提示词元数据。
-    ///
-    /// 键必须与 `tools()` 或 `tools_for()` 返回的工具名匹配。
-    /// 默认返回空 HashMap。
-    fn tool_prompt_metadata(&self) -> std::collections::HashMap<String, ToolPromptMetadata> {
-        std::collections::HashMap::new()
-    }
+    /// 一次性调用。扩展通过 registrar 注册工具、命令和事件处理器。
+    fn register(&self, _reg: &mut Registrar) {}
 }
 
 // ─── Lifecycle Events ────────────────────────────────────────────────────
@@ -205,42 +130,7 @@ pub struct ManifestSubscription {
     pub priority: i32,
 }
 
-// ─── Hook Input / Output ─────────────────────────────────────────────────
-
-/// PreToolUse 钩子的输入数据。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PreToolUseInput {
-    /// 即将执行的工具名称。
-    pub tool_name: String,
-    /// 工具的输入参数。
-    pub tool_input: serde_json::Value,
-}
-
-/// PostToolUse 钩子的输入数据。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PostToolUseInput {
-    /// 已执行的工具名称。
-    pub tool_name: String,
-    /// 工具的输入参数。
-    pub tool_input: serde_json::Value,
-    /// 工具执行结果。
-    pub tool_result: ToolResult,
-}
-
-/// PostToolUseFailure 钩子的输入数据。
-///
-/// 仅当工具执行结果为错误时触发，携带结构化的错误信息。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PostToolUseFailureInput {
-    /// 失败的工具名称。
-    pub tool_name: String,
-    /// 工具的输入参数。
-    pub tool_input: serde_json::Value,
-    /// 错误描述文本。
-    pub error: String,
-    /// 完整的工具执行结果（可能包含额外输出）。
-    pub tool_result: ToolResult,
-}
+// ─── Compact Trigger ─────────────────────────────────────────────────────
 
 /// 触发 compact 的来源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,30 +140,6 @@ pub enum CompactTrigger {
     AutoThreshold,
     /// 用户手动执行 compact 命令。
     ManualCommand,
-}
-
-/// PreCompact 钩子的输入数据。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PreCompactInput {
-    /// compact 的触发来源。
-    pub trigger: CompactTrigger,
-    /// 即将参与 compact 判断或执行的可见消息数量。
-    pub message_count: usize,
-}
-
-/// PostCompact 钩子的输入数据。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PostCompactInput {
-    /// compact 的触发来源。
-    pub trigger: CompactTrigger,
-    /// compact 前的估算 token 数。
-    pub pre_tokens: usize,
-    /// compact 后的估算 token 数。
-    pub post_tokens: usize,
-    /// compact 移除的可见消息数量。
-    pub messages_removed: usize,
-    /// LLM 或 deterministic fallback 生成的摘要。
-    pub summary: String,
 }
 
 // ─── Hook Mode ───────────────────────────────────────────────────────────
@@ -293,58 +159,6 @@ pub enum HookMode {
     /// 执行但结果仅供参考。
     /// 适用于：风格建议、可选指导。
     Advisory,
-}
-
-/// 运行时扩展订阅条目。
-///
-/// 相比旧版 `(ExtensionEvent, HookMode)`，这里把优先级绑定到单个事件订阅上，
-/// 让同一个扩展可以在不同 hook 上使用不同排序。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HookSubscription {
-    /// 订阅的事件类型。
-    pub event: ExtensionEvent,
-    /// 钩子执行模式。
-    pub mode: HookMode,
-    /// 同一事件内的执行优先级，数值越大越先执行。
-    pub priority: i32,
-}
-
-// ─── Hook Effect ─────────────────────────────────────────────────────────
-
-/// 钩子执行的结果。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HookEffect {
-    /// 允许操作正常继续。
-    Allow,
-
-    /// 阻止操作并附带原因。仅 Blocking 钩子有效。
-    Block { reason: String },
-
-    /// 修改工具输入后再执行（仅 PreToolUse）。
-    ModifiedInput { tool_input: serde_json::Value },
-
-    /// 修改工具执行后的结果内容（仅 PostToolUse）。
-    ModifiedResult { content: String },
-
-    /// 修改发送给 LLM 的消息列表（仅 BeforeProviderRequest）。
-    ModifiedMessages {
-        messages: Vec<crate::llm::LlmMessage>,
-    },
-
-    /// 向发送给 LLM 的消息列表尾部追加消息（仅 BeforeProviderRequest）。
-    AppendMessages {
-        messages: Vec<crate::llm::LlmMessage>,
-    },
-
-    /// 修改 LLM 流式输出后的文本（仅 AfterProviderResponse）。
-    ModifiedOutput { text: String },
-
-    /// 为 prompt 组装提供受控片段（仅 PromptBuild）。
-    PromptContributions(PromptContributions),
-
-    /// 为 compact 摘要提供额外指令（仅 PreCompact）。
-    CompactContributions(CompactContributions),
 }
 
 /// 插件在 PromptBuild hook 中提供的 prompt 片段。
@@ -386,21 +200,6 @@ impl CompactContributions {
     pub fn merge(&mut self, other: CompactContributions) {
         self.instructions.extend(other.instructions);
     }
-}
-
-// ─── Extension Capabilities Summary ──────────────────────────────────────
-
-/// 扩展提供的能力摘要。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExtensionCapabilities {
-    /// 扩展 ID。
-    pub id: String,
-    /// 订阅的事件、模式及事件级优先级。
-    pub events: Vec<HookSubscription>,
-    /// 注册的工具数量。
-    pub tool_count: usize,
-    /// 注册的斜杠命令数量。
-    pub command_count: usize,
 }
 
 // ─── Slash Command ───────────────────────────────────────────────────────
@@ -456,148 +255,6 @@ impl ExtensionCommandResult {
     pub fn start_turn(instructions: impl Into<String>) -> Self {
         Self::StartTurn {
             instructions: instructions.into(),
-        }
-    }
-}
-
-// ─── Extension Context ───────────────────────────────────────────────────
-
-/// 扩展处理器可访问的受限会话和服务视图。
-///
-/// 扩展获得有限的 API 接口，以防止它们破坏核心系统的稳定性。
-#[async_trait::async_trait]
-pub trait ExtensionContext: Send + Sync {
-    /// 获取当前会话 ID。
-    fn session_id(&self) -> &str;
-
-    /// 获取当前会话的工作目录。
-    fn working_dir(&self) -> &str;
-
-    /// 获取当前的模型选择配置。
-    fn model_selection(&self) -> ModelSelection;
-
-    /// 按键名读取配置值。
-    fn config_value(&self, key: &str) -> Option<String>;
-
-    /// 向会话日志发送自定义事件。
-    async fn emit_custom_event(&self, name: &str, data: serde_json::Value);
-
-    /// 从工具注册表中按名称查找工具定义。
-    fn find_tool(&self, name: &str) -> Option<ToolDefinition>;
-
-    /// 获取当前 PreToolUse 载荷（仅在工具钩子上下文中可用）。
-    fn pre_tool_use_input(&self) -> Option<PreToolUseInput> {
-        None
-    }
-
-    /// 获取当前 PostToolUse 载荷（仅在工具钩子上下文中可用）。
-    fn post_tool_use_input(&self) -> Option<PostToolUseInput> {
-        None
-    }
-
-    /// 获取当前 PostToolUseFailure 载荷（仅在工具失败钩子上下文中可用）。
-    fn post_tool_use_failure_input(&self) -> Option<PostToolUseFailureInput> {
-        None
-    }
-
-    /// 获取当前 PreCompact 载荷（仅在 compact 钩子上下文中可用）。
-    fn pre_compact_input(&self) -> Option<PreCompactInput> {
-        None
-    }
-
-    /// 获取当前 PostCompact 载荷（仅在 compact 钩子上下文中可用）。
-    fn post_compact_input(&self) -> Option<PostCompactInput> {
-        None
-    }
-
-    /// 注册工具以注入到当前工具快照中。
-    ///
-    /// 通过此方法注册的工具会由宿主收集，并在构建工具快照时应用。
-    fn register_tool(&self, _def: ToolDefinition) {}
-
-    /// 排空所有通过 `register_tool()` 注册的工具。
-    fn drain_registered_tools(&self) -> Vec<ToolDefinition> {
-        vec![]
-    }
-
-    /// 获取即将发送给 LLM 的消息列表（用于 BeforeProviderRequest 钩子）。
-    fn provider_messages(&self) -> Option<Vec<crate::llm::LlmMessage>> {
-        None
-    }
-
-    /// 记录警告诊断信息（在服务器日志中可见）。
-    fn log_warn(&self, msg: &str);
-
-    /// 创建此上下文的快照，适用于即发即弃钩子中使用。
-    fn snapshot(&self) -> std::sync::Arc<dyn ExtensionContext>;
-
-    // ── 扩展间通信 ──────────────────────────────────────────────────
-
-    /// 返回共享的事件总线，用于扩展间通信。
-    ///
-    /// 通过事件总线，扩展可以广播自定义事件并监听其他扩展的事件。
-    /// 例如，模式扩展可以在模式切换时广播 `"mode_changed"` 事件，
-    /// 其他扩展监听到后可以调整自身行为。
-    ///
-    /// 默认实现返回 `None`（代表上下文未连接事件总线）。
-    /// 只有在服务器提供的完整上下文中才可用。
-    fn event_bus(&self) -> Option<&EventBus> {
-        None
-    }
-
-    // ── 会话信息（仅完整上下文可用） ────────────────────────────────
-
-    /// 获取当前会话的消息历史快照。
-    ///
-    /// 包含当前 turn 开始时的消息列表。扩展可以通过此方法读取
-    /// 过去的用户消息、助手回复和工具执行结果。
-    ///
-    /// 默认实现返回空切片。只有在服务器提供的完整上下文中才有内容。
-    fn session_history(&self) -> &[crate::llm::LlmMessage] {
-        &[]
-    }
-
-    /// 获取当前会话的 system prompt。
-    ///
-    /// 默认实现返回 `None`。只有在服务器提供的完整上下文中才可用。
-    fn system_prompt(&self) -> Option<&str> {
-        None
-    }
-
-    // ── 会话操作（仅完整上下文可用） ────────────────────────────────
-
-    /// 向当前会话发送一条用户消息。
-    ///
-    /// 消息会被追加到会话历史中，并在下一轮 agent turn 中被处理。
-    /// 默认实现返回错误——此方法仅在服务器提供的完整上下文中有效。
-    async fn send_message(&self, _content: &str) -> Result<(), String> {
-        Err("send_message is only available in server-side extension context".into())
-    }
-
-    /// 切换当前会话使用的模型。
-    ///
-    /// # 参数
-    /// - `model_id`: 模型标识符（如 `"claude-sonnet-4-6"`）
-    fn set_model(&self, _model_id: &str) -> Result<(), String> {
-        Err("set_model is only available in server-side extension context".into())
-    }
-
-    /// 触发当前会话的上下文压缩。
-    fn compact(&self) -> Result<(), String> {
-        Err("compact is only available in server-side extension context".into())
-    }
-
-    /// 广播一个自定义事件到事件总线。
-    ///
-    /// 如果事件总线可用，将数据发射到指定通道上的所有监听器。
-    /// 如果事件总线不可用（如在快照中），此方法无操作。
-    ///
-    /// # 参数
-    /// - `channel`: 事件通道名
-    /// - `data`: 事件载荷
-    fn broadcast(&self, channel: &str, data: serde_json::Value) {
-        if let Some(bus) = self.event_bus() {
-            bus.emit(channel, &data);
         }
     }
 }
@@ -665,4 +322,383 @@ pub enum ExtensionToolOutcome {
 /// `wait_for_result` 的 serde 默认值——`true`（同步阻塞）。
 const fn default_wait_for_result() -> bool {
     true
+}
+
+// ───  Typed Extension API ────────────────────────────────
+
+/// Provider hook 触发时机。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderEvent {
+    BeforeRequest,
+    AfterResponse,
+}
+
+/// Compact hook 触发时机。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactEvent {
+    PreCompact,
+    PostCompact,
+}
+
+// ─── Result Enums ────────────────────────────────────────────────
+
+/// 通用钩子结果。
+#[derive(Debug, Clone)]
+pub enum HookResult {
+    Allow,
+    Block { reason: String },
+}
+
+/// PreToolUse 钩子结果。
+#[derive(Debug, Clone)]
+pub enum PreToolUseResult {
+    Allow,
+    Block { reason: String },
+    ModifyInput { tool_input: serde_json::Value },
+}
+
+/// PostToolUse 钩子结果。
+#[derive(Debug, Clone)]
+pub enum PostToolUseResult {
+    Allow,
+    Block { reason: String },
+    ModifyResult { content: String },
+}
+
+/// Provider 钩子结果。
+#[derive(Debug, Clone)]
+pub enum ProviderResult {
+    Allow,
+    Block { reason: String },
+    ReplaceMessages { messages: Vec<crate::llm::LlmMessage> },
+    AppendMessages { messages: Vec<crate::llm::LlmMessage> },
+}
+
+/// Compact 钩子结果。
+#[derive(Debug, Clone)]
+pub enum CompactResult {
+    Allow,
+    Block { reason: String },
+    Contributions(CompactContributions),
+}
+
+// ─── Context Structs ─────────────────────────────────────────────
+
+/// PostToolUseFailure 钩子上下文。
+#[derive(Debug, Clone)]
+pub struct PostToolUseFailureContext {
+    pub session_id: String,
+    pub working_dir: String,
+    pub model: ModelSelection,
+    pub tool_name: String,
+    pub tool_input: serde_json::Value,
+    pub error: String,
+    pub tool_result: ToolResult,
+}
+
+/// PreToolUse 钩子上下文。
+#[derive(Debug, Clone)]
+pub struct PreToolUseContext {
+    pub session_id: String,
+    pub working_dir: String,
+    pub model: ModelSelection,
+    pub tool_name: String,
+    pub tool_input: serde_json::Value,
+    pub available_tools: Vec<ToolDefinition>,
+}
+
+/// PostToolUse 钩子上下文。
+#[derive(Debug, Clone)]
+pub struct PostToolUseContext {
+    pub session_id: String,
+    pub working_dir: String,
+    pub model: ModelSelection,
+    pub tool_name: String,
+    pub tool_input: serde_json::Value,
+    pub tool_result: ToolResult,
+    pub is_error: bool,
+}
+
+/// Provider 钩子上下文。
+#[derive(Debug, Clone)]
+pub struct ProviderContext {
+    pub session_id: String,
+    pub working_dir: String,
+    pub model: ModelSelection,
+    pub messages: Vec<crate::llm::LlmMessage>,
+}
+
+/// PromptBuild 钩子上下文。
+#[derive(Debug, Clone)]
+pub struct PromptBuildContext {
+    pub session_id: String,
+    pub working_dir: String,
+    pub model: ModelSelection,
+    pub tools: Vec<ToolDefinition>,
+}
+
+/// Compact 钩子上下文。
+#[derive(Debug, Clone)]
+pub struct CompactContext {
+    pub session_id: String,
+    pub working_dir: String,
+    pub model: ModelSelection,
+    pub trigger: CompactTrigger,
+    pub message_count: usize,
+    pub pre_tokens: Option<usize>,
+    pub post_tokens: Option<usize>,
+    pub summary: Option<String>,
+}
+
+/// 通用生命周期钩子上下文。
+#[derive(Debug, Clone)]
+pub struct LifecycleContext {
+    pub session_id: String,
+    pub working_dir: String,
+    pub model: ModelSelection,
+}
+
+/// 命令执行上下文。
+#[derive(Debug, Clone)]
+pub struct CommandContext {
+    pub session_id: String,
+    pub working_dir: String,
+    pub model: ModelSelection,
+}
+
+// ─── Handler Traits ──────────────────────────────────────────────
+
+/// PreToolUse 钩子处理器。
+#[async_trait::async_trait]
+pub trait PreToolUseHandler: Send + Sync {
+    async fn handle(&self, ctx: PreToolUseContext) -> Result<PreToolUseResult, ExtensionError>;
+}
+
+/// PostToolUse 钩子处理器。
+#[async_trait::async_trait]
+pub trait PostToolUseHandler: Send + Sync {
+    async fn handle(&self, ctx: PostToolUseContext) -> Result<PostToolUseResult, ExtensionError>;
+}
+
+/// Provider 钩子处理器。
+#[async_trait::async_trait]
+pub trait ProviderHandler: Send + Sync {
+    async fn handle(&self, ctx: ProviderContext) -> Result<ProviderResult, ExtensionError>;
+}
+
+/// PromptBuild 钩子处理器。
+#[async_trait::async_trait]
+pub trait PromptBuildHandler: Send + Sync {
+    async fn handle(&self, ctx: PromptBuildContext) -> Result<PromptContributions, ExtensionError>;
+}
+
+/// Compact 钩子处理器。
+#[async_trait::async_trait]
+pub trait CompactHandler: Send + Sync {
+    async fn handle(&self, ctx: CompactContext) -> Result<CompactResult, ExtensionError>;
+}
+
+/// PostToolUseFailure 通知型钩子处理器。
+#[async_trait::async_trait]
+pub trait PostToolUseFailureHandler: Send + Sync {
+    async fn handle(&self, ctx: PostToolUseFailureContext) -> Result<(), ExtensionError>;
+}
+
+/// 通用生命周期钩子处理器。
+#[async_trait::async_trait]
+pub trait LifecycleHandler: Send + Sync {
+    async fn handle(&self, ctx: LifecycleContext) -> Result<HookResult, ExtensionError>;
+}
+
+/// 工具执行处理器。
+#[async_trait::async_trait]
+pub trait ToolHandler: Send + Sync {
+    async fn execute(
+        &self,
+        tool_name: &str,
+        arguments: serde_json::Value,
+        working_dir: &str,
+        ctx: &crate::tool::ToolExecutionContext,
+    ) -> Result<ToolResult, ExtensionError>;
+}
+
+/// 命令执行处理器。
+#[async_trait::async_trait]
+pub trait CommandHandler: Send + Sync {
+    async fn execute(
+        &self,
+        command_name: &str,
+        args: &str,
+        working_dir: &str,
+        ctx: &CommandContext,
+    ) -> Result<ExtensionCommandResult, ExtensionError>;
+}
+
+/// 动态工具发现处理器。
+#[async_trait::async_trait]
+pub trait ToolDiscoveryHandler: Send + Sync {
+    async fn discover(
+        &self,
+        working_dir: &str,
+    ) -> Vec<(ToolDefinition, std::sync::Arc<dyn ToolHandler>)>;
+}
+
+/// 动态命令发现处理器。
+#[async_trait::async_trait]
+pub trait CommandDiscoveryHandler: Send + Sync {
+    async fn discover(
+        &self,
+        working_dir: &str,
+    ) -> Vec<(SlashCommand, std::sync::Arc<dyn CommandHandler>)>;
+}
+
+// ─── Registrar ───────────────────────────────────────────────────
+
+/// 扩展能力注册器。
+///
+/// 在 `Extension::register()` 调用期间有效，扩展通过它声明自己提供的能力。
+pub struct Registrar {
+    pub tools: Vec<(ToolDefinition, std::sync::Arc<dyn ToolHandler>)>,
+    pub tool_discovery: Vec<std::sync::Arc<dyn ToolDiscoveryHandler>>,
+    pub tool_metadata: std::collections::HashMap<String, ToolPromptMetadata>,
+    pub commands: Vec<(SlashCommand, std::sync::Arc<dyn CommandHandler>)>,
+    pub command_discovery: Vec<std::sync::Arc<dyn CommandDiscoveryHandler>>,
+    pub pre_tool_use: Vec<(HookMode, i32, std::sync::Arc<dyn PreToolUseHandler>)>,
+    pub post_tool_use: Vec<(HookMode, i32, std::sync::Arc<dyn PostToolUseHandler>)>,
+    pub provider: Vec<(ProviderEvent, HookMode, i32, std::sync::Arc<dyn ProviderHandler>)>,
+    pub prompt_build: Vec<(i32, std::sync::Arc<dyn PromptBuildHandler>)>,
+    pub compact: Vec<(CompactEvent, i32, std::sync::Arc<dyn CompactHandler>)>,
+    pub post_tool_use_failure: Vec<(i32, std::sync::Arc<dyn PostToolUseFailureHandler>)>,
+    pub lifecycle: Vec<(ExtensionEvent, HookMode, i32, std::sync::Arc<dyn LifecycleHandler>)>,
+}
+
+impl Registrar {
+    pub fn new() -> Self {
+        Self {
+            tools: Vec::new(),
+            tool_discovery: Vec::new(),
+            tool_metadata: std::collections::HashMap::new(),
+            commands: Vec::new(),
+            command_discovery: Vec::new(),
+            pre_tool_use: Vec::new(),
+            post_tool_use: Vec::new(),
+            provider: Vec::new(),
+            prompt_build: Vec::new(),
+            compact: Vec::new(),
+            post_tool_use_failure: Vec::new(),
+            lifecycle: Vec::new(),
+        }
+    }
+
+    pub fn tool(&mut self, def: ToolDefinition, handler: std::sync::Arc<dyn ToolHandler>) {
+        self.tools.push((def, handler));
+    }
+
+    pub fn tool_discovery(&mut self, handler: std::sync::Arc<dyn ToolDiscoveryHandler>) {
+        self.tool_discovery.push(handler);
+    }
+
+    pub fn tool_metadata(
+        &mut self,
+        meta: std::collections::HashMap<String, ToolPromptMetadata>,
+    ) {
+        self.tool_metadata.extend(meta);
+    }
+
+    pub fn command(&mut self, cmd: SlashCommand, handler: std::sync::Arc<dyn CommandHandler>) {
+        self.commands.push((cmd, handler));
+    }
+
+    pub fn command_discovery(
+        &mut self,
+        handler: std::sync::Arc<dyn CommandDiscoveryHandler>,
+    ) {
+        self.command_discovery.push(handler);
+    }
+
+    pub fn on_pre_tool_use(
+        &mut self,
+        mode: HookMode,
+        priority: i32,
+        handler: std::sync::Arc<dyn PreToolUseHandler>,
+    ) {
+        self.pre_tool_use.push((mode, priority, handler));
+    }
+
+    pub fn on_post_tool_use(
+        &mut self,
+        mode: HookMode,
+        priority: i32,
+        handler: std::sync::Arc<dyn PostToolUseHandler>,
+    ) {
+        self.post_tool_use.push((mode, priority, handler));
+    }
+
+    pub fn on_provider(
+        &mut self,
+        event: ProviderEvent,
+        mode: HookMode,
+        priority: i32,
+        handler: std::sync::Arc<dyn ProviderHandler>,
+    ) {
+        self.provider.push((event, mode, priority, handler));
+    }
+
+    pub fn on_prompt_build(
+        &mut self,
+        priority: i32,
+        handler: std::sync::Arc<dyn PromptBuildHandler>,
+    ) {
+        self.prompt_build.push((priority, handler));
+    }
+
+    pub fn on_compact(
+        &mut self,
+        event: CompactEvent,
+        priority: i32,
+        handler: std::sync::Arc<dyn CompactHandler>,
+    ) {
+        self.compact.push((event, priority, handler));
+    }
+
+    pub fn on_post_tool_use_failure(
+        &mut self,
+        priority: i32,
+        handler: std::sync::Arc<dyn PostToolUseFailureHandler>,
+    ) {
+        self.post_tool_use_failure.push((priority, handler));
+    }
+
+    pub fn on_event(
+        &mut self,
+        event: ExtensionEvent,
+        mode: HookMode,
+        priority: i32,
+        handler: std::sync::Arc<dyn LifecycleHandler>,
+    ) {
+        self.lifecycle.push((event, mode, priority, handler));
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
+            && self.tool_discovery.is_empty()
+            && self.tool_metadata.is_empty()
+            && self.commands.is_empty()
+            && self.command_discovery.is_empty()
+            && self.pre_tool_use.is_empty()
+            && self.post_tool_use.is_empty()
+            && self.provider.is_empty()
+            && self.prompt_build.is_empty()
+            && self.compact.is_empty()
+            && self.post_tool_use_failure.is_empty()
+            && self.lifecycle.is_empty()
+    }
+}
+
+impl Default for Registrar {
+    fn default() -> Self {
+        Self::new()
+    }
 }

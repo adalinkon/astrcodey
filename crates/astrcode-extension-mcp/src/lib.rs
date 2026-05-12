@@ -11,8 +11,10 @@ use std::{
 
 use astrcode_core::{
     extension::{
-        Extension, ExtensionContext, ExtensionError, ExtensionEvent, HookEffect, HookMode,
-        HookSubscription, PromptContributions,
+        Extension, ExtensionError,
+        PromptContributions,
+        PromptBuildContext, PromptBuildHandler,
+        Registrar, ToolDiscoveryHandler, ToolHandler,
     },
     tool::{
         ExecutionMode, ToolDefinition, ToolExecutionContext, ToolOrigin, ToolResult, tool_metadata,
@@ -49,46 +51,43 @@ impl Extension for McpExtension {
         EXTENSION_ID
     }
 
-    fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-        vec![HookSubscription {
-            event: ExtensionEvent::PromptBuild,
-            mode: HookMode::Blocking,
-            priority: 0,
-        }]
+    fn register(&self, reg: &mut Registrar) {
+        reg.tool_discovery(Arc::new(McpToolDiscovery));
+        reg.tool_metadata(mcp_tool_metadata());
+        reg.on_prompt_build(0, Arc::new(McpPromptBuildHandler));
     }
+}
 
-    async fn on_event(
+struct McpToolDiscovery;
+
+#[async_trait::async_trait]
+impl ToolDiscoveryHandler for McpToolDiscovery {
+    async fn discover(
         &self,
-        event: ExtensionEvent,
-        ctx: &dyn ExtensionContext,
-    ) -> Result<HookEffect, ExtensionError> {
-        if event == ExtensionEvent::PromptBuild && ctx.find_tool(TOOL_SEARCH_TOOL_NAME).is_some() {
-            return Ok(HookEffect::PromptContributions(PromptContributions {
-                additional_instructions: vec![mcp_discovery_instructions().into()],
-                ..Default::default()
-            }));
-        }
-        Ok(HookEffect::Allow)
-    }
-
-    async fn tools_for(&self, working_dir: &str) -> Vec<ToolDefinition> {
+        working_dir: &str,
+    ) -> Vec<(ToolDefinition, Arc<dyn ToolHandler>)> {
         let discovered = discover_mcp_tools(working_dir).await;
         warn_diagnostics(&discovered.diagnostics);
         if discovered.tools.is_empty() {
             return Vec::new();
         }
 
-        let mut definitions = vec![tool_search_tool_definition()];
-        definitions.extend(
-            discovered
-                .tools
-                .into_iter()
-                .map(|candidate| candidate.definition),
-        );
-        definitions
+        let mut result = vec![(
+            tool_search_tool_definition(),
+            Arc::new(McpToolHandler) as Arc<dyn ToolHandler>,
+        )];
+        for candidate in discovered.tools {
+            result.push((candidate.definition, Arc::new(McpToolHandler) as Arc<dyn ToolHandler>));
+        }
+        result
     }
+}
 
-    async fn execute_tool(
+struct McpToolHandler;
+
+#[async_trait::async_trait]
+impl ToolHandler for McpToolHandler {
+    async fn execute(
         &self,
         tool_name: &str,
         arguments: Value,
@@ -153,25 +152,40 @@ impl Extension for McpExtension {
             )),
         }
     }
+}
 
-    fn tool_prompt_metadata(
-        &self,
-    ) -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
-        let mut map = std::collections::HashMap::new();
-        map.insert(
-            TOOL_SEARCH_TOOL_NAME.to_string(),
-            astrcode_core::tool::ToolPromptMetadata::new(
-                "Builtin tools do not need discovery. Use `tool_search_tool` only when builtin \
-                 tools are not enough and you need the schema of an external MCP tool.",
-            )
-            .caveat(
-                "After `tool_search_tool` returns candidate tools and schemas, call the matching \
-                 concrete `mcp__...` tool directly.",
-            )
-            .prompt_tag("discovery"),
-        );
-        map
+struct McpPromptBuildHandler;
+
+#[async_trait::async_trait]
+impl PromptBuildHandler for McpPromptBuildHandler {
+    async fn handle(&self, ctx: PromptBuildContext) -> Result<PromptContributions, ExtensionError> {
+        let has_tool_search = ctx.tools.iter().any(|t| t.name == TOOL_SEARCH_TOOL_NAME);
+        if has_tool_search {
+            Ok(PromptContributions {
+                additional_instructions: vec![mcp_discovery_instructions().into()],
+                ..Default::default()
+            })
+        } else {
+            Ok(PromptContributions::default())
+        }
     }
+}
+
+fn mcp_tool_metadata() -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
+    let mut map = std::collections::HashMap::new();
+    map.insert(
+        TOOL_SEARCH_TOOL_NAME.to_string(),
+        astrcode_core::tool::ToolPromptMetadata::new(
+            "Builtin tools do not need discovery. Use `tool_search_tool` only when builtin \
+             tools are not enough and you need the schema of an external MCP tool.",
+        )
+        .caveat(
+            "After `tool_search_tool` returns candidate tools and schemas, call the matching \
+             concrete `mcp__...` tool directly.",
+        )
+        .prompt_tag("discovery"),
+    );
+    map
 }
 
 struct DiscoveredMcpTools {

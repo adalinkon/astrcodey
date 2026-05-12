@@ -11,10 +11,7 @@ use std::{
 };
 
 use astrcode_core::{
-    config::ModelSelection,
-    event_bus::EventBus,
     extension::*,
-    llm::LlmMessage,
     tool::{ExecutionMode, Tool, ToolDefinition, ToolError, ToolExecutionContext, ToolResult},
 };
 use tokio::sync::RwLock;
@@ -30,17 +27,18 @@ use crate::runtime::{SessionSpawner, SpawnRequest, SpawnResult};
 pub struct ExtensionRunner {
     /// 已注册的扩展列表（读写锁保护）
     extensions: RwLock<Vec<Arc<dyn Extension>>>,
+    /// 从 register() 收集的类型化能力记录
+    records: RwLock<Vec<ExtensionRecord>>,
     /// 会话创建器（在 bind() 调用前为 None）
     spawner: Arc<StdRwLock<Option<Arc<dyn SessionSpawner>>>>,
-    /// 扩展间共享的事件总线
-    event_bus: EventBus,
     /// 钩子执行超时时间
     timeout: Duration,
 }
 
-struct OrderedExtension {
-    ext: Arc<dyn Extension>,
-    mode: HookMode,
+/// 从 `register()` 调用中收集的扩展能力记录。
+struct ExtensionRecord {
+    id: String,
+    reg: Registrar,
 }
 
 #[derive(Debug, Clone)]
@@ -57,14 +55,36 @@ impl ExtensionRunner {
     pub fn new(timeout: Duration) -> Self {
         Self {
             extensions: RwLock::new(Vec::new()),
+            records: RwLock::new(Vec::new()),
             spawner: Arc::new(StdRwLock::new(None)),
-            event_bus: EventBus::new(),
             timeout,
         }
     }
 
     /// 注册一个扩展。
+    ///
+    /// 调用 `ext.register()` 收集类型化能力，然后存入扩展列表。
+    /// 重复的扩展 ID 会被跳过并记录警告。
     pub async fn register(&self, ext: Arc<dyn Extension>) {
+        let id = ext.id().to_string();
+
+        {
+            let exts = self.extensions.read().await;
+            if exts.iter().any(|e| e.id() == id) {
+                tracing::warn!(extension_id = %id, "extension already registered, skipping duplicate");
+                return;
+            }
+        }
+
+        let mut reg = Registrar::new();
+        ext.register(&mut reg);
+        if !reg.is_empty() {
+            let mut records = self.records.write().await;
+            records.push(ExtensionRecord {
+                id: id.clone(),
+                reg,
+            });
+        }
         let mut exts = self.extensions.write().await;
         exts.push(ext);
     }
@@ -72,428 +92,425 @@ impl ExtensionRunner {
     /// 绑定会话创建能力。
     /// 在服务器启动后、任何工具执行之前调用一次。
     pub fn bind(&self, spawner: Arc<dyn SessionSpawner>) {
-        *self.spawner.write().unwrap() = Some(spawner);
+        *self.spawner.write().unwrap_or_else(|e| e.into_inner()) = Some(spawner);
     }
 
-    /// 返回共享的事件总线引用，用于扩展间通信。
-    pub fn event_bus(&self) -> &EventBus {
-        &self.event_bus
-    }
-
-    /// 将事件分发到所有订阅的扩展。
-    ///
-    /// 在迭代前复制扩展列表，这样在钩子执行期间不会持有读锁。
-    pub async fn dispatch(
-        &self,
-        event: ExtensionEvent,
-        ctx: &dyn ExtensionContext,
-    ) -> Result<(), ExtensionError> {
-        for ordered in self.ordered_extensions_for(&event).await {
-            let ext = ordered.ext;
-
-            match ordered.mode {
-                HookMode::Blocking => {
-                    let result = self.call_ext(ext.as_ref(), event.clone(), ctx).await?;
-
-                    if let HookEffect::Block { reason } = result {
-                        return Err(ExtensionError::Blocked { reason });
-                    }
-                    // Modified* 效果在非工具事件上无意义 — 记录警告并继续
-                    if matches!(
-                        result,
-                        HookEffect::ModifiedInput { .. }
-                            | HookEffect::ModifiedResult { .. }
-                            | HookEffect::ModifiedMessages { .. }
-                            | HookEffect::AppendMessages { .. }
-                            | HookEffect::ModifiedOutput { .. }
-                            | HookEffect::PromptContributions(_)
-                            | HookEffect::CompactContributions(_)
-                    ) {
-                        tracing::warn!(
-                            "extension returned {:?} on {:?} — effect ignored (only \
-                             PreToolUse/PostToolUse/BeforeProviderRequest support modification)",
-                            result,
-                            event
-                        );
-                    }
-                },
-                HookMode::NonBlocking => {
-                    let evt = event.clone();
-                    // 使用快照以在派生前释放借用
-                    let snap_ctx = ctx.snapshot();
-                    tokio::spawn(async move {
-                        let _ = ext.on_event(evt, snap_ctx.as_ref()).await;
-                    });
-                },
-                HookMode::Advisory => {
-                    // 执行但不强制执行结果
-                    let _ = ext.on_event(event.clone(), ctx).await;
-                },
-            }
-        }
-
-        Ok(())
-    }
-
-    /// 分发 PreToolUse 或 PostToolUse 事件，并收集第一个
-    /// Blocking 结果（ModifiedInput / ModifiedResult / Block）。
-    ///
-    /// # 返回
-    /// 返回 [`ToolHookOutcome`] 表示所有扩展处理后的综合结果。
-    pub async fn dispatch_tool_hook(
-        &self,
-        event: ExtensionEvent,
-        ctx: &dyn ExtensionContext,
-    ) -> Result<ToolHookOutcome, ExtensionError> {
-        let mut modified_input: Option<serde_json::Value> = None;
-        let mut modified_result: Option<String> = None;
-
-        for ordered in self.ordered_extensions_for(&event).await {
-            let ext = ordered.ext;
-
-            match ordered.mode {
-                HookMode::Blocking => {
-                    let result = self.call_ext(ext.as_ref(), event.clone(), ctx).await?;
-
-                    match result {
-                        HookEffect::Block { reason } => {
-                            // 阻止效果立即返回
-                            return Ok(ToolHookOutcome::Blocked { reason });
-                        },
-                        HookEffect::ModifiedInput { tool_input } => {
-                            modified_input = Some(tool_input);
-                        },
-                        HookEffect::ModifiedResult { content } => {
-                            modified_result = Some(content);
-                        },
-                        HookEffect::ModifiedMessages { .. }
-                        | HookEffect::AppendMessages { .. }
-                        | HookEffect::ModifiedOutput { .. }
-                        | HookEffect::PromptContributions(_)
-                        | HookEffect::CompactContributions(_)
-                        | HookEffect::Allow => {},
-                    }
-                },
-                HookMode::NonBlocking => {
-                    let evt = event.clone();
-                    let snap_ctx = ctx.snapshot();
-                    tokio::spawn(async move {
-                        let _ = ext.on_event(evt, snap_ctx.as_ref()).await;
-                    });
-                },
-                HookMode::Advisory => {
-                    let _ = ext.on_event(event.clone(), ctx).await;
-                },
-            }
-        }
-
-        // 优先级: ModifiedInput > ModifiedResult > Allow
-        Ok(match (modified_input, modified_result) {
-            (Some(input), _) => ToolHookOutcome::ModifiedInput { tool_input: input },
-            (_, Some(content)) => ToolHookOutcome::ModifiedResult { content },
-            _ => ToolHookOutcome::Allow,
-        })
-    }
-
-    /// 分发提供者级别的钩子，收集消息变更。
-    ///
-    /// 用于 BeforeProviderRequest/AfterProviderResponse 事件，
-    /// 允许扩展修改发送给 LLM 的消息列表。
-    pub async fn dispatch_provider_hook(
-        &self,
-        event: ExtensionEvent,
-        ctx: &dyn ExtensionContext,
-    ) -> Result<ProviderHookOutcome, ExtensionError> {
-        let mut current_messages = ctx.provider_messages();
-        let mut modified_messages = false;
-
-        for ordered in self.ordered_extensions_for(&event).await {
-            let ext = ordered.ext;
-            let hook_ctx = ProviderMessagesContext {
-                base: ctx,
-                snap: ctx.snapshot(),
-                messages: current_messages.clone(),
-            };
-
-            match ordered.mode {
-                HookMode::Blocking => {
-                    let result = self
-                        .call_ext(ext.as_ref(), event.clone(), &hook_ctx)
-                        .await?;
-
-                    match result {
-                        HookEffect::Block { reason } => {
-                            return Ok(ProviderHookOutcome::Blocked { reason });
-                        },
-                        HookEffect::ModifiedMessages { messages } => {
-                            current_messages = Some(messages);
-                            modified_messages = true;
-                        },
-                        HookEffect::AppendMessages { mut messages } => {
-                            current_messages
-                                .get_or_insert_with(Vec::new)
-                                .append(&mut messages);
-                            modified_messages = true;
-                        },
-                        HookEffect::Allow
-                        | HookEffect::ModifiedInput { .. }
-                        | HookEffect::ModifiedResult { .. }
-                        | HookEffect::ModifiedOutput { .. }
-                        | HookEffect::PromptContributions(_)
-                        | HookEffect::CompactContributions(_) => {},
-                    }
-                },
-                HookMode::NonBlocking => {
-                    let evt = event.clone();
-                    let snap_ctx = hook_ctx.snapshot();
-                    tokio::spawn(async move {
-                        let _ = ext.on_event(evt, snap_ctx.as_ref()).await;
-                    });
-                },
-                HookMode::Advisory => {
-                    let _ = ext.on_event(event.clone(), &hook_ctx).await;
-                },
-            }
-        }
-
-        Ok(match (modified_messages, current_messages) {
-            (true, Some(messages)) => ProviderHookOutcome::ModifiedMessages { messages },
-            _ => ProviderHookOutcome::Allow,
-        })
-    }
-
-    /// 分发 PromptBuild hook，收集插件提供的 system/skills/agents 片段。
-    pub async fn collect_prompt_contributions(
-        &self,
-        ctx: &dyn ExtensionContext,
-    ) -> Result<PromptContributions, ExtensionError> {
-        let mut collected = PromptContributions::default();
-
-        for ordered in self
-            .ordered_extensions_for(&ExtensionEvent::PromptBuild)
-            .await
-        {
-            let ext = ordered.ext;
-
-            match ordered.mode {
-                HookMode::Blocking => {
-                    let result = self
-                        .call_ext(ext.as_ref(), ExtensionEvent::PromptBuild, ctx)
-                        .await?;
-
-                    match result {
-                        HookEffect::PromptContributions(contributions) => {
-                            collected.merge(contributions);
-                        },
-                        HookEffect::Block { reason } => {
-                            return Err(ExtensionError::Blocked { reason });
-                        },
-                        _ => {},
-                    }
-                },
-                HookMode::Advisory => {
-                    if let HookEffect::PromptContributions(contributions) =
-                        ext.on_event(ExtensionEvent::PromptBuild, ctx).await?
-                    {
-                        collected.merge(contributions);
-                    }
-                },
-                HookMode::NonBlocking => {
-                    tracing::warn!(
-                        "extension {} subscribes to PromptBuild as NonBlocking; prompt \
-                         contributions require Blocking or Advisory mode",
-                        ext.id()
-                    );
-                },
-            }
-        }
-
-        Ok(collected)
-    }
-
-    /// 分发 PreCompact hook，收集插件提供的 compact 摘要指令。
-    pub async fn collect_compact_contributions(
-        &self,
-        ctx: &dyn ExtensionContext,
-    ) -> Result<CompactContributions, ExtensionError> {
-        let mut collected = CompactContributions::default();
-
-        for ordered in self
-            .ordered_extensions_for(&ExtensionEvent::PreCompact)
-            .await
-        {
-            let ext = ordered.ext;
-
-            match ordered.mode {
-                HookMode::Blocking => {
-                    let result = self
-                        .call_ext(ext.as_ref(), ExtensionEvent::PreCompact, ctx)
-                        .await?;
-
-                    match result {
-                        HookEffect::CompactContributions(contributions) => {
-                            collected.merge(contributions);
-                        },
-                        HookEffect::Block { reason } => {
-                            return Err(ExtensionError::Blocked { reason });
-                        },
-                        _ => {},
-                    }
-                },
-                HookMode::Advisory => {
-                    if let HookEffect::CompactContributions(contributions) =
-                        ext.on_event(ExtensionEvent::PreCompact, ctx).await?
-                    {
-                        collected.merge(contributions);
-                    }
-                },
-                HookMode::NonBlocking => {
-                    tracing::warn!(
-                        "extension {} subscribes to PreCompact as NonBlocking; compact \
-                         contributions require Blocking or Advisory mode",
-                        ext.id()
-                    );
-                },
-            }
-        }
-
-        Ok(collected)
-    }
-
-    /// 当前已注册的扩展数量。
     pub async fn count(&self) -> usize {
         self.extensions.read().await.len()
     }
 
-    /// 从所有已注册的扩展收集工具定义。
-    pub async fn collect_tools(&self) -> Vec<astrcode_core::tool::ToolDefinition> {
-        let exts = self.extensions.read().await;
-        let mut tools = Vec::new();
-        for ext in exts.iter() {
-            tools.extend(ext.tools());
-        }
-        tools
-    }
+    // ─── 类型化分发方法（Context + Handler） ──────────────────
 
-    /// 从所有已注册的扩展收集工具提示词元数据。
-    pub async fn collect_tool_prompt_metadata(
+    /// PreToolUse 钩子分发。
+    pub async fn emit_pre_tool_use(
         &self,
-    ) -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
-        let exts = self.extensions.read().await;
-        let mut map = std::collections::HashMap::new();
-        for ext in exts.iter() {
-            map.extend(ext.tool_prompt_metadata());
+        ctx: PreToolUseContext,
+    ) -> Result<PreToolUseResult, ExtensionError> {
+        let records = self.records.read().await;
+        let mut handlers: Vec<(i32, HookMode, Arc<dyn PreToolUseHandler>)> = Vec::new();
+        for record in records.iter() {
+            for (mode, priority, handler) in record.reg.pre_tool_use.iter() {
+                handlers.push((*priority, *mode, Arc::clone(handler)));
+            }
         }
-        map
+        handlers.sort_by_key(|b| std::cmp::Reverse(b.0));
+        drop(records);
+
+        let mut ctx = ctx;
+        for (_, mode, handler) in handlers {
+            match mode {
+                HookMode::Blocking => {
+                    let result = tokio::time::timeout(self.timeout, handler.handle(ctx.clone()))
+                        .await
+                        .map_err(|_| ExtensionError::Timeout(self.timeout.as_millis() as u64))??;
+                    match result {
+                        PreToolUseResult::Block { reason } => {
+                            return Ok(PreToolUseResult::Block { reason });
+                        },
+                        PreToolUseResult::ModifyInput { tool_input } => {
+                            ctx = PreToolUseContext { tool_input, ..ctx };
+                        },
+                        PreToolUseResult::Allow => {},
+                    }
+                },
+                HookMode::Advisory => {
+                    if let Err(e) = handler.handle(ctx.clone()).await {
+                        tracing::warn!(extension_event = "pre_tool_use", error = %e, "advisory handler failed");
+                    }
+                },
+                HookMode::NonBlocking => {
+                    let ctx = ctx.clone();
+                    spawn_nonblocking(async move {
+                        if let Err(e) = handler.handle(ctx).await {
+                            tracing::warn!(extension_event = "pre_tool_use", error = %e, "non-blocking handler failed");
+                        }
+                    });
+                },
+            }
+        }
+        Ok(PreToolUseResult::Allow)
     }
 
-    /// 从所有已注册的扩展收集可执行的工具适配器。
-    pub async fn collect_tool_adapters(&self, working_dir: &str) -> Vec<Arc<dyn Tool>> {
-        let exts: Vec<Arc<dyn Extension>> = { self.extensions.read().await.clone() };
+    /// PostToolUse 钩子分发。
+    pub async fn emit_post_tool_use(
+        &self,
+        ctx: PostToolUseContext,
+    ) -> Result<PostToolUseResult, ExtensionError> {
+        let records = self.records.read().await;
+        let mut handlers: Vec<(i32, HookMode, Arc<dyn PostToolUseHandler>)> = Vec::new();
+        for record in records.iter() {
+            for (mode, priority, handler) in record.reg.post_tool_use.iter() {
+                handlers.push((*priority, *mode, Arc::clone(handler)));
+            }
+        }
+        handlers.sort_by_key(|b| std::cmp::Reverse(b.0));
+        drop(records);
+
+        let mut ctx = ctx;
+        for (_, mode, handler) in handlers {
+            match mode {
+                HookMode::Blocking => {
+                    let result = tokio::time::timeout(self.timeout, handler.handle(ctx.clone()))
+                        .await
+                        .map_err(|_| ExtensionError::Timeout(self.timeout.as_millis() as u64))??;
+                    match result {
+                        PostToolUseResult::Block { reason } => {
+                            return Ok(PostToolUseResult::Block { reason });
+                        },
+                        PostToolUseResult::ModifyResult { content } => {
+                            ctx = PostToolUseContext {
+                                tool_result: ToolResult {
+                                    content,
+                                    ..ctx.tool_result
+                                },
+                                ..ctx
+                            };
+                        },
+                        PostToolUseResult::Allow => {},
+                    }
+                },
+                HookMode::Advisory => {
+                    if let Err(e) = handler.handle(ctx.clone()).await {
+                        tracing::warn!(extension_event = "post_tool_use", error = %e, "advisory handler failed");
+                    }
+                },
+                HookMode::NonBlocking => {
+                    let ctx = ctx.clone();
+                    spawn_nonblocking(async move {
+                        if let Err(e) = handler.handle(ctx).await {
+                            tracing::warn!(extension_event = "post_tool_use", error = %e, "non-blocking handler failed");
+                        }
+                    });
+                },
+            }
+        }
+        Ok(PostToolUseResult::Allow)
+    }
+
+    /// Provider 钩子分发。
+    pub async fn emit_provider(
+        &self,
+        event: ProviderEvent,
+        ctx: ProviderContext,
+    ) -> Result<ProviderResult, ExtensionError> {
+        let records = self.records.read().await;
+        let mut handlers: Vec<(i32, HookMode, Arc<dyn ProviderHandler>)> = Vec::new();
+        for record in records.iter() {
+            for (ev, mode, priority, handler) in record.reg.provider.iter() {
+                if *ev == event {
+                    handlers.push((*priority, *mode, Arc::clone(handler)));
+                }
+            }
+        }
+        handlers.sort_by_key(|b| std::cmp::Reverse(b.0));
+        drop(records);
+
+        let mut ctx = ctx;
+        let mut modified = false;
+        for (_, mode, handler) in handlers {
+            match mode {
+                HookMode::Blocking => {
+                    let result = tokio::time::timeout(self.timeout, handler.handle(ctx.clone()))
+                        .await
+                        .map_err(|_| ExtensionError::Timeout(self.timeout.as_millis() as u64))??;
+                    match result {
+                        ProviderResult::Block { reason } => {
+                            return Ok(ProviderResult::Block { reason });
+                        },
+                        ProviderResult::ReplaceMessages { messages } => {
+                            ctx = ProviderContext { messages, ..ctx };
+                            modified = true;
+                        },
+                        ProviderResult::AppendMessages { messages } => {
+                            let mut new_messages = ctx.messages;
+                            new_messages.extend(messages);
+                            ctx = ProviderContext { messages: new_messages, ..ctx };
+                            modified = true;
+                        },
+                        ProviderResult::Allow => {},
+                    }
+                },
+                HookMode::Advisory => {
+                    if let Err(e) = handler.handle(ctx.clone()).await {
+                        tracing::warn!(extension_event = "provider", error = %e, "advisory handler failed");
+                    }
+                },
+                HookMode::NonBlocking => {
+                    let ctx = ctx.clone();
+                    spawn_nonblocking(async move {
+                        if let Err(e) = handler.handle(ctx).await {
+                            tracing::warn!(extension_event = "provider", error = %e, "non-blocking handler failed");
+                        }
+                    });
+                },
+            }
+        }
+        if modified {
+            Ok(ProviderResult::ReplaceMessages { messages: ctx.messages })
+        } else {
+            Ok(ProviderResult::Allow)
+        }
+    }
+
+    /// PromptBuild 贡献收集（类型化版本）。
+    pub async fn collect_prompt_contributions_typed(
+        &self,
+        ctx: PromptBuildContext,
+    ) -> Result<PromptContributions, ExtensionError> {
+        let records = self.records.read().await;
+        let mut handlers: Vec<(i32, Arc<dyn PromptBuildHandler>)> = Vec::new();
+        for record in records.iter() {
+            for (priority, handler) in record.reg.prompt_build.iter() {
+                handlers.push((*priority, Arc::clone(handler)));
+            }
+        }
+        handlers.sort_by_key(|b| std::cmp::Reverse(b.0));
+        drop(records);
+
+        let mut collected = PromptContributions::default();
+        for (_, handler) in handlers {
+            let contributions = tokio::time::timeout(self.timeout, handler.handle(ctx.clone()))
+                .await
+                .map_err(|_| ExtensionError::Timeout(self.timeout.as_millis() as u64))??;
+            collected.merge(contributions);
+        }
+        Ok(collected)
+    }
+
+    /// Compact 钩子分发。
+    pub async fn emit_compact(
+        &self,
+        event: CompactEvent,
+        ctx: CompactContext,
+    ) -> Result<CompactResult, ExtensionError> {
+        let records = self.records.read().await;
+        let mut handlers: Vec<(i32, Arc<dyn CompactHandler>)> = Vec::new();
+        for record in records.iter() {
+            for (ev, priority, handler) in record.reg.compact.iter() {
+                if *ev == event {
+                    handlers.push((*priority, Arc::clone(handler)));
+                }
+            }
+        }
+        handlers.sort_by_key(|b| std::cmp::Reverse(b.0));
+        drop(records);
+
+        let mut collected = CompactContributions::default();
+        for (_, handler) in handlers {
+            let result = tokio::time::timeout(self.timeout, handler.handle(ctx.clone()))
+                .await
+                .map_err(|_| ExtensionError::Timeout(self.timeout.as_millis() as u64))??;
+            match result {
+                CompactResult::Block { reason } => {
+                    return Ok(CompactResult::Block { reason });
+                },
+                CompactResult::Contributions(c) => {
+                    collected.merge(c);
+                },
+                CompactResult::Allow => {},
+            }
+        }
+        if collected.instructions.is_empty() {
+            Ok(CompactResult::Allow)
+        } else {
+            Ok(CompactResult::Contributions(collected))
+        }
+    }
+
+    /// PostToolUseFailure 通知型钩子分发。
+    pub async fn emit_post_tool_use_failure(
+        &self,
+        ctx: PostToolUseFailureContext,
+    ) {
+        let records = self.records.read().await;
+        let mut handlers: Vec<(i32, Arc<dyn PostToolUseFailureHandler>)> = Vec::new();
+        for record in records.iter() {
+            for (priority, handler) in record.reg.post_tool_use_failure.iter() {
+                handlers.push((*priority, Arc::clone(handler)));
+            }
+        }
+        handlers.sort_by_key(|b| std::cmp::Reverse(b.0));
+        drop(records);
+
+        for (_, handler) in handlers {
+            match tokio::time::timeout(self.timeout, handler.handle(ctx.clone())).await {
+                Ok(Ok(())) => {},
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "post tool use failure handler failed");
+                },
+                Err(_) => {
+                    tracing::warn!("post tool use failure handler timed out");
+                },
+            }
+        }
+    }
+
+    /// 通用生命周期事件分发。
+    pub async fn emit_lifecycle(
+        &self,
+        event: ExtensionEvent,
+        ctx: LifecycleContext,
+    ) -> Result<HookResult, ExtensionError> {
+        let records = self.records.read().await;
+        let mut handlers: Vec<(i32, HookMode, Arc<dyn LifecycleHandler>)> = Vec::new();
+        for record in records.iter() {
+            for (ev, mode, priority, handler) in record.reg.lifecycle.iter() {
+                if *ev == event {
+                    handlers.push((*priority, *mode, Arc::clone(handler)));
+                }
+            }
+        }
+        handlers.sort_by_key(|b| std::cmp::Reverse(b.0));
+        drop(records);
+
+        for (_, mode, handler) in handlers {
+            match mode {
+                HookMode::Blocking => {
+                    let result = tokio::time::timeout(self.timeout, handler.handle(ctx.clone()))
+                        .await
+                        .map_err(|_| ExtensionError::Timeout(self.timeout.as_millis() as u64))??;
+                    if let HookResult::Block { reason } = result {
+                        return Ok(HookResult::Block { reason });
+                    }
+                },
+                HookMode::Advisory => {
+                    if let Err(e) = handler.handle(ctx.clone()).await {
+                        tracing::warn!(extension_event = "lifecycle", error = %e, "advisory handler failed");
+                    }
+                },
+                HookMode::NonBlocking => {
+                    let ctx = ctx.clone();
+                    spawn_nonblocking(async move {
+                        if let Err(e) = handler.handle(ctx).await {
+                            tracing::warn!(extension_event = "lifecycle", error = %e, "non-blocking handler failed");
+                        }
+                    });
+                },
+            }
+        }
+        Ok(HookResult::Allow)
+    }
+
+    /// 从 ExtensionRecord 收集工具适配器（类型化版本）。
+    pub async fn collect_tool_adapters_typed(&self, working_dir: &str) -> Vec<Arc<dyn Tool>> {
+        let records = self.records.read().await;
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-        for ext in exts.iter() {
-            for def in ext.tools_for(working_dir).await {
-                tools.push(Arc::new(ExtensionTool {
-                    extension: Arc::clone(ext),
-                    definition: def,
+        for record in records.iter() {
+            for (def, handler) in record.reg.tools.iter() {
+                tools.push(Arc::new(HandlerTool {
+                    definition: def.clone(),
+                    handler: Arc::clone(handler),
                     working_dir: working_dir.to_string(),
                     spawner: Arc::clone(&self.spawner),
                 }));
             }
+            for discovery in record.reg.tool_discovery.iter() {
+                match tokio::time::timeout(self.timeout, discovery.discover(working_dir)).await {
+                    Ok(discovered) => {
+                        for (def, handler) in discovered {
+                            tools.push(Arc::new(HandlerTool {
+                                definition: def,
+                                handler,
+                                working_dir: working_dir.to_string(),
+                                spawner: Arc::clone(&self.spawner),
+                            }));
+                        }
+                    },
+                    Err(_) => {
+                        tracing::warn!("tool discovery timed out for extension {}", record.id);
+                    },
+                }
+            }
         }
         tools
     }
 
-    /// 从所有已注册的扩展收集斜杠命令。
-    pub async fn collect_commands(&self) -> Vec<astrcode_core::extension::SlashCommand> {
-        let exts = self.extensions.read().await;
+    /// 从 ExtensionRecord 收集工具提示词元数据（类型化版本）。
+    pub async fn collect_tool_prompt_metadata_typed(
+        &self,
+    ) -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
+        let records = self.records.read().await;
+        let mut map = std::collections::HashMap::new();
+        for record in records.iter() {
+            map.extend(record.reg.tool_metadata.clone());
+        }
+        map
+    }
+
+    /// 从 ExtensionRecord 收集斜杠命令（类型化版本）。
+    pub async fn collect_commands_for_typed(
+        &self,
+        working_dir: &str,
+    ) -> Vec<(String, SlashCommand, Arc<dyn CommandHandler>)> {
+        let records = self.records.read().await;
         let mut cmds = Vec::new();
-        for ext in exts.iter() {
-            cmds.extend(ext.slash_commands());
+        for record in records.iter() {
+            for (cmd, handler) in record.reg.commands.iter() {
+                cmds.push((record.id.clone(), cmd.clone(), Arc::clone(handler)));
+            }
+            for discovery in record.reg.command_discovery.iter() {
+                match tokio::time::timeout(self.timeout, discovery.discover(working_dir)).await {
+                    Ok(discovered) => {
+                        for (cmd, handler) in discovered {
+                            cmds.push((record.id.clone(), cmd, handler));
+                        }
+                    },
+                    Err(_) => {
+                        tracing::warn!("command discovery timed out for extension {}", record.id);
+                    },
+                }
+            }
         }
         cmds
     }
 
-    /// 从所有已注册的扩展收集绑定到工作目录的斜杠命令。
-    pub async fn collect_commands_for(&self, working_dir: &str) -> Vec<RegisteredSlashCommand> {
-        let exts: Vec<Arc<dyn Extension>> = { self.extensions.read().await.clone() };
-        let mut cmds = Vec::new();
-        for ext in exts.iter() {
-            cmds.extend(
-                ext.slash_commands_for(working_dir)
-                    .await
-                    .into_iter()
-                    .map(|command| RegisteredSlashCommand {
-                        extension_id: ext.id().to_string(),
-                        command,
-                    }),
-            );
-        }
-        cmds
-    }
-
-    /// 将斜杠命令派发到注册了该命令的扩展。
-    ///
-    /// 遍历所有扩展，找到 `slash_commands()` 中包含该命令名的扩展并调用其
-    /// `execute_command()`。如果没有任何扩展声明该命令，返回 `NotFound`。
-    pub async fn dispatch_command(
+    /// 命令派发（类型化版本）。
+    pub async fn dispatch_command_typed(
         &self,
         command_name: &str,
         arguments: &str,
         working_dir: &str,
-        ctx: &dyn ExtensionContext,
-    ) -> Result<astrcode_core::extension::ExtensionCommandResult, ExtensionError> {
-        let mut exts: Vec<Arc<dyn Extension>> = { self.extensions.read().await.clone() };
-        exts.sort_by_key(|ext| command_dispatch_priority(ext.id()));
-        for ext in exts.iter() {
-            let commands = ext.slash_commands_for(working_dir).await;
-            if commands.iter().any(|cmd| cmd.name == command_name) {
-                return ext
-                    .execute_command(command_name, arguments, working_dir, ctx)
-                    .await;
-            }
+        ctx: &CommandContext,
+    ) -> Result<ExtensionCommandResult, ExtensionError> {
+        let cmds = self.collect_commands_for_typed(working_dir).await;
+        let mut matched: Vec<(String, SlashCommand, Arc<dyn CommandHandler>)> = cmds
+            .into_iter()
+            .filter(|(_, cmd, _)| cmd.name == command_name)
+            .collect();
+        matched.sort_by_key(|a| command_dispatch_priority(&a.0));
+
+        if let Some((_, _, handler)) = matched.into_iter().next() {
+            handler
+                .execute(command_name, arguments, working_dir, ctx)
+                .await
+        } else {
+            Err(ExtensionError::NotFound(command_name.into()))
         }
-        Err(ExtensionError::NotFound(command_name.into()))
     }
 
-    async fn ordered_extensions_for(&self, event: &ExtensionEvent) -> Vec<OrderedExtension> {
-        let exts: Vec<Arc<dyn Extension>> = { self.extensions.read().await.clone() };
-        let mut matched = exts
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, ext)| {
-                let subscription = ext
-                    .hook_subscriptions()
-                    .into_iter()
-                    .find(|sub| &sub.event == event)?;
-                Some((index, subscription.priority, subscription.mode, ext))
-            })
-            .collect::<Vec<_>>();
-
-        matched.sort_by(
-            |(left_index, left_priority, _, _), (right_index, right_priority, _, _)| {
-                right_priority
-                    .cmp(left_priority)
-                    .then_with(|| left_index.cmp(right_index))
-            },
-        );
-
-        matched
-            .into_iter()
-            .map(|(_, _, mode, ext)| OrderedExtension { ext, mode })
-            .collect()
-    }
-
-    /// 带超时执行扩展的 on_event，统一处理 Timeout 错误映射。
-    async fn call_ext(
-        &self,
-        ext: &dyn Extension,
-        event: ExtensionEvent,
-        ctx: &dyn ExtensionContext,
-    ) -> Result<HookEffect, ExtensionError> {
-        tokio::time::timeout(self.timeout, ext.on_event(event, ctx))
-            .await
-            .map_err(|_| ExtensionError::Timeout(self.timeout.as_millis() as u64))?
+    /// 判断是否有任何扩展使用了 register() 注册了类型化能力。
+    pub async fn has_records(&self) -> bool {
+        !self.records.read().await.is_empty()
     }
 }
 
@@ -505,27 +522,41 @@ fn command_dispatch_priority(extension_id: &str) -> u8 {
     }
 }
 
-/// 扩展工具适配器，将扩展注册的工具包装为 `Tool` trait 实现。
-struct ExtensionTool {
-    /// 所属扩展引用
-    extension: Arc<dyn Extension>,
-    /// 工具定义
+/// 以即发即弃方式派生异步任务，观察 panic 并记录错误日志。
+///
+/// `tokio::spawn` 的 JoinHandle 被丢弃时，任务内的 panic 会被静默吞掉。
+/// 此函数通过第二个轻量级任务观察原始任务的 JoinHandle，
+/// 确保 panic 至少以 error 级别被记录。
+fn spawn_nonblocking<F>(fut: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let handle = tokio::spawn(fut);
+    tokio::spawn(async move {
+        if let Err(e) = handle.await {
+            if e.is_panic() {
+                tracing::error!("non-blocking handler panicked");
+            }
+        }
+    });
+}
+
+/// 类型化工具适配器，将 `ToolHandler` 包装为 `Tool` trait 实现。
+struct HandlerTool {
     definition: ToolDefinition,
-    /// 工作目录
+    handler: Arc<dyn ToolHandler>,
     working_dir: String,
-    /// 会话创建器（用于处理 RunSession 声明式结果）
     spawner: Arc<StdRwLock<Option<Arc<dyn SessionSpawner>>>>,
 }
 
-impl ExtensionTool {
-    /// 通过会话创建器派生子会话。
+impl HandlerTool {
     async fn spawn(
         &self,
         parent_session_id: &str,
         request: SpawnRequest,
     ) -> Result<SpawnResult, String> {
         let spawner = {
-            let guard = self.spawner.read().unwrap();
+            let guard = self.spawner.read().unwrap_or_else(|e| e.into_inner());
             match &*guard {
                 Some(s) => Arc::clone(s),
                 None => return Err("Session spawner not bound".into()),
@@ -536,7 +567,7 @@ impl ExtensionTool {
 }
 
 #[async_trait::async_trait]
-impl Tool for ExtensionTool {
+impl Tool for HandlerTool {
     fn definition(&self) -> ToolDefinition {
         self.definition.clone()
     }
@@ -545,31 +576,26 @@ impl Tool for ExtensionTool {
         self.definition.execution_mode
     }
 
-    /// 扩展工具的实际执行逻辑。
-    ///
-    /// 调用扩展的工具回调，并处理声明式 RunSession 结果：
-    /// 如果工具返回 RunSession，则通过运行时派生子会话。
     async fn execute(
         &self,
         arguments: serde_json::Value,
         _ctx: &ToolExecutionContext,
     ) -> Result<ToolResult, ToolError> {
         let mut result = match self
-            .extension
-            .execute_tool(&self.definition.name, arguments, &self.working_dir, _ctx)
+            .handler
+            .execute(&self.definition.name, arguments, &self.working_dir, _ctx)
             .await
         {
             Ok(result) => result,
             Err(err) => {
                 return Ok(extension_error_result(
                     &self.definition.name,
-                    self.extension.id(),
+                    "handler",
                     err,
                 ));
             },
         };
 
-        // 处理声明式结果: RunSession → 派生子会话
         if let Some(outcome_value) = result.metadata.remove("extension_tool_outcome") {
             if let Ok(ExtensionToolOutcome::RunSession {
                 name,
@@ -658,535 +684,4 @@ fn extension_error_result(tool_name: &str, extension_id: &str, err: ExtensionErr
     }
 
     ToolResult::text(content, true, metadata)
-}
-
-/// 工具级别钩子分发的结果。
-#[derive(Debug, Clone)]
-pub enum ToolHookOutcome {
-    /// 允许继续执行
-    Allow,
-    /// 阻止执行，附带阻止原因
-    Blocked { reason: String },
-    /// 修改了工具输入
-    ModifiedInput { tool_input: serde_json::Value },
-    /// 修改了工具结果
-    ModifiedResult { content: String },
-}
-
-/// 提供者级别钩子分发的结果。
-#[derive(Debug, Clone)]
-pub enum ProviderHookOutcome {
-    /// 允许继续执行
-    Allow,
-    /// 阻止执行，附带阻止原因
-    Blocked { reason: String },
-    /// 修改了发送给提供者的消息列表
-    ModifiedMessages {
-        messages: Vec<astrcode_core::llm::LlmMessage>,
-    },
-}
-
-/// 为 BeforeProviderRequest/AfterProviderResponse 钩子准备的上下文包装器，
-/// 重写 `provider_messages()` 使其反映链式调用中已修改的消息。
-///
-/// 使用借用的基上下文（带工具），以及一份预创建的快照（用于非阻塞分支）。
-struct ProviderMessagesContext<'a> {
-    base: &'a dyn ExtensionContext,
-    snap: Arc<dyn ExtensionContext>,
-    messages: Option<Vec<LlmMessage>>,
-}
-
-#[async_trait::async_trait]
-impl ExtensionContext for ProviderMessagesContext<'_> {
-    fn session_id(&self) -> &str {
-        self.base.session_id()
-    }
-    fn working_dir(&self) -> &str {
-        self.base.working_dir()
-    }
-    fn model_selection(&self) -> ModelSelection {
-        self.base.model_selection()
-    }
-    fn config_value(&self, key: &str) -> Option<String> {
-        self.base.config_value(key)
-    }
-    async fn emit_custom_event(&self, name: &str, data: serde_json::Value) {
-        self.base.emit_custom_event(name, data).await;
-    }
-    fn find_tool(&self, name: &str) -> Option<ToolDefinition> {
-        self.base.find_tool(name)
-    }
-    fn pre_tool_use_input(&self) -> Option<PreToolUseInput> {
-        self.base.pre_tool_use_input()
-    }
-    fn post_tool_use_input(&self) -> Option<PostToolUseInput> {
-        self.base.post_tool_use_input()
-    }
-    fn post_tool_use_failure_input(&self) -> Option<PostToolUseFailureInput> {
-        self.base.post_tool_use_failure_input()
-    }
-    fn pre_compact_input(&self) -> Option<PreCompactInput> {
-        self.base.pre_compact_input()
-    }
-    fn post_compact_input(&self) -> Option<PostCompactInput> {
-        self.base.post_compact_input()
-    }
-    fn register_tool(&self, def: ToolDefinition) {
-        self.base.register_tool(def);
-    }
-    fn drain_registered_tools(&self) -> Vec<ToolDefinition> {
-        self.base.drain_registered_tools()
-    }
-    fn provider_messages(&self) -> Option<Vec<LlmMessage>> {
-        self.messages.clone()
-    }
-    fn log_warn(&self, msg: &str) {
-        self.base.log_warn(msg);
-    }
-    fn event_bus(&self) -> Option<&EventBus> {
-        self.base.event_bus()
-    }
-    fn session_history(&self) -> &[LlmMessage] {
-        self.base.session_history()
-    }
-    fn system_prompt(&self) -> Option<&str> {
-        self.base.system_prompt()
-    }
-    async fn send_message(&self, content: &str) -> Result<(), String> {
-        self.base.send_message(content).await
-    }
-    fn set_model(&self, model_id: &str) -> Result<(), String> {
-        self.base.set_model(model_id)
-    }
-    fn compact(&self) -> Result<(), String> {
-        self.base.compact()
-    }
-    fn broadcast(&self, channel: &str, data: serde_json::Value) {
-        self.base.broadcast(channel, data);
-    }
-    fn snapshot(&self) -> Arc<dyn ExtensionContext> {
-        Arc::new(ProviderMessagesSnapshot {
-            base: self.snap.clone(),
-            messages: self.messages.clone(),
-        })
-    }
-}
-
-/// 即发即弃分支使用的消息上下文快照。
-struct ProviderMessagesSnapshot {
-    base: Arc<dyn ExtensionContext>,
-    messages: Option<Vec<LlmMessage>>,
-}
-
-#[async_trait::async_trait]
-impl ExtensionContext for ProviderMessagesSnapshot {
-    fn session_id(&self) -> &str {
-        self.base.session_id()
-    }
-    fn working_dir(&self) -> &str {
-        self.base.working_dir()
-    }
-    fn model_selection(&self) -> ModelSelection {
-        self.base.model_selection()
-    }
-    fn config_value(&self, key: &str) -> Option<String> {
-        self.base.config_value(key)
-    }
-    async fn emit_custom_event(&self, name: &str, data: serde_json::Value) {
-        self.base.emit_custom_event(name, data).await;
-    }
-    fn find_tool(&self, name: &str) -> Option<ToolDefinition> {
-        self.base.find_tool(name)
-    }
-    fn pre_tool_use_input(&self) -> Option<PreToolUseInput> {
-        self.base.pre_tool_use_input()
-    }
-    fn post_tool_use_input(&self) -> Option<PostToolUseInput> {
-        self.base.post_tool_use_input()
-    }
-    fn post_tool_use_failure_input(&self) -> Option<PostToolUseFailureInput> {
-        self.base.post_tool_use_failure_input()
-    }
-    fn pre_compact_input(&self) -> Option<PreCompactInput> {
-        self.base.pre_compact_input()
-    }
-    fn post_compact_input(&self) -> Option<PostCompactInput> {
-        self.base.post_compact_input()
-    }
-    fn provider_messages(&self) -> Option<Vec<LlmMessage>> {
-        self.messages.clone()
-    }
-    fn log_warn(&self, msg: &str) {
-        self.base.log_warn(msg);
-    }
-    fn event_bus(&self) -> Option<&EventBus> {
-        self.base.event_bus()
-    }
-    fn session_history(&self) -> &[LlmMessage] {
-        self.base.session_history()
-    }
-    fn system_prompt(&self) -> Option<&str> {
-        self.base.system_prompt()
-    }
-    async fn send_message(&self, content: &str) -> Result<(), String> {
-        self.base.send_message(content).await
-    }
-    fn set_model(&self, model_id: &str) -> Result<(), String> {
-        self.base.set_model(model_id)
-    }
-    fn compact(&self) -> Result<(), String> {
-        self.base.compact()
-    }
-    fn broadcast(&self, channel: &str, data: serde_json::Value) {
-        self.base.broadcast(channel, data);
-    }
-    fn snapshot(&self) -> Arc<dyn ExtensionContext> {
-        Arc::new(ProviderMessagesSnapshot {
-            base: self.base.snapshot(),
-            messages: self.messages.clone(),
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Mutex;
-
-    use astrcode_core::{config::ModelSelection, extension::PromptContributions};
-
-    use super::*;
-
-    struct PromptContributionExtension;
-    struct ProviderReplaceExtension;
-    struct ProviderAppendExtension;
-    struct OrderedProviderAppendExtension {
-        id: &'static str,
-        text: &'static str,
-        priority: i32,
-    }
-    struct OrderedToolExtension {
-        id: &'static str,
-        label: &'static str,
-        priority: i32,
-        blocks: bool,
-        seen: Arc<Mutex<Vec<&'static str>>>,
-    }
-
-    #[async_trait::async_trait]
-    impl Extension for PromptContributionExtension {
-        fn id(&self) -> &str {
-            "prompt-contribution"
-        }
-
-        fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-            vec![HookSubscription {
-                event: ExtensionEvent::PromptBuild,
-                mode: HookMode::Blocking,
-                priority: 0,
-            }]
-        }
-
-        async fn on_event(
-            &self,
-            event: ExtensionEvent,
-            _ctx: &dyn ExtensionContext,
-        ) -> Result<HookEffect, ExtensionError> {
-            assert_eq!(event, ExtensionEvent::PromptBuild);
-            Ok(HookEffect::PromptContributions(PromptContributions {
-                system_prompts: vec!["system".to_string()],
-                additional_instructions: vec!["instruction".to_string()],
-                skills: vec!["skill".to_string()],
-                agents: vec!["agent".to_string()],
-            }))
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Extension for ProviderReplaceExtension {
-        fn id(&self) -> &str {
-            "provider-replace"
-        }
-
-        fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-            vec![HookSubscription {
-                event: ExtensionEvent::BeforeProviderRequest,
-                mode: HookMode::Blocking,
-                priority: 0,
-            }]
-        }
-
-        async fn on_event(
-            &self,
-            event: ExtensionEvent,
-            _ctx: &dyn ExtensionContext,
-        ) -> Result<HookEffect, ExtensionError> {
-            assert_eq!(event, ExtensionEvent::BeforeProviderRequest);
-            Ok(HookEffect::ModifiedMessages {
-                messages: vec![LlmMessage::user("replaced")],
-            })
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Extension for ProviderAppendExtension {
-        fn id(&self) -> &str {
-            "provider-append"
-        }
-
-        fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-            vec![HookSubscription {
-                event: ExtensionEvent::BeforeProviderRequest,
-                mode: HookMode::Blocking,
-                priority: 0,
-            }]
-        }
-
-        async fn on_event(
-            &self,
-            event: ExtensionEvent,
-            ctx: &dyn ExtensionContext,
-        ) -> Result<HookEffect, ExtensionError> {
-            assert_eq!(event, ExtensionEvent::BeforeProviderRequest);
-            let messages = ctx
-                .provider_messages()
-                .expect("provider hook should see current messages");
-            assert!(message_texts(&messages).contains(&String::from("replaced")));
-            Ok(HookEffect::AppendMessages {
-                messages: vec![LlmMessage::user("appended")],
-            })
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Extension for OrderedProviderAppendExtension {
-        fn id(&self) -> &str {
-            self.id
-        }
-
-        fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-            vec![HookSubscription {
-                event: ExtensionEvent::BeforeProviderRequest,
-                mode: HookMode::Blocking,
-                priority: self.priority,
-            }]
-        }
-
-        async fn on_event(
-            &self,
-            event: ExtensionEvent,
-            _ctx: &dyn ExtensionContext,
-        ) -> Result<HookEffect, ExtensionError> {
-            assert_eq!(event, ExtensionEvent::BeforeProviderRequest);
-            Ok(HookEffect::AppendMessages {
-                messages: vec![LlmMessage::user(self.text)],
-            })
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Extension for OrderedToolExtension {
-        fn id(&self) -> &str {
-            self.id
-        }
-
-        fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-            vec![HookSubscription {
-                event: ExtensionEvent::PreToolUse,
-                mode: HookMode::Blocking,
-                priority: self.priority,
-            }]
-        }
-
-        async fn on_event(
-            &self,
-            event: ExtensionEvent,
-            _ctx: &dyn ExtensionContext,
-        ) -> Result<HookEffect, ExtensionError> {
-            assert_eq!(event, ExtensionEvent::PreToolUse);
-            self.seen
-                .lock()
-                .expect("record hook order")
-                .push(self.label);
-            if self.blocks {
-                return Ok(HookEffect::Block {
-                    reason: self.label.to_string(),
-                });
-            }
-            Ok(HookEffect::Allow)
-        }
-    }
-
-    struct TestContext;
-
-    #[async_trait::async_trait]
-    impl ExtensionContext for TestContext {
-        fn session_id(&self) -> &str {
-            "session"
-        }
-
-        fn working_dir(&self) -> &str {
-            "."
-        }
-
-        fn model_selection(&self) -> ModelSelection {
-            ModelSelection::simple("mock")
-        }
-
-        fn config_value(&self, _key: &str) -> Option<String> {
-            None
-        }
-
-        async fn emit_custom_event(&self, _name: &str, _data: serde_json::Value) {}
-
-        fn find_tool(&self, _name: &str) -> Option<ToolDefinition> {
-            None
-        }
-
-        fn provider_messages(&self) -> Option<Vec<LlmMessage>> {
-            Some(vec![LlmMessage::user("original")])
-        }
-
-        fn log_warn(&self, _msg: &str) {}
-
-        fn snapshot(&self) -> Arc<dyn ExtensionContext> {
-            Arc::new(TestContext)
-        }
-    }
-
-    fn message_texts(messages: &[LlmMessage]) -> Vec<String> {
-        messages
-            .iter()
-            .flat_map(|message| message.content.iter())
-            .filter_map(|content| match content {
-                astrcode_core::llm::LlmContent::Text { text } => Some(text.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    #[tokio::test]
-    async fn collect_prompt_contributions_merges_prompt_build_hook_output() {
-        let runner = ExtensionRunner::new(Duration::from_secs(1));
-        runner.register(Arc::new(PromptContributionExtension)).await;
-
-        let contributions = runner
-            .collect_prompt_contributions(&TestContext)
-            .await
-            .expect("collect contributions");
-
-        assert_eq!(contributions.system_prompts, ["system"]);
-        assert_eq!(contributions.additional_instructions, ["instruction"]);
-        assert_eq!(contributions.skills, ["skill"]);
-        assert_eq!(contributions.agents, ["agent"]);
-    }
-
-    #[tokio::test]
-    async fn provider_message_hooks_replace_then_append() {
-        let runner = ExtensionRunner::new(Duration::from_secs(1));
-        runner.register(Arc::new(ProviderReplaceExtension)).await;
-        runner.register(Arc::new(ProviderAppendExtension)).await;
-
-        let outcome = runner
-            .dispatch_provider_hook(ExtensionEvent::BeforeProviderRequest, &TestContext)
-            .await
-            .expect("provider hook dispatch");
-
-        let ProviderHookOutcome::ModifiedMessages { messages } = outcome else {
-            panic!("provider hooks should produce modified messages");
-        };
-        assert_eq!(message_texts(&messages), ["replaced", "appended"]);
-    }
-
-    #[tokio::test]
-    async fn provider_hooks_use_priority_before_registration_order() {
-        let runner = ExtensionRunner::new(Duration::from_secs(1));
-        runner
-            .register(Arc::new(OrderedProviderAppendExtension {
-                id: "low",
-                text: "low",
-                priority: -1,
-            }))
-            .await;
-        runner
-            .register(Arc::new(OrderedProviderAppendExtension {
-                id: "high",
-                text: "high",
-                priority: 10,
-            }))
-            .await;
-
-        let outcome = runner
-            .dispatch_provider_hook(ExtensionEvent::BeforeProviderRequest, &TestContext)
-            .await
-            .expect("provider hook dispatch");
-
-        let ProviderHookOutcome::ModifiedMessages { messages } = outcome else {
-            panic!("provider hooks should produce modified messages");
-        };
-        assert_eq!(message_texts(&messages), ["original", "high", "low"]);
-    }
-
-    #[tokio::test]
-    async fn provider_hooks_keep_registration_order_for_equal_priority() {
-        let runner = ExtensionRunner::new(Duration::from_secs(1));
-        runner
-            .register(Arc::new(OrderedProviderAppendExtension {
-                id: "first",
-                text: "first",
-                priority: 0,
-            }))
-            .await;
-        runner
-            .register(Arc::new(OrderedProviderAppendExtension {
-                id: "second",
-                text: "second",
-                priority: 0,
-            }))
-            .await;
-
-        let outcome = runner
-            .dispatch_provider_hook(ExtensionEvent::BeforeProviderRequest, &TestContext)
-            .await
-            .expect("provider hook dispatch");
-
-        let ProviderHookOutcome::ModifiedMessages { messages } = outcome else {
-            panic!("provider hooks should produce modified messages");
-        };
-        assert_eq!(message_texts(&messages), ["original", "first", "second"]);
-    }
-
-    #[tokio::test]
-    async fn tool_hooks_stop_after_higher_priority_block() {
-        let runner = ExtensionRunner::new(Duration::from_secs(1));
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        runner
-            .register(Arc::new(OrderedToolExtension {
-                id: "low",
-                label: "low",
-                priority: -1,
-                blocks: false,
-                seen: Arc::clone(&seen),
-            }))
-            .await;
-        runner
-            .register(Arc::new(OrderedToolExtension {
-                id: "high",
-                label: "high",
-                priority: 10,
-                blocks: true,
-                seen: Arc::clone(&seen),
-            }))
-            .await;
-
-        let outcome = runner
-            .dispatch_tool_hook(ExtensionEvent::PreToolUse, &TestContext)
-            .await
-            .expect("tool hook dispatch");
-
-        let ToolHookOutcome::Blocked { reason } = outcome else {
-            panic!("higher priority hook should block");
-        };
-        assert_eq!(reason, "high");
-        assert_eq!(seen.lock().expect("read hook order").as_slice(), ["high"]);
-    }
 }

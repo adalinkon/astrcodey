@@ -70,7 +70,6 @@ impl CommandHandler {
             session_id: sid.as_str(),
             working_dir: &state.working_dir,
             model_id: &state.model_id,
-            tools: &tools,
             trigger: CompactTrigger::ManualCommand,
             message_count: provider_messages.len(),
         };

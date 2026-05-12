@@ -75,6 +75,7 @@ pub struct ModeSpec {
 }
 
 /// Registry of available modes with lookup by ID.
+#[derive(Clone)]
 pub struct ModeCatalog {
     modes: Vec<ModeSpec>,
     index: BTreeMap<String, usize>,

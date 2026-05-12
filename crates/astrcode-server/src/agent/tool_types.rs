@@ -51,7 +51,6 @@ pub(super) struct ExecuteToolCalls<'a> {
 pub(super) struct CommitToolResults<'a> {
     pub(super) prepared: &'a [PreparedToolCall],
     pub(super) results: BTreeMap<usize, ToolResult>,
-    pub(super) tools: &'a [ToolDefinition],
     pub(super) messages: &'a mut Vec<LlmMessage>,
     pub(super) all_tool_results: &'a mut Vec<ToolResult>,
     pub(super) event_tx: &'a Option<mpsc::UnboundedSender<AgentSignal>>,

@@ -4,8 +4,10 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use astrcode_core::{
     extension::{
-        Extension, ExtensionContext, ExtensionError, ExtensionEvent, HookEffect, HookMode,
-        HookSubscription,
+        Extension, ExtensionError, HookMode,
+        PostToolUseContext, PostToolUseHandler, PostToolUseResult,
+        ProviderContext, ProviderEvent, ProviderHandler, ProviderResult,
+        Registrar, ToolHandler,
     },
     tool::{ExecutionMode, ToolDefinition, ToolOrigin, ToolResult, tool_metadata},
 };
@@ -41,56 +43,28 @@ impl Extension for TodoToolExtension {
         "astrcode-todo-tool"
     }
 
-    fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-        vec![
-            HookSubscription {
-                event: ExtensionEvent::BeforeProviderRequest,
-                mode: HookMode::Blocking,
-                priority: 0,
-            },
-            HookSubscription {
-                event: ExtensionEvent::PostToolUse,
-                mode: HookMode::Blocking,
-                priority: 0,
-            },
-        ]
+    fn register(&self, reg: &mut Registrar) {
+        reg.tool(todo_write_tool_definition(), Arc::new(TodoWriteToolHandler));
+        reg.tool_metadata(todo_write_metadata());
+        reg.on_provider(
+            ProviderEvent::BeforeRequest,
+            HookMode::Blocking,
+            0,
+            Arc::new(TodoReminderHandler),
+        );
+        reg.on_post_tool_use(
+            HookMode::Blocking,
+            0,
+            Arc::new(TodoPostToolUseHandler),
+        );
     }
+}
 
-    async fn on_event(
-        &self,
-        event: ExtensionEvent,
-        ctx: &dyn ExtensionContext,
-    ) -> Result<HookEffect, ExtensionError> {
-        match event {
-            ExtensionEvent::BeforeProviderRequest => {
-                if ctx.find_tool(TODO_WRITE_TOOL_NAME).is_none() {
-                    return Ok(HookEffect::Allow);
-                }
+struct TodoWriteToolHandler;
 
-                ProgressReminder::new(progress_store_root(ctx.session_id(), ctx.working_dir()))
-                    .before_provider_request()
-                    .map_err(ExtensionError::Internal)
-            },
-            ExtensionEvent::PostToolUse => {
-                let Some(input) = ctx.post_tool_use_input() else {
-                    return Ok(HookEffect::Allow);
-                };
-                if input.tool_name == TODO_WRITE_TOOL_NAME {
-                    ProgressReminder::new(progress_store_root(ctx.session_id(), ctx.working_dir()))
-                        .record_todo_write()
-                        .map_err(ExtensionError::Internal)?;
-                }
-                Ok(HookEffect::Allow)
-            },
-            _ => Ok(HookEffect::Allow),
-        }
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![todo_write_tool_definition()]
-    }
-
-    async fn execute_tool(
+#[async_trait::async_trait]
+impl ToolHandler for TodoWriteToolHandler {
+    async fn execute(
         &self,
         tool_name: &str,
         arguments: Value,
@@ -100,7 +74,6 @@ impl Extension for TodoToolExtension {
         if tool_name != TODO_WRITE_TOOL_NAME {
             return Err(ExtensionError::NotFound(tool_name.into()));
         }
-
         let store =
             ProgressListStore::new(progress_store_root(ctx.session_id.as_str(), working_dir));
         Ok(match handle_todo_write(arguments, &store) {
@@ -112,36 +85,61 @@ impl Extension for TodoToolExtension {
             ),
         })
     }
+}
 
-    fn tool_prompt_metadata(
-        &self,
-    ) -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
-        let mut map = std::collections::HashMap::new();
-        map.insert(
-            TODO_WRITE_TOOL_NAME.to_string(),
-            astrcode_core::tool::ToolPromptMetadata::new(
-                "Maintain the current progress snapshot for this branch of work.",
-            )
-            .caveat(
-                "Do not use for trivial one-step work, pure Q&A, or tasks that can be completed \
-                 in roughly three straightforward actions.",
-            )
-            .caveat(
-                "Keep exactly one item in `in_progress` at a time. Mark an item `in_progress` \
-                 before starting it, and mark it `completed` immediately after it is truly \
-                 finished.",
-            )
-            .example(
-                "{ todos: [{ content: \"分析现有代码结构\", status: \"in_progress\", activeForm: \
-                 \"正在分析现有代码结构\" }, { content: \"设计优化方案\", status: \"pending\", \
-                 activeForm: \"准备设计优化方案\" }, { content: \"验证优化效果\", status: \
-                 \"pending\", activeForm: \"准备验证优化效果\" }] }",
-            )
-            .prompt_tag("planning")
-            .always_include(true),
-        );
-        map
+struct TodoReminderHandler;
+
+#[async_trait::async_trait]
+impl ProviderHandler for TodoReminderHandler {
+    async fn handle(&self, ctx: ProviderContext) -> Result<ProviderResult, ExtensionError> {
+        let root = progress_store_root(&ctx.session_id, &ctx.working_dir);
+        ProgressReminder::new(root)
+            .before_provider_request()
+            .map_err(ExtensionError::Internal)
     }
+}
+
+struct TodoPostToolUseHandler;
+
+#[async_trait::async_trait]
+impl PostToolUseHandler for TodoPostToolUseHandler {
+    async fn handle(&self, ctx: PostToolUseContext) -> Result<PostToolUseResult, ExtensionError> {
+        if ctx.tool_name == TODO_WRITE_TOOL_NAME {
+            let root = progress_store_root(&ctx.session_id, &ctx.working_dir);
+            ProgressReminder::new(root)
+                .record_todo_write()
+                .map_err(ExtensionError::Internal)?;
+        }
+        Ok(PostToolUseResult::Allow)
+    }
+}
+
+fn todo_write_metadata() -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
+    let mut map = std::collections::HashMap::new();
+    map.insert(
+        TODO_WRITE_TOOL_NAME.to_string(),
+        astrcode_core::tool::ToolPromptMetadata::new(
+            "Maintain the current progress snapshot for this branch of work.",
+        )
+        .caveat(
+            "Do not use for trivial one-step work, pure Q&A, or tasks that can be completed \
+             in roughly three straightforward actions.",
+        )
+        .caveat(
+            "Keep exactly one item in `in_progress` at a time. Mark an item `in_progress` \
+             before starting it, and mark it `completed` immediately after it is truly \
+             finished.",
+        )
+        .example(
+            "{ todos: [{ content: \"分析现有代码结构\", status: \"in_progress\", activeForm: \
+             \"正在分析现有代码结构\" }, { content: \"设计优化方案\", status: \"pending\", \
+             activeForm: \"准备设计优化方案\" }, { content: \"验证优化效果\", status: \
+             \"pending\", activeForm: \"准备验证优化效果\" }] }",
+        )
+        .prompt_tag("planning")
+        .always_include(true),
+    );
+    map
 }
 
 #[derive(Debug, Deserialize)]
@@ -297,7 +295,7 @@ impl ProgressReminder {
         Self { root }
     }
 
-    fn before_provider_request(&self) -> Result<HookEffect, String> {
+    fn before_provider_request(&self) -> Result<ProviderResult, String> {
         let mut state = self.load_state()?;
         state.assistant_cycles_since_todo_write =
             state.assistant_cycles_since_todo_write.saturating_add(1);
@@ -309,19 +307,19 @@ impl ProgressReminder {
             && state.assistant_cycles_since_todo_write >= REMINDER_THRESHOLD
             && state.assistant_cycles_since_reminder >= REMINDER_THRESHOLD;
 
-        let effect = if should_remind {
+        let result = if should_remind {
             state.assistant_cycles_since_reminder = 0;
-            HookEffect::AppendMessages {
+            ProviderResult::AppendMessages {
                 messages: vec![astrcode_core::llm::LlmMessage::user(reminder_message(
                     &items,
                 ))],
             }
         } else {
-            HookEffect::Allow
+            ProviderResult::Allow
         };
 
         self.save_state(&state)?;
-        Ok(effect)
+        Ok(result)
     }
 
     fn record_todo_write(&self) -> Result<(), String> {
@@ -655,21 +653,11 @@ mod tests {
         assert_eq!(tool["description"], definition.description);
         assert_eq!(tool["parameters"], definition.parameters);
         assert_eq!(manifest["subscriptions"].as_array().unwrap().len(), 2);
-        assert_eq!(
-            TodoToolExtension.hook_subscriptions(),
-            vec![
-                HookSubscription {
-                    event: ExtensionEvent::BeforeProviderRequest,
-                    mode: HookMode::Blocking,
-                    priority: 0,
-                },
-                HookSubscription {
-                    event: ExtensionEvent::PostToolUse,
-                    mode: HookMode::Blocking,
-                    priority: 0,
-                },
-            ]
-        );
+        let mut reg = Registrar::new();
+        TodoToolExtension.register(&mut reg);
+        assert_eq!(reg.tools.len(), 1);
+        assert!(!reg.provider.is_empty());
+        assert!(!reg.post_tool_use.is_empty());
     }
 
     #[test]
@@ -723,7 +711,7 @@ mod tests {
         let effect = reminder.before_provider_request().unwrap();
 
         let messages = match effect {
-            HookEffect::AppendMessages { messages } => messages,
+            ProviderResult::AppendMessages { messages } => messages,
             _ => panic!("stale todo list should inject a provider reminder"),
         };
         assert!(text_exists(
@@ -746,7 +734,7 @@ mod tests {
 
         let effect = reminder.before_provider_request().unwrap();
 
-        assert!(matches!(effect, HookEffect::Allow));
+        assert!(matches!(effect, ProviderResult::Allow));
     }
 
     #[test]

@@ -17,7 +17,6 @@
 
 pub mod config;
 pub mod event;
-pub mod event_bus;
 pub mod extension;
 pub mod llm;
 pub mod prompt;
@@ -29,7 +28,6 @@ pub mod types;
 // 重新导出常用类型，方便外部 crate 直接使用
 pub use config::*;
 pub use event::*;
-pub use event_bus::EventBus;
 pub use extension::*;
 pub use llm::*;
 pub use prompt::*;

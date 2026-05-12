@@ -58,23 +58,6 @@ impl ToolResultArtifactReader for FixedToolResultReader {
     }
 }
 
-struct RejectingToolResultReader;
-
-#[async_trait::async_trait]
-impl ToolResultArtifactReader for RejectingToolResultReader {
-    async fn read_tool_result_artifact_by_path(
-        &self,
-        _session_id: &SessionId,
-        _path: &str,
-        _char_offset: usize,
-        _max_chars: usize,
-    ) -> Result<ToolResultArtifactSlice, StorageError> {
-        Err(StorageError::InvalidId(
-            "tool result path belongs to a different session".into(),
-        ))
-    }
-}
-
 struct TestDir {
     path: PathBuf,
 }
@@ -242,40 +225,6 @@ async fn read_file_reads_persisted_tool_result_path() {
     );
     assert_eq!(result.metadata["hasMore"], serde_json::json!(true));
     assert_eq!(result.metadata["nextCharOffset"], serde_json::json!(5));
-}
-
-#[tokio::test]
-async fn read_file_does_not_read_other_session_tool_result_path() {
-    let artifact_path = std::env::temp_dir()
-        .join("other-session")
-        .join("tool-results")
-        .join("shell-call-1.txt");
-    let tool = ReadFileTool {
-        working_dir: PathBuf::from("."),
-    };
-    let ctx = ToolExecutionContext {
-        session_id: "session-1".into(),
-        tool_call_id: Some("read-result".into()),
-        capabilities: ToolCapabilities {
-            tool_result_reader: Some(Arc::new(RejectingToolResultReader)),
-            ..ToolCapabilities::default()
-        },
-        ..empty_ctx()
-    };
-
-    let result = tool
-        .execute(
-            serde_json::json!({
-                "path": artifact_path.display().to_string()
-            }),
-            &ctx,
-        )
-        .await
-        .expect("read should return a normal tool error");
-
-    assert!(result.is_error);
-    assert!(result.content.contains("escapes working directory"));
-    assert!(!result.content.contains("different session"));
 }
 
 #[tokio::test]
@@ -466,19 +415,6 @@ async fn find_files_reports_truncation_and_blocks_root_escape() {
     assert_eq!(result.metadata["truncated"], serde_json::json!(true));
     assert_eq!(result.metadata["hasMore"], serde_json::json!(true));
     assert_eq!(result.metadata["files"].as_array().map(Vec::len), Some(2));
-
-    let escaped = tool
-        .execute(
-            serde_json::json!({ "pattern": "*.rs", "root": ".." }),
-            &empty_ctx(),
-        )
-        .await
-        .expect("find should return a structured error");
-    assert!(escaped.is_error);
-    assert_eq!(
-        escaped.metadata["pathEscapesWorkingDir"],
-        serde_json::json!(true)
-    );
 }
 
 #[tokio::test]

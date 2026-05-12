@@ -1,94 +1,69 @@
 //! Integration test: extensions can block tool execution via PreToolUse hooks.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, collections::HashMap, sync::Arc, time::Duration};
 
 use astrcode_core::{
-    config::ModelSelection,
     extension::{
-        Extension, ExtensionContext, ExtensionError, ExtensionEvent, HookEffect, HookMode,
-        HookSubscription, PreToolUseInput,
+        Extension, ExtensionError, HookMode, HookResult, LifecycleContext, PreToolUseContext,
+        PreToolUseResult, Registrar, ToolHandler,
     },
     tool::{ExecutionMode, ToolDefinition, ToolOrigin, ToolResult},
 };
-use astrcode_extensions::{
-    context::ServerExtensionContext,
-    runner::{ExtensionRunner, ToolHookOutcome},
-};
+use astrcode_extensions::runner::ExtensionRunner;
 use astrcode_tools::registry::ToolRegistry;
 
-/// A test extension that blocks shell commands containing "rm -rf".
+// ─── Test extensions using register() ─────────────────────────────────────
+
 struct SecurityExtension;
 
-#[async_trait::async_trait]
 impl Extension for SecurityExtension {
     fn id(&self) -> &str {
         "test-security"
     }
 
-    fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-        vec![HookSubscription {
-            event: ExtensionEvent::PreToolUse,
-            mode: HookMode::Blocking,
-            priority: 0,
-        }]
-    }
-
-    async fn on_event(
-        &self,
-        event: ExtensionEvent,
-        ctx: &dyn ExtensionContext,
-    ) -> Result<HookEffect, ExtensionError> {
-        match event {
-            ExtensionEvent::PreToolUse => {
-                let input = ctx
-                    .pre_tool_use_input()
-                    .expect("PreToolUse context should include tool payload");
-                ctx.log_warn(&format!(
-                    "SecurityExtension checking {} in session {}",
-                    input.tool_name,
-                    ctx.session_id(),
-                ));
-                if input.tool_name == "shell"
-                    && input
-                        .tool_input
-                        .get("command")
-                        .and_then(|value| value.as_str())
-                        .is_some_and(|command| command.contains("rm -rf"))
-                {
-                    return Ok(HookEffect::Block {
-                        reason: "dangerous shell command".into(),
-                    });
-                }
-                Ok(HookEffect::Allow)
-            },
-            _ => Ok(HookEffect::Allow),
-        }
+    fn register(&self, reg: &mut Registrar) {
+        reg.on_pre_tool_use(HookMode::Blocking, 0, Arc::new(SecurityHandler));
     }
 }
 
-/// A test extension that always blocks.
-struct AlwaysBlockExtension;
+struct SecurityHandler;
 
 #[async_trait::async_trait]
+impl astrcode_core::extension::PreToolUseHandler for SecurityHandler {
+    async fn handle(&self, ctx: PreToolUseContext) -> Result<PreToolUseResult, ExtensionError> {
+        if ctx.tool_name == "shell"
+            && ctx
+                .tool_input
+                .get("command")
+                .and_then(|value| value.as_str())
+                .is_some_and(|command| command.contains("rm -rf"))
+        {
+            return Ok(PreToolUseResult::Block {
+                reason: "dangerous shell command".into(),
+            });
+        }
+        Ok(PreToolUseResult::Allow)
+    }
+}
+
+struct AlwaysBlockExtension;
+
 impl Extension for AlwaysBlockExtension {
     fn id(&self) -> &str {
         "test-always-block"
     }
 
-    fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-        vec![HookSubscription {
-            event: ExtensionEvent::PreToolUse,
-            mode: HookMode::Blocking,
-            priority: 0,
-        }]
+    fn register(&self, reg: &mut Registrar) {
+        reg.on_pre_tool_use(HookMode::Blocking, 0, Arc::new(AlwaysBlockHandler));
     }
+}
 
-    async fn on_event(
-        &self,
-        _event: ExtensionEvent,
-        _ctx: &dyn ExtensionContext,
-    ) -> Result<HookEffect, ExtensionError> {
-        Ok(HookEffect::Block {
+struct AlwaysBlockHandler;
+
+#[async_trait::async_trait]
+impl astrcode_core::extension::PreToolUseHandler for AlwaysBlockHandler {
+    async fn handle(&self, _ctx: PreToolUseContext) -> Result<PreToolUseResult, ExtensionError> {
+        Ok(PreToolUseResult::Block {
             reason: "blocked by AlwaysBlockExtension".into(),
         })
     }
@@ -96,40 +71,35 @@ impl Extension for AlwaysBlockExtension {
 
 struct EchoToolExtension;
 
-#[async_trait::async_trait]
 impl Extension for EchoToolExtension {
     fn id(&self) -> &str {
         "test-echo-tool"
     }
 
-    fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-        vec![]
+    fn register(&self, reg: &mut Registrar) {
+        reg.tool(
+            ToolDefinition {
+                name: "extensionEcho".into(),
+                description: "echo from extension".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "text": { "type": "string" }
+                    }
+                }),
+                origin: ToolOrigin::Extension,
+                execution_mode: ExecutionMode::Sequential,
+            },
+            Arc::new(EchoToolHandler),
+        );
     }
+}
 
-    async fn on_event(
-        &self,
-        _event: ExtensionEvent,
-        _ctx: &dyn ExtensionContext,
-    ) -> Result<HookEffect, ExtensionError> {
-        Ok(HookEffect::Allow)
-    }
+struct EchoToolHandler;
 
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: "extensionEcho".into(),
-            description: "echo from extension".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "text": { "type": "string" }
-                }
-            }),
-            origin: ToolOrigin::Extension,
-            execution_mode: ExecutionMode::Sequential,
-        }]
-    }
-
-    async fn execute_tool(
+#[async_trait::async_trait]
+impl ToolHandler for EchoToolHandler {
+    async fn execute(
         &self,
         tool_name: &str,
         arguments: serde_json::Value,
@@ -148,7 +118,7 @@ impl Extension for EchoToolExtension {
             content: format!("{working_dir}:{text}"),
             is_error: false,
             error: None,
-            metadata: Default::default(),
+            metadata: BTreeMap::new(),
             duration_ms: None,
         })
     }
@@ -160,38 +130,42 @@ struct FixedToolExtension {
     content: &'static str,
 }
 
-#[async_trait::async_trait]
 impl Extension for FixedToolExtension {
     fn id(&self) -> &str {
         self.id
     }
 
-    fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-        vec![]
-    }
-
-    async fn on_event(
-        &self,
-        _event: ExtensionEvent,
-        _ctx: &dyn ExtensionContext,
-    ) -> Result<HookEffect, ExtensionError> {
-        Ok(HookEffect::Allow)
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: self.tool_name.into(),
-            description: format!("{} tool", self.id),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {}
+    fn register(&self, reg: &mut Registrar) {
+        let tool_name = self.tool_name;
+        let content = self.content;
+        let description = format!("{} tool", self.id);
+        reg.tool(
+            ToolDefinition {
+                name: tool_name.into(),
+                description,
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+                origin: ToolOrigin::Extension,
+                execution_mode: ExecutionMode::Sequential,
+            },
+            Arc::new(FixedToolHandler {
+                tool_name: tool_name.to_string(),
+                content: content.to_string(),
             }),
-            origin: ToolOrigin::Extension,
-            execution_mode: ExecutionMode::Sequential,
-        }]
+        );
     }
+}
 
-    async fn execute_tool(
+struct FixedToolHandler {
+    tool_name: String,
+    content: String,
+}
+
+#[async_trait::async_trait]
+impl ToolHandler for FixedToolHandler {
+    async fn execute(
         &self,
         tool_name: &str,
         _arguments: serde_json::Value,
@@ -203,44 +177,60 @@ impl Extension for FixedToolExtension {
         }
         Ok(ToolResult {
             call_id: String::new(),
-            content: self.content.into(),
+            content: self.content.clone(),
             is_error: false,
             error: None,
-            metadata: Default::default(),
+            metadata: BTreeMap::new(),
             duration_ms: None,
         })
     }
 }
 
-/// Checks that the block outcome carries the expected reason.
-fn assert_blocked(outcome: &ToolHookOutcome, expected_reason: &str) {
-    match outcome {
-        ToolHookOutcome::Blocked { reason } => {
-            assert_eq!(reason, expected_reason);
-        },
-        other => panic!("Expected Blocked, got {other:?}"),
+// ─── Lifecycle extension for NonBlocking test ─────────────────────────────
+
+struct FireAndForgetExt;
+
+impl Extension for FireAndForgetExt {
+    fn id(&self) -> &str {
+        "test-faf"
+    }
+
+    fn register(&self, reg: &mut Registrar) {
+        reg.on_event(
+            astrcode_core::extension::ExtensionEvent::TurnStart,
+            HookMode::NonBlocking,
+            0,
+            Arc::new(FafHandler),
+        );
     }
 }
 
-fn assert_allow(outcome: &ToolHookOutcome) {
-    match outcome {
-        ToolHookOutcome::Allow => {},
-        other => panic!("Expected Allow, got {other:?}"),
+struct FafHandler;
+
+#[async_trait::async_trait]
+impl astrcode_core::extension::LifecycleHandler for FafHandler {
+    async fn handle(&self, ctx: LifecycleContext) -> Result<HookResult, ExtensionError> {
+        assert_eq!(ctx.session_id, "test-session");
+        assert_eq!(ctx.working_dir, "/tmp");
+        Ok(HookResult::Allow)
     }
 }
 
-fn context_with_pre_tool_input(command: &str) -> ServerExtensionContext {
-    let mut ctx = ServerExtensionContext::new(
-        "test-session".into(),
-        "/tmp".into(),
-        ModelSelection::simple("test-model"),
-    );
-    ctx.set_pre_tool_use_input(PreToolUseInput {
+// ─── Helpers ──────────────────────────────────────────────────────────────
+
+fn pre_tool_use_context(command: &str) -> PreToolUseContext {
+    PreToolUseContext {
+        session_id: "test-session".into(),
+        working_dir: "/tmp".into(),
+        model: astrcode_core::config::ModelSelection::simple("test-model"),
         tool_name: "shell".into(),
         tool_input: serde_json::json!({ "command": command }),
-    });
-    ctx
+        config: HashMap::new(),
+        available_tools: vec![],
+    }
 }
+
+// ─── Tests ────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn duplicate_extension_tools_keep_first_registration() {
@@ -260,7 +250,7 @@ async fn duplicate_extension_tools_keep_first_registration() {
         }))
         .await;
 
-    let tools = runner.collect_tool_adapters("/workspace").await;
+    let tools = runner.collect_tool_adapters_typed("/workspace").await;
     let mut tool_registry = ToolRegistry::new();
     for tool in tools.into_iter().rev() {
         tool_registry.register(tool);
@@ -295,7 +285,7 @@ async fn extension_tools_are_adapted_into_tool_registry() {
     let runner = ExtensionRunner::new(Duration::from_secs(5));
     runner.register(Arc::new(EchoToolExtension)).await;
 
-    let tools = runner.collect_tool_adapters("/workspace").await;
+    let tools = runner.collect_tool_adapters_typed("/workspace").await;
     let mut tool_registry = ToolRegistry::new();
     for tool in tools.into_iter().rev() {
         tool_registry.register(tool);
@@ -328,13 +318,14 @@ async fn blocking_extension_returns_block_outcome() {
     let runner = ExtensionRunner::new(Duration::from_secs(5));
     runner.register(Arc::new(AlwaysBlockExtension)).await;
 
-    let ctx = context_with_pre_tool_input("pwd");
-
-    let outcome = runner
-        .dispatch_tool_hook(ExtensionEvent::PreToolUse, &ctx)
-        .await
-        .unwrap();
-    assert_blocked(&outcome, "blocked by AlwaysBlockExtension");
+    let ctx = pre_tool_use_context("pwd");
+    let result = runner.emit_pre_tool_use(ctx).await.unwrap();
+    match result {
+        PreToolUseResult::Block { reason } => {
+            assert_eq!(reason, "blocked by AlwaysBlockExtension");
+        },
+        other => panic!("Expected Block, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -342,13 +333,9 @@ async fn allow_extension_returns_allow_outcome() {
     let runner = ExtensionRunner::new(Duration::from_secs(5));
     runner.register(Arc::new(SecurityExtension)).await;
 
-    let ctx = context_with_pre_tool_input("pwd");
-
-    let outcome = runner
-        .dispatch_tool_hook(ExtensionEvent::PreToolUse, &ctx)
-        .await
-        .unwrap();
-    assert_allow(&outcome);
+    let ctx = pre_tool_use_context("pwd");
+    let result = runner.emit_pre_tool_use(ctx).await.unwrap();
+    assert!(matches!(result, PreToolUseResult::Allow));
 }
 
 #[tokio::test]
@@ -356,57 +343,30 @@ async fn pre_tool_use_extension_can_inspect_tool_payload() {
     let runner = ExtensionRunner::new(Duration::from_secs(5));
     runner.register(Arc::new(SecurityExtension)).await;
 
-    let ctx = context_with_pre_tool_input("rm -rf /");
-    let outcome = runner
-        .dispatch_tool_hook(ExtensionEvent::PreToolUse, &ctx)
-        .await
-        .unwrap();
-
-    assert_blocked(&outcome, "dangerous shell command");
+    let ctx = pre_tool_use_context("rm -rf /");
+    let result = runner.emit_pre_tool_use(ctx).await.unwrap();
+    match result {
+        PreToolUseResult::Block { reason } => {
+            assert_eq!(reason, "dangerous shell command");
+        },
+        other => panic!("Expected Block, got {other:?}"),
+    }
 }
 
 #[tokio::test]
 async fn extension_context_snapshot_works_for_nonblocking() {
     let runner = ExtensionRunner::new(Duration::from_secs(5));
-
-    // A fire-and-forget extension
-    struct FireAndForgetExt;
-    #[async_trait::async_trait]
-    impl Extension for FireAndForgetExt {
-        fn id(&self) -> &str {
-            "test-faf"
-        }
-        fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-            vec![HookSubscription {
-                event: ExtensionEvent::TurnStart,
-                mode: HookMode::NonBlocking,
-                priority: 0,
-            }]
-        }
-        async fn on_event(
-            &self,
-            _event: ExtensionEvent,
-            ctx: &dyn ExtensionContext,
-        ) -> Result<HookEffect, ExtensionError> {
-            // NonBlocking hooks should still have session context
-            assert_eq!(ctx.session_id(), "test-session");
-            assert_eq!(ctx.working_dir(), "/tmp");
-            Ok(HookEffect::Allow)
-        }
-    }
-
     runner.register(Arc::new(FireAndForgetExt)).await;
 
-    let ctx = ServerExtensionContext::new(
-        "test-session".into(),
-        "/tmp".into(),
-        ModelSelection::simple("test-model"),
-    );
+    let ctx = LifecycleContext {
+        session_id: "test-session".into(),
+        working_dir: "/tmp".into(),
+        model: astrcode_core::config::ModelSelection::simple("test-model"),
+        config: HashMap::new(),
+    };
 
-    // dispatch() copies the extension list and releases the lock,
-    // then spawns NonBlocking with a snapshot context.
     runner
-        .dispatch(ExtensionEvent::TurnStart, &ctx)
+        .emit_lifecycle(astrcode_core::extension::ExtensionEvent::TurnStart, ctx)
         .await
         .unwrap();
 
@@ -417,22 +377,21 @@ async fn extension_context_snapshot_works_for_nonblocking() {
 #[tokio::test]
 async fn dispatch_with_no_registered_extensions_is_noop() {
     let runner = ExtensionRunner::new(Duration::from_secs(5));
-    let ctx = ServerExtensionContext::new(
-        "empty".into(),
-        "/tmp".into(),
-        ModelSelection::simple("noop"),
-    );
 
-    // Should not error or panic
+    let ctx = LifecycleContext {
+        session_id: "empty".into(),
+        working_dir: "/tmp".into(),
+        model: astrcode_core::config::ModelSelection::simple("noop"),
+        config: HashMap::new(),
+    };
     runner
-        .dispatch(ExtensionEvent::SessionStart, &ctx)
+        .emit_lifecycle(astrcode_core::extension::ExtensionEvent::SessionStart, ctx)
         .await
         .unwrap();
-    let outcome = runner
-        .dispatch_tool_hook(ExtensionEvent::PreToolUse, &ctx)
-        .await
-        .unwrap();
-    assert_allow(&outcome);
+
+    let pre_ctx = pre_tool_use_context("pwd");
+    let result = runner.emit_pre_tool_use(pre_ctx).await.unwrap();
+    assert!(matches!(result, PreToolUseResult::Allow));
 }
 
 #[tokio::test]
@@ -440,19 +399,28 @@ async fn extension_subscribes_only_to_matching_events() {
     let runner = ExtensionRunner::new(Duration::from_secs(5));
     runner.register(Arc::new(AlwaysBlockExtension)).await;
 
-    let ctx = context_with_pre_tool_input("pwd");
-
-    // AlwaysBlockExtension only subscribes to PreToolUse.
+    let lifecycle_ctx = LifecycleContext {
+        session_id: "test-session".into(),
+        working_dir: "/tmp".into(),
+        model: astrcode_core::config::ModelSelection::simple("test-model"),
+        config: HashMap::new(),
+    };
     // SessionStart should pass through without blocking.
     runner
-        .dispatch(ExtensionEvent::SessionStart, &ctx)
+        .emit_lifecycle(
+            astrcode_core::extension::ExtensionEvent::SessionStart,
+            lifecycle_ctx,
+        )
         .await
         .unwrap();
 
     // PreToolUse should be blocked.
-    let outcome = runner
-        .dispatch_tool_hook(ExtensionEvent::PreToolUse, &ctx)
-        .await
-        .unwrap();
-    assert_blocked(&outcome, "blocked by AlwaysBlockExtension");
+    let pre_ctx = pre_tool_use_context("pwd");
+    let result = runner.emit_pre_tool_use(pre_ctx).await.unwrap();
+    match result {
+        PreToolUseResult::Block { reason } => {
+            assert_eq!(reason, "blocked by AlwaysBlockExtension");
+        },
+        other => panic!("Expected Block, got {other:?}"),
+    }
 }
