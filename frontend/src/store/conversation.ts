@@ -25,6 +25,7 @@ interface ConversationState {
   control: ConversationControlState | null
   cursor: string | null
   phase: Phase
+  compactSubmitting: boolean
 
   streamAbortController: AbortController | null
   modelRefreshKey: number
@@ -84,6 +85,18 @@ function upsertBlock(
   const next = [...blocks]
   next[idx] = mergeBlock(next[idx], block)
   return next
+}
+
+function commandNoteBlock(message: string): ConversationBlock {
+  return {
+    kind: 'systemNote',
+    id: `command-${Date.now()}`,
+    text: message,
+  }
+}
+
+function isCompactCommand(text: string): boolean {
+  return /^\/compact(?:\s|$)/.test(text.trim())
 }
 
 function patchAssistantBlock(
@@ -160,6 +173,7 @@ export const useAppStore = create<ConversationState>((set, get) => ({
   control: null,
   cursor: null,
   phase: 'idle',
+  compactSubmitting: false,
   streamAbortController: null,
   modelRefreshKey: 0,
   agentSessions: [],
@@ -229,6 +243,7 @@ export const useAppStore = create<ConversationState>((set, get) => ({
         control: null,
         cursor: null,
         phase: 'idle',
+        compactSubmitting: false,
         workingDir: null,
         agentSessions: [],
       })
@@ -255,6 +270,7 @@ export const useAppStore = create<ConversationState>((set, get) => ({
         control: null,
         cursor: null,
         phase: 'idle',
+        compactSubmitting: false,
         workingDir: null,
         agentSessions: [],
       })
@@ -277,6 +293,7 @@ export const useAppStore = create<ConversationState>((set, get) => ({
       control: null,
       cursor: null,
       phase: 'idle',
+      compactSubmitting: false,
       agentSessions: [],
     })
 
@@ -307,8 +324,36 @@ export const useAppStore = create<ConversationState>((set, get) => ({
       return false
     }
 
-    await api.submitPrompt(activeSessionId, text)
-    return true
+    const compactCommand = isCompactCommand(text)
+    if (compactCommand) {
+      set({ compactSubmitting: true, phase: 'compacting' })
+    }
+
+    try {
+      const response = await api.submitPrompt(activeSessionId, text)
+      if (response.kind === 'handled') {
+        if (get().activeSessionId !== response.sessionId) {
+          return true
+        }
+        if (response.message === 'compact accepted') {
+          await get().refreshSessions()
+          await get().switchSession(response.sessionId)
+        } else if (response.message.trim()) {
+          set((current) => ({
+            blocks: [...current.blocks, commandNoteBlock(response.message)],
+          }))
+        }
+      }
+      return true
+    } finally {
+      if (compactCommand) {
+        const current = get()
+        set({
+          compactSubmitting: false,
+          phase: phaseFromControl(current.control),
+        })
+      }
+    }
   },
 
   abortCurrentTurn: async () => {
@@ -351,7 +396,9 @@ export const useAppStore = create<ConversationState>((set, get) => ({
       case 'updateControlState':
         set({
           control: delta.control,
-          phase: phaseFromControl(delta.control),
+          phase: get().compactSubmitting
+            ? 'compacting'
+            : phaseFromControl(delta.control),
         })
         break
 

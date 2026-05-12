@@ -26,12 +26,13 @@ export default function InputBar() {
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const modelRefreshKey = useAppStore((s) => s.modelRefreshKey)
   const bumpModelRefreshKey = useAppStore((s) => s.bumpModelRefreshKey)
+  const compactSubmitting = useAppStore((s) => s.compactSubmitting)
 
   const [value, setValue] = useState('')
   const [isComposing, setIsComposing] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const isBusy = isExecutionPhase(phase)
-  const canSubmit = control?.canSubmitPrompt ?? false
+  const isBusy = isExecutionPhase(phase) || compactSubmitting
+  const canSubmit = (control?.canSubmitPrompt ?? false) && !compactSubmitting
 
   // ── slash command panel state ──
   const [slashTriggerVisible, setSlashTriggerVisible] = useState(false)
@@ -267,8 +268,16 @@ export default function InputBar() {
                         className={composerInterruptButton}
                         type="button"
                         onClick={() => void abortCurrentTurn()}
+                        disabled={compactSubmitting}
                       >
-                        中断
+                        {compactSubmitting ? (
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                            压缩中...
+                          </span>
+                        ) : (
+                          '中断'
+                        )}
                       </button>
                     ) : (
                       <button
