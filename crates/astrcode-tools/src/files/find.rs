@@ -6,11 +6,10 @@ use std::{
 };
 
 use astrcode_core::tool::*;
+use astrcode_support::hostpaths::resolve_path;
 use serde::Deserialize;
 
-use super::shared::{
-    FileCollectOptions, collect_candidate_files, resolve_sandboxed_path, tool_call_id,
-};
+use super::shared::{FileCollectOptions, collect_candidate_files, tool_call_id};
 // ─── find ────────────────────────────────────────────────────────────────
 
 const DEFAULT_FIND_FILES_MAX_RESULTS: usize = 100;
@@ -70,13 +69,7 @@ impl Tool for FindFilesTool {
         let args: FindFilesArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(format!("invalid find args: {e}")))?;
         let root = match args.root {
-            Some(ref raw) => {
-                let root = resolve_sandboxed_path(&self.working_dir, raw, ctx, started_at);
-                let Ok(root) = root else {
-                    return Ok(root.unwrap_err());
-                };
-                root
-            },
+            Some(ref raw) => resolve_path(&self.working_dir, raw),
             None => self.working_dir.clone(),
         };
         let max_results = args.max_results.unwrap_or(DEFAULT_FIND_FILES_MAX_RESULTS);

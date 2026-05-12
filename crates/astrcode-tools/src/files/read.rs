@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::OnceLock, time::Instant};
 
 use astrcode_core::{storage::StorageError, tool::*};
-use astrcode_support::hostpaths::{is_path_within, resolve_path};
+use astrcode_support::hostpaths::resolve_path;
 use serde::Deserialize;
 
 use super::shared::{
@@ -62,26 +62,12 @@ impl Tool for ReadFileTool {
         let args: ReadFileArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(format!("invalid read args: {e}")))?;
         let path = resolve_path(&self.working_dir, &args.path);
-        let path = if !is_path_within(&path, &self.working_dir) {
+        if !path.exists() {
             if let Some(result) =
                 read_persisted_tool_result_path(ctx, started_at, &path, &args).await?
             {
                 return Ok(result);
             }
-            let result = error_result(
-                ctx,
-                started_at,
-                format!("path escapes working directory: {}", path.display()),
-                BTreeMap::from([
-                    ("path".into(), serde_json::json!(path.display().to_string())),
-                    ("pathEscapesWorkingDir".into(), serde_json::json!(true)),
-                ]),
-            );
-            return Ok(result);
-        } else {
-            path
-        };
-        if !path.exists() {
             return Ok(not_found(ctx, started_at, &path));
         }
         if path.is_dir() {
@@ -182,8 +168,7 @@ fn read_file_tool_definition() -> &'static ToolDefinition {
             name: "read".into(),
             description: "Read a known file's contents. When a previous tool result says it was \
                           persisted, pass the saved path here to read it. This is not a directory \
-                          listing or content search tool. File paths are limited to the working \
-                          directory or the current session's tool-result artifact directory."
+                          listing or content search tool."
                 .into(),
             origin: ToolOrigin::Builtin,
             execution_mode: ExecutionMode::Parallel,

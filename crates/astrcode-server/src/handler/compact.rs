@@ -146,10 +146,9 @@ impl CommandHandler {
             return Err(HandlerError::Other(format!("Compaction failed: {error}")));
         }
 
-        let system_prompt = state
-            .system_prompt
-            .clone()
-            .ok_or_else(|| HandlerError::Other("Cannot compact session without system prompt".into()))?;
+        let system_prompt = state.system_prompt.clone().ok_or_else(|| {
+            HandlerError::Other("Cannot compact session without system prompt".into())
+        })?;
 
         // Manual compact has no agent loop, so emit CompactionStarted here.
         self.record_and_broadcast(sid, None, EventPayload::CompactionStarted)
