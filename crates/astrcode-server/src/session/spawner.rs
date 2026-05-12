@@ -75,17 +75,6 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
             },
         };
 
-        // 按 session 派生链计算嵌套深度（parent → grandparent → …）。
-        // 同一 parent 并行派生的子会话深度相同，互不影响。
-        let chain_depth = compute_chain_depth(&self.session_manager, &parent_session_id).await;
-        if chain_depth >= astrcode_extensions::runtime::MAX_SPAWN_DEPTH {
-            return Err(format!(
-                "Maximum spawn depth ({}) exceeded — nested agent spawning too deep (chain depth: \
-                 {chain_depth})",
-                astrcode_extensions::runtime::MAX_SPAWN_DEPTH,
-            ));
-        }
-
         let create_event = self
             .session_manager
             .create(&request.working_dir, &model_id, Some(&parent_session_id))
@@ -525,25 +514,6 @@ async fn drive_child_agent_turn(
 /// 沿 `parent_session_id` 链路向上遍历，计算从根会话到指定会话的嵌套深度。
 ///
 /// 根会话（无 `parent_session_id`）深度为 0，其子会话深度为 1，以此类推。
-async fn compute_chain_depth(session_manager: &SessionManager, session_id: &SessionId) -> u32 {
-    let mut depth = 0u32;
-    let mut current = session_id.clone();
-    loop {
-        let model = match session_manager.read_model(&current).await {
-            Ok(m) => m,
-            Err(_) => break,
-        };
-        match model.parent_session_id {
-            Some(parent) => {
-                depth += 1;
-                current = parent;
-            },
-            None => break,
-        }
-    }
-    depth
-}
-
 /// 将子 agent 事件转发为父级工具调用的 [`ToolOutputDelta`] 进度事件。
 ///
 /// 持有父级工具调用 ID 和事件发送通道。`emit` 发送字符串消息，
@@ -993,57 +963,5 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn parallel_spawns_from_same_parent_do_not_exceed_depth() {
-        // 从同一 parent 派生多个子会话不应触发 MAX_SPAWN_DEPTH。
-        // 深度按链路计算，同一 parent 的兄弟会话深度相同，互不影响。
-        let session_manager = Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new())));
-        let parent = session_manager.create(".", "mock", None).await.unwrap();
-        let llm = Arc::new(StaticTextLlm {
-            text: "parallel ok",
-        });
-        let llm_provider: Arc<dyn LlmProvider> = llm;
-        let spawner = ServerSessionSpawner {
-            session_manager: Arc::clone(&session_manager),
-            llm_provider: Arc::new(RwLock::new(llm_provider)),
-            context_assembler: Arc::new(LlmContextAssembler::new(Default::default())),
-            auto_compact_failures: Arc::new(AutoCompactFailureTracker::default()),
-            background_tasks: Default::default(),
-            extension_runner: Arc::new(ExtensionRunner::new(
-                Duration::from_secs(1),
-                Arc::new(ExtensionRuntime::new()),
-            )),
-            read_timeout_secs: 1,
-        };
-
-        for i in 0..4 {
-            let result = spawner
-                .spawn(
-                    parent.session_id.as_str(),
-                    SpawnRequest {
-                        name: format!("parallel-{i}"),
-                        system_prompt: "work".into(),
-                        user_prompt: format!("task {i}"),
-                        working_dir: ".".into(),
-                        model_preference: Some("mock".into()),
-                        tool_call_id: Some(format!("call-{i}")),
-                        event_tx: None,
-                        wait_for_result: true,
-                    },
-                )
-                .await
-                .unwrap();
-            assert!(
-                !result.content.contains("Maximum spawn depth"),
-                "sibling spawn #{i} should not hit depth limit: {}",
-                result.content
-            );
-        }
-
-        let parent_model = session_manager
-            .read_model(&parent.session_id)
-            .await
-            .unwrap();
-        assert_eq!(parent_model.agent_sessions.len(), 4);
-    }
+    
 }
