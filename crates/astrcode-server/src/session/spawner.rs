@@ -46,6 +46,8 @@ pub(crate) struct ServerSessionSpawner {
     pub(crate) auto_compact_failures: Arc<AutoCompactFailureTracker>,
     pub(crate) background_tasks: Arc<StdMutex<BackgroundTaskManager>>,
     pub(crate) extension_runner: Arc<ExtensionRunner>,
+    // bind 时从 effective.llm 快照，不会随配置热更新变化。
+    // TODO: 如需配置热更新生效，改为持有 RwLock<EffectiveConfig> 引用，在 spawn 时动态读取。
     pub(crate) read_timeout_secs: u64,
 }
 
