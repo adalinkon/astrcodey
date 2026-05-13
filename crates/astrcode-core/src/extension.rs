@@ -726,15 +726,11 @@ impl Registrar {
         &self.command_discovery
     }
 
-    pub fn pre_tool_use(
-        &self,
-    ) -> &[(HookMode, i32, std::sync::Arc<dyn PreToolUseHandler>)] {
+    pub fn pre_tool_use(&self) -> &[(HookMode, i32, std::sync::Arc<dyn PreToolUseHandler>)] {
         &self.pre_tool_use
     }
 
-    pub fn post_tool_use(
-        &self,
-    ) -> &[(HookMode, i32, std::sync::Arc<dyn PostToolUseHandler>)] {
+    pub fn post_tool_use(&self) -> &[(HookMode, i32, std::sync::Arc<dyn PostToolUseHandler>)] {
         &self.post_tool_use
     }
 
@@ -753,15 +749,11 @@ impl Registrar {
         &self.prompt_build
     }
 
-    pub fn compact(
-        &self,
-    ) -> &[(CompactEvent, i32, std::sync::Arc<dyn CompactHandler>)] {
+    pub fn compact(&self) -> &[(CompactEvent, i32, std::sync::Arc<dyn CompactHandler>)] {
         &self.compact
     }
 
-    pub fn post_tool_use_failure(
-        &self,
-    ) -> &[(i32, std::sync::Arc<dyn PostToolUseFailureHandler>)] {
+    pub fn post_tool_use_failure(&self) -> &[(i32, std::sync::Arc<dyn PostToolUseFailureHandler>)] {
         &self.post_tool_use_failure
     }
 

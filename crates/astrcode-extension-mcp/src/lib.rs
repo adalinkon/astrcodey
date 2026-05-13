@@ -218,11 +218,14 @@ impl McpToolHandler {
         } else {
             let discovered = discover_mcp_tools(working_dir).await;
             if !discovered.tools.is_empty() {
-                self.shared.store(working_dir, McpCacheEntry {
-                    tool_lookup: HashMap::new(),
-                    candidates: discovered.tools.clone(),
-                    diagnostics: discovered.diagnostics.clone(),
-                });
+                self.shared.store(
+                    working_dir,
+                    McpCacheEntry {
+                        tool_lookup: HashMap::new(),
+                        candidates: discovered.tools.clone(),
+                        diagnostics: discovered.diagnostics.clone(),
+                    },
+                );
             }
             (discovered.tools, discovered.diagnostics)
         };
