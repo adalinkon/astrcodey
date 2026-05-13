@@ -9,7 +9,7 @@ use astrcode_core::{
     extension::{PostToolUseContext, PostToolUseResult, PreToolUseContext, PreToolUseResult},
     llm::{LlmContent, LlmMessage, LlmRole},
     storage::ToolResultArtifactReader,
-    tool::{BackgroundTaskReader, ExecutionMode, ToolDefinition, ToolResult},
+    tool::{BackgroundTaskReader, AgentSessionControl, ExecutionMode, ToolDefinition, ToolResult},
 };
 use astrcode_extensions::runner::ExtensionRunner;
 use astrcode_support::tool_results::{
@@ -46,6 +46,7 @@ pub(in crate::agent) struct ToolPipeline {
     background_tasks: Arc<parking_lot::Mutex<BackgroundTaskManager>>,
     background_task_reader: Option<Arc<dyn BackgroundTaskReader>>,
     file_observation_store: Option<Arc<dyn astrcode_core::tool::FileObservationStore>>,
+    agent_session_control: Option<Arc<dyn AgentSessionControl>>,
 }
 
 impl ToolPipeline {
@@ -59,6 +60,7 @@ impl ToolPipeline {
         background_tasks: Arc<parking_lot::Mutex<BackgroundTaskManager>>,
         background_task_reader: Option<Arc<dyn BackgroundTaskReader>>,
         file_observation_store: Option<Arc<dyn astrcode_core::tool::FileObservationStore>>,
+        agent_session_control: Option<Arc<dyn AgentSessionControl>>,
     ) -> Self {
         Self {
             shared,
@@ -69,6 +71,7 @@ impl ToolPipeline {
             background_tasks,
             background_task_reader,
             file_observation_store,
+            agent_session_control,
         }
     }
 
@@ -95,6 +98,7 @@ impl ToolPipeline {
             background_tasks: self.background_tasks.clone(),
             background_task_reader: self.background_task_reader.clone(),
             file_observation_store: self.file_observation_store.clone(),
+            agent_session_control: self.agent_session_control.clone(),
         }
     }
 

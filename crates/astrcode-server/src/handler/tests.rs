@@ -278,6 +278,7 @@ fn test_runtime_with_settings(
                 post_compact_max_tokens_per_file: context_settings.post_compact_max_tokens_per_file,
             },
         }),
+        agent_session_control: Arc::new(parking_lot::RwLock::new(None)),
     })
 }
 

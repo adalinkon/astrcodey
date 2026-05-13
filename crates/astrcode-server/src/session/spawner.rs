@@ -50,6 +50,7 @@ pub(crate) struct ServerSessionSpawner {
     // bind 时从 effective.llm 快照，不会随配置热更新变化。
     // TODO: 如需配置热更新生效，改为持有 RwLock<EffectiveConfig> 引用，在 spawn 时动态读取。
     pub(crate) read_timeout_secs: u64,
+    pub(crate) agent_session_control: Arc<parking_lot::RwLock<Option<Arc<dyn astrcode_core::tool::AgentSessionControl>>>>,
 }
 
 #[async_trait::async_trait]
@@ -212,6 +213,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                 auto_compact_failures: Arc::clone(&self.auto_compact_failures),
                 background_result_tx: Some(child_bg_result_tx),
                 background_tasks: Arc::clone(&self.background_tasks),
+                agent_session_control: self.agent_session_control.read().clone(),
             },
         );
 
@@ -780,6 +782,7 @@ mod tests {
             background_tasks: Default::default(),
             extension_runner: Arc::new(ExtensionRunner::new(Duration::from_secs(1))),
             read_timeout_secs: 1,
+            agent_session_control: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -849,6 +852,7 @@ mod tests {
             background_tasks: Default::default(),
             extension_runner: Arc::new(ExtensionRunner::new(Duration::from_secs(1))),
             read_timeout_secs: 1,
+            agent_session_control: Arc::new(RwLock::new(None)),
         };
         *llm_provider.write() = Arc::new(StaticTextLlm { text: "new" });
 
@@ -889,6 +893,7 @@ mod tests {
             background_tasks: Arc::clone(&background_tasks),
             extension_runner: Arc::new(ExtensionRunner::new(Duration::from_secs(1))),
             read_timeout_secs: 1,
+            agent_session_control: Arc::new(RwLock::new(None)),
         };
 
         let result = spawner

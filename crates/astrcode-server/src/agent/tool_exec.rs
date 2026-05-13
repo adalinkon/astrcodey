@@ -163,6 +163,7 @@ async fn execute_tool_call_blocking(
             tool_result_reader: runtime.tool_result_reader,
             background_task_reader: runtime.background_task_reader,
             file_observation_store: runtime.file_observation_store,
+            agent_session_control: runtime.agent_session_control,
         },
     };
 
@@ -237,6 +238,7 @@ async fn execute_tool_call_with_background(
             tool_result_reader: runtime.tool_result_reader.clone(),
             background_task_reader: runtime.background_task_reader.clone(),
             file_observation_store: runtime.file_observation_store.clone(),
+            agent_session_control: runtime.agent_session_control.clone(),
         },
     };
 

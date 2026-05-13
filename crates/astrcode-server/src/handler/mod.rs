@@ -988,6 +988,7 @@ impl CommandHandler {
                     auto_compact_failures: runtime.auto_compact_failures.clone(),
                     background_result_tx: Some(background_result_tx),
                     background_tasks: runtime.background_tasks.clone(),
+                    agent_session_control: runtime.agent_session_control.read().clone(),
                 },
             );
 
