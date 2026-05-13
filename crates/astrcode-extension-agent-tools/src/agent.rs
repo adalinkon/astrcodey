@@ -119,6 +119,7 @@ fn merge_dir(agents: &mut Vec<AgentConfig>, dir: &std::path::Path, override_exis
             continue;
         };
         let Ok(agent) = parse(&path.to_string_lossy(), &content) else {
+            tracing::warn!(path = %path.display(), "skipping agent file: parse failed");
             continue;
         };
         if override_existing {

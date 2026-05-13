@@ -340,16 +340,19 @@ impl AgentLoop {
         ));
         let file_observation_store: Option<Arc<dyn FileObservationStore>> =
             Some(Arc::new(InMemoryFileObservationStore::default()));
+        let capabilities = super::tool_types::ToolRuntimeCapabilities {
+            background_result_tx: services.background_result_tx,
+            background_tasks: services.background_tasks,
+            background_task_reader,
+            file_observation_store,
+            agent_session_control: services.agent_session_control,
+        };
         let tools = ToolPipeline::new(
             shared.clone(),
             services.tool_registry,
             services.extension_runner.clone(),
             services.session_manager.clone(),
-            services.background_result_tx,
-            services.background_tasks,
-            background_task_reader,
-            file_observation_store,
-            services.agent_session_control,
+            capabilities,
         );
         Self {
             system_prompt,

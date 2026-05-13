@@ -74,13 +74,13 @@ impl AgentShared {
 
     fn get_or_discover(&self, working_dir: Option<&str>) -> Vec<agent::AgentConfig> {
         let key = working_dir.unwrap_or("");
-        if let Some(agents) = self.cache.lock().unwrap().get(key) {
+        if let Some(agents) = self.cache.lock().unwrap_or_else(|e| e.into_inner()).get(key) {
             return agents.clone();
         }
         let agents = agent::discover_agents(working_dir);
         self.cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .entry(key.to_string())
             .or_insert_with(|| agents.clone());
         agents
@@ -312,6 +312,7 @@ const fn default_wait_for_result() -> bool {
     true
 }
 
+#[derive(Debug)]
 struct AgentRun {
     outcome: ExtensionToolOutcome,
     render: RenderSpec,
@@ -326,7 +327,13 @@ fn build_agent_run(
         serde_json::from_value(input.clone()).map_err(|e| format!("invalid agent args: {e}"))?;
 
     let matched = match args.subagent_type.as_deref() {
-        None | Some("") => agents.first().ok_or("no agents configured")?,
+        None => {
+            return Err(format!(
+                "subagentType is required.\n\n{}",
+                format_agents_for_model(agents)
+            ))
+        },
+        Some("") => agents.first().ok_or("no agents configured")?,
         Some(name) => agents
             .iter()
             .find(|a| a.name == name || a.id == name)
@@ -574,7 +581,7 @@ mod tests {
         }];
 
         let sync_input = json!({
-            "prompt": "search", "description": "test", "waitForResult": true
+            "prompt": "search", "description": "test", "subagentType": "explore", "waitForResult": true
         });
         let run = build_agent_run(&sync_input, &agents).unwrap();
         match run.outcome {
@@ -587,7 +594,7 @@ mod tests {
         }
 
         let async_input = json!({
-            "prompt": "search", "description": "test", "waitForResult": false
+            "prompt": "search", "description": "test", "subagentType": "explore", "waitForResult": false
         });
         let run = build_agent_run(&async_input, &agents).unwrap();
         match run.outcome {
@@ -598,6 +605,26 @@ mod tests {
             },
             _ => panic!("expected RunSession"),
         }
+    }
+
+    #[test]
+    fn build_agent_run_rejects_missing_subagent_type() {
+        let agents = vec![agent::AgentConfig {
+            id: String::from("explore"),
+            name: String::from("explore"),
+            description: String::from("explore code"),
+            model: None,
+            body: String::from("Explore."),
+        }];
+
+        let input = json!({ "prompt": "search", "description": "test" });
+        let result = build_agent_run(&input, &agents);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("subagentType is required"),
+            "error should mention subagentType: {err}"
+        );
     }
 
     #[test]
