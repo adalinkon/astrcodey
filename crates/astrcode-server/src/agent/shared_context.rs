@@ -2,9 +2,11 @@
 //! types shared across agent sub-objects.
 
 use astrcode_core::{
-    config::ModelSelection, event::EventPayload,
+    config::ModelSelection,
+    event::EventPayload,
     extension::{ExtensionEvent, LifecycleContext},
-    llm::LlmRole, types::*,
+    llm::LlmRole,
+    types::*,
 };
 use astrcode_extensions::runner::ExtensionRunner;
 use tokio::sync::{mpsc, oneshot};
@@ -70,11 +72,7 @@ pub(super) struct SharedTurnContext {
 }
 
 impl SharedTurnContext {
-    pub(super) fn new(
-        session_id: SessionId,
-        working_dir: String,
-        model_id: String,
-    ) -> Self {
+    pub(super) fn new(session_id: SessionId, working_dir: String, model_id: String) -> Self {
         Self {
             session_id,
             working_dir,

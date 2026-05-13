@@ -11,7 +11,7 @@ use std::{
 
 use astrcode_core::{
     extension::{
-        CompactContributions, CompactContext, CompactEvent, CompactResult, CompactTrigger,
+        CompactContext, CompactContributions, CompactEvent, CompactResult, CompactTrigger,
         Extension, ExtensionError, HookMode, PreToolUseContext, PreToolUseResult, ProviderContext,
         ProviderEvent, ProviderResult, Registrar,
     },
@@ -125,8 +125,16 @@ impl Extension for CompactInstructionExtension {
     fn register(&self, reg: &mut Registrar) {
         let pre_seen = Arc::clone(&self.pre_seen);
         let post_seen = Arc::clone(&self.post_seen);
-        reg.on_compact(CompactEvent::PreCompact, 0, Arc::new(PreCompactHandler { pre_seen }));
-        reg.on_compact(CompactEvent::PostCompact, 0, Arc::new(PostCompactHandler { post_seen }));
+        reg.on_compact(
+            CompactEvent::PreCompact,
+            0,
+            Arc::new(PreCompactHandler { pre_seen }),
+        );
+        reg.on_compact(
+            CompactEvent::PostCompact,
+            0,
+            Arc::new(PostCompactHandler { post_seen }),
+        );
     }
 }
 

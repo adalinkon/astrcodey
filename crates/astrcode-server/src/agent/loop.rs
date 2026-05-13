@@ -18,7 +18,10 @@ use astrcode_context::{
 use astrcode_core::{
     config::ModelSelection,
     event::EventPayload,
-    extension::{CompactTrigger, ExtensionEvent, LifecycleContext, ProviderContext, ProviderEvent, ProviderResult},
+    extension::{
+        CompactTrigger, ExtensionEvent, LifecycleContext, ProviderContext, ProviderEvent,
+        ProviderResult,
+    },
     llm::{LlmError, LlmEvent, LlmMessage, LlmProvider, LlmRole},
     storage::CompactSnapshotInput,
     tool::{BackgroundTaskReader, FileObservationStore, ToolDefinition},
@@ -330,11 +333,7 @@ impl AgentLoop {
         model_id: String,
         services: AgentServices,
     ) -> Self {
-        let shared = SharedTurnContext::new(
-            session_id,
-            working_dir,
-            model_id,
-        );
+        let shared = SharedTurnContext::new(session_id, working_dir, model_id);
         let background_task_reader: Option<Arc<dyn BackgroundTaskReader>> = Some(Arc::new(
             super::background::BackgroundTaskReaderImpl::new(services.background_tasks.clone()),
         ));
@@ -429,10 +428,7 @@ impl AgentLoop {
             );
 
             let send_messages = self
-                .apply_before_provider_request_hook(
-                    system_messages,
-                    context_messages,
-                )
+                .apply_before_provider_request_hook(system_messages, context_messages)
                 .await?;
 
             let rx = self
@@ -502,7 +498,8 @@ impl AgentLoop {
                         );
                     }
 
-                    self.dispatch_after_provider_response(&lifecycle_ctx).await?;
+                    self.dispatch_after_provider_response(&lifecycle_ctx)
+                        .await?;
 
                     let prepared_tool_calls = self
                         .tools
@@ -563,7 +560,8 @@ impl AgentLoop {
             {
                 Ok(instructions) => instructions,
                 Err(error) => {
-                    return end_turn_with_error_typed(&self.extension_runner, &self.shared, error).await;
+                    return end_turn_with_error_typed(&self.extension_runner, &self.shared, error)
+                        .await;
                 },
             };
             let transcript_path = self
@@ -664,7 +662,8 @@ impl AgentLoop {
                 )
                 .await
             {
-                return end_turn_with_error_typed(&self.extension_runner, &self.shared, error).await;
+                return end_turn_with_error_typed(&self.extension_runner, &self.shared, error)
+                    .await;
             }
             let compacted = compaction.clone();
             if event_tx.is_some() {
@@ -704,8 +703,7 @@ impl AgentLoop {
         system_messages: Vec<LlmMessage>,
         context_messages: Vec<LlmMessage>,
     ) -> Result<Vec<LlmMessage>, AgentError> {
-        let send_messages =
-            provider_visible_messages([system_messages, context_messages].concat());
+        let send_messages = provider_visible_messages([system_messages, context_messages].concat());
         let provider_ctx = ProviderContext {
             session_id: self.shared.session_id.to_string(),
             working_dir: self.shared.working_dir.clone(),
@@ -728,9 +726,7 @@ impl AgentLoop {
                     .await?;
                 Err(AgentError::Internal(reason))
             },
-            ProviderResult::ReplaceMessages { messages } => {
-                Ok(provider_visible_messages(messages))
-            },
+            ProviderResult::ReplaceMessages { messages } => Ok(provider_visible_messages(messages)),
             ProviderResult::AppendMessages { messages } => {
                 let mut combined = send_messages;
                 combined.extend(messages);

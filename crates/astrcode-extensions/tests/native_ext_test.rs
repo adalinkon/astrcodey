@@ -22,7 +22,13 @@ fn ffi_vtable_register_handler_and_invoke() {
     let commands = Mutex::new(Vec::new());
     let command_handlers: Mutex<HashMap<String, CommandCallback>> = Mutex::new(HashMap::new());
 
-    let ud = Box::new(super_ud(&handlers, &tools, &tool_handlers, &commands, &command_handlers));
+    let ud = Box::new(super_ud(
+        &handlers,
+        &tools,
+        &tool_handlers,
+        &commands,
+        &command_handlers,
+    ));
     let api = ExtensionApi {
         user_data: Box::into_raw(ud) as *mut std::ffi::c_void,
         on: test_ffi_on,
@@ -54,7 +60,13 @@ fn ffi_register_tool_stores_definition() {
     let commands = Mutex::new(Vec::new());
     let command_handlers: Mutex<HashMap<String, CommandCallback>> = Mutex::new(HashMap::new());
 
-    let ud = Box::new(super_ud(&handlers, &tools, &tool_handlers, &commands, &command_handlers));
+    let ud = Box::new(super_ud(
+        &handlers,
+        &tools,
+        &tool_handlers,
+        &commands,
+        &command_handlers,
+    ));
     let api = ExtensionApi {
         user_data: Box::into_raw(ud) as *mut std::ffi::c_void,
         on: test_ffi_on,
@@ -96,7 +108,13 @@ fn ffi_register_tool_handler_stores_callback() {
     let commands = Mutex::new(Vec::new());
     let command_handlers: Mutex<HashMap<String, CommandCallback>> = Mutex::new(HashMap::new());
 
-    let ud = Box::new(super_ud(&handlers, &tools, &tool_handlers, &commands, &command_handlers));
+    let ud = Box::new(super_ud(
+        &handlers,
+        &tools,
+        &tool_handlers,
+        &commands,
+        &command_handlers,
+    ));
     let api = ExtensionApi {
         user_data: Box::into_raw(ud) as *mut std::ffi::c_void,
         on: test_ffi_on,
@@ -121,7 +139,16 @@ fn ffi_register_tool_handler_stores_callback() {
 /// 测试 FFI 上下文正确传递会话信息（session_id、working_dir）
 #[test]
 fn ffi_ctx_passes_session_info() {
-    let ffi_ctx = FfiCtxOwned::new("s1".into(), "/tmp".into(), String::new(), String::new(), "model".into(), String::new(), String::new(), String::new());
+    let ffi_ctx = FfiCtxOwned::new(
+        "s1".into(),
+        "/tmp".into(),
+        String::new(),
+        String::new(),
+        "model".into(),
+        String::new(),
+        String::new(),
+        String::new(),
+    );
     let raw = unsafe { &*(ffi_ctx.as_ptr() as *const astrcode_extensions::ffi::FfiCtx) };
     unsafe {
         let sid = ffi::read_ffi_str(raw.session_id_ptr, raw.session_id_len);
@@ -140,7 +167,13 @@ fn blocking_handler_effect_is_returned() {
     let commands = Mutex::new(Vec::new());
     let command_handlers: Mutex<HashMap<String, CommandCallback>> = Mutex::new(HashMap::new());
 
-    let ud = Box::new(super_ud(&handlers, &tools, &tool_handlers, &commands, &command_handlers));
+    let ud = Box::new(super_ud(
+        &handlers,
+        &tools,
+        &tool_handlers,
+        &commands,
+        &command_handlers,
+    ));
     let api = ExtensionApi {
         user_data: Box::into_raw(ud) as *mut std::ffi::c_void,
         on: test_ffi_on,

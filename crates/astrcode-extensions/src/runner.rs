@@ -133,9 +133,7 @@ where
     map
 }
 
-fn group_by_event_plain<K, H>(
-    mut items: Vec<(K, i32, Arc<H>)>,
-) -> HashMap<K, Vec<Arc<H>>>
+fn group_by_event_plain<K, H>(mut items: Vec<(K, i32, Arc<H>)>) -> HashMap<K, Vec<Arc<H>>>
 where
     K: std::hash::Hash + Eq,
     H: ?Sized,

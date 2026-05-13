@@ -24,9 +24,8 @@ use std::sync::Arc;
 
 use astrcode_core::{
     extension::{
-        Extension, ExtensionError, HookMode,
-        PreToolUseContext, PreToolUseHandler, PreToolUseResult,
-        ProviderContext, ProviderEvent, ProviderHandler, ProviderResult,
+        Extension, ExtensionError, HookMode, PreToolUseContext, PreToolUseHandler,
+        PreToolUseResult, ProviderContext, ProviderEvent, ProviderHandler, ProviderResult,
         Registrar, ToolHandler,
     },
     llm::LlmMessage,
@@ -64,11 +63,32 @@ impl Extension for ModeExtension {
 
     fn register(&self, reg: &mut Registrar) {
         let catalog = self.catalog.clone();
-        reg.tool(switch_mode_tool_definition(), Arc::new(ModeToolHandler { catalog: catalog.clone() }));
-        reg.tool(upsert_plan_tool_definition(), Arc::new(ModeToolHandler { catalog: catalog.clone() }));
+        reg.tool(
+            switch_mode_tool_definition(),
+            Arc::new(ModeToolHandler {
+                catalog: catalog.clone(),
+            }),
+        );
+        reg.tool(
+            upsert_plan_tool_definition(),
+            Arc::new(ModeToolHandler {
+                catalog: catalog.clone(),
+            }),
+        );
         reg.tool_metadata(mode_tool_metadata());
-        reg.on_pre_tool_use(HookMode::Blocking, 100, Arc::new(ModePreToolUseHandler { catalog: catalog.clone() }));
-        reg.on_provider(ProviderEvent::BeforeRequest, HookMode::Blocking, 50, Arc::new(ModeProviderHandler));
+        reg.on_pre_tool_use(
+            HookMode::Blocking,
+            100,
+            Arc::new(ModePreToolUseHandler {
+                catalog: catalog.clone(),
+            }),
+        );
+        reg.on_provider(
+            ProviderEvent::BeforeRequest,
+            HookMode::Blocking,
+            50,
+            Arc::new(ModeProviderHandler),
+        );
     }
 }
 
@@ -130,7 +150,10 @@ impl PreToolUseHandler for ModePreToolUseHandler {
 
         if spec.restricted_tools.contains(&ctx.tool_name) {
             return Ok(PreToolUseResult::Block {
-                reason: format!("Tool '{}' is not available in {} mode", ctx.tool_name, spec.name),
+                reason: format!(
+                    "Tool '{}' is not available in {} mode",
+                    ctx.tool_name, spec.name
+                ),
             });
         }
 
@@ -163,7 +186,8 @@ impl ProviderHandler for ModeProviderHandler {
     }
 }
 
-fn mode_tool_metadata() -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
+fn mode_tool_metadata() -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata>
+{
     use astrcode_core::tool::ToolPromptMetadata;
     let mut map = std::collections::HashMap::new();
     map.insert(

@@ -12,10 +12,8 @@ use std::{
 
 use astrcode_core::{
     extension::{
-        Extension, ExtensionError, ExtensionToolOutcome,
-        PromptContributions,
-        PromptBuildContext, PromptBuildHandler,
-        Registrar, ToolHandler,
+        Extension, ExtensionError, ExtensionToolOutcome, PromptBuildContext, PromptBuildHandler,
+        PromptContributions, Registrar, ToolHandler,
     },
     render::{RenderKeyValue, RenderSpec, RenderTone, UI_RENDER_METADATA_KEY},
     tool::{ExecutionMode, ToolDefinition, ToolOrigin, ToolResult, tool_metadata},
@@ -135,22 +133,23 @@ impl PromptBuildHandler for AgentPromptBuildHandler {
     }
 }
 
-fn agent_tool_metadata() -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
+fn agent_tool_metadata()
+-> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
     let mut map = std::collections::HashMap::new();
     map.insert(
         "agent".to_string(),
         astrcode_core::tool::ToolPromptMetadata::new(
             "Use `agent` to delegate isolated tasks to specialized subagents. By default, the \
-             agent runs synchronously and blocks until completion — use this when your next \
-             step depends on the result. Set waitForResult to false to run the agent in the \
-             background and continue working. Background agent results arrive as a \
-             notification in the next turn.",
+             agent runs synchronously and blocks until completion — use this when your next step \
+             depends on the result. Set waitForResult to false to run the agent in the background \
+             and continue working. Background agent results arrive as a notification in the next \
+             turn.",
         )
         .caveat(
             "For simple file reads or targeted searches, use Read/Grep directly instead of \
              spawning an agent. When running agents in the background (waitForResult: false), \
-             avoid duplicating their work — work on non-overlapping tasks. Background agents \
-             are automatically cancelled if the session ends.",
+             avoid duplicating their work — work on non-overlapping tasks. Background agents are \
+             automatically cancelled if the session ends.",
         )
         .prompt_tag("collaboration"),
     );

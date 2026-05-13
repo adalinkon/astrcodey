@@ -263,7 +263,9 @@ impl CommandHandler {
                     let lifecycle_ctx = LifecycleContext {
                         session_id: session_id.to_string(),
                         working_dir: String::new(),
-                        model: ModelSelection::simple(self.runtime.read_effective().llm.model_id.clone()),
+                        model: ModelSelection::simple(
+                            self.runtime.read_effective().llm.model_id.clone(),
+                        ),
                     };
                     if let Err(e) = self
                         .runtime
@@ -375,7 +377,9 @@ impl CommandHandler {
                 let lifecycle_ctx = LifecycleContext {
                     session_id: event.session_id.to_string(),
                     working_dir: working_dir.clone(),
-                    model: ModelSelection::simple(self.runtime.read_effective().llm.model_id.clone()),
+                    model: ModelSelection::simple(
+                        self.runtime.read_effective().llm.model_id.clone(),
+                    ),
                 };
                 if let Err(e) = self
                     .runtime
@@ -653,12 +657,10 @@ impl CommandHandler {
             .extension_runner
             .collect_commands_for_typed(working_dir)
             .await;
-        extension_commands.sort_by_key(|(ext_id, _, _)| {
-            match command_source(ext_id.as_str()) {
-                "plugin" => 0,
-                "skill" => 1,
-                _ => 2,
-            }
+        extension_commands.sort_by_key(|(ext_id, _, _)| match command_source(ext_id.as_str()) {
+            "plugin" => 0,
+            "skill" => 1,
+            _ => 2,
         });
 
         for (ext_id, cmd, _handler) in extension_commands {

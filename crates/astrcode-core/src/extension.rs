@@ -371,9 +371,15 @@ pub enum PostToolUseResult {
 #[derive(Debug, Clone)]
 pub enum ProviderResult {
     Allow,
-    Block { reason: String },
-    ReplaceMessages { messages: Vec<crate::llm::LlmMessage> },
-    AppendMessages { messages: Vec<crate::llm::LlmMessage> },
+    Block {
+        reason: String,
+    },
+    ReplaceMessages {
+        messages: Vec<crate::llm::LlmMessage>,
+    },
+    AppendMessages {
+        messages: Vec<crate::llm::LlmMessage>,
+    },
 }
 
 /// Compact 钩子结果。
@@ -567,11 +573,21 @@ pub struct Registrar {
     pub command_discovery: Vec<std::sync::Arc<dyn CommandDiscoveryHandler>>,
     pub pre_tool_use: Vec<(HookMode, i32, std::sync::Arc<dyn PreToolUseHandler>)>,
     pub post_tool_use: Vec<(HookMode, i32, std::sync::Arc<dyn PostToolUseHandler>)>,
-    pub provider: Vec<(ProviderEvent, HookMode, i32, std::sync::Arc<dyn ProviderHandler>)>,
+    pub provider: Vec<(
+        ProviderEvent,
+        HookMode,
+        i32,
+        std::sync::Arc<dyn ProviderHandler>,
+    )>,
     pub prompt_build: Vec<(i32, std::sync::Arc<dyn PromptBuildHandler>)>,
     pub compact: Vec<(CompactEvent, i32, std::sync::Arc<dyn CompactHandler>)>,
     pub post_tool_use_failure: Vec<(i32, std::sync::Arc<dyn PostToolUseFailureHandler>)>,
-    pub lifecycle: Vec<(ExtensionEvent, HookMode, i32, std::sync::Arc<dyn LifecycleHandler>)>,
+    pub lifecycle: Vec<(
+        ExtensionEvent,
+        HookMode,
+        i32,
+        std::sync::Arc<dyn LifecycleHandler>,
+    )>,
 }
 
 impl Registrar {
@@ -600,10 +616,7 @@ impl Registrar {
         self.tool_discovery.push(handler);
     }
 
-    pub fn tool_metadata(
-        &mut self,
-        meta: std::collections::HashMap<String, ToolPromptMetadata>,
-    ) {
+    pub fn tool_metadata(&mut self, meta: std::collections::HashMap<String, ToolPromptMetadata>) {
         self.tool_metadata.extend(meta);
     }
 
@@ -611,10 +624,7 @@ impl Registrar {
         self.commands.push((cmd, handler));
     }
 
-    pub fn command_discovery(
-        &mut self,
-        handler: std::sync::Arc<dyn CommandDiscoveryHandler>,
-    ) {
+    pub fn command_discovery(&mut self, handler: std::sync::Arc<dyn CommandDiscoveryHandler>) {
         self.command_discovery.push(handler);
     }
 

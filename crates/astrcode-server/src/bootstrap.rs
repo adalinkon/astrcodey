@@ -509,7 +509,9 @@ mod tests {
             _working_dir: &str,
             _ctx: &astrcode_core::tool::ToolExecutionContext,
         ) -> Result<ToolResult, astrcode_core::extension::ExtensionError> {
-            Err(astrcode_core::extension::ExtensionError::NotFound(tool_name.into()))
+            Err(astrcode_core::extension::ExtensionError::NotFound(
+                tool_name.into(),
+            ))
         }
     }
 

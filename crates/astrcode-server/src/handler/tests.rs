@@ -111,7 +111,9 @@ impl Extension for StaticCommandExtension {
                 description: "Static test command".into(),
                 args_schema: None,
             },
-            Arc::new(StaticCommandHandler { command_name: command_name.to_string() }),
+            Arc::new(StaticCommandHandler {
+                command_name: command_name.to_string(),
+            }),
         );
     }
 }

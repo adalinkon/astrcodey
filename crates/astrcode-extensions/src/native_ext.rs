@@ -131,8 +131,9 @@ impl ToolHandler for FfiToolHandler {
             },
         };
 
-        let parsed_outcome =
-            unsafe { ffi::parse_tool_outcome(status, output_ptr, output_len, error_ptr, error_len) };
+        let parsed_outcome = unsafe {
+            ffi::parse_tool_outcome(status, output_ptr, output_len, error_ptr, error_len)
+        };
         release_output(output_ptr, output_len, self.output_free);
         release_output(error_ptr, error_len, self.output_free);
         let outcome = parsed_outcome.map_err(|e| {
@@ -279,7 +280,8 @@ impl PreToolUseHandler for FfiPreToolUseHandler {
             String::new(),
             String::new(),
         );
-        let (effect, content) = call_ffi_event(self.callback, self.event_disc, &ffi_ctx, self.output_free);
+        let (effect, content) =
+            call_ffi_event(self.callback, self.event_disc, &ffi_ctx, self.output_free);
         match effect {
             1 => Ok(PreToolUseResult::Block { reason: content }),
             3 => {
@@ -314,7 +316,8 @@ impl PostToolUseHandler for FfiPostToolUseHandler {
             tool_result_json,
             String::new(),
         );
-        let (effect, content) = call_ffi_event(self.callback, self.event_disc, &ffi_ctx, self.output_free);
+        let (effect, content) =
+            call_ffi_event(self.callback, self.event_disc, &ffi_ctx, self.output_free);
         match effect {
             1 => Ok(PostToolUseResult::Block { reason: content }),
             2 => Ok(PostToolUseResult::ModifyResult { content }),
@@ -343,7 +346,8 @@ impl ProviderHandler for FfiProviderHandler {
             String::new(),
             String::new(),
         );
-        let (effect, content) = call_ffi_event(self.callback, self.event_disc, &ffi_ctx, self.output_free);
+        let (effect, content) =
+            call_ffi_event(self.callback, self.event_disc, &ffi_ctx, self.output_free);
         match effect {
             1 => Ok(ProviderResult::Block { reason: content }),
             _ => Ok(ProviderResult::Allow),
@@ -371,7 +375,8 @@ impl PromptBuildHandler for FfiPromptBuildHandler {
             String::new(),
             String::new(),
         );
-        let (effect, content) = call_ffi_event(self.callback, self.event_disc, &ffi_ctx, self.output_free);
+        let (effect, content) =
+            call_ffi_event(self.callback, self.event_disc, &ffi_ctx, self.output_free);
         if effect == 4 {
             serde_json::from_str(&content).map_err(|e| {
                 ExtensionError::Internal(format!("FFI PromptBuild invalid contributions: {e}"))
@@ -410,11 +415,13 @@ impl CompactHandler for FfiCompactHandler {
             String::new(),
             event_context_json,
         );
-        let (effect, content) = call_ffi_event(self.callback, self.event_disc, &ffi_ctx, self.output_free);
+        let (effect, content) =
+            call_ffi_event(self.callback, self.event_disc, &ffi_ctx, self.output_free);
         if effect == 5 {
-            let contributions: CompactContributions = serde_json::from_str(&content).map_err(|e| {
-                ExtensionError::Internal(format!("FFI Compact invalid contributions: {e}"))
-            })?;
+            let contributions: CompactContributions =
+                serde_json::from_str(&content).map_err(|e| {
+                    ExtensionError::Internal(format!("FFI Compact invalid contributions: {e}"))
+                })?;
             Ok(CompactResult::Contributions(contributions))
         } else {
             Ok(CompactResult::Allow)
@@ -442,7 +449,8 @@ impl LifecycleHandler for FfiLifecycleHandler {
             String::new(),
             String::new(),
         );
-        let (effect, content) = call_ffi_event(self.callback, self.event_disc, &ffi_ctx, self.output_free);
+        let (effect, content) =
+            call_ffi_event(self.callback, self.event_disc, &ffi_ctx, self.output_free);
         if effect == 1 {
             Ok(HookResult::Block { reason: content })
         } else {
@@ -728,7 +736,10 @@ unsafe extern "C" fn ffi_on(
     let Some(mode) = ffi::mode_from_discriminant(mode) else {
         return;
     };
-    user_data!(api).handlers.lock().push((event, mode, callback));
+    user_data!(api)
+        .handlers
+        .lock()
+        .push((event, mode, callback));
 }
 
 unsafe extern "C" fn ffi_register_tool(
@@ -790,7 +801,10 @@ unsafe extern "C" fn ffi_register_command_handler(
     callback: CommandCallback,
 ) {
     let name = ffi::read_ffi_str(name_ptr, name_len);
-    user_data!(api).command_handlers.lock().insert(name, callback);
+    user_data!(api)
+        .command_handlers
+        .lock()
+        .insert(name, callback);
 }
 
 unsafe extern "C" fn ffi_register_output_free_handler(

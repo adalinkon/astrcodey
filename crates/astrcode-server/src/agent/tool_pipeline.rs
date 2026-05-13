@@ -6,9 +6,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Instant};
 use astrcode_core::{
     config::ModelSelection,
     event::EventPayload,
-    extension::{
-        PostToolUseContext, PostToolUseResult, PreToolUseContext, PreToolUseResult,
-    },
+    extension::{PostToolUseContext, PostToolUseResult, PreToolUseContext, PreToolUseResult},
     llm::{LlmContent, LlmMessage, LlmRole},
     storage::ToolResultArtifactReader,
     tool::{BackgroundTaskReader, ExecutionMode, ToolDefinition, ToolResult},
@@ -148,10 +146,7 @@ impl ToolPipeline {
                 available_tools: tools.to_vec(),
             };
 
-            let pre_hook_result = self
-                .extension_runner
-                .emit_pre_tool_use(pre_ctx)
-                .await?;
+            let pre_hook_result = self.extension_runner.emit_pre_tool_use(pre_ctx).await?;
 
             let tool_input = match &pre_hook_result {
                 PreToolUseResult::ModifyInput { tool_input } => tool_input.clone(),
@@ -429,11 +424,7 @@ impl ToolPipeline {
                     is_error: result.is_error,
                 };
 
-                match self
-                    .extension_runner
-                    .emit_post_tool_use(post_ctx)
-                    .await?
-                {
+                match self.extension_runner.emit_post_tool_use(post_ctx).await? {
                     PostToolUseResult::ModifyResult { content } => {
                         result.content = content;
                         if result.is_error {
@@ -456,7 +447,10 @@ impl ToolPipeline {
                         model: ModelSelection::simple(self.shared.model_id.clone()),
                         tool_name: call.name.clone(),
                         tool_input: call.tool_input.clone(),
-                        error: result.error.clone().unwrap_or_else(|| result.content.clone()),
+                        error: result
+                            .error
+                            .clone()
+                            .unwrap_or_else(|| result.content.clone()),
                         tool_result: result.clone(),
                     };
                     self.extension_runner

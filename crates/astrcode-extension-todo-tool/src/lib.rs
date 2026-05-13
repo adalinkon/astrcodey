@@ -4,9 +4,8 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use astrcode_core::{
     extension::{
-        Extension, ExtensionError, HookMode,
-        PostToolUseContext, PostToolUseHandler, PostToolUseResult,
-        ProviderContext, ProviderEvent, ProviderHandler, ProviderResult,
+        Extension, ExtensionError, HookMode, PostToolUseContext, PostToolUseHandler,
+        PostToolUseResult, ProviderContext, ProviderEvent, ProviderHandler, ProviderResult,
         Registrar, ToolHandler,
     },
     tool::{ExecutionMode, ToolDefinition, ToolOrigin, ToolResult, tool_metadata},
@@ -52,11 +51,7 @@ impl Extension for TodoToolExtension {
             0,
             Arc::new(TodoReminderHandler),
         );
-        reg.on_post_tool_use(
-            HookMode::Blocking,
-            0,
-            Arc::new(TodoPostToolUseHandler),
-        );
+        reg.on_post_tool_use(HookMode::Blocking, 0, Arc::new(TodoPostToolUseHandler));
     }
 }
 
@@ -114,7 +109,8 @@ impl PostToolUseHandler for TodoPostToolUseHandler {
     }
 }
 
-fn todo_write_metadata() -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
+fn todo_write_metadata()
+-> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
     let mut map = std::collections::HashMap::new();
     map.insert(
         TODO_WRITE_TOOL_NAME.to_string(),
@@ -122,13 +118,12 @@ fn todo_write_metadata() -> std::collections::HashMap<String, astrcode_core::too
             "Maintain the current progress snapshot for this branch of work.",
         )
         .caveat(
-            "Do not use for trivial one-step work, pure Q&A, or tasks that can be completed \
-             in roughly three straightforward actions.",
+            "Do not use for trivial one-step work, pure Q&A, or tasks that can be completed in \
+             roughly three straightforward actions.",
         )
         .caveat(
-            "Keep exactly one item in `in_progress` at a time. Mark an item `in_progress` \
-             before starting it, and mark it `completed` immediately after it is truly \
-             finished.",
+            "Keep exactly one item in `in_progress` at a time. Mark an item `in_progress` before \
+             starting it, and mark it `completed` immediately after it is truly finished.",
         )
         .example(
             "{ todos: [{ content: \"分析现有代码结构\", status: \"in_progress\", activeForm: \

@@ -13,11 +13,9 @@ use std::{
 
 use astrcode_core::{
     extension::{
-        CommandContext, CommandHandler, CommandDiscoveryHandler,
-        Extension, ExtensionCommandResult, ExtensionError,
-        PromptContributions,
-        PromptBuildContext, PromptBuildHandler,
-        Registrar, ToolHandler,
+        CommandContext, CommandDiscoveryHandler, CommandHandler, Extension, ExtensionCommandResult,
+        ExtensionError, PromptBuildContext, PromptBuildHandler, PromptContributions, Registrar,
+        ToolHandler,
     },
     tool::{ExecutionMode, ToolDefinition, ToolOrigin, ToolResult, tool_metadata},
 };
@@ -56,9 +54,12 @@ impl Extension for SkillExtension {
         reg.command_discovery(Arc::new(SkillCommandDiscovery {
             shared: shared.clone(),
         }));
-        reg.on_prompt_build(0, Arc::new(SkillPromptBuildHandler {
-            shared: shared.clone(),
-        }));
+        reg.on_prompt_build(
+            0,
+            Arc::new(SkillPromptBuildHandler {
+                shared: shared.clone(),
+            }),
+        );
     }
 }
 
@@ -145,7 +146,10 @@ impl CommandDiscoveryHandler for SkillCommandDiscovery {
     async fn discover(
         &self,
         working_dir: &str,
-    ) -> Vec<(astrcode_core::extension::SlashCommand, Arc<dyn CommandHandler>)> {
+    ) -> Vec<(
+        astrcode_core::extension::SlashCommand,
+        Arc<dyn CommandHandler>,
+    )> {
         self.shared
             .get_or_discover(working_dir)
             .into_iter()
@@ -199,13 +203,14 @@ impl CommandHandler for SkillCommandHandler {
     }
 }
 
-fn skill_tool_metadata() -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
+fn skill_tool_metadata()
+-> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
     let mut map = std::collections::HashMap::new();
     map.insert(
         SKILL_TOOL_NAME.to_string(),
         astrcode_core::tool::ToolPromptMetadata::new(
-            "Call the Skill tool with the exact skill name before continuing when a task \
-             matches one of the listed skills.",
+            "Call the Skill tool with the exact skill name before continuing when a task matches \
+             one of the listed skills.",
         )
         .caveat("Users may also refer to skills as slash commands, such as /commit.")
         .prompt_tag("discovery"),
@@ -308,7 +313,12 @@ fn skill_tool_definition() -> ToolDefinition {
     }
 }
 
-fn handle_skill_tool(arguments: Value, working_dir: &str, session_id: &str, shared: &SkillShared) -> ToolResult {
+fn handle_skill_tool(
+    arguments: Value,
+    working_dir: &str,
+    session_id: &str,
+    shared: &SkillShared,
+) -> ToolResult {
     let args = match serde_json::from_value::<SkillToolArgs>(arguments) {
         Ok(args) => args,
         Err(error) => {
@@ -853,7 +863,9 @@ mod tests {
             &sample_md("Commit changes.", "Commit guide"),
         );
 
-        let handler = SkillPromptBuildHandler { shared: Arc::new(SkillShared::new()) };
+        let handler = SkillPromptBuildHandler {
+            shared: Arc::new(SkillShared::new()),
+        };
         let ctx = PromptBuildContext {
             session_id: "test".into(),
             working_dir: workspace.to_string_lossy().into_owned(),
@@ -876,7 +888,9 @@ mod tests {
             &sample_md("Review current code.", "Review guide"),
         );
 
-        let discovery = SkillCommandDiscovery { shared: Arc::new(SkillShared::new()) };
+        let discovery = SkillCommandDiscovery {
+            shared: Arc::new(SkillShared::new()),
+        };
         let commands = discovery.discover(&workspace.to_string_lossy()).await;
 
         assert!(commands.iter().any(|(cmd, _)| {
@@ -895,19 +909,17 @@ mod tests {
             &sample_md("Commit changes.", "Use ${SKILL_DIR} for ${SESSION_ID}."),
         );
 
-        let handler = SkillCommandHandler { skill_id: "commit".into(), shared: Arc::new(SkillShared::new()) };
+        let handler = SkillCommandHandler {
+            skill_id: "commit".into(),
+            shared: Arc::new(SkillShared::new()),
+        };
         let ctx = CommandContext {
             session_id: "session".into(),
             working_dir: workspace.to_string_lossy().into_owned(),
             model: ModelSelection::simple("mock"),
         };
         let result = handler
-            .execute(
-                "commit",
-                "staged files",
-                &workspace.to_string_lossy(),
-                &ctx,
-            )
+            .execute("commit", "staged files", &workspace.to_string_lossy(), &ctx)
             .await
             .expect("skill command");
 
@@ -931,7 +943,9 @@ mod tests {
             &sample_md("Commit changes.", "Commit guide"),
         );
 
-        let handler = SkillToolHandler { shared: Arc::new(SkillShared::new()) };
+        let handler = SkillToolHandler {
+            shared: Arc::new(SkillShared::new()),
+        };
         let result = handler
             .execute(
                 SKILL_TOOL_NAME,
