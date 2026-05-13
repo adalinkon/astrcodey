@@ -361,17 +361,13 @@ impl ProviderHandler for FfiProviderHandler {
             // 5 (CompactContributions) 仅用于 Compact 事件
             6 => {
                 let messages = serde_json::from_str(&content).map_err(|e| {
-                    ExtensionError::Internal(format!(
-                        "FFI Provider invalid ReplaceMessages: {e}"
-                    ))
+                    ExtensionError::Internal(format!("FFI Provider invalid ReplaceMessages: {e}"))
                 })?;
                 Ok(ProviderResult::ReplaceMessages { messages })
             },
             7 => {
                 let messages = serde_json::from_str(&content).map_err(|e| {
-                    ExtensionError::Internal(format!(
-                        "FFI Provider invalid AppendMessages: {e}"
-                    ))
+                    ExtensionError::Internal(format!("FFI Provider invalid AppendMessages: {e}"))
                 })?;
                 Ok(ProviderResult::AppendMessages { messages })
             },
