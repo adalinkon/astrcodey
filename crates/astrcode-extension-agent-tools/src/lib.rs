@@ -18,7 +18,11 @@ use astrcode_core::{
     },
     render::{RenderKeyValue, RenderSpec, RenderTone, UI_RENDER_METADATA_KEY},
     tool::{
-        ExecutionMode, ToolDefinition, ToolOrigin, ToolResult, tool_metadata,
+        ExecutionMode,
+        ToolDefinition,
+        ToolOrigin,
+        ToolResult,
+        tool_metadata,
         // AgentSessionControl,
     },
 };
@@ -264,12 +268,15 @@ impl ToolHandler for AgentToolHandler {
 //
 // TODO: send 工具暂时禁用，待 session 管理完善后重新启用。
 //
-// const SEND_TOOL_DESCRIPTION: &str = "Send a message to a running agent and wait for its response. \
-//                                      Use this to continue a conversation with an agent that was \
-//                                      started with waitForResult: false, or to give additional \
+// const SEND_TOOL_DESCRIPTION: &str = "Send a message to a running agent and wait for its response.
+// \                                      Use this to continue a conversation with an agent that was
+// \                                      started with waitForResult: false, or to give additional \
 //                                      instructions to a running agent.";
 //
-// const SEND_TOOL_PARAMETERS: &str = r#"{"type":"object","properties":{"agentId":{"type":"string","description":"The agent's name or session ID to send the message to"},"message":{"type":"string","description":"The message to send to the agent"}},"required":["agentId","message"]}"#;
+// const SEND_TOOL_PARAMETERS: &str =
+// r#"{"type":"object","properties":{"agentId":{"type":"string","description":"The agent's name or
+// session ID to send the message to"},"message":{"type":"string","description":"The message to send
+// to the agent"}},"required":["agentId","message"]}"#;
 //
 // fn send_tool_definition() -> ToolDefinition {
 //     ToolDefinition {
@@ -429,13 +436,13 @@ fn agent_tool_metadata()
     //     "send".to_string(),
     //     astrcode_core::tool::ToolPromptMetadata::new(
     //         "Send a message to an already-running agent and wait for its response. Use this to \
-    //          continue a conversation with an agent that was started with waitForResult: false, or \
-    //          to give additional instructions to a running agent.",
+    //          continue a conversation with an agent that was started with waitForResult: false, or
+    // \          to give additional instructions to a running agent.",
     //     )
     //     .caveat(
-    //         "The agentId can be either the agent's name (e.g. 'Code Reviewer') or its session ID. \
-    //          Sending blocks until the agent responds — for long tasks, consider spawning a new \
-    //          background agent instead.",
+    //         "The agentId can be either the agent's name (e.g. 'Code Reviewer') or its session ID.
+    // \          Sending blocks until the agent responds — for long tasks, consider spawning a
+    // new \          background agent instead.",
     //     )
     //     .prompt_tag("collaboration"),
     // );
