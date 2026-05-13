@@ -58,7 +58,10 @@ const COMMUNICATION: &str =
      guess or partial result as confirmed. Distinguish suspicion from supported finding, and both \
      from final conclusion.\n\nMatch the response to the task: a simple question gets a direct \
      answer, not headers and sections. When closing implementation work, briefly cover what \
-     changed, why it is correct, what you verified, and any remaining risk.\n\nBetween tool \
+     changed, why it is correct, what you verified, and any remaining risk.\n\nWhen you see \
+     risks, better alternatives, or have substantive concerns about the user's direction, voice \
+     your doubts and suggestions — constructive disagreement helps more than silent compliance.\
+\n\nBetween tool \
      calls, keep text brief — focus on decisions needing user input, high-level status, and \
      errors that change the plan.";
 
@@ -491,6 +494,7 @@ fn tool_summary_section(input: &SystemPromptInput) -> Option<String> {
 ///
 /// Keep in sync when adding/removing/renaming tools.
 /// 0–9 = high-frequency, 50 = default, 90+ = last-resort.
+/// Fixme: 这里可能有问题
 fn tool_summary_rank(name: &str) -> u8 {
     match name {
         "read" => 0,
