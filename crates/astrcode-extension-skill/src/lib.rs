@@ -5,10 +5,10 @@
 //! `SKILL.md` content only when a matching task appears.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use astrcode_core::{
@@ -45,14 +45,54 @@ impl Extension for SkillExtension {
     }
 
     fn register(&self, reg: &mut Registrar) {
-        reg.tool(skill_tool_definition(), Arc::new(SkillToolHandler));
+        let shared = Arc::new(SkillShared::new());
+        reg.tool(
+            skill_tool_definition(),
+            Arc::new(SkillToolHandler {
+                shared: shared.clone(),
+            }),
+        );
         reg.tool_metadata(skill_tool_metadata());
-        reg.command_discovery(Arc::new(SkillCommandDiscovery));
-        reg.on_prompt_build(0, Arc::new(SkillPromptBuildHandler));
+        reg.command_discovery(Arc::new(SkillCommandDiscovery {
+            shared: shared.clone(),
+        }));
+        reg.on_prompt_build(0, Arc::new(SkillPromptBuildHandler {
+            shared: shared.clone(),
+        }));
     }
 }
 
-struct SkillToolHandler;
+// ─── Shared Cache ───────────────────────────────────────────────────────
+
+/// Skill 发现结果缓存，按 working_dir 缓存。
+struct SkillShared {
+    cache: Mutex<HashMap<String, Vec<SkillDefinition>>>,
+}
+
+impl SkillShared {
+    fn new() -> Self {
+        Self {
+            cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn get_or_discover(&self, working_dir: &str) -> Vec<SkillDefinition> {
+        if let Some(skills) = self.cache.lock().unwrap().get(working_dir) {
+            return skills.clone();
+        }
+        let skills = discover_skills(working_dir);
+        self.cache
+            .lock()
+            .unwrap()
+            .entry(working_dir.to_string())
+            .or_insert_with(|| skills.clone());
+        skills
+    }
+}
+
+struct SkillToolHandler {
+    shared: Arc<SkillShared>,
+}
 
 #[async_trait::async_trait]
 impl ToolHandler for SkillToolHandler {
@@ -71,11 +111,14 @@ impl ToolHandler for SkillToolHandler {
             arguments,
             working_dir,
             ctx.session_id.as_str(),
+            &self.shared,
         ))
     }
 }
 
-struct SkillPromptBuildHandler;
+struct SkillPromptBuildHandler {
+    shared: Arc<SkillShared>,
+}
 
 #[async_trait::async_trait]
 impl PromptBuildHandler for SkillPromptBuildHandler {
@@ -85,7 +128,7 @@ impl PromptBuildHandler for SkillPromptBuildHandler {
             return Ok(PromptContributions::default());
         }
 
-        let skills = discover_skills(&ctx.working_dir);
+        let skills = self.shared.get_or_discover(&ctx.working_dir);
         Ok(PromptContributions {
             skills: vec![format_skills_for_model(&skills)],
             ..Default::default()
@@ -93,7 +136,9 @@ impl PromptBuildHandler for SkillPromptBuildHandler {
     }
 }
 
-struct SkillCommandDiscovery;
+struct SkillCommandDiscovery {
+    shared: Arc<SkillShared>,
+}
 
 #[async_trait::async_trait]
 impl CommandDiscoveryHandler for SkillCommandDiscovery {
@@ -101,7 +146,8 @@ impl CommandDiscoveryHandler for SkillCommandDiscovery {
         &self,
         working_dir: &str,
     ) -> Vec<(astrcode_core::extension::SlashCommand, Arc<dyn CommandHandler>)> {
-        discover_skills(working_dir)
+        self.shared
+            .get_or_discover(working_dir)
             .into_iter()
             .map(|skill| {
                 let description =
@@ -111,7 +157,13 @@ impl CommandDiscoveryHandler for SkillCommandDiscovery {
                     description,
                     args_schema: None,
                 };
-                (cmd, Arc::new(SkillCommandHandler { skill_id: skill.id }) as Arc<dyn CommandHandler>)
+                (
+                    cmd,
+                    Arc::new(SkillCommandHandler {
+                        skill_id: skill.id,
+                        shared: self.shared.clone(),
+                    }) as Arc<dyn CommandHandler>,
+                )
             })
             .collect()
     }
@@ -119,6 +171,7 @@ impl CommandDiscoveryHandler for SkillCommandDiscovery {
 
 struct SkillCommandHandler {
     skill_id: String,
+    shared: Arc<SkillShared>,
 }
 
 #[async_trait::async_trait]
@@ -130,7 +183,7 @@ impl CommandHandler for SkillCommandHandler {
         working_dir: &str,
         ctx: &CommandContext,
     ) -> Result<ExtensionCommandResult, ExtensionError> {
-        let skills = discover_skills(working_dir);
+        let skills = self.shared.get_or_discover(working_dir);
         let Some(skill) = skills
             .iter()
             .find(|skill| skill.matches_requested_name(&self.skill_id))
@@ -255,7 +308,7 @@ fn skill_tool_definition() -> ToolDefinition {
     }
 }
 
-fn handle_skill_tool(arguments: Value, working_dir: &str, session_id: &str) -> ToolResult {
+fn handle_skill_tool(arguments: Value, working_dir: &str, session_id: &str, shared: &SkillShared) -> ToolResult {
     let args = match serde_json::from_value::<SkillToolArgs>(arguments) {
         Ok(args) => args,
         Err(error) => {
@@ -271,7 +324,7 @@ fn handle_skill_tool(arguments: Value, working_dir: &str, session_id: &str) -> T
         },
     };
 
-    let skills = discover_skills(working_dir);
+    let skills = shared.get_or_discover(working_dir);
     let Some(skill) = skills
         .iter()
         .find(|skill| skill.matches_requested_name(&args.skill))
@@ -712,10 +765,12 @@ mod tests {
         fs::create_dir_all(skill_dir.join("references")).expect("asset dir");
         fs::write(skill_dir.join("references").join("rules.md"), "rules").expect("asset");
 
+        let shared = SkillShared::new();
         let result = handle_skill_tool(
             json!({ "skill": "/review", "args": "src/lib.rs" }),
             &workspace.to_string_lossy(),
             "session-123",
+            &shared,
         );
 
         assert!(!result.is_error);
@@ -798,7 +853,7 @@ mod tests {
             &sample_md("Commit changes.", "Commit guide"),
         );
 
-        let handler = SkillPromptBuildHandler;
+        let handler = SkillPromptBuildHandler { shared: Arc::new(SkillShared::new()) };
         let ctx = PromptBuildContext {
             session_id: "test".into(),
             working_dir: workspace.to_string_lossy().into_owned(),
@@ -821,7 +876,7 @@ mod tests {
             &sample_md("Review current code.", "Review guide"),
         );
 
-        let discovery = SkillCommandDiscovery;
+        let discovery = SkillCommandDiscovery { shared: Arc::new(SkillShared::new()) };
         let commands = discovery.discover(&workspace.to_string_lossy()).await;
 
         assert!(commands.iter().any(|(cmd, _)| {
@@ -840,7 +895,7 @@ mod tests {
             &sample_md("Commit changes.", "Use ${SKILL_DIR} for ${SESSION_ID}."),
         );
 
-        let handler = SkillCommandHandler { skill_id: "commit".into() };
+        let handler = SkillCommandHandler { skill_id: "commit".into(), shared: Arc::new(SkillShared::new()) };
         let ctx = CommandContext {
             session_id: "session".into(),
             working_dir: workspace.to_string_lossy().into_owned(),
@@ -876,7 +931,7 @@ mod tests {
             &sample_md("Commit changes.", "Commit guide"),
         );
 
-        let handler = SkillToolHandler;
+        let handler = SkillToolHandler { shared: Arc::new(SkillShared::new()) };
         let result = handler
             .execute(
                 SKILL_TOOL_NAME,

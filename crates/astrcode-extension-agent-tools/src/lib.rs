@@ -5,7 +5,10 @@
 
 mod agent;
 
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use astrcode_core::{
     extension::{
@@ -36,13 +39,55 @@ impl Extension for AgentToolsExtension {
     }
 
     fn register(&self, reg: &mut Registrar) {
-        reg.tool(agent_tool_definition(), Arc::new(AgentToolHandler));
+        let shared = Arc::new(AgentShared::new());
+        reg.tool(
+            agent_tool_definition(),
+            Arc::new(AgentToolHandler {
+                shared: shared.clone(),
+            }),
+        );
         reg.tool_metadata(agent_tool_metadata());
-        reg.on_prompt_build(0, Arc::new(AgentPromptBuildHandler));
+        reg.on_prompt_build(
+            0,
+            Arc::new(AgentPromptBuildHandler {
+                shared: shared.clone(),
+            }),
+        );
     }
 }
 
-struct AgentToolHandler;
+// ─── Shared Cache ───────────────────────────────────────────────────────
+
+/// Agent 发现结果缓存，按 working_dir 缓存。
+struct AgentShared {
+    cache: Mutex<HashMap<String, Vec<agent::AgentConfig>>>,
+}
+
+impl AgentShared {
+    fn new() -> Self {
+        Self {
+            cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn get_or_discover(&self, working_dir: Option<&str>) -> Vec<agent::AgentConfig> {
+        let key = working_dir.unwrap_or("");
+        if let Some(agents) = self.cache.lock().unwrap().get(key) {
+            return agents.clone();
+        }
+        let agents = agent::discover_agents(working_dir);
+        self.cache
+            .lock()
+            .unwrap()
+            .entry(key.to_string())
+            .or_insert_with(|| agents.clone());
+        agents
+    }
+}
+
+struct AgentToolHandler {
+    shared: Arc<AgentShared>,
+}
 
 #[async_trait::async_trait]
 impl ToolHandler for AgentToolHandler {
@@ -57,7 +102,7 @@ impl ToolHandler for AgentToolHandler {
             return Err(ExtensionError::NotFound(tool_name.into()));
         }
 
-        let agents = agent::discover_agents(Some(working_dir));
+        let agents = self.shared.get_or_discover(Some(working_dir));
         let run = build_agent_run(&arguments, &agents).map_err(ExtensionError::Internal)?;
         let outcome_json = serde_json::to_value(&run.outcome)
             .map_err(|e| ExtensionError::Internal(format!("serialize agent outcome: {e}")))?;
@@ -75,12 +120,14 @@ impl ToolHandler for AgentToolHandler {
     }
 }
 
-struct AgentPromptBuildHandler;
+struct AgentPromptBuildHandler {
+    shared: Arc<AgentShared>,
+}
 
 #[async_trait::async_trait]
 impl PromptBuildHandler for AgentPromptBuildHandler {
     async fn handle(&self, ctx: PromptBuildContext) -> Result<PromptContributions, ExtensionError> {
-        let agents = agent::discover_agents(Some(&ctx.working_dir));
+        let agents = self.shared.get_or_discover(Some(&ctx.working_dir));
         Ok(PromptContributions {
             agents: vec![format_agents_for_model(&agents)],
             ..Default::default()

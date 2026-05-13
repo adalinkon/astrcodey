@@ -6,6 +6,7 @@
 //! - Advisory: 结果仅记录日志，不强制执行
 
 use std::{
+    collections::HashMap,
     sync::{Arc, RwLock as StdRwLock},
     time::Duration,
 };
@@ -29,6 +30,8 @@ pub struct ExtensionRunner {
     extensions: RwLock<Vec<Arc<dyn Extension>>>,
     /// 从 register() 收集的类型化能力记录
     records: RwLock<Vec<ExtensionRecord>>,
+    /// 预计算的 handler 索引，注册时重建，分发时直接查表
+    index: parking_lot::RwLock<Arc<HandlerIndex>>,
     /// 会话创建器（在 bind() 调用前为 None）
     spawner: Arc<StdRwLock<Option<Arc<dyn SessionSpawner>>>>,
     /// 钩子执行超时时间
@@ -47,24 +50,126 @@ pub struct RegisteredSlashCommand {
     pub command: astrcode_core::extension::SlashCommand,
 }
 
+// ─── Handler Index ──────────────────────────────────────────────────────
+
+/// 预排序的 handler 索引。
+///
+/// 在每次 `register()` 后从所有 records 重建，确保分发时无需遍历+排序。
+/// 各列表按 priority 降序排列，provider/compact/lifecycle 按 event 分组。
+#[allow(clippy::type_complexity)]
+struct HandlerIndex {
+    pre_tool_use: Vec<(HookMode, Arc<dyn PreToolUseHandler>)>,
+    post_tool_use: Vec<(HookMode, Arc<dyn PostToolUseHandler>)>,
+    provider: HashMap<ProviderEvent, Vec<(HookMode, Arc<dyn ProviderHandler>)>>,
+    prompt_build: Vec<Arc<dyn PromptBuildHandler>>,
+    compact: HashMap<CompactEvent, Vec<Arc<dyn CompactHandler>>>,
+    post_tool_use_failure: Vec<Arc<dyn PostToolUseFailureHandler>>,
+    lifecycle: HashMap<ExtensionEvent, Vec<(HookMode, Arc<dyn LifecycleHandler>)>>,
+}
+
+fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
+    let mut pre: Vec<(i32, HookMode, Arc<dyn PreToolUseHandler>)> = Vec::new();
+    let mut post: Vec<(i32, HookMode, Arc<dyn PostToolUseHandler>)> = Vec::new();
+    let mut prov: Vec<(ProviderEvent, i32, HookMode, Arc<dyn ProviderHandler>)> = Vec::new();
+    let mut pb: Vec<(i32, Arc<dyn PromptBuildHandler>)> = Vec::new();
+    let mut cmp: Vec<(CompactEvent, i32, Arc<dyn CompactHandler>)> = Vec::new();
+    let mut ptuf: Vec<(i32, Arc<dyn PostToolUseFailureHandler>)> = Vec::new();
+    let mut lc: Vec<(ExtensionEvent, i32, HookMode, Arc<dyn LifecycleHandler>)> = Vec::new();
+
+    for record in records {
+        for (mode, pri, h) in &record.reg.pre_tool_use {
+            pre.push((*pri, *mode, Arc::clone(h)));
+        }
+        for (mode, pri, h) in &record.reg.post_tool_use {
+            post.push((*pri, *mode, Arc::clone(h)));
+        }
+        for (ev, mode, pri, h) in &record.reg.provider {
+            prov.push((*ev, *pri, *mode, Arc::clone(h)));
+        }
+        for (pri, h) in &record.reg.prompt_build {
+            pb.push((*pri, Arc::clone(h)));
+        }
+        for (ev, pri, h) in &record.reg.compact {
+            cmp.push((*ev, *pri, Arc::clone(h)));
+        }
+        for (pri, h) in &record.reg.post_tool_use_failure {
+            ptuf.push((*pri, Arc::clone(h)));
+        }
+        for (ev, mode, pri, h) in &record.reg.lifecycle {
+            lc.push((ev.clone(), *pri, *mode, Arc::clone(h)));
+        }
+    }
+
+    pre.sort_by_key(|b| std::cmp::Reverse(b.0));
+    post.sort_by_key(|b| std::cmp::Reverse(b.0));
+    prov.sort_by_key(|b| std::cmp::Reverse(b.1));
+    pb.sort_by_key(|b| std::cmp::Reverse(b.0));
+    cmp.sort_by_key(|b| std::cmp::Reverse(b.1));
+    ptuf.sort_by_key(|b| std::cmp::Reverse(b.0));
+    lc.sort_by_key(|b| std::cmp::Reverse(b.1));
+
+    HandlerIndex {
+        pre_tool_use: pre.into_iter().map(|(_, m, h)| (m, h)).collect(),
+        post_tool_use: post.into_iter().map(|(_, m, h)| (m, h)).collect(),
+        provider: group_by_event_with_mode(prov),
+        prompt_build: pb.into_iter().map(|(_, h)| h).collect(),
+        compact: group_by_event_plain(cmp),
+        post_tool_use_failure: ptuf.into_iter().map(|(_, h)| h).collect(),
+        lifecycle: group_by_event_with_mode(lc),
+    }
+}
+
+fn group_by_event_with_mode<K, H>(
+    mut items: Vec<(K, i32, HookMode, Arc<H>)>,
+) -> HashMap<K, Vec<(HookMode, Arc<H>)>>
+where
+    K: std::hash::Hash + Eq,
+    H: ?Sized,
+{
+    let mut map: HashMap<K, Vec<(HookMode, Arc<H>)>> = HashMap::new();
+    for (ev, _, mode, h) in items.drain(..) {
+        map.entry(ev).or_default().push((mode, h));
+    }
+    map
+}
+
+fn group_by_event_plain<K, H>(
+    mut items: Vec<(K, i32, Arc<H>)>,
+) -> HashMap<K, Vec<Arc<H>>>
+where
+    K: std::hash::Hash + Eq,
+    H: ?Sized,
+{
+    let mut map: HashMap<K, Vec<Arc<H>>> = HashMap::new();
+    for (ev, _, h) in items.drain(..) {
+        map.entry(ev).or_default().push(h);
+    }
+    map
+}
+
+// ─── ExtensionRunner impl ───────────────────────────────────────────────
+
 impl ExtensionRunner {
     /// 创建新的扩展运行器。
-    ///
-    /// # 参数
-    /// - `timeout`: 阻塞钩子的执行超时时间
     pub fn new(timeout: Duration) -> Self {
         Self {
             extensions: RwLock::new(Vec::new()),
             records: RwLock::new(Vec::new()),
+            index: parking_lot::RwLock::new(Arc::new(HandlerIndex {
+                pre_tool_use: Vec::new(),
+                post_tool_use: Vec::new(),
+                provider: HashMap::new(),
+                prompt_build: Vec::new(),
+                compact: HashMap::new(),
+                post_tool_use_failure: Vec::new(),
+                lifecycle: HashMap::new(),
+            })),
             spawner: Arc::new(StdRwLock::new(None)),
             timeout,
         }
     }
 
     /// 注册一个扩展。
-    ///
-    /// 调用 `ext.register()` 收集类型化能力，然后存入扩展列表。
-    /// 重复的扩展 ID 会被跳过并记录警告。
     pub async fn register(&self, ext: Arc<dyn Extension>) {
         let id = ext.id().to_string();
 
@@ -84,13 +189,14 @@ impl ExtensionRunner {
                 id: id.clone(),
                 reg,
             });
+            let index = Arc::new(build_handler_index(&records));
+            *self.index.write() = index;
         }
         let mut exts = self.extensions.write().await;
         exts.push(ext);
     }
 
     /// 绑定会话创建能力。
-    /// 在服务器启动后、任何工具执行之前调用一次。
     pub fn bind(&self, spawner: Arc<dyn SessionSpawner>) {
         *self.spawner.write().unwrap_or_else(|e| e.into_inner()) = Some(spawner);
     }
@@ -99,25 +205,21 @@ impl ExtensionRunner {
         self.extensions.read().await.len()
     }
 
-    // ─── 类型化分发方法（Context + Handler） ──────────────────
+    fn load_index(&self) -> Arc<HandlerIndex> {
+        Arc::clone(&self.index.read())
+    }
+
+    // ─── 类型化分发方法 ──────────────────────────────────────────────
 
     /// PreToolUse 钩子分发。
     pub async fn emit_pre_tool_use(
         &self,
         ctx: PreToolUseContext,
     ) -> Result<PreToolUseResult, ExtensionError> {
-        let records = self.records.read().await;
-        let mut handlers: Vec<(i32, HookMode, Arc<dyn PreToolUseHandler>)> = Vec::new();
-        for record in records.iter() {
-            for (mode, priority, handler) in record.reg.pre_tool_use.iter() {
-                handlers.push((*priority, *mode, Arc::clone(handler)));
-            }
-        }
-        handlers.sort_by_key(|b| std::cmp::Reverse(b.0));
-        drop(records);
+        let index = self.load_index();
 
         let mut ctx = ctx;
-        for (_, mode, handler) in handlers {
+        for (mode, handler) in &index.pre_tool_use {
             match mode {
                 HookMode::Blocking => {
                     let result = tokio::time::timeout(self.timeout, handler.handle(ctx.clone()))
@@ -140,6 +242,7 @@ impl ExtensionRunner {
                 },
                 HookMode::NonBlocking => {
                     let ctx = ctx.clone();
+                    let handler = Arc::clone(handler);
                     spawn_nonblocking(async move {
                         if let Err(e) = handler.handle(ctx).await {
                             tracing::warn!(extension_event = "pre_tool_use", error = %e, "non-blocking handler failed");
@@ -156,18 +259,10 @@ impl ExtensionRunner {
         &self,
         ctx: PostToolUseContext,
     ) -> Result<PostToolUseResult, ExtensionError> {
-        let records = self.records.read().await;
-        let mut handlers: Vec<(i32, HookMode, Arc<dyn PostToolUseHandler>)> = Vec::new();
-        for record in records.iter() {
-            for (mode, priority, handler) in record.reg.post_tool_use.iter() {
-                handlers.push((*priority, *mode, Arc::clone(handler)));
-            }
-        }
-        handlers.sort_by_key(|b| std::cmp::Reverse(b.0));
-        drop(records);
+        let index = self.load_index();
 
         let mut ctx = ctx;
-        for (_, mode, handler) in handlers {
+        for (mode, handler) in &index.post_tool_use {
             match mode {
                 HookMode::Blocking => {
                     let result = tokio::time::timeout(self.timeout, handler.handle(ctx.clone()))
@@ -196,6 +291,7 @@ impl ExtensionRunner {
                 },
                 HookMode::NonBlocking => {
                     let ctx = ctx.clone();
+                    let handler = Arc::clone(handler);
                     spawn_nonblocking(async move {
                         if let Err(e) = handler.handle(ctx).await {
                             tracing::warn!(extension_event = "post_tool_use", error = %e, "non-blocking handler failed");
@@ -213,21 +309,16 @@ impl ExtensionRunner {
         event: ProviderEvent,
         ctx: ProviderContext,
     ) -> Result<ProviderResult, ExtensionError> {
-        let records = self.records.read().await;
-        let mut handlers: Vec<(i32, HookMode, Arc<dyn ProviderHandler>)> = Vec::new();
-        for record in records.iter() {
-            for (ev, mode, priority, handler) in record.reg.provider.iter() {
-                if *ev == event {
-                    handlers.push((*priority, *mode, Arc::clone(handler)));
-                }
-            }
-        }
-        handlers.sort_by_key(|b| std::cmp::Reverse(b.0));
-        drop(records);
+        let index = self.load_index();
+        let handlers = index.provider.get(&event);
+
+        let Some(handlers) = handlers else {
+            return Ok(ProviderResult::Allow);
+        };
 
         let mut ctx = ctx;
         let mut modified = false;
-        for (_, mode, handler) in handlers {
+        for (mode, handler) in handlers {
             match mode {
                 HookMode::Blocking => {
                     let result = tokio::time::timeout(self.timeout, handler.handle(ctx.clone()))
@@ -244,7 +335,10 @@ impl ExtensionRunner {
                         ProviderResult::AppendMessages { messages } => {
                             let mut new_messages = ctx.messages;
                             new_messages.extend(messages);
-                            ctx = ProviderContext { messages: new_messages, ..ctx };
+                            ctx = ProviderContext {
+                                messages: new_messages,
+                                ..ctx
+                            };
                             modified = true;
                         },
                         ProviderResult::Allow => {},
@@ -257,6 +351,7 @@ impl ExtensionRunner {
                 },
                 HookMode::NonBlocking => {
                     let ctx = ctx.clone();
+                    let handler = Arc::clone(handler);
                     spawn_nonblocking(async move {
                         if let Err(e) = handler.handle(ctx).await {
                             tracing::warn!(extension_event = "provider", error = %e, "non-blocking handler failed");
@@ -266,29 +361,23 @@ impl ExtensionRunner {
             }
         }
         if modified {
-            Ok(ProviderResult::ReplaceMessages { messages: ctx.messages })
+            Ok(ProviderResult::ReplaceMessages {
+                messages: ctx.messages,
+            })
         } else {
             Ok(ProviderResult::Allow)
         }
     }
 
-    /// PromptBuild 贡献收集（类型化版本）。
+    /// PromptBuild 贡献收集。
     pub async fn collect_prompt_contributions_typed(
         &self,
         ctx: PromptBuildContext,
     ) -> Result<PromptContributions, ExtensionError> {
-        let records = self.records.read().await;
-        let mut handlers: Vec<(i32, Arc<dyn PromptBuildHandler>)> = Vec::new();
-        for record in records.iter() {
-            for (priority, handler) in record.reg.prompt_build.iter() {
-                handlers.push((*priority, Arc::clone(handler)));
-            }
-        }
-        handlers.sort_by_key(|b| std::cmp::Reverse(b.0));
-        drop(records);
+        let index = self.load_index();
 
         let mut collected = PromptContributions::default();
-        for (_, handler) in handlers {
+        for handler in &index.prompt_build {
             let contributions = tokio::time::timeout(self.timeout, handler.handle(ctx.clone()))
                 .await
                 .map_err(|_| ExtensionError::Timeout(self.timeout.as_millis() as u64))??;
@@ -303,20 +392,15 @@ impl ExtensionRunner {
         event: CompactEvent,
         ctx: CompactContext,
     ) -> Result<CompactResult, ExtensionError> {
-        let records = self.records.read().await;
-        let mut handlers: Vec<(i32, Arc<dyn CompactHandler>)> = Vec::new();
-        for record in records.iter() {
-            for (ev, priority, handler) in record.reg.compact.iter() {
-                if *ev == event {
-                    handlers.push((*priority, Arc::clone(handler)));
-                }
-            }
-        }
-        handlers.sort_by_key(|b| std::cmp::Reverse(b.0));
-        drop(records);
+        let index = self.load_index();
+        let handlers = index.compact.get(&event);
+
+        let Some(handlers) = handlers else {
+            return Ok(CompactResult::Allow);
+        };
 
         let mut collected = CompactContributions::default();
-        for (_, handler) in handlers {
+        for handler in handlers {
             let result = tokio::time::timeout(self.timeout, handler.handle(ctx.clone()))
                 .await
                 .map_err(|_| ExtensionError::Timeout(self.timeout.as_millis() as u64))??;
@@ -338,21 +422,10 @@ impl ExtensionRunner {
     }
 
     /// PostToolUseFailure 通知型钩子分发。
-    pub async fn emit_post_tool_use_failure(
-        &self,
-        ctx: PostToolUseFailureContext,
-    ) {
-        let records = self.records.read().await;
-        let mut handlers: Vec<(i32, Arc<dyn PostToolUseFailureHandler>)> = Vec::new();
-        for record in records.iter() {
-            for (priority, handler) in record.reg.post_tool_use_failure.iter() {
-                handlers.push((*priority, Arc::clone(handler)));
-            }
-        }
-        handlers.sort_by_key(|b| std::cmp::Reverse(b.0));
-        drop(records);
+    pub async fn emit_post_tool_use_failure(&self, ctx: PostToolUseFailureContext) {
+        let index = self.load_index();
 
-        for (_, handler) in handlers {
+        for handler in &index.post_tool_use_failure {
             match tokio::time::timeout(self.timeout, handler.handle(ctx.clone())).await {
                 Ok(Ok(())) => {},
                 Ok(Err(e)) => {
@@ -371,19 +444,14 @@ impl ExtensionRunner {
         event: ExtensionEvent,
         ctx: LifecycleContext,
     ) -> Result<HookResult, ExtensionError> {
-        let records = self.records.read().await;
-        let mut handlers: Vec<(i32, HookMode, Arc<dyn LifecycleHandler>)> = Vec::new();
-        for record in records.iter() {
-            for (ev, mode, priority, handler) in record.reg.lifecycle.iter() {
-                if *ev == event {
-                    handlers.push((*priority, *mode, Arc::clone(handler)));
-                }
-            }
-        }
-        handlers.sort_by_key(|b| std::cmp::Reverse(b.0));
-        drop(records);
+        let index = self.load_index();
+        let handlers = index.lifecycle.get(&event);
 
-        for (_, mode, handler) in handlers {
+        let Some(handlers) = handlers else {
+            return Ok(HookResult::Allow);
+        };
+
+        for (mode, handler) in handlers {
             match mode {
                 HookMode::Blocking => {
                     let result = tokio::time::timeout(self.timeout, handler.handle(ctx.clone()))
@@ -400,6 +468,7 @@ impl ExtensionRunner {
                 },
                 HookMode::NonBlocking => {
                     let ctx = ctx.clone();
+                    let handler = Arc::clone(handler);
                     spawn_nonblocking(async move {
                         if let Err(e) = handler.handle(ctx).await {
                             tracing::warn!(extension_event = "lifecycle", error = %e, "non-blocking handler failed");
@@ -411,7 +480,9 @@ impl ExtensionRunner {
         Ok(HookResult::Allow)
     }
 
-    /// 从 ExtensionRecord 收集工具适配器（类型化版本）。
+    // ─── 收集方法（仍从 records 读取，注册时不变） ──────────────────
+
+    /// 从 ExtensionRecord 收集工具适配器。
     pub async fn collect_tool_adapters_typed(&self, working_dir: &str) -> Vec<Arc<dyn Tool>> {
         let records = self.records.read().await;
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
@@ -445,7 +516,7 @@ impl ExtensionRunner {
         tools
     }
 
-    /// 从 ExtensionRecord 收集工具提示词元数据（类型化版本）。
+    /// 从 ExtensionRecord 收集工具提示词元数据。
     pub async fn collect_tool_prompt_metadata_typed(
         &self,
     ) -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
@@ -457,7 +528,7 @@ impl ExtensionRunner {
         map
     }
 
-    /// 从 ExtensionRecord 收集斜杠命令（类型化版本）。
+    /// 从 ExtensionRecord 收集斜杠命令。
     pub async fn collect_commands_for_typed(
         &self,
         working_dir: &str,
@@ -484,7 +555,7 @@ impl ExtensionRunner {
         cmds
     }
 
-    /// 命令派发（类型化版本）。
+    /// 命令派发。
     pub async fn dispatch_command_typed(
         &self,
         command_name: &str,
@@ -508,7 +579,7 @@ impl ExtensionRunner {
         }
     }
 
-    /// 判断是否有任何扩展使用了 register() 注册了类型化能力。
+    /// 判断是否有任何扩展注册了类型化能力。
     pub async fn has_records(&self) -> bool {
         !self.records.read().await.is_empty()
     }
@@ -523,10 +594,6 @@ fn command_dispatch_priority(extension_id: &str) -> u8 {
 }
 
 /// 以即发即弃方式派生异步任务，观察 panic 并记录错误日志。
-///
-/// `tokio::spawn` 的 JoinHandle 被丢弃时，任务内的 panic 会被静默吞掉。
-/// 此函数通过第二个轻量级任务观察原始任务的 JoinHandle，
-/// 确保 panic 至少以 error 级别被记录。
 fn spawn_nonblocking<F>(fut: F)
 where
     F: std::future::Future<Output = ()> + Send + 'static,
@@ -644,10 +711,7 @@ impl Tool for HandlerTool {
     }
 }
 
-/// 将 [`ExtensionError`] 转换为结构化的错误 [`ToolResult`]，供 agent 理解和恢复。
-///
-/// 与 `ToolError`（纯字符串）不同，`ToolResult` 携带 metadata，
-/// agent 可以据此判断是重试、换工具还是报告给用户。
+/// 将 [`ExtensionError`] 转换为结构化的错误 [`ToolResult`]。
 fn extension_error_result(tool_name: &str, extension_id: &str, err: ExtensionError) -> ToolResult {
     use astrcode_core::tool::tool_metadata;
 
