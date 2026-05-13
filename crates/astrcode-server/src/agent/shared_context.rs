@@ -2,10 +2,13 @@
 //! types shared across agent sub-objects.
 
 use astrcode_core::{
-    config::ModelSelection, event::EventPayload, extension::ExtensionEvent, llm::LlmRole,
-    tool::ToolDefinition, types::*,
+    config::ModelSelection,
+    event::EventPayload,
+    extension::{ExtensionEvent, LifecycleContext},
+    llm::LlmRole,
+    types::*,
 };
-use astrcode_extensions::{context::ServerExtensionContext, runner::ExtensionRunner};
+use astrcode_extensions::runner::ExtensionRunner;
 use tokio::sync::{mpsc, oneshot};
 
 // ─── Constants ───────────────────────────────────────────────────────────
@@ -36,16 +39,21 @@ pub(crate) fn send_event(
 
 /// Emit `TurnEnd` before returning an error, preventing extensions from
 /// seeing an unfinished turn.
-pub(super) async fn end_turn_with_error<T, E>(
+pub(super) async fn end_turn_with_error_typed<T, E>(
     extension_runner: &ExtensionRunner,
-    ext_ctx: &ServerExtensionContext,
+    shared: &SharedTurnContext,
     error: E,
 ) -> Result<T, AgentError>
 where
     E: Into<AgentError>,
 {
+    let ctx = LifecycleContext {
+        session_id: shared.session_id.to_string(),
+        working_dir: shared.working_dir.clone(),
+        model: ModelSelection::simple(shared.model_id.clone()),
+    };
     let _ = extension_runner
-        .dispatch(ExtensionEvent::TurnEnd, ext_ctx)
+        .emit_lifecycle(ExtensionEvent::TurnEnd, ctx)
         .await;
     Err(error.into())
 }
@@ -58,6 +66,9 @@ pub(super) struct SharedTurnContext {
     pub(super) session_id: SessionId,
     pub(super) working_dir: String,
     pub(super) model_id: String,
+    // TODO: 恢复 event_bus、session_history、system_prompt 等能力，
+    // 旧 ExtensionContext trait 已在类型化注册迁移中移除，
+    // 后续需要通过独立的机制（如 SharedState struct）重新暴露给 handler。
 }
 
 impl SharedTurnContext {
@@ -67,26 +78,6 @@ impl SharedTurnContext {
             working_dir,
             model_id,
         }
-    }
-
-    pub(super) fn ext_ctx(&self) -> ServerExtensionContext {
-        ServerExtensionContext::new(
-            self.session_id.to_string(),
-            self.working_dir.clone(),
-            ModelSelection::simple(self.model_id.clone()),
-        )
-    }
-
-    pub(super) fn ext_ctx_with_tools(&self, tools: &[ToolDefinition]) -> ServerExtensionContext {
-        let mut ctx = self.ext_ctx();
-        ctx.set_tools(
-            tools
-                .iter()
-                .cloned()
-                .map(|tool| (tool.name.clone(), tool))
-                .collect(),
-        );
-        ctx
     }
 }
 

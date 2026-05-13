@@ -10,14 +10,14 @@
   "tools": [
     {
       "name": "agent",
-      "description": "Spawn a subagent to handle one delegated task. Choose subagent_type from the Agents section.",
+      "description": "Launch a specialized subagent for one narrow, delegated task. By default, blocks until the agent completes and returns its result. Set waitForResult to false to run the agent in the background — you can continue working and the result will be available in the next turn. See the [Agents] section in the system prompt for available agent types.",
       "parameters": {
         "type": "object",
         "properties": {
           "description": { "type": "string", "description": "Short 3-5 word description of what this agent will do" },
           "prompt": { "type": "string", "description": "Task for the subagent" },
-          "subagent_type": { "type": "string", "description": "Agent name from agents/ directory" },
-          "mode": { "type": "string", "enum": ["single"], "default": "single" }
+          "subagentType": { "type": "string", "description": "Agent name from agents/ directory" },
+          "waitForResult": { "type": "boolean", "default": true, "description": "If true (default), block until the agent completes. If false, run in the background and return immediately." }
         },
         "required": ["prompt", "description"]
       }

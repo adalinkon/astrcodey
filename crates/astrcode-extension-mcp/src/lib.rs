@@ -5,14 +5,14 @@
 //! this extension; stdio process handling and MCP protocol details stay here.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::{Arc, Mutex},
 };
 
 use astrcode_core::{
     extension::{
-        Extension, ExtensionContext, ExtensionError, ExtensionEvent, HookEffect, HookMode,
-        HookSubscription, PromptContributions,
+        Extension, ExtensionError, PromptBuildContext, PromptBuildHandler, PromptContributions,
+        Registrar, ToolDiscoveryHandler, ToolHandler,
     },
     tool::{
         ExecutionMode, ToolDefinition, ToolExecutionContext, ToolOrigin, ToolResult, tool_metadata,
@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use crate::{
     client::StdioMcpClient,
     config::McpServerConfig,
-    names::{build_tool_name, normalized_name_matches, parse_tool_name},
+    names::build_tool_name,
     protocol::{CallToolResult, McpTool},
     search::{SearchCandidate, ToolSearchArgs, search_mcp_tools},
 };
@@ -49,46 +49,119 @@ impl Extension for McpExtension {
         EXTENSION_ID
     }
 
-    fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-        vec![HookSubscription {
-            event: ExtensionEvent::PromptBuild,
-            mode: HookMode::Blocking,
-            priority: 0,
-        }]
+    fn register(&self, reg: &mut Registrar) {
+        let shared = Arc::new(McpShared::new());
+        reg.tool_discovery(Arc::new(McpToolDiscovery {
+            shared: shared.clone(),
+        }));
+        reg.tool_metadata(mcp_tool_metadata());
+        reg.on_prompt_build(0, Arc::new(McpPromptBuildHandler));
     }
+}
 
-    async fn on_event(
-        &self,
-        event: ExtensionEvent,
-        ctx: &dyn ExtensionContext,
-    ) -> Result<HookEffect, ExtensionError> {
-        if event == ExtensionEvent::PromptBuild && ctx.find_tool(TOOL_SEARCH_TOOL_NAME).is_some() {
-            return Ok(HookEffect::PromptContributions(PromptContributions {
-                additional_instructions: vec![mcp_discovery_instructions().into()],
-                ..Default::default()
-            }));
+// ─── Shared Cache ───────────────────────────────────────────────────────
+
+/// MCP 发现结果缓存，在 tool discovery 和 tool execution 之间共享。
+///
+/// Keyed by working_dir. Populated during `McpToolDiscovery::discover`,
+/// consumed during `McpToolHandler::execute` and `tool_search_tool` calls.
+struct McpShared {
+    cache: Mutex<HashMap<String, Arc<McpCacheEntry>>>,
+}
+
+struct McpCacheEntry {
+    /// normalized tool name -> (server config, original tool name)
+    tool_lookup: HashMap<String, (McpServerConfig, String)>,
+    /// search candidates for tool_search_tool
+    candidates: Vec<SearchCandidate>,
+    diagnostics: Vec<String>,
+}
+
+impl McpShared {
+    fn new() -> Self {
+        Self {
+            cache: Mutex::new(HashMap::new()),
         }
-        Ok(HookEffect::Allow)
     }
 
-    async fn tools_for(&self, working_dir: &str) -> Vec<ToolDefinition> {
+    fn get_entry(&self, working_dir: &str) -> Option<Arc<McpCacheEntry>> {
+        self.cache.lock().unwrap().get(working_dir).cloned()
+    }
+
+    fn store(&self, working_dir: &str, entry: McpCacheEntry) {
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(working_dir.to_string(), Arc::new(entry));
+    }
+}
+
+// ─── Discovery ──────────────────────────────────────────────────────────
+
+struct McpToolDiscovery {
+    shared: Arc<McpShared>,
+}
+
+#[async_trait::async_trait]
+impl ToolDiscoveryHandler for McpToolDiscovery {
+    async fn discover(&self, working_dir: &str) -> Vec<(ToolDefinition, Arc<dyn ToolHandler>)> {
         let discovered = discover_mcp_tools(working_dir).await;
         warn_diagnostics(&discovered.diagnostics);
         if discovered.tools.is_empty() {
             return Vec::new();
         }
 
-        let mut definitions = vec![tool_search_tool_definition()];
-        definitions.extend(
-            discovered
-                .tools
-                .into_iter()
-                .map(|candidate| candidate.definition),
-        );
-        definitions
-    }
+        // Build tool lookup: normalized name -> (server config, original tool name)
+        let server_map: HashMap<&str, &McpServerConfig> = discovered
+            .servers
+            .iter()
+            .map(|s| (s.name.as_str(), s))
+            .collect();
+        let mut tool_lookup = HashMap::new();
+        for candidate in &discovered.tools {
+            if let Some(server) = server_map.get(candidate.server.as_str()) {
+                tool_lookup.insert(
+                    candidate.definition.name.clone(),
+                    ((*server).clone(), candidate.tool.clone()),
+                );
+            }
+        }
 
-    async fn execute_tool(
+        self.shared.store(
+            working_dir,
+            McpCacheEntry {
+                tool_lookup,
+                candidates: discovered.tools.clone(),
+                diagnostics: discovered.diagnostics,
+            },
+        );
+
+        let handler = Arc::new(McpToolHandler {
+            shared: self.shared.clone(),
+        });
+        let mut result = vec![(
+            tool_search_tool_definition(),
+            handler.clone() as Arc<dyn ToolHandler>,
+        )];
+        for candidate in discovered.tools {
+            result.push((
+                candidate.definition,
+                handler.clone() as Arc<dyn ToolHandler>,
+            ));
+        }
+        result
+    }
+}
+
+// ─── Tool Handler ───────────────────────────────────────────────────────
+
+struct McpToolHandler {
+    shared: Arc<McpShared>,
+}
+
+#[async_trait::async_trait]
+impl ToolHandler for McpToolHandler {
+    async fn execute(
         &self,
         tool_name: &str,
         arguments: Value,
@@ -96,56 +169,22 @@ impl Extension for McpExtension {
         _ctx: &ToolExecutionContext,
     ) -> Result<ToolResult, ExtensionError> {
         if tool_name == TOOL_SEARCH_TOOL_NAME {
-            return Ok(handle_tool_search(arguments, working_dir).await);
+            return Ok(self.handle_tool_search(arguments, working_dir).await);
         }
 
-        let Some(parsed) = parse_tool_name(tool_name) else {
+        let entry = self.shared.get_entry(working_dir);
+        let Some(cached) = entry.as_ref().and_then(|e| e.tool_lookup.get(tool_name)) else {
             return Err(ExtensionError::NotFound(tool_name.into()));
         };
 
-        let config = config::load_config(working_dir);
-        warn_diagnostics(&config.diagnostics);
-
-        let Some(server) = config
-            .servers
-            .into_iter()
-            .find(|server| normalized_name_matches(&server.name, &parsed.server))
-        else {
-            return Ok(error_result(
-                format!("MCP server '{}' is not configured", parsed.server),
-                tool_metadata([("server", json!(parsed.server))]),
-            ));
-        };
-
-        let original_tool = match resolve_original_tool_name(&server, tool_name).await {
-            Ok(Some(name)) => name,
-            Ok(None) => {
-                return Ok(error_result(
-                    format!(
-                        "MCP tool '{tool_name}' is no longer exposed by server '{}'",
-                        server.name
-                    ),
-                    tool_metadata([("server", json!(server.name))]),
-                ));
-            },
-            Err(error) => {
-                return Ok(error_result(
-                    format!(
-                        "failed to refresh MCP tool list for server '{}': {error}",
-                        server.name
-                    ),
-                    tool_metadata([("server", json!(server.name))]),
-                ));
-            },
-        };
-
+        let (server, original_tool) = cached;
         match StdioMcpClient::new(server.clone())
-            .call_tool(&original_tool, arguments)
+            .call_tool(original_tool, arguments)
             .await
         {
-            Ok(result) => Ok(call_result(&server.name, &original_tool, result)),
+            Ok(result) => Ok(call_result(&server.name, original_tool, result)),
             Err(error) => Ok(error_result(
-                format!("failed to call MCP tool '{}': {error}", original_tool),
+                format!("failed to call MCP tool '{original_tool}': {error}"),
                 tool_metadata([
                     ("server", json!(server.name)),
                     ("tool", json!(original_tool)),
@@ -153,41 +192,117 @@ impl Extension for McpExtension {
             )),
         }
     }
+}
 
-    fn tool_prompt_metadata(
-        &self,
-    ) -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
-        let mut map = std::collections::HashMap::new();
-        map.insert(
-            TOOL_SEARCH_TOOL_NAME.to_string(),
-            astrcode_core::tool::ToolPromptMetadata::new(
-                "Builtin tools do not need discovery. Use `tool_search_tool` only when builtin \
-                 tools are not enough and you need the schema of an external MCP tool.",
-            )
-            .caveat(
-                "After `tool_search_tool` returns candidate tools and schemas, call the matching \
-                 concrete `mcp__...` tool directly.",
-            )
-            .prompt_tag("discovery"),
-        );
-        map
+impl McpToolHandler {
+    async fn handle_tool_search(&self, arguments: Value, working_dir: &str) -> ToolResult {
+        let args = match serde_json::from_value::<ToolSearchArgs>(arguments) {
+            Ok(args) if !args.query.trim().is_empty() => args,
+            Ok(_) => {
+                return error_result(
+                    "invalid tool_search_tool input: query must not be empty".into(),
+                    BTreeMap::new(),
+                );
+            },
+            Err(error) => {
+                return error_result(
+                    format!("invalid tool_search_tool input: {error}"),
+                    BTreeMap::new(),
+                );
+            },
+        };
+
+        // Use cached candidates when available
+        let (candidates, diagnostics) = if let Some(entry) = self.shared.get_entry(working_dir) {
+            (entry.candidates.clone(), entry.diagnostics.clone())
+        } else {
+            let discovered = discover_mcp_tools(working_dir).await;
+            if !discovered.tools.is_empty() {
+                self.shared.store(
+                    working_dir,
+                    McpCacheEntry {
+                        tool_lookup: HashMap::new(),
+                        candidates: discovered.tools.clone(),
+                        diagnostics: discovered.diagnostics.clone(),
+                    },
+                );
+            }
+            (discovered.tools, discovered.diagnostics)
+        };
+
+        warn_diagnostics(&diagnostics);
+        let output = search_mcp_tools(&candidates, args);
+        let mut metadata = BTreeMap::new();
+        metadata.insert("toolSearch".into(), search::output_metadata(&output));
+        if !diagnostics.is_empty() {
+            metadata.insert("diagnostics".into(), json!(diagnostics));
+        }
+        text_result(search::render_search_output(&output), false, None, metadata)
     }
 }
 
+// ─── PromptBuild ────────────────────────────────────────────────────────
+
+struct McpPromptBuildHandler;
+
+#[async_trait::async_trait]
+impl PromptBuildHandler for McpPromptBuildHandler {
+    async fn handle(&self, ctx: PromptBuildContext) -> Result<PromptContributions, ExtensionError> {
+        let has_tool_search = ctx.tools.iter().any(|t| t.name == TOOL_SEARCH_TOOL_NAME);
+        if has_tool_search {
+            Ok(PromptContributions {
+                additional_instructions: vec![mcp_discovery_instructions().into()],
+                ..Default::default()
+            })
+        } else {
+            Ok(PromptContributions::default())
+        }
+    }
+}
+
+fn mcp_tool_metadata() -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata>
+{
+    let mut map = std::collections::HashMap::new();
+    map.insert(
+        TOOL_SEARCH_TOOL_NAME.to_string(),
+        astrcode_core::tool::ToolPromptMetadata::new(
+            "Builtin tools do not need discovery. Use `tool_search_tool` only when builtin tools \
+             are not enough and you need the schema of an external MCP tool.",
+        )
+        .caveat(
+            "After `tool_search_tool` returns candidate tools and schemas, call the matching \
+             concrete `mcp__...` tool directly.",
+        )
+        .prompt_tag("discovery"),
+    );
+    map
+}
+
+// ─── Discovery helpers ──────────────────────────────────────────────────
+
 struct DiscoveredMcpTools {
     tools: Vec<SearchCandidate>,
+    servers: Vec<McpServerConfig>,
     diagnostics: Vec<String>,
 }
 
 async fn discover_mcp_tools(working_dir: &str) -> DiscoveredMcpTools {
     let config = config::load_config(working_dir);
     let mut diagnostics = config.diagnostics;
+    let servers = config.servers;
+
+    let results: Vec<(String, Result<Vec<McpTool>, _>)> =
+        futures::future::join_all(servers.iter().map(|server| async {
+            let name = server.name.clone();
+            let result = StdioMcpClient::new(server.clone()).list_tools().await;
+            (name, result)
+        }))
+        .await;
 
     let mut emitted = BTreeSet::new();
     let mut candidates = Vec::new();
-    for server in config.servers {
-        let server_name = server.name.clone();
-        match StdioMcpClient::new(server.clone()).list_tools().await {
+    for (server_name, list_result) in results {
+        match list_result {
             Ok(tools) => {
                 for tool in tools {
                     let Some(definition) = tool_definition(&server_name, &tool) else {
@@ -225,47 +340,9 @@ async fn discover_mcp_tools(working_dir: &str) -> DiscoveredMcpTools {
 
     DiscoveredMcpTools {
         tools: candidates,
+        servers,
         diagnostics,
     }
-}
-
-async fn handle_tool_search(arguments: Value, working_dir: &str) -> ToolResult {
-    let args = match serde_json::from_value::<ToolSearchArgs>(arguments) {
-        Ok(args) if !args.query.trim().is_empty() => args,
-        Ok(_) => {
-            return error_result(
-                "invalid tool_search_tool input: query must not be empty".into(),
-                BTreeMap::new(),
-            );
-        },
-        Err(error) => {
-            return error_result(
-                format!("invalid tool_search_tool input: {error}"),
-                BTreeMap::new(),
-            );
-        },
-    };
-
-    let discovered = discover_mcp_tools(working_dir).await;
-    warn_diagnostics(&discovered.diagnostics);
-    let output = search_mcp_tools(&discovered.tools, args);
-    let mut metadata = BTreeMap::new();
-    metadata.insert("toolSearch".into(), search::output_metadata(&output));
-    if !discovered.diagnostics.is_empty() {
-        metadata.insert("diagnostics".into(), json!(discovered.diagnostics));
-    }
-    text_result(search::render_search_output(&output), false, None, metadata)
-}
-
-async fn resolve_original_tool_name(
-    server: &McpServerConfig,
-    emitted_name: &str,
-) -> Result<Option<String>, client::McpClientError> {
-    let tools = StdioMcpClient::new(server.clone()).list_tools().await?;
-    Ok(tools
-        .into_iter()
-        .find(|tool| build_tool_name(&server.name, &tool.name).as_deref() == Some(emitted_name))
-        .map(|tool| tool.name))
 }
 
 fn tool_definition(server_name: &str, tool: &McpTool) -> Option<ToolDefinition> {

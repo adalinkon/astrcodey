@@ -5,10 +5,15 @@
 
 mod agent;
 
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+
 use astrcode_core::{
     extension::{
-        Extension, ExtensionContext, ExtensionError, ExtensionEvent, ExtensionToolOutcome,
-        HookEffect, HookMode, HookSubscription, PromptContributions,
+        Extension, ExtensionError, ExtensionToolOutcome, PromptBuildContext, PromptBuildHandler,
+        PromptContributions, Registrar, ToolHandler,
     },
     render::{RenderKeyValue, RenderSpec, RenderTone, UI_RENDER_METADATA_KEY},
     tool::{ExecutionMode, ToolDefinition, ToolOrigin, ToolResult, tool_metadata},
@@ -31,36 +36,60 @@ impl Extension for AgentToolsExtension {
         "astrcode-agent-tools"
     }
 
-    fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-        vec![HookSubscription {
-            event: ExtensionEvent::PromptBuild,
-            mode: HookMode::Blocking,
-            priority: 0,
-        }]
+    fn register(&self, reg: &mut Registrar) {
+        let shared = Arc::new(AgentShared::new());
+        reg.tool(
+            agent_tool_definition(),
+            Arc::new(AgentToolHandler {
+                shared: shared.clone(),
+            }),
+        );
+        reg.tool_metadata(agent_tool_metadata());
+        reg.on_prompt_build(
+            0,
+            Arc::new(AgentPromptBuildHandler {
+                shared: shared.clone(),
+            }),
+        );
     }
+}
 
-    async fn on_event(
-        &self,
-        event: ExtensionEvent,
-        ctx: &dyn ExtensionContext,
-    ) -> Result<HookEffect, ExtensionError> {
-        match event {
-            ExtensionEvent::PromptBuild => {
-                let agents = agent::discover_agents(Some(ctx.working_dir()));
-                Ok(HookEffect::PromptContributions(PromptContributions {
-                    agents: vec![format_agents_for_model(&agents)],
-                    ..Default::default()
-                }))
-            },
-            _ => Ok(HookEffect::Allow),
+// ─── Shared Cache ───────────────────────────────────────────────────────
+
+/// Agent 发现结果缓存，按 working_dir 缓存。
+struct AgentShared {
+    cache: Mutex<HashMap<String, Vec<agent::AgentConfig>>>,
+}
+
+impl AgentShared {
+    fn new() -> Self {
+        Self {
+            cache: Mutex::new(HashMap::new()),
         }
     }
 
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![agent_tool_definition()]
+    fn get_or_discover(&self, working_dir: Option<&str>) -> Vec<agent::AgentConfig> {
+        let key = working_dir.unwrap_or("");
+        if let Some(agents) = self.cache.lock().unwrap().get(key) {
+            return agents.clone();
+        }
+        let agents = agent::discover_agents(working_dir);
+        self.cache
+            .lock()
+            .unwrap()
+            .entry(key.to_string())
+            .or_insert_with(|| agents.clone());
+        agents
     }
+}
 
-    async fn execute_tool(
+struct AgentToolHandler {
+    shared: Arc<AgentShared>,
+}
+
+#[async_trait::async_trait]
+impl ToolHandler for AgentToolHandler {
+    async fn execute(
         &self,
         tool_name: &str,
         arguments: serde_json::Value,
@@ -71,7 +100,7 @@ impl Extension for AgentToolsExtension {
             return Err(ExtensionError::NotFound(tool_name.into()));
         }
 
-        let agents = agent::discover_agents(Some(working_dir));
+        let agents = self.shared.get_or_discover(Some(working_dir));
         let run = build_agent_run(&arguments, &agents).map_err(ExtensionError::Internal)?;
         let outcome_json = serde_json::to_value(&run.outcome)
             .map_err(|e| ExtensionError::Internal(format!("serialize agent outcome: {e}")))?;
@@ -87,30 +116,44 @@ impl Extension for AgentToolsExtension {
             ]),
         ))
     }
+}
 
-    fn tool_prompt_metadata(
-        &self,
-    ) -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
-        let mut map = std::collections::HashMap::new();
-        map.insert(
-            "agent".to_string(),
-            astrcode_core::tool::ToolPromptMetadata::new(
-                "Use `agent` to delegate isolated tasks to specialized subagents. By default, the \
-                 agent runs synchronously and blocks until completion — use this when your next \
-                 step depends on the result. Set waitForResult to false to run the agent in the \
-                 background and continue working. Background agent results arrive as a \
-                 notification in the next turn.",
-            )
-            .caveat(
-                "For simple file reads or targeted searches, use Read/Grep directly instead of \
-                 spawning an agent. When running agents in the background (waitForResult: false), \
-                 avoid duplicating their work — work on non-overlapping tasks. Background agents \
-                 are automatically cancelled if the session ends.",
-            )
-            .prompt_tag("collaboration"),
-        );
-        map
+struct AgentPromptBuildHandler {
+    shared: Arc<AgentShared>,
+}
+
+#[async_trait::async_trait]
+impl PromptBuildHandler for AgentPromptBuildHandler {
+    async fn handle(&self, ctx: PromptBuildContext) -> Result<PromptContributions, ExtensionError> {
+        let agents = self.shared.get_or_discover(Some(&ctx.working_dir));
+        Ok(PromptContributions {
+            agents: vec![format_agents_for_model(&agents)],
+            ..Default::default()
+        })
     }
+}
+
+fn agent_tool_metadata()
+-> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
+    let mut map = std::collections::HashMap::new();
+    map.insert(
+        "agent".to_string(),
+        astrcode_core::tool::ToolPromptMetadata::new(
+            "Use `agent` to delegate isolated tasks to specialized subagents. By default, the \
+             agent runs synchronously and blocks until completion — use this when your next step \
+             depends on the result. Set waitForResult to false to run the agent in the background \
+             and continue working. Background agent results arrive as a notification in the next \
+             turn.",
+        )
+        .caveat(
+            "For simple file reads or targeted searches, use Read/Grep directly instead of \
+             spawning an agent. When running agents in the background (waitForResult: false), \
+             avoid duplicating their work — work on non-overlapping tasks. Background agents are \
+             automatically cancelled if the session ends.",
+        )
+        .prompt_tag("collaboration"),
+    );
+    map
 }
 
 // ─── 工具实现 ────────────────────────────────────────────────────────

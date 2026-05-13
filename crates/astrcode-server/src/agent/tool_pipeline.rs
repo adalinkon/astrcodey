@@ -4,13 +4,14 @@
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 use astrcode_core::{
+    config::ModelSelection,
     event::EventPayload,
-    extension::{ExtensionEvent, PostToolUseFailureInput, PostToolUseInput, PreToolUseInput},
+    extension::{PostToolUseContext, PostToolUseResult, PreToolUseContext, PreToolUseResult},
     llm::{LlmContent, LlmMessage, LlmRole},
     storage::ToolResultArtifactReader,
     tool::{BackgroundTaskReader, ExecutionMode, ToolDefinition, ToolResult},
 };
-use astrcode_extensions::runner::{ExtensionRunner, ToolHookOutcome};
+use astrcode_extensions::runner::ExtensionRunner;
 use astrcode_support::tool_results::{
     MAX_TOOL_RESULTS_PER_MESSAGE_CHARS, TOOL_RESULT_PREVIEW_CHARS, persisted_tool_result_summary,
     should_persist_tool_result, tool_result_inline_limit, tool_result_preview,
@@ -136,25 +137,25 @@ impl ToolPipeline {
                 continue;
             }
 
-            let mut pre_ctx = self.shared.ext_ctx_with_tools(tools);
-            pre_ctx.set_pre_tool_use_input(PreToolUseInput {
+            let pre_ctx = PreToolUseContext {
+                session_id: self.shared.session_id.to_string(),
+                working_dir: self.shared.working_dir.clone(),
+                model: ModelSelection::simple(self.shared.model_id.clone()),
                 tool_name: tc.name.clone(),
                 tool_input: args.clone(),
-            });
+                available_tools: tools.to_vec(),
+            };
 
-            let pre_hook_outcome = self
-                .extension_runner
-                .dispatch_tool_hook(ExtensionEvent::PreToolUse, &pre_ctx)
-                .await?;
+            let pre_hook_result = self.extension_runner.emit_pre_tool_use(pre_ctx).await?;
 
-            let tool_input = match &pre_hook_outcome {
-                ToolHookOutcome::ModifiedInput { tool_input } => tool_input.clone(),
+            let tool_input = match &pre_hook_result {
+                PreToolUseResult::ModifyInput { tool_input } => tool_input.clone(),
                 _ => args.clone(),
             };
 
             send_tool_requested(event_tx, tc, &tool_input);
 
-            let outcome = if let ToolHookOutcome::Blocked { reason } = pre_hook_outcome {
+            let outcome = if let PreToolUseResult::Block { reason } = pre_hook_result {
                 PreparedToolOutcome::Blocked(ToolResult {
                     call_id: tc.call_id.clone(),
                     content: format!("Tool execution blocked by hook: {reason}"),
@@ -257,7 +258,6 @@ impl ToolPipeline {
                         self.commit_tool_results(CommitToolResults {
                             prepared: &input.prepared[position..position + 1],
                             results,
-                            tools: input.tools,
                             messages: input.messages,
                             all_tool_results: input.all_tool_results,
                             event_tx: input.event_tx,
@@ -304,7 +304,6 @@ impl ToolPipeline {
         self.commit_tool_results(CommitToolResults {
             prepared: &input.prepared[batch_start..batch_end],
             results,
-            tools: input.tools,
             messages: input.messages,
             all_tool_results: input.all_tool_results,
             event_tx: input.event_tx,
@@ -323,7 +322,6 @@ impl ToolPipeline {
         self.commit_tool_results(CommitToolResults {
             prepared: &input.prepared[position..position + 1],
             results,
-            tools: input.tools,
             messages: input.messages,
             all_tool_results: input.all_tool_results,
             event_tx: input.event_tx,
@@ -416,37 +414,37 @@ impl ToolPipeline {
                     result.error = Some(result.content.clone());
                 }
 
-                let mut post_ctx = self.shared.ext_ctx_with_tools(input.tools);
-                post_ctx.set_post_tool_use_input(PostToolUseInput {
+                let post_ctx = PostToolUseContext {
+                    session_id: self.shared.session_id.to_string(),
+                    working_dir: self.shared.working_dir.clone(),
+                    model: ModelSelection::simple(self.shared.model_id.clone()),
                     tool_name: call.name.clone(),
                     tool_input: call.tool_input.clone(),
                     tool_result: result.clone(),
-                });
+                    is_error: result.is_error,
+                };
 
-                match self
-                    .extension_runner
-                    .dispatch_tool_hook(ExtensionEvent::PostToolUse, &post_ctx)
-                    .await?
-                {
-                    ToolHookOutcome::ModifiedResult { content } => {
+                match self.extension_runner.emit_post_tool_use(post_ctx).await? {
+                    PostToolUseResult::ModifyResult { content } => {
                         result.content = content;
                         if result.is_error {
                             result.error = Some(result.content.clone());
                         }
                     },
-                    ToolHookOutcome::Blocked { reason } => {
+                    PostToolUseResult::Block { reason } => {
                         result.content = format!("Tool result blocked by hook: {reason}");
                         result.is_error = true;
                         result.error = Some(reason);
                     },
-                    ToolHookOutcome::Allow | ToolHookOutcome::ModifiedInput { .. } => {},
+                    PostToolUseResult::Allow => {},
                 }
 
-                // PostToolUseFailure: 仅当结果仍为错误时触发
-                // 这是一个通知型钩子，dispatch 结果不影响工具执行流程。
+                // PostToolUseFailure: 通知型钩子，结果不影响流程。
                 if result.is_error {
-                    let mut fail_ctx = self.shared.ext_ctx_with_tools(input.tools);
-                    fail_ctx.set_post_tool_use_failure_input(PostToolUseFailureInput {
+                    let fail_ctx = astrcode_core::extension::PostToolUseFailureContext {
+                        session_id: self.shared.session_id.to_string(),
+                        working_dir: self.shared.working_dir.clone(),
+                        model: ModelSelection::simple(self.shared.model_id.clone()),
                         tool_name: call.name.clone(),
                         tool_input: call.tool_input.clone(),
                         error: result
@@ -454,12 +452,10 @@ impl ToolPipeline {
                             .clone()
                             .unwrap_or_else(|| result.content.clone()),
                         tool_result: result.clone(),
-                    });
-
-                    let _outcome = self
-                        .extension_runner
-                        .dispatch_tool_hook(ExtensionEvent::PostToolUseFailure, &fail_ctx)
-                        .await?;
+                    };
+                    self.extension_runner
+                        .emit_post_tool_use_failure(fail_ctx)
+                        .await;
                 }
             }
 

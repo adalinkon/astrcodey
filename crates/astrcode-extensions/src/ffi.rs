@@ -19,6 +19,10 @@ use astrcode_core::extension::{ExtensionEvent, HookMode};
 /// - ModifiedInput (3): `output_ptr/len` 携带替换的工具输入 JSON。
 /// - PromptContributions (4): `output_ptr/len` 携带 PromptContributions JSON。
 /// - CompactContributions (5): `output_ptr/len` 携带 CompactContributions JSON。
+/// - ReplaceMessages (6): `output_ptr/len` 携带替换后的 Vec<LlmMessage> JSON（仅 Provider 事件）。
+/// - AppendMessages (7): `output_ptr/len` 携带追加的 Vec<LlmMessage> JSON（仅 Provider 事件）。
+///
+/// 注意：6/7 仅对 Provider 钩子有意义。其他钩子返回这些 code 会被当作 Allow 忽略。
 pub type EventCallback = unsafe extern "C" fn(
     event: u8,
     ctx: *const c_void,
@@ -37,6 +41,21 @@ pub type EventCallback = unsafe extern "C" fn(
 /// 返回码 0 是历史默认值 — 现有回调无需修改即可兼容。
 pub type ToolCallback = unsafe extern "C" fn(
     ctx: *const c_void,
+    output_ptr_out: *mut *const u8,
+    output_len_out: *mut u32,
+    error_ptr_out: *mut *const u8,
+    error_len_out: *mut u32,
+) -> u8;
+
+/// 扩展注册的斜杠命令执行回调函数签名。
+///
+/// 返回值语义 (u8):
+///   `0` — 成功。`output_ptr/len` 携带序列化的 `ExtensionCommandResult` JSON。
+///   `1` — 错误。`error_ptr/len` 携带错误消息。
+pub type CommandCallback = unsafe extern "C" fn(
+    ctx: *const c_void,
+    args_ptr: *const u8,
+    args_len: u32,
     output_ptr_out: *mut *const u8,
     output_len_out: *mut u32,
     error_ptr_out: *mut *const u8,
@@ -140,6 +159,14 @@ pub struct ExtensionApi {
         name_len: u32,
         desc_ptr: *const u8,
         desc_len: u32,
+    ),
+
+    /// 为先前声明的斜杠命令注册可执行处理器
+    pub register_command_handler: unsafe extern "C" fn(
+        api: *const ExtensionApi,
+        name_ptr: *const u8,
+        name_len: u32,
+        callback: CommandCallback,
     ),
 
     /// 注册插件侧输出释放回调。
@@ -248,13 +275,23 @@ pub struct FfiCtx {
     /// 当前模型 ID (ptr, len) — 在工具执行时设置
     pub model_id_ptr: *const u8,
     pub model_id_len: u32,
-    /// 可用工具 JSON (ptr, len) — 序列化的 Vec<ToolDefinition>，在工具执行时设置
+    /// 可用工具 JSON (ptr, len) — 序列化的 Vec<ToolDefinition>，在工具执行和 PreToolUse 时设置
     pub tools_json_ptr: *const u8,
     pub tools_json_len: u32,
+    /// 工具结果 JSON (ptr, len) — 序列化的 ToolResult，仅在 PostToolUse 时设置
+    pub tool_result_json_ptr: *const u8,
+    pub tool_result_json_len: u32,
+    /// 事件上下文 JSON (ptr, len) — Compact 等事件的额外上下文，按事件类型设置
+    pub event_context_json_ptr: *const u8,
+    pub event_context_json_len: u32,
+    /// 消息列表 JSON (ptr, len) — 序列化的 Vec<LlmMessage>，仅在 Provider 事件时设置
+    pub messages_json_ptr: *const u8,
+    pub messages_json_len: u32,
 }
 
 impl FfiCtx {
     /// 从各字符串部分构建 FFI 上下文。
+    #[allow(clippy::too_many_arguments)]
     fn from_parts(
         session_id: &str,
         working_dir: &str,
@@ -262,6 +299,9 @@ impl FfiCtx {
         tool_input_json: &str,
         model_id: &str,
         tools_json: &str,
+        tool_result_json: &str,
+        event_context_json: &str,
+        messages_json: &str,
     ) -> Self {
         let sid = session_id.as_bytes();
         let wd = working_dir.as_bytes();
@@ -269,6 +309,9 @@ impl FfiCtx {
         let input = tool_input_json.as_bytes();
         let mid = model_id.as_bytes();
         let tj = tools_json.as_bytes();
+        let tr = tool_result_json.as_bytes();
+        let ec = event_context_json.as_bytes();
+        let mj = messages_json.as_bytes();
         Self {
             session_id_ptr: sid.as_ptr(),
             session_id_len: sid.len() as u32,
@@ -282,6 +325,12 @@ impl FfiCtx {
             model_id_len: mid.len() as u32,
             tools_json_ptr: tj.as_ptr(),
             tools_json_len: tj.len() as u32,
+            tool_result_json_ptr: tr.as_ptr(),
+            tool_result_json_len: tr.len() as u32,
+            event_context_json_ptr: ec.as_ptr(),
+            event_context_json_len: ec.len() as u32,
+            messages_json_ptr: mj.as_ptr(),
+            messages_json_len: mj.len() as u32,
         }
     }
 }
@@ -297,40 +346,13 @@ pub struct FfiCtxOwned {
     tool_input_json: String,
     model_id: String,
     tools_json: String,
+    tool_result_json: String,
+    event_context_json: String,
+    messages_json: String,
     raw: FfiCtx,
 }
 
 impl FfiCtxOwned {
-    /// 从扩展上下文构建 FFI 上下文（用于事件钩子）。
-    pub fn from_ext_ctx(ctx: &dyn astrcode_core::extension::ExtensionContext) -> Self {
-        let session_id = ctx.session_id().to_string();
-        let working_dir = ctx.working_dir().to_string();
-        let pre = ctx.pre_tool_use_input();
-        let post = ctx.post_tool_use_input();
-        let model_id = ctx.model_selection().model;
-        // 优先使用 PreToolUse 输入，其次使用 PostToolUse 输入
-        let (tool_name, tool_input) = if let Some(input) = pre {
-            (input.tool_name, input.tool_input)
-        } else if let Some(input) = post {
-            (input.tool_name, input.tool_input)
-        } else {
-            (String::new(), serde_json::Value::Null)
-        };
-        let tool_input_json = if tool_input.is_null() {
-            String::new()
-        } else {
-            tool_input.to_string()
-        };
-        Self::new(
-            session_id,
-            working_dir,
-            tool_name,
-            tool_input_json,
-            model_id,
-            String::new(), // tools_json — 事件钩子不需要
-        )
-    }
-
     /// 从工具执行上下文构建 FFI 上下文（用于工具回调）。
     pub fn from_tool_execution(
         working_dir: &str,
@@ -352,17 +374,24 @@ impl FfiCtxOwned {
             tool_input.to_string(),
             ctx.capabilities.model_id.clone().unwrap_or_default(),
             tools_json,
+            String::new(),
+            String::new(),
+            String::new(),
         )
     }
 
-    /// 内部构造函数：先创建拥有型字符串，再构建指向它们的原始 FfiCtx。
-    fn new(
+    /// 从各字符串部分构建 FFI 上下文。
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
         session_id: String,
         working_dir: String,
         tool_name: String,
         tool_input_json: String,
         model_id: String,
         tools_json: String,
+        tool_result_json: String,
+        event_context_json: String,
+        messages_json: String,
     ) -> Self {
         let mut owned = Self {
             session_id,
@@ -371,6 +400,9 @@ impl FfiCtxOwned {
             tool_input_json,
             model_id,
             tools_json,
+            tool_result_json,
+            event_context_json,
+            messages_json,
             raw: FfiCtx {
                 session_id_ptr: std::ptr::null(),
                 session_id_len: 0,
@@ -384,6 +416,12 @@ impl FfiCtxOwned {
                 model_id_len: 0,
                 tools_json_ptr: std::ptr::null(),
                 tools_json_len: 0,
+                tool_result_json_ptr: std::ptr::null(),
+                tool_result_json_len: 0,
+                event_context_json_ptr: std::ptr::null(),
+                event_context_json_len: 0,
+                messages_json_ptr: std::ptr::null(),
+                messages_json_len: 0,
             },
         };
         // 让 raw 中的指针指向 owned 中的字符串数据
@@ -394,6 +432,9 @@ impl FfiCtxOwned {
             &owned.tool_input_json,
             &owned.model_id,
             &owned.tools_json,
+            &owned.tool_result_json,
+            &owned.event_context_json,
+            &owned.messages_json,
         );
         owned
     }

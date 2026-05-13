@@ -16,17 +16,18 @@ use astrcode_context::{
     token_usage::should_compact as token_should_compact,
 };
 use astrcode_core::{
+    config::ModelSelection,
     event::EventPayload,
-    extension::{CompactTrigger, ExtensionEvent},
+    extension::{
+        CompactTrigger, ExtensionEvent, LifecycleContext, ProviderContext, ProviderEvent,
+        ProviderResult,
+    },
     llm::{LlmError, LlmEvent, LlmMessage, LlmProvider, LlmRole},
     storage::CompactSnapshotInput,
     tool::{BackgroundTaskReader, FileObservationStore, ToolDefinition},
     types::*,
 };
-use astrcode_extensions::{
-    context::ServerExtensionContext,
-    runner::{ExtensionRunner, ProviderHookOutcome},
-};
+use astrcode_extensions::runner::ExtensionRunner;
 use astrcode_tools::registry::ToolRegistry;
 use tokio::sync::{mpsc, oneshot};
 
@@ -39,7 +40,7 @@ use super::{
     },
     post_compact::enrich_post_compact_context,
     shared_context::{
-        AgentError, AgentSignal, SharedTurnContext, end_turn_with_error,
+        AgentError, AgentSignal, SharedTurnContext, end_turn_with_error_typed,
         retained_messages_after_compaction, send_event,
     },
     tool_pipeline::ToolPipeline,
@@ -367,25 +368,27 @@ impl AgentLoop {
         history: Vec<LlmMessage>,
         event_tx: Option<mpsc::UnboundedSender<AgentSignal>>,
     ) -> Result<AgentTurnOutput, AgentError> {
-        let mut ext_ctx = self.shared.ext_ctx();
+        let _session_history = history.clone();
         let all_tools = self.tools.list_definitions();
         let mut active_mcp_tools = std::collections::HashSet::new();
         let mut tool_indexes = provider_visible_tool_indexes(&all_tools, &active_mcp_tools);
         let mut tools = clone_tools_by_index(&all_tools, &tool_indexes);
-        let tool_map: std::collections::HashMap<_, _> =
-            tools.iter().map(|t| (t.name.clone(), t.clone())).collect();
-        ext_ctx.set_tools(tool_map);
 
+        let lifecycle_ctx = LifecycleContext {
+            session_id: self.shared.session_id.to_string(),
+            working_dir: self.shared.working_dir.clone(),
+            model: ModelSelection::simple(self.shared.model_id.clone()),
+        };
         self.extension_runner
-            .dispatch(ExtensionEvent::TurnStart, &ext_ctx)
+            .emit_lifecycle(ExtensionEvent::TurnStart, lifecycle_ctx.clone())
             .await?;
 
         if let Err(e) = self
             .extension_runner
-            .dispatch(ExtensionEvent::UserPromptSubmit, &ext_ctx)
+            .emit_lifecycle(ExtensionEvent::UserPromptSubmit, lifecycle_ctx.clone())
             .await
         {
-            return end_turn_with_error(&self.extension_runner, &ext_ctx, e).await;
+            return end_turn_with_error_typed(&self.extension_runner, &self.shared, e).await;
         }
 
         let mut messages = Vec::with_capacity(history.len() + 2);
@@ -406,7 +409,7 @@ impl AgentLoop {
 
         loop {
             let (system_messages, prepared_context, compacted) = self
-                .prepare_provider_context(&mut messages, &tools, &ext_ctx, &event_tx)
+                .prepare_provider_context(&mut messages, &tools, &event_tx)
                 .await?;
             if return_auto_compaction {
                 if let Some(compaction) = compacted {
@@ -425,11 +428,11 @@ impl AgentLoop {
             );
 
             let send_messages = self
-                .apply_before_provider_request_hook(system_messages, context_messages, &tools)
+                .apply_before_provider_request_hook(system_messages, context_messages)
                 .await?;
 
             let rx = self
-                .start_provider_stream(send_messages, &tools, &event_tx, &ext_ctx)
+                .start_provider_stream(send_messages, &tools, &event_tx)
                 .await?;
             let message_id = new_message_id();
 
@@ -462,7 +465,7 @@ impl AgentLoop {
                         }
                     }
                     self.extension_runner
-                        .dispatch(ExtensionEvent::TurnEnd, &ext_ctx)
+                        .emit_lifecycle(ExtensionEvent::TurnEnd, lifecycle_ctx.clone())
                         .await?;
                     return Ok(AgentTurnOutput {
                         text: final_text,
@@ -495,7 +498,8 @@ impl AgentLoop {
                         );
                     }
 
-                    self.dispatch_after_provider_response(&ext_ctx).await?;
+                    self.dispatch_after_provider_response(&lifecycle_ctx)
+                        .await?;
 
                     let prepared_tool_calls = self
                         .tools
@@ -534,7 +538,6 @@ impl AgentLoop {
         &self,
         messages: &mut Vec<LlmMessage>,
         tools: &[ToolDefinition],
-        ext_ctx: &ServerExtensionContext,
         event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
     ) -> Result<(Vec<LlmMessage>, PreparedContext, Option<CompactResult>), AgentError> {
         let (system_messages, visible_messages): (Vec<_>, Vec<_>) = messages
@@ -552,12 +555,13 @@ impl AgentLoop {
         let prepared_context = if should_auto_compact {
             send_event(event_tx, EventPayload::CompactionStarted);
             let compact_instructions = match self
-                .compact_instructions(CompactTrigger::AutoThreshold, compact_message_count, tools)
+                .compact_instructions(CompactTrigger::AutoThreshold, compact_message_count)
                 .await
             {
                 Ok(instructions) => instructions,
                 Err(error) => {
-                    return end_turn_with_error(&self.extension_runner, ext_ctx, error).await;
+                    return end_turn_with_error_typed(&self.extension_runner, &self.shared, error)
+                        .await;
                 },
             };
             let transcript_path = self
@@ -654,12 +658,12 @@ impl AgentLoop {
                 .notify_post_compact(
                     CompactTrigger::AutoThreshold,
                     compact_message_count,
-                    tools,
                     compaction,
                 )
                 .await
             {
-                return end_turn_with_error(&self.extension_runner, ext_ctx, error).await;
+                return end_turn_with_error_typed(&self.extension_runner, &self.shared, error)
+                    .await;
             }
             let compacted = compaction.clone();
             if event_tx.is_some() {
@@ -698,28 +702,37 @@ impl AgentLoop {
         &self,
         system_messages: Vec<LlmMessage>,
         context_messages: Vec<LlmMessage>,
-        tools: &[ToolDefinition],
     ) -> Result<Vec<LlmMessage>, AgentError> {
-        let mut send_messages =
-            provider_visible_messages([system_messages, context_messages].concat());
-        let mut ext_ctx = self.shared.ext_ctx_with_tools(tools);
-        ext_ctx.set_provider_messages(send_messages.clone());
+        let send_messages = provider_visible_messages([system_messages, context_messages].concat());
+        let provider_ctx = ProviderContext {
+            session_id: self.shared.session_id.to_string(),
+            working_dir: self.shared.working_dir.clone(),
+            model: ModelSelection::simple(self.shared.model_id.clone()),
+            messages: send_messages.clone(),
+        };
         match self
             .extension_runner
-            .dispatch_provider_hook(ExtensionEvent::BeforeProviderRequest, &ext_ctx)
+            .emit_provider(ProviderEvent::BeforeRequest, provider_ctx)
             .await?
         {
-            ProviderHookOutcome::Blocked { reason } => {
+            ProviderResult::Block { reason } => {
+                let lifecycle_ctx = LifecycleContext {
+                    session_id: self.shared.session_id.to_string(),
+                    working_dir: self.shared.working_dir.clone(),
+                    model: ModelSelection::simple(self.shared.model_id.clone()),
+                };
                 self.extension_runner
-                    .dispatch(ExtensionEvent::TurnEnd, &ext_ctx)
+                    .emit_lifecycle(ExtensionEvent::TurnEnd, lifecycle_ctx)
                     .await?;
                 Err(AgentError::Internal(reason))
             },
-            ProviderHookOutcome::ModifiedMessages { messages } => {
-                send_messages = provider_visible_messages(messages);
-                Ok(send_messages)
+            ProviderResult::ReplaceMessages { messages } => Ok(provider_visible_messages(messages)),
+            ProviderResult::AppendMessages { messages } => {
+                let mut combined = send_messages;
+                combined.extend(messages);
+                Ok(provider_visible_messages(combined))
             },
-            ProviderHookOutcome::Allow => Ok(send_messages),
+            ProviderResult::Allow => Ok(send_messages),
         }
     }
 
@@ -728,7 +741,6 @@ impl AgentLoop {
         send_messages: Vec<LlmMessage>,
         tools: &[ToolDefinition],
         event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
-        ext_ctx: &ServerExtensionContext,
     ) -> Result<mpsc::UnboundedReceiver<LlmEvent>, AgentError> {
         match self.llm.generate(send_messages, tools.to_vec()).await {
             Ok(rx) => Ok(rx),
@@ -741,21 +753,21 @@ impl AgentLoop {
                         recoverable: false,
                     },
                 );
-                end_turn_with_error(&self.extension_runner, ext_ctx, e).await
+                end_turn_with_error_typed(&self.extension_runner, &self.shared, e).await
             },
         }
     }
 
     async fn dispatch_after_provider_response(
         &self,
-        ext_ctx: &ServerExtensionContext,
+        lifecycle_ctx: &LifecycleContext,
     ) -> Result<(), AgentError> {
         if let Err(e) = self
             .extension_runner
-            .dispatch(ExtensionEvent::AfterProviderResponse, ext_ctx)
+            .emit_lifecycle(ExtensionEvent::AfterProviderResponse, lifecycle_ctx.clone())
             .await
         {
-            return end_turn_with_error(&self.extension_runner, ext_ctx, e).await;
+            return end_turn_with_error_typed(&self.extension_runner, &self.shared, e).await;
         }
         Ok(())
     }
@@ -795,7 +807,6 @@ impl AgentLoop {
         &self,
         trigger: CompactTrigger,
         message_count: usize,
-        tools: &[ToolDefinition],
     ) -> Result<Vec<String>, AgentError> {
         collect_compact_instructions(
             &self.extension_runner,
@@ -803,7 +814,6 @@ impl AgentLoop {
                 session_id: self.shared.session_id.as_str(),
                 working_dir: &self.shared.working_dir,
                 model_id: &self.shared.model_id,
-                tools,
                 trigger,
                 message_count,
             },
@@ -816,7 +826,6 @@ impl AgentLoop {
         &self,
         trigger: CompactTrigger,
         message_count: usize,
-        tools: &[ToolDefinition],
         compaction: &CompactResult,
     ) -> Result<(), AgentError> {
         dispatch_post_compact(
@@ -825,7 +834,6 @@ impl AgentLoop {
                 session_id: self.shared.session_id.as_str(),
                 working_dir: &self.shared.working_dir,
                 model_id: &self.shared.model_id,
-                tools,
                 trigger,
                 message_count,
             },

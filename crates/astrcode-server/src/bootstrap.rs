@@ -9,14 +9,12 @@ use astrcode_ai::create_provider;
 use astrcode_context::manager::LlmContextAssembler;
 use astrcode_core::{
     config::{ConfigStore, EffectiveConfig, ModelSelection},
-    extension::ExtensionError,
+    extension::{ExtensionError, PromptBuildContext},
     llm::{LlmClientConfig, LlmProvider},
     prompt::{ExtensionPromptBlock, ExtensionSection, PromptProvider, SystemPromptInput},
     tool::ToolDefinition,
 };
-use astrcode_extensions::{
-    context::ServerExtensionContext, loader::ExtensionLoader, runner::ExtensionRunner,
-};
+use astrcode_extensions::{loader::ExtensionLoader, runner::ExtensionRunner};
 use astrcode_prompt::{composer::PromptComposer, pipeline};
 use astrcode_storage::config_store::FileConfigStore;
 use astrcode_support::shell::resolve_shell;
@@ -239,10 +237,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     // 每个 session 需要工具时，再从 runner 收集工具适配器并生成快照。
     let cwd_str = cwd.to_string_lossy().to_string();
     let load_result = ExtensionLoader::load_all(Some(&cwd_str)).await;
-    let extension_runner = Arc::new(ExtensionRunner::new(
-        Duration::from_secs(30),
-        load_result.runtime,
-    ));
+    let extension_runner = Arc::new(ExtensionRunner::new(Duration::from_secs(30)));
     extension_runner
         .register(astrcode_extension_agent_tools::extension())
         .await;
@@ -268,7 +263,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     // 7. 给扩展运行时绑定“创建子会话”的宿主能力。
     //
     // 扩展本身不能直接拿到 SessionManager；当扩展工具返回 RunSession 声明式结果时，
-    // ExtensionRuntime 会回调这个 ServerSessionSpawner，让服务器创建子 session。
+    // 绑定会话派生器，使扩展工具可通过 RunSession 声明式结果创建子 session。
     // 子 session 也会生成自己的工具快照，而不是复用父会话或启动期的工具表。
     extension_runner.bind(Arc::new(ServerSessionSpawner {
         session_manager: Arc::clone(&session_manager),
@@ -341,7 +336,7 @@ pub(crate) async fn build_tool_registry_snapshot(
     // Extensions override builtins, and earlier registered extensions keep
     // precedence over later registered extensions with the same tool name.
     for tool in extension_runner
-        .collect_tool_adapters(working_dir)
+        .collect_tool_adapters_typed(working_dir)
         .await
         .into_iter()
         .rev()
@@ -366,20 +361,15 @@ pub(crate) async fn build_system_prompt_snapshot_with_files(
         prompt_files,
     } = input;
 
-    let mut ext_ctx = ServerExtensionContext::new(
-        session_id.to_string(),
-        working_dir.to_string(),
-        ModelSelection::simple(model_id),
-    );
-    ext_ctx.set_tools(
-        tools
-            .iter()
-            .map(|tool| (tool.name.clone(), tool.clone()))
-            .collect(),
-    );
+    let prompt_ctx = PromptBuildContext {
+        session_id: session_id.to_string(),
+        working_dir: working_dir.to_string(),
+        model: ModelSelection::simple(model_id),
+        tools: tools.to_vec(),
+    };
 
     let contributions = extension_runner
-        .collect_prompt_contributions(&ext_ctx)
+        .collect_prompt_contributions_typed(prompt_ctx)
         .await?;
 
     let mut extension_blocks = Vec::new();
@@ -414,7 +404,7 @@ pub(crate) async fn build_system_prompt_snapshot_with_files(
 
     // Merge extension prompt metadata with caller-provided metadata.
     let mut merged_metadata = tool_prompt_metadata;
-    merged_metadata.extend(extension_runner.collect_tool_prompt_metadata().await);
+    merged_metadata.extend(extension_runner.collect_tool_prompt_metadata_typed().await);
 
     let input = SystemPromptInput {
         working_dir: working_dir.to_string(),
@@ -476,8 +466,8 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use astrcode_core::{
-        extension::{Extension, ExtensionContext, ExtensionError, ExtensionEvent, HookEffect},
-        tool::{ToolDefinition, ToolOrigin},
+        extension::{Extension, Registrar, ToolHandler},
+        tool::{ExecutionMode, ToolDefinition, ToolOrigin, ToolResult},
     };
 
     use super::*;
@@ -494,35 +484,40 @@ mod tests {
             self.id
         }
 
-        fn hook_subscriptions(&self) -> Vec<astrcode_core::extension::HookSubscription> {
-            Vec::new()
+        fn register(&self, reg: &mut Registrar) {
+            reg.tool(
+                ToolDefinition {
+                    name: self.tool_name.into(),
+                    description: self.description.into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                    origin: ToolOrigin::Extension,
+                    execution_mode: ExecutionMode::Sequential,
+                },
+                Arc::new(StaticToolHandler),
+            );
         }
+    }
 
-        async fn on_event(
+    struct StaticToolHandler;
+
+    #[async_trait::async_trait]
+    impl ToolHandler for StaticToolHandler {
+        async fn execute(
             &self,
-            _event: ExtensionEvent,
-            _ctx: &dyn ExtensionContext,
-        ) -> Result<HookEffect, ExtensionError> {
-            Ok(HookEffect::Allow)
-        }
-
-        fn tools(&self) -> Vec<ToolDefinition> {
-            vec![ToolDefinition {
-                name: self.tool_name.into(),
-                description: self.description.into(),
-                parameters: serde_json::json!({"type": "object"}),
-                origin: ToolOrigin::Extension,
-                execution_mode: astrcode_core::tool::ExecutionMode::Sequential,
-            }]
+            tool_name: &str,
+            _arguments: serde_json::Value,
+            _working_dir: &str,
+            _ctx: &astrcode_core::tool::ToolExecutionContext,
+        ) -> Result<ToolResult, astrcode_core::extension::ExtensionError> {
+            Err(astrcode_core::extension::ExtensionError::NotFound(
+                tool_name.into(),
+            ))
         }
     }
 
     #[tokio::test]
     async fn child_extra_system_prompt_participates_in_snapshot_build() {
-        let runner = ExtensionRunner::new(
-            Duration::from_secs(1),
-            Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
-        );
+        let runner = ExtensionRunner::new(Duration::from_secs(1));
         let prompt_files = load_system_prompt_files(".").await;
         let (system_prompt, fingerprint) =
             build_system_prompt_snapshot_with_files(SystemPromptSnapshotInput {
@@ -544,10 +539,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_snapshot_precedence_is_explicit() {
-        let runner = ExtensionRunner::new(
-            Duration::from_secs(1),
-            Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
-        );
+        let runner = ExtensionRunner::new(Duration::from_secs(1));
         runner
             .register(Arc::new(StaticToolExtension {
                 id: "first",

@@ -21,13 +21,14 @@ use astrcode_context::{
 use astrcode_core::{
     config::ModelSelection,
     extension::{
-        CompactTrigger, ExtensionError, ExtensionEvent, PostCompactInput, PreCompactInput,
+        CompactContext, CompactEvent, CompactResult as TypedCompactResult, CompactTrigger,
+        ExtensionError,
     },
     llm::{LlmError, LlmEvent, LlmMessage, LlmProvider},
     tool::ToolDefinition,
     types::SessionId,
 };
-use astrcode_extensions::{context::ServerExtensionContext, runner::ExtensionRunner};
+use astrcode_extensions::runner::ExtensionRunner;
 
 pub const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES: usize = 3;
 
@@ -74,7 +75,6 @@ pub(crate) struct CompactHookContext<'a> {
     pub(crate) session_id: &'a str,
     pub(crate) working_dir: &'a str,
     pub(crate) model_id: &'a str,
-    pub(crate) tools: &'a [ToolDefinition],
     pub(crate) trigger: CompactTrigger,
     pub(crate) message_count: usize,
 }
@@ -83,14 +83,24 @@ pub(crate) async fn collect_compact_instructions(
     extension_runner: &ExtensionRunner,
     input: CompactHookContext<'_>,
 ) -> Result<Vec<String>, ExtensionError> {
-    let mut ctx = compact_extension_context(&input);
-    ctx.set_pre_compact_input(PreCompactInput {
+    let ctx = CompactContext {
+        session_id: input.session_id.to_string(),
+        working_dir: input.working_dir.to_string(),
+        model: ModelSelection::simple(input.model_id),
         trigger: input.trigger,
         message_count: input.message_count,
-    });
-
-    let contributions = extension_runner.collect_compact_contributions(&ctx).await?;
-    Ok(clean_compact_instructions(contributions.instructions))
+        pre_tokens: None,
+        post_tokens: None,
+        summary: None,
+    };
+    let result = extension_runner
+        .emit_compact(CompactEvent::PreCompact, ctx)
+        .await?;
+    match result {
+        TypedCompactResult::Contributions(c) => Ok(clean_compact_instructions(c.instructions)),
+        TypedCompactResult::Block { reason } => Err(ExtensionError::Blocked { reason }),
+        TypedCompactResult::Allow => Ok(Vec::new()),
+    }
 }
 
 pub(crate) async fn dispatch_post_compact(
@@ -98,17 +108,20 @@ pub(crate) async fn dispatch_post_compact(
     input: CompactHookContext<'_>,
     compaction: &CompactResult,
 ) -> Result<(), ExtensionError> {
-    let mut ctx = compact_extension_context(&input);
-    ctx.set_post_compact_input(PostCompactInput {
+    let ctx = CompactContext {
+        session_id: input.session_id.to_string(),
+        working_dir: input.working_dir.to_string(),
+        model: ModelSelection::simple(input.model_id),
         trigger: input.trigger,
-        pre_tokens: compaction.pre_tokens,
-        post_tokens: compaction.post_tokens,
-        messages_removed: compaction.messages_removed,
-        summary: compaction.summary.clone(),
-    });
+        message_count: input.message_count,
+        pre_tokens: Some(compaction.pre_tokens),
+        post_tokens: Some(compaction.post_tokens),
+        summary: Some(compaction.summary.clone()),
+    };
     extension_runner
-        .dispatch(ExtensionEvent::PostCompact, &ctx)
-        .await
+        .emit_compact(CompactEvent::PostCompact, ctx)
+        .await?;
+    Ok(())
 }
 
 pub(crate) fn compact_trigger_name(trigger: CompactTrigger) -> &'static str {
@@ -116,23 +129,6 @@ pub(crate) fn compact_trigger_name(trigger: CompactTrigger) -> &'static str {
         CompactTrigger::AutoThreshold => "auto_threshold",
         CompactTrigger::ManualCommand => "manual_command",
     }
-}
-
-fn compact_extension_context(input: &CompactHookContext<'_>) -> ServerExtensionContext {
-    let mut ctx = ServerExtensionContext::new(
-        input.session_id.to_string(),
-        input.working_dir.to_string(),
-        ModelSelection::simple(input.model_id),
-    );
-    ctx.set_tools(
-        input
-            .tools
-            .iter()
-            .cloned()
-            .map(|tool| (tool.name.clone(), tool))
-            .collect(),
-    );
-    ctx
 }
 
 fn clean_compact_instructions(instructions: Vec<String>) -> Vec<String> {

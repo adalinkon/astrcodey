@@ -6,43 +6,12 @@
 use std::{collections::HashMap, sync::Mutex};
 
 use astrcode_core::{
-    config::ModelSelection,
-    extension::{ExtensionContext, ExtensionEvent, HookMode},
+    extension::{ExtensionEvent, HookMode},
     tool::ToolDefinition,
 };
-use astrcode_extensions::ffi::{self, EventCallback, ExtensionApi, FfiCtxOwned, ToolCallback};
-
-/// 测试用的扩展上下文，返回固定值。
-struct TestCtx {
-    sid: String,
-    wd: String,
-}
-#[async_trait::async_trait]
-impl ExtensionContext for TestCtx {
-    fn session_id(&self) -> &str {
-        &self.sid
-    }
-    fn working_dir(&self) -> &str {
-        &self.wd
-    }
-    fn model_selection(&self) -> ModelSelection {
-        ModelSelection::simple("")
-    }
-    fn config_value(&self, _: &str) -> Option<String> {
-        None
-    }
-    async fn emit_custom_event(&self, _: &str, _: serde_json::Value) {}
-    fn find_tool(&self, _: &str) -> Option<ToolDefinition> {
-        None
-    }
-    fn log_warn(&self, _: &str) {}
-    fn snapshot(&self) -> std::sync::Arc<dyn ExtensionContext> {
-        std::sync::Arc::new(TestCtx {
-            sid: self.sid.clone(),
-            wd: self.wd.clone(),
-        })
-    }
-}
+use astrcode_extensions::ffi::{
+    self, CommandCallback, EventCallback, ExtensionApi, FfiCtxOwned, ToolCallback,
+};
 
 /// 测试 FFI vtable 注册事件处理器并验证其被正确存储
 #[test]
@@ -51,14 +20,22 @@ fn ffi_vtable_register_handler_and_invoke() {
     let tools: Mutex<Vec<ToolDefinition>> = Mutex::new(Vec::new());
     let tool_handlers: Mutex<HashMap<String, ToolCallback>> = Mutex::new(HashMap::new());
     let commands = Mutex::new(Vec::new());
+    let command_handlers: Mutex<HashMap<String, CommandCallback>> = Mutex::new(HashMap::new());
 
-    let ud = Box::new(super_ud(&handlers, &tools, &tool_handlers, &commands));
+    let ud = Box::new(super_ud(
+        &handlers,
+        &tools,
+        &tool_handlers,
+        &commands,
+        &command_handlers,
+    ));
     let api = ExtensionApi {
         user_data: Box::into_raw(ud) as *mut std::ffi::c_void,
         on: test_ffi_on,
         register_tool: test_ffi_register_tool,
         register_tool_handler: test_ffi_register_tool_handler,
         register_command: test_ffi_register_command,
+        register_command_handler: test_ffi_register_command_handler,
         register_output_free_handler: test_ffi_register_output_free_handler,
     };
 
@@ -81,14 +58,22 @@ fn ffi_register_tool_stores_definition() {
     let tools: Mutex<Vec<ToolDefinition>> = Mutex::new(Vec::new());
     let tool_handlers: Mutex<HashMap<String, ToolCallback>> = Mutex::new(HashMap::new());
     let commands = Mutex::new(Vec::new());
+    let command_handlers: Mutex<HashMap<String, CommandCallback>> = Mutex::new(HashMap::new());
 
-    let ud = Box::new(super_ud(&handlers, &tools, &tool_handlers, &commands));
+    let ud = Box::new(super_ud(
+        &handlers,
+        &tools,
+        &tool_handlers,
+        &commands,
+        &command_handlers,
+    ));
     let api = ExtensionApi {
         user_data: Box::into_raw(ud) as *mut std::ffi::c_void,
         on: test_ffi_on,
         register_tool: test_ffi_register_tool,
         register_tool_handler: test_ffi_register_tool_handler,
         register_command: test_ffi_register_command,
+        register_command_handler: test_ffi_register_command_handler,
         register_output_free_handler: test_ffi_register_output_free_handler,
     };
 
@@ -121,14 +106,22 @@ fn ffi_register_tool_handler_stores_callback() {
     let tools: Mutex<Vec<ToolDefinition>> = Mutex::new(Vec::new());
     let tool_handlers: Mutex<HashMap<String, ToolCallback>> = Mutex::new(HashMap::new());
     let commands = Mutex::new(Vec::new());
+    let command_handlers: Mutex<HashMap<String, CommandCallback>> = Mutex::new(HashMap::new());
 
-    let ud = Box::new(super_ud(&handlers, &tools, &tool_handlers, &commands));
+    let ud = Box::new(super_ud(
+        &handlers,
+        &tools,
+        &tool_handlers,
+        &commands,
+        &command_handlers,
+    ));
     let api = ExtensionApi {
         user_data: Box::into_raw(ud) as *mut std::ffi::c_void,
         on: test_ffi_on,
         register_tool: test_ffi_register_tool,
         register_tool_handler: test_ffi_register_tool_handler,
         register_command: test_ffi_register_command,
+        register_command_handler: test_ffi_register_command_handler,
         register_output_free_handler: test_ffi_register_output_free_handler,
     };
 
@@ -146,11 +139,17 @@ fn ffi_register_tool_handler_stores_callback() {
 /// 测试 FFI 上下文正确传递会话信息（session_id、working_dir）
 #[test]
 fn ffi_ctx_passes_session_info() {
-    let ctx = TestCtx {
-        sid: "s1".into(),
-        wd: "/tmp".into(),
-    };
-    let ffi_ctx = FfiCtxOwned::from_ext_ctx(&ctx);
+    let ffi_ctx = FfiCtxOwned::new(
+        "s1".into(),
+        "/tmp".into(),
+        String::new(),
+        String::new(),
+        "model".into(),
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+    );
     let raw = unsafe { &*(ffi_ctx.as_ptr() as *const astrcode_extensions::ffi::FfiCtx) };
     unsafe {
         let sid = ffi::read_ffi_str(raw.session_id_ptr, raw.session_id_len);
@@ -167,14 +166,22 @@ fn blocking_handler_effect_is_returned() {
     let tools: Mutex<Vec<ToolDefinition>> = Mutex::new(Vec::new());
     let tool_handlers: Mutex<HashMap<String, ToolCallback>> = Mutex::new(HashMap::new());
     let commands = Mutex::new(Vec::new());
+    let command_handlers: Mutex<HashMap<String, CommandCallback>> = Mutex::new(HashMap::new());
 
-    let ud = Box::new(super_ud(&handlers, &tools, &tool_handlers, &commands));
+    let ud = Box::new(super_ud(
+        &handlers,
+        &tools,
+        &tool_handlers,
+        &commands,
+        &command_handlers,
+    ));
     let api = ExtensionApi {
         user_data: Box::into_raw(ud) as *mut std::ffi::c_void,
         on: test_ffi_on,
         register_tool: test_ffi_register_tool,
         register_tool_handler: test_ffi_register_tool_handler,
         register_command: test_ffi_register_command,
+        register_command_handler: test_ffi_register_command_handler,
         register_output_free_handler: test_ffi_register_output_free_handler,
     };
 
@@ -218,6 +225,7 @@ struct TestUserData<'a> {
     tools: &'a Mutex<Vec<ToolDefinition>>,
     tool_handlers: &'a Mutex<HashMap<String, ToolCallback>>,
     commands: &'a Mutex<Vec<astrcode_core::extension::SlashCommand>>,
+    command_handlers: &'a Mutex<HashMap<String, CommandCallback>>,
 }
 
 /// 构建测试用 UserData
@@ -226,12 +234,14 @@ fn super_ud<'a>(
     t: &'a Mutex<Vec<ToolDefinition>>,
     th: &'a Mutex<HashMap<String, ToolCallback>>,
     c: &'a Mutex<Vec<astrcode_core::extension::SlashCommand>>,
+    ch: &'a Mutex<HashMap<String, CommandCallback>>,
 ) -> TestUserData<'a> {
     TestUserData {
         handlers: h,
         tools: t,
         tool_handlers: th,
         commands: c,
+        command_handlers: ch,
     }
 }
 
@@ -304,6 +314,20 @@ unsafe extern "C" fn test_ffi_register_command(
             description: ffi::read_ffi_str(desc_ptr, desc_len),
             args_schema: None,
         });
+}
+
+/// 测试用 FFI 命令处理器注册回调
+unsafe extern "C" fn test_ffi_register_command_handler(
+    api: *const ExtensionApi,
+    name_ptr: *const u8,
+    name_len: u32,
+    callback: CommandCallback,
+) {
+    let ud = &*((*api).user_data as *const TestUserData);
+    ud.command_handlers
+        .lock()
+        .unwrap()
+        .insert(ffi::read_ffi_str(name_ptr, name_len), callback);
 }
 
 /// 测试用 FFI 输出释放注册回调

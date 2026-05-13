@@ -5,16 +5,17 @@
 //! `SKILL.md` content only when a matching task appears.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use astrcode_core::{
     extension::{
-        Extension, ExtensionContext, ExtensionError, ExtensionEvent, HookEffect, HookMode,
-        HookSubscription, PromptContributions,
+        CommandContext, CommandDiscoveryHandler, CommandHandler, Extension, ExtensionCommandResult,
+        ExtensionError, PromptBuildContext, PromptBuildHandler, PromptContributions, Registrar,
+        ToolHandler,
     },
     tool::{ExecutionMode, ToolDefinition, ToolOrigin, ToolResult, tool_metadata},
 };
@@ -41,80 +42,62 @@ impl Extension for SkillExtension {
         "astrcode-skill"
     }
 
-    fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-        vec![HookSubscription {
-            event: ExtensionEvent::PromptBuild,
-            mode: HookMode::Blocking,
-            priority: 0,
-        }]
+    fn register(&self, reg: &mut Registrar) {
+        let shared = Arc::new(SkillShared::new());
+        reg.tool(
+            skill_tool_definition(),
+            Arc::new(SkillToolHandler {
+                shared: shared.clone(),
+            }),
+        );
+        reg.tool_metadata(skill_tool_metadata());
+        reg.command_discovery(Arc::new(SkillCommandDiscovery {
+            shared: shared.clone(),
+        }));
+        reg.on_prompt_build(
+            0,
+            Arc::new(SkillPromptBuildHandler {
+                shared: shared.clone(),
+            }),
+        );
     }
+}
 
-    async fn on_event(
-        &self,
-        event: ExtensionEvent,
-        ctx: &dyn ExtensionContext,
-    ) -> Result<HookEffect, ExtensionError> {
-        if event != ExtensionEvent::PromptBuild {
-            return Ok(HookEffect::Allow);
+// ─── Shared Cache ───────────────────────────────────────────────────────
+
+/// Skill 发现结果缓存，按 working_dir 缓存。
+struct SkillShared {
+    cache: Mutex<HashMap<String, Vec<SkillDefinition>>>,
+}
+
+impl SkillShared {
+    fn new() -> Self {
+        Self {
+            cache: Mutex::new(HashMap::new()),
         }
-        if ctx.find_tool(SKILL_TOOL_NAME).is_none() {
-            return Ok(HookEffect::Allow);
+    }
+
+    fn get_or_discover(&self, working_dir: &str) -> Vec<SkillDefinition> {
+        if let Some(skills) = self.cache.lock().unwrap().get(working_dir) {
+            return skills.clone();
         }
-
-        let skills = discover_skills(ctx.working_dir());
-        Ok(HookEffect::PromptContributions(PromptContributions {
-            skills: vec![format_skills_for_model(&skills)],
-            ..Default::default()
-        }))
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![skill_tool_definition()]
-    }
-
-    async fn slash_commands_for(
-        &self,
-        working_dir: &str,
-    ) -> Vec<astrcode_core::extension::SlashCommand> {
-        discover_skills(working_dir)
-            .into_iter()
-            .map(|skill| {
-                let description =
-                    truncate_for_index(&skill.index_description(), MAX_DESCRIPTION_CHARS);
-                astrcode_core::extension::SlashCommand {
-                    name: skill.id,
-                    description,
-                    args_schema: None,
-                }
-            })
-            .collect()
-    }
-
-    async fn execute_command(
-        &self,
-        command_name: &str,
-        arguments: &str,
-        working_dir: &str,
-        ctx: &dyn ExtensionContext,
-    ) -> Result<astrcode_core::extension::ExtensionCommandResult, ExtensionError> {
         let skills = discover_skills(working_dir);
-        let Some(skill) = skills
-            .iter()
-            .find(|skill| skill.matches_requested_name(command_name))
-        else {
-            return Err(ExtensionError::NotFound(command_name.into()));
-        };
-
-        Ok(
-            astrcode_core::extension::ExtensionCommandResult::start_turn(render_skill_content(
-                skill,
-                Some(arguments),
-                ctx.session_id(),
-            )),
-        )
+        self.cache
+            .lock()
+            .unwrap()
+            .entry(working_dir.to_string())
+            .or_insert_with(|| skills.clone());
+        skills
     }
+}
 
-    async fn execute_tool(
+struct SkillToolHandler {
+    shared: Arc<SkillShared>,
+}
+
+#[async_trait::async_trait]
+impl ToolHandler for SkillToolHandler {
+    async fn execute(
         &self,
         tool_name: &str,
         arguments: Value,
@@ -129,24 +112,110 @@ impl Extension for SkillExtension {
             arguments,
             working_dir,
             ctx.session_id.as_str(),
+            &self.shared,
         ))
     }
+}
 
-    fn tool_prompt_metadata(
-        &self,
-    ) -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
-        let mut map = std::collections::HashMap::new();
-        map.insert(
-            SKILL_TOOL_NAME.to_string(),
-            astrcode_core::tool::ToolPromptMetadata::new(
-                "Call the Skill tool with the exact skill name before continuing when a task \
-                 matches one of the listed skills.",
-            )
-            .caveat("Users may also refer to skills as slash commands, such as /commit.")
-            .prompt_tag("discovery"),
-        );
-        map
+struct SkillPromptBuildHandler {
+    shared: Arc<SkillShared>,
+}
+
+#[async_trait::async_trait]
+impl PromptBuildHandler for SkillPromptBuildHandler {
+    async fn handle(&self, ctx: PromptBuildContext) -> Result<PromptContributions, ExtensionError> {
+        let has_skill_tool = ctx.tools.iter().any(|t| t.name == SKILL_TOOL_NAME);
+        if !has_skill_tool {
+            return Ok(PromptContributions::default());
+        }
+
+        let skills = self.shared.get_or_discover(&ctx.working_dir);
+        Ok(PromptContributions {
+            skills: vec![format_skills_for_model(&skills)],
+            ..Default::default()
+        })
     }
+}
+
+struct SkillCommandDiscovery {
+    shared: Arc<SkillShared>,
+}
+
+#[async_trait::async_trait]
+impl CommandDiscoveryHandler for SkillCommandDiscovery {
+    async fn discover(
+        &self,
+        working_dir: &str,
+    ) -> Vec<(
+        astrcode_core::extension::SlashCommand,
+        Arc<dyn CommandHandler>,
+    )> {
+        self.shared
+            .get_or_discover(working_dir)
+            .into_iter()
+            .map(|skill| {
+                let description =
+                    truncate_for_index(&skill.index_description(), MAX_DESCRIPTION_CHARS);
+                let cmd = astrcode_core::extension::SlashCommand {
+                    name: skill.id.clone(),
+                    description,
+                    args_schema: None,
+                };
+                (
+                    cmd,
+                    Arc::new(SkillCommandHandler {
+                        skill_id: skill.id,
+                        shared: self.shared.clone(),
+                    }) as Arc<dyn CommandHandler>,
+                )
+            })
+            .collect()
+    }
+}
+
+struct SkillCommandHandler {
+    skill_id: String,
+    shared: Arc<SkillShared>,
+}
+
+#[async_trait::async_trait]
+impl CommandHandler for SkillCommandHandler {
+    async fn execute(
+        &self,
+        _command_name: &str,
+        arguments: &str,
+        working_dir: &str,
+        ctx: &CommandContext,
+    ) -> Result<ExtensionCommandResult, ExtensionError> {
+        let skills = self.shared.get_or_discover(working_dir);
+        let Some(skill) = skills
+            .iter()
+            .find(|skill| skill.matches_requested_name(&self.skill_id))
+        else {
+            return Err(ExtensionError::NotFound(self.skill_id.clone()));
+        };
+
+        Ok(ExtensionCommandResult::start_turn(render_skill_content(
+            skill,
+            Some(arguments),
+            &ctx.session_id,
+        )))
+    }
+}
+
+fn skill_tool_metadata()
+-> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
+    let mut map = std::collections::HashMap::new();
+    map.insert(
+        SKILL_TOOL_NAME.to_string(),
+        astrcode_core::tool::ToolPromptMetadata::new(
+            "Call the Skill tool with the exact skill name before continuing when a task matches \
+             one of the listed skills.",
+        )
+        .caveat("Users may also refer to skills as slash commands, such as /commit.")
+        .prompt_tag("discovery"),
+    );
+    map
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,7 +313,12 @@ fn skill_tool_definition() -> ToolDefinition {
     }
 }
 
-fn handle_skill_tool(arguments: Value, working_dir: &str, session_id: &str) -> ToolResult {
+fn handle_skill_tool(
+    arguments: Value,
+    working_dir: &str,
+    session_id: &str,
+    shared: &SkillShared,
+) -> ToolResult {
     let args = match serde_json::from_value::<SkillToolArgs>(arguments) {
         Ok(args) => args,
         Err(error) => {
@@ -260,7 +334,7 @@ fn handle_skill_tool(arguments: Value, working_dir: &str, session_id: &str) -> T
         },
     };
 
-    let skills = discover_skills(working_dir);
+    let skills = shared.get_or_discover(working_dir);
     let Some(skill) = skills
         .iter()
         .find(|skill| skill.matches_requested_name(&args.skill))
@@ -581,7 +655,7 @@ fn truncate_for_index(text: &str, max_chars: usize) -> String {
 mod tests {
     use astrcode_core::{
         config::ModelSelection,
-        extension::ExtensionContext,
+        extension::CommandContext,
         tool::{ToolCapabilities, ToolExecutionContext},
     };
 
@@ -701,10 +775,12 @@ mod tests {
         fs::create_dir_all(skill_dir.join("references")).expect("asset dir");
         fs::write(skill_dir.join("references").join("rules.md"), "rules").expect("asset");
 
+        let shared = SkillShared::new();
         let result = handle_skill_tool(
             json!({ "skill": "/review", "args": "src/lib.rs" }),
             &workspace.to_string_lossy(),
             "session-123",
+            &shared,
         );
 
         assert!(!result.is_error);
@@ -760,51 +836,10 @@ mod tests {
         assert_eq!(manifest["tools"][0]["name"], definition.name);
         assert_eq!(manifest["tools"][0]["description"], definition.description);
         assert_eq!(manifest["tools"][0]["parameters"], definition.parameters);
-        assert_eq!(
-            SkillExtension.hook_subscriptions(),
-            vec![HookSubscription {
-                event: ExtensionEvent::PromptBuild,
-                mode: HookMode::Blocking,
-                priority: 0,
-            }]
-        );
-    }
-
-    #[derive(Clone)]
-    struct TestContext {
-        working_dir: String,
-        expose_skill_tool: bool,
-    }
-
-    #[async_trait::async_trait]
-    impl ExtensionContext for TestContext {
-        fn session_id(&self) -> &str {
-            "session"
-        }
-
-        fn working_dir(&self) -> &str {
-            &self.working_dir
-        }
-
-        fn model_selection(&self) -> ModelSelection {
-            ModelSelection::simple("mock")
-        }
-
-        fn config_value(&self, _key: &str) -> Option<String> {
-            None
-        }
-
-        async fn emit_custom_event(&self, _name: &str, _data: Value) {}
-
-        fn find_tool(&self, name: &str) -> Option<ToolDefinition> {
-            (self.expose_skill_tool && name == SKILL_TOOL_NAME).then(skill_tool_definition)
-        }
-
-        fn log_warn(&self, _msg: &str) {}
-
-        fn snapshot(&self) -> Arc<dyn ExtensionContext> {
-            Arc::new(self.clone())
-        }
+        let mut reg = Registrar::new();
+        SkillExtension.register(&mut reg);
+        assert_eq!(reg.tools().len(), 1);
+        assert!(!reg.prompt_build().is_empty());
     }
 
     fn tool_ctx(working_dir: &Path) -> ToolExecutionContext {
@@ -828,19 +863,17 @@ mod tests {
             &sample_md("Commit changes.", "Commit guide"),
         );
 
-        let context = TestContext {
+        let handler = SkillPromptBuildHandler {
+            shared: Arc::new(SkillShared::new()),
+        };
+        let ctx = PromptBuildContext {
+            session_id: "test".into(),
             working_dir: workspace.to_string_lossy().into_owned(),
-            expose_skill_tool: true,
+            model: astrcode_core::config::ModelSelection::simple("mock"),
+            tools: vec![skill_tool_definition()],
         };
+        let contributions = handler.handle(ctx).await.expect("prompt build");
 
-        let effect = SkillExtension
-            .on_event(ExtensionEvent::PromptBuild, &context)
-            .await
-            .expect("prompt build");
-
-        let HookEffect::PromptContributions(contributions) = effect else {
-            panic!("expected prompt contributions");
-        };
         assert!(contributions.skills[0].contains("- commit: Commit changes."));
     }
 
@@ -855,12 +888,13 @@ mod tests {
             &sample_md("Review current code.", "Review guide"),
         );
 
-        let commands = SkillExtension
-            .slash_commands_for(&workspace.to_string_lossy())
-            .await;
+        let discovery = SkillCommandDiscovery {
+            shared: Arc::new(SkillShared::new()),
+        };
+        let commands = discovery.discover(&workspace.to_string_lossy()).await;
 
-        assert!(commands.iter().any(|command| {
-            command.name == "reviewnow" && command.description == "Review current code."
+        assert!(commands.iter().any(|(cmd, _)| {
+            cmd.name == "reviewnow" && cmd.description == "Review current code."
         }));
     }
 
@@ -874,18 +908,18 @@ mod tests {
             "commit",
             &sample_md("Commit changes.", "Use ${SKILL_DIR} for ${SESSION_ID}."),
         );
-        let context = TestContext {
-            working_dir: workspace.to_string_lossy().into_owned(),
-            expose_skill_tool: true,
-        };
 
-        let result = SkillExtension
-            .execute_command(
-                "commit",
-                "staged files",
-                &workspace.to_string_lossy(),
-                &context,
-            )
+        let handler = SkillCommandHandler {
+            skill_id: "commit".into(),
+            shared: Arc::new(SkillShared::new()),
+        };
+        let ctx = CommandContext {
+            session_id: "session".into(),
+            working_dir: workspace.to_string_lossy().into_owned(),
+            model: ModelSelection::simple("mock"),
+        };
+        let result = handler
+            .execute("commit", "staged files", &workspace.to_string_lossy(), &ctx)
             .await
             .expect("skill command");
 
@@ -909,8 +943,11 @@ mod tests {
             &sample_md("Commit changes.", "Commit guide"),
         );
 
-        let result = SkillExtension
-            .execute_tool(
+        let handler = SkillToolHandler {
+            shared: Arc::new(SkillShared::new()),
+        };
+        let result = handler
+            .execute(
                 SKILL_TOOL_NAME,
                 json!({ "skill": "commit" }),
                 &workspace.to_string_lossy(),

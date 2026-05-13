@@ -11,13 +11,12 @@ use std::{
 use astrcode_core::{
     config::ModelSelection,
     event::{Event, EventPayload, Phase},
-    extension::{ExtensionCommandResult, ExtensionError, ExtensionEvent},
+    extension::{ExtensionCommandResult, ExtensionError, ExtensionEvent, LifecycleContext},
     llm::{LlmContent, LlmMessage, LlmRole},
     storage::SessionReadModel,
     tool::ToolResult,
     types::{SessionId, ToolCallId, TurnId, new_message_id, new_turn_id},
 };
-use astrcode_extensions::context::ServerExtensionContext;
 use astrcode_protocol::{
     commands::ClientCommand,
     events::{ClientNotification, SessionListItem},
@@ -260,17 +259,18 @@ impl CommandHandler {
 
             ClientCommand::DeleteSession { session_id } => {
                 let session_id = SessionId::from(session_id);
-                // Dispatch SessionShutdown hook before deletion
                 {
-                    let ext_ctx = ServerExtensionContext::new(
-                        session_id.to_string(),
-                        String::new(),
-                        ModelSelection::simple(self.runtime.read_effective().llm.model_id.clone()),
-                    );
+                    let lifecycle_ctx = LifecycleContext {
+                        session_id: session_id.to_string(),
+                        working_dir: String::new(),
+                        model: ModelSelection::simple(
+                            self.runtime.read_effective().llm.model_id.clone(),
+                        ),
+                    };
                     if let Err(e) = self
                         .runtime
                         .extension_runner
-                        .dispatch(ExtensionEvent::SessionShutdown, &ext_ctx)
+                        .emit_lifecycle(ExtensionEvent::SessionShutdown, lifecycle_ctx)
                         .await
                     {
                         self.send_error(-32603, &e.to_string());
@@ -374,15 +374,17 @@ impl CommandHandler {
                 self.active_session_id = Some(event.session_id.clone());
                 tracing::info!(session_id = %event.session_id, "session created, dispatching SessionStart");
                 let _ = self.event_tx.send(ClientNotification::Event(event.clone()));
-                let ext_ctx = ServerExtensionContext::new(
-                    event.session_id.to_string(),
-                    working_dir.clone(),
-                    ModelSelection::simple(self.runtime.read_effective().llm.model_id.clone()),
-                );
+                let lifecycle_ctx = LifecycleContext {
+                    session_id: event.session_id.to_string(),
+                    working_dir: working_dir.clone(),
+                    model: ModelSelection::simple(
+                        self.runtime.read_effective().llm.model_id.clone(),
+                    ),
+                };
                 if let Err(e) = self
                     .runtime
                     .extension_runner
-                    .dispatch(ExtensionEvent::SessionStart, &ext_ctx)
+                    .emit_lifecycle(ExtensionEvent::SessionStart, lifecycle_ctx)
                     .await
                 {
                     tracing::error!(error = %e, "SessionStart extension dispatch failed");
@@ -572,20 +574,20 @@ impl CommandHandler {
             .read_model(&sid)
             .await
             .map_err(|e| HandlerError::Other(format!("read session {sid}: {e}")))?;
-        let ext_ctx = ServerExtensionContext::new(
-            sid.to_string(),
-            state.working_dir.clone(),
-            ModelSelection::simple(self.runtime.read_effective().llm.model_id.clone()),
-        );
+        let cmd_ctx = astrcode_core::extension::CommandContext {
+            session_id: sid.to_string(),
+            working_dir: state.working_dir.clone(),
+            model: ModelSelection::simple(self.runtime.read_effective().llm.model_id.clone()),
+        };
 
         match self
             .runtime
             .extension_runner
-            .dispatch_command(
+            .dispatch_command_typed(
                 &command.name,
                 &command.arguments,
                 &state.working_dir,
-                &ext_ctx,
+                &cmd_ctx,
             )
             .await
         {
@@ -653,31 +655,29 @@ impl CommandHandler {
         let mut extension_commands = self
             .runtime
             .extension_runner
-            .collect_commands_for(working_dir)
+            .collect_commands_for_typed(working_dir)
             .await;
-        extension_commands.sort_by_key(|registered| {
-            match command_source(&registered.extension_id) {
-                "plugin" => 0,
-                "skill" => 1,
-                _ => 2,
-            }
+        extension_commands.sort_by_key(|(ext_id, _, _)| match command_source(ext_id.as_str()) {
+            "plugin" => 0,
+            "skill" => 1,
+            _ => 2,
         });
 
-        for registered in extension_commands {
-            let source = command_source(&registered.extension_id);
-            if !seen.insert(registered.command.name.clone()) {
+        for (ext_id, cmd, _handler) in extension_commands {
+            let source = command_source(&ext_id);
+            if !seen.insert(cmd.name.clone()) {
                 tracing::warn!(
-                    command = %registered.command.name,
+                    command = %cmd.name,
                     source,
-                    extension_id = %registered.extension_id,
+                    extension_id = %ext_id,
                     "slash command ignored because a higher priority command already exists"
                 );
                 continue;
             }
             infos.push(astrcode_protocol::events::ExtensionCommandInfo {
-                name: registered.command.name,
-                description: registered.command.description,
-                needs_argument: registered.command.args_schema.is_some(),
+                name: cmd.name,
+                description: cmd.description,
+                needs_argument: cmd.args_schema.is_some(),
                 source: source.into(),
             });
         }
@@ -716,16 +716,15 @@ impl CommandHandler {
             return Err(HandlerError::NoActiveTurn);
         };
 
-        // 扩展的TurnAborted事件
-        let ext_ctx = ServerExtensionContext::new(
-            active_turn.session_id.to_string(),
-            active_turn.working_dir.clone(),
-            ModelSelection::simple(active_turn.model_id.clone()),
-        );
+        let lifecycle_ctx = LifecycleContext {
+            session_id: active_turn.session_id.to_string(),
+            working_dir: active_turn.working_dir.clone(),
+            model: ModelSelection::simple(active_turn.model_id.clone()),
+        };
         if let Err(e) = self
             .runtime
             .extension_runner
-            .dispatch(ExtensionEvent::TurnAborted, &ext_ctx)
+            .emit_lifecycle(ExtensionEvent::TurnAborted, lifecycle_ctx)
             .await
         {
             tracing::warn!(error = %e, "TurnAborted extension dispatch failed");
@@ -808,14 +807,14 @@ impl CommandHandler {
         let sid = event.session_id.clone();
         self.active_session_id = Some(sid.clone());
         let _ = self.event_tx.send(ClientNotification::Event(event));
-        let ext_ctx = ServerExtensionContext::new(
-            sid.to_string(),
-            wd.clone(),
-            ModelSelection::simple(self.runtime.read_effective().llm.model_id.clone()),
-        );
+        let lifecycle_ctx = LifecycleContext {
+            session_id: sid.to_string(),
+            working_dir: wd.clone(),
+            model: ModelSelection::simple(self.runtime.read_effective().llm.model_id.clone()),
+        };
         self.runtime
             .extension_runner
-            .dispatch(ExtensionEvent::SessionStart, &ext_ctx)
+            .emit_lifecycle(ExtensionEvent::SessionStart, lifecycle_ctx)
             .await
             .map_err(|e| HandlerError::Other(e.to_string()))?;
         self.initialize_session_prompt(&sid, &wd)

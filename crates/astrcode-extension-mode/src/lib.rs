@@ -24,8 +24,9 @@ use std::sync::Arc;
 
 use astrcode_core::{
     extension::{
-        Extension, ExtensionContext, ExtensionError, ExtensionEvent, HookEffect, HookMode,
-        HookSubscription,
+        Extension, ExtensionError, HookMode, PreToolUseContext, PreToolUseHandler,
+        PreToolUseResult, ProviderContext, ProviderEvent, ProviderHandler, ProviderResult,
+        Registrar, ToolHandler,
     },
     llm::LlmMessage,
     tool::{ToolResult, tool_metadata},
@@ -60,80 +61,44 @@ impl Extension for ModeExtension {
         "astrcode-mode"
     }
 
-    fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-        vec![
-            HookSubscription {
-                event: ExtensionEvent::PreToolUse,
-                mode: HookMode::Blocking,
-                priority: 100,
-            },
-            HookSubscription {
-                event: ExtensionEvent::BeforeProviderRequest,
-                mode: HookMode::Blocking,
-                priority: 50,
-            },
-        ]
+    fn register(&self, reg: &mut Registrar) {
+        let catalog = self.catalog.clone();
+        reg.tool(
+            switch_mode_tool_definition(),
+            Arc::new(ModeToolHandler {
+                catalog: catalog.clone(),
+            }),
+        );
+        reg.tool(
+            upsert_plan_tool_definition(),
+            Arc::new(ModeToolHandler {
+                catalog: catalog.clone(),
+            }),
+        );
+        reg.tool_metadata(mode_tool_metadata());
+        reg.on_pre_tool_use(
+            HookMode::Blocking,
+            100,
+            Arc::new(ModePreToolUseHandler {
+                catalog: catalog.clone(),
+            }),
+        );
+        reg.on_provider(
+            ProviderEvent::BeforeRequest,
+            HookMode::Blocking,
+            50,
+            Arc::new(ModeProviderHandler),
+        );
     }
+}
 
-    async fn on_event(
-        &self,
-        event: ExtensionEvent,
-        ctx: &dyn ExtensionContext,
-    ) -> Result<HookEffect, ExtensionError> {
-        let session_id = ctx.session_id();
-        let working_dir = ctx.working_dir();
-        let mode_root = store::mode_store_root(session_id, working_dir);
+struct ModeToolHandler {
+    catalog: ModeCatalog,
+}
 
-        match event {
-            ExtensionEvent::PreToolUse => {
-                let Some(input) = ctx.pre_tool_use_input() else {
-                    return Ok(HookEffect::Allow);
-                };
-                let state = store::load_mode_state(&mode_root).map_err(ExtensionError::Internal)?;
-                let mode_id = ModeId::from_raw(&state.current_mode);
-                let Some(spec) = self.catalog.get(&mode_id) else {
-                    return Ok(HookEffect::Allow);
-                };
-
-                if spec.restricted_tools.contains(&input.tool_name) {
-                    return Ok(HookEffect::Block {
-                        reason: format!(
-                            "Tool '{}' is not available in {} mode",
-                            input.tool_name, spec.name
-                        ),
-                    });
-                }
-
-                if !spec.allow_delegation && input.tool_name == "agent" {
-                    return Ok(HookEffect::Block {
-                        reason: format!("Agent delegation is not allowed in {} mode", spec.name),
-                    });
-                }
-
-                Ok(HookEffect::Allow)
-            },
-            ExtensionEvent::BeforeProviderRequest => {
-                let mut state =
-                    store::load_mode_state(&mode_root).map_err(ExtensionError::Internal)?;
-
-                if let Some(context) = state.pending_transition_context.take() {
-                    store::save_mode_state(&mode_root, &state).map_err(ExtensionError::Internal)?;
-                    return Ok(HookEffect::AppendMessages {
-                        messages: vec![LlmMessage::user(context)],
-                    });
-                }
-
-                Ok(HookEffect::Allow)
-            },
-            _ => Ok(HookEffect::Allow),
-        }
-    }
-
-    fn tools(&self) -> Vec<astrcode_core::tool::ToolDefinition> {
-        vec![switch_mode_tool_definition(), upsert_plan_tool_definition()]
-    }
-
-    async fn execute_tool(
+#[async_trait::async_trait]
+impl ToolHandler for ModeToolHandler {
+    async fn execute(
         &self,
         tool_name: &str,
         arguments: serde_json::Value,
@@ -167,27 +132,78 @@ impl Extension for ModeExtension {
             _ => Err(ExtensionError::NotFound(tool_name.into())),
         }
     }
+}
 
-    fn tool_prompt_metadata(
-        &self,
-    ) -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
-        use astrcode_core::tool::ToolPromptMetadata;
-        let mut map = std::collections::HashMap::new();
-        map.insert(
-            SWITCH_MODE_TOOL_NAME.to_string(),
-            ToolPromptMetadata::new(
-                "Use `switchMode` to enter plan mode for read-only exploration, or return to code \
-                 mode for execution.",
-            )
-            .prompt_tag("planning"),
-        );
-        map.insert(
-            UPSERT_PLAN_TOOL_NAME.to_string(),
-            ToolPromptMetadata::new(
-                "Only available in plan mode. The plan must contain all required headings.",
-            )
-            .prompt_tag("planning"),
-        );
-        map
+struct ModePreToolUseHandler {
+    catalog: ModeCatalog,
+}
+
+#[async_trait::async_trait]
+impl PreToolUseHandler for ModePreToolUseHandler {
+    async fn handle(&self, ctx: PreToolUseContext) -> Result<PreToolUseResult, ExtensionError> {
+        let mode_root = store::mode_store_root(&ctx.session_id, &ctx.working_dir);
+        let state = store::load_mode_state(&mode_root).map_err(ExtensionError::Internal)?;
+        let mode_id = ModeId::from_raw(&state.current_mode);
+        let Some(spec) = self.catalog.get(&mode_id) else {
+            return Ok(PreToolUseResult::Allow);
+        };
+
+        if spec.restricted_tools.contains(&ctx.tool_name) {
+            return Ok(PreToolUseResult::Block {
+                reason: format!(
+                    "Tool '{}' is not available in {} mode",
+                    ctx.tool_name, spec.name
+                ),
+            });
+        }
+
+        if !spec.allow_delegation && ctx.tool_name == "agent" {
+            return Ok(PreToolUseResult::Block {
+                reason: format!("Agent delegation is not allowed in {} mode", spec.name),
+            });
+        }
+
+        Ok(PreToolUseResult::Allow)
     }
+}
+
+struct ModeProviderHandler;
+
+#[async_trait::async_trait]
+impl ProviderHandler for ModeProviderHandler {
+    async fn handle(&self, ctx: ProviderContext) -> Result<ProviderResult, ExtensionError> {
+        let mode_root = store::mode_store_root(&ctx.session_id, &ctx.working_dir);
+        let mut state = store::load_mode_state(&mode_root).map_err(ExtensionError::Internal)?;
+
+        if let Some(context) = state.pending_transition_context.take() {
+            store::save_mode_state(&mode_root, &state).map_err(ExtensionError::Internal)?;
+            return Ok(ProviderResult::AppendMessages {
+                messages: vec![LlmMessage::user(context)],
+            });
+        }
+
+        Ok(ProviderResult::Allow)
+    }
+}
+
+fn mode_tool_metadata() -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata>
+{
+    use astrcode_core::tool::ToolPromptMetadata;
+    let mut map = std::collections::HashMap::new();
+    map.insert(
+        SWITCH_MODE_TOOL_NAME.to_string(),
+        ToolPromptMetadata::new(
+            "Use `switchMode` to enter plan mode for read-only exploration, or return to code \
+             mode for execution.",
+        )
+        .prompt_tag("planning"),
+    );
+    map.insert(
+        UPSERT_PLAN_TOOL_NAME.to_string(),
+        ToolPromptMetadata::new(
+            "Only available in plan mode. The plan must contain all required headings.",
+        )
+        .prompt_tag("planning"),
+    );
+    map
 }

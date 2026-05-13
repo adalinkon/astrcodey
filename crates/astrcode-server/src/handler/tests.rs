@@ -10,8 +10,8 @@ use astrcode_core::{
     config::{ContextSettings, EffectiveConfig, LlmSettings, OpenAiApiMode},
     event::{Event, EventPayload, Phase},
     extension::{
-        Extension, ExtensionCommandResult, ExtensionContext, ExtensionError, ExtensionEvent,
-        HookEffect, HookMode, HookSubscription, SlashCommand,
+        CommandContext, Extension, ExtensionCommandResult, ExtensionError, ExtensionEvent,
+        HookMode, HookResult, LifecycleContext, Registrar, SlashCommand,
     },
     llm::{LlmContent, LlmError, LlmEvent, LlmMessage, LlmProvider, LlmRole, ModelLimits},
     tool::ToolDefinition,
@@ -103,37 +103,37 @@ impl Extension for StaticCommandExtension {
         self.id
     }
 
-    fn slash_commands(&self) -> Vec<SlashCommand> {
-        vec![SlashCommand {
-            name: self.command_name.into(),
-            description: "Static test command".into(),
-            args_schema: None,
-        }]
+    fn register(&self, reg: &mut Registrar) {
+        let command_name = self.command_name;
+        reg.command(
+            SlashCommand {
+                name: command_name.into(),
+                description: "Static test command".into(),
+                args_schema: None,
+            },
+            Arc::new(StaticCommandHandler {
+                command_name: command_name.to_string(),
+            }),
+        );
     }
+}
 
-    fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-        vec![]
-    }
+struct StaticCommandHandler {
+    command_name: String,
+}
 
-    async fn on_event(
-        &self,
-        _event: ExtensionEvent,
-        _ctx: &dyn ExtensionContext,
-    ) -> Result<HookEffect, ExtensionError> {
-        Ok(HookEffect::Allow)
-    }
-
-    async fn execute_command(
+#[async_trait::async_trait]
+impl astrcode_core::extension::CommandHandler for StaticCommandHandler {
+    async fn execute(
         &self,
         command_name: &str,
-        _arguments: &str,
+        _args: &str,
         _working_dir: &str,
-        _ctx: &dyn ExtensionContext,
+        _ctx: &CommandContext,
     ) -> Result<ExtensionCommandResult, ExtensionError> {
         if command_name == self.command_name {
             return Ok(ExtensionCommandResult::display("plugin command", false));
         }
-
         Err(ExtensionError::NotFound(command_name.into()))
     }
 }
@@ -144,20 +144,21 @@ impl Extension for FailSessionStartExtension {
         "fail-session-start"
     }
 
-    fn hook_subscriptions(&self) -> Vec<HookSubscription> {
-        vec![HookSubscription {
-            event: ExtensionEvent::SessionStart,
-            mode: HookMode::Blocking,
-            priority: 0,
-        }]
+    fn register(&self, reg: &mut Registrar) {
+        reg.on_event(
+            ExtensionEvent::SessionStart,
+            HookMode::Blocking,
+            0,
+            Arc::new(FailSessionStartHandler),
+        );
     }
+}
 
-    async fn on_event(
-        &self,
-        event: ExtensionEvent,
-        _ctx: &dyn ExtensionContext,
-    ) -> Result<HookEffect, ExtensionError> {
-        assert_eq!(event, ExtensionEvent::SessionStart);
+struct FailSessionStartHandler;
+
+#[async_trait::async_trait]
+impl astrcode_core::extension::LifecycleHandler for FailSessionStartHandler {
+    async fn handle(&self, _ctx: LifecycleContext) -> Result<HookResult, ExtensionError> {
         Err(ExtensionError::Internal("session start failed".into()))
     }
 }
@@ -243,7 +244,6 @@ fn test_runtime_with_settings(
         background_tasks: Default::default(),
         extension_runner: Arc::new(astrcode_extensions::runner::ExtensionRunner::new(
             Duration::from_secs(1),
-            Arc::new(astrcode_extensions::runtime::ExtensionRuntime::new()),
         )),
         shutdown_token: tokio_util::sync::CancellationToken::new(),
         config_store: Arc::new(astrcode_storage::config_store::FileConfigStore::new(
