@@ -611,10 +611,9 @@ fn spawn_nonblocking<F>(fut: F)
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
-    let handle = tokio::spawn(fut);
     tokio::spawn(async move {
-        if let Err(e) = handle.await {
-            if e.is_panic() {
+        if let Err(join_err) = tokio::spawn(fut).await {
+            if join_err.is_panic() {
                 tracing::error!("non-blocking handler panicked");
             }
         }
