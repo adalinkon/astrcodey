@@ -22,9 +22,11 @@ use astrcode_storage::in_memory::InMemoryEventStore;
 use tokio::sync::mpsc;
 
 use super::*;
-use crate::agent::AgentTurnOutput;
-use crate::session::{
-    SessionManager, compact_boundary_payload, session_continued_from_compaction_payload,
+use crate::{
+    agent::AgentTurnOutput,
+    session::{
+        SessionManager, compact_boundary_payload, session_continued_from_compaction_payload,
+    },
 };
 
 struct MockLlm;

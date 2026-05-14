@@ -355,10 +355,7 @@ impl CommandHandler {
                 text,
                 reply,
             } => {
-                let _ = reply.send(
-                    self.submit_input_with_completion(session_id, text)
-                        .await,
-                );
+                let _ = reply.send(self.submit_input_with_completion(session_id, text).await);
             },
         }
     }

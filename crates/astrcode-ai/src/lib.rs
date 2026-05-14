@@ -17,8 +17,7 @@ use astrcode_core::{
     llm::{LlmClientConfig, LlmProvider},
 };
 use providers::{
-    anthropic::AnthropicProvider, google_genai::GeminiProvider,
-    openai::StandardProvider,
+    anthropic::AnthropicProvider, google_genai::GeminiProvider, openai::StandardProvider,
 };
 
 /// 根据 `provider_kind`、`base_url` 和 `model_id` 创建 LLM provider。

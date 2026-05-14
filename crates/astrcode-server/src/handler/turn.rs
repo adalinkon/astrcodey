@@ -16,9 +16,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use super::{
-    CommandHandler, CommandMessage, HandlerError,
-};
+use super::{CommandHandler, CommandMessage, HandlerError};
 use crate::{
     agent::{
         AgentLoop, AgentServices, AgentSignal, AgentTurnOutput, drive_agent,
@@ -300,10 +298,7 @@ impl CommandHandler {
     }
 
     /// 清理会话的所有后台任务。
-    pub(in crate::handler) fn cleanup_background_tasks_for_session(
-        &self,
-        session_id: &SessionId,
-    ) {
+    pub(in crate::handler) fn cleanup_background_tasks_for_session(&self, session_id: &SessionId) {
         self.runtime
             .background_tasks
             .lock()

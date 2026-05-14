@@ -3,10 +3,7 @@
 //! 传输层无关：同时被 stdio 二进制和进程内 CLI 使用。
 //! 负责将 `ClientCommand` 路由到对应的服务方法，并通过广播通道发送通知。
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use astrcode_core::{
     config::ModelSelection,
@@ -19,15 +16,11 @@ use astrcode_protocol::{
     events::{ClientNotification, SessionListItem},
 };
 use astrcode_tools::registry::ToolRegistry;
-use tokio::{
-    sync::{broadcast, mpsc},
-};
+use tokio::sync::{broadcast, mpsc};
 
-use crate::{
-    bootstrap::{
-        ServerRuntime, SystemPromptSnapshotInput, build_system_prompt_snapshot_with_files,
-        build_tool_registry_snapshot, load_system_prompt_files,
-    },
+use crate::bootstrap::{
+    ServerRuntime, SystemPromptSnapshotInput, build_system_prompt_snapshot_with_files,
+    build_tool_registry_snapshot, load_system_prompt_files,
 };
 
 mod actor;
@@ -44,7 +37,6 @@ use events::record_and_broadcast;
 #[cfg(test)]
 use snapshot::message_to_dto;
 use snapshot::session_snapshot;
-
 use turn::ActiveTurn;
 
 /// 用户输入提交结果：被接受进入 Turn，或被斜杠命令处理。
