@@ -1304,27 +1304,18 @@ async fn auth_middleware(
     }
 }
 
-fn generate_auth_token() -> String {
-    let pid = std::process::id();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-    let mut data = [0u8; 12];
-    data[..4].copy_from_slice(&pid.to_le_bytes());
-    data[4..].copy_from_slice(&now.to_le_bytes());
-    let hash = crate::bootstrap::fnv1a_hash_bytes(&data);
-    let hash2 = hash
-        .wrapping_mul(0x5851f42d4c957f2d)
-        .wrapping_add(pid as u64);
-    format!("{hash:016x}{hash2:016x}")
+fn generate_auth_token() -> Result<String, getrandom::Error> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes)?;
+
+    Ok(bytes.iter().map(|b| format!("{:02x}", b)).collect())
 }
 
 fn configured_auth_token() -> String {
     std::env::var(ASTRCODE_HTTP_TOKEN_ENV)
         .ok()
         .filter(|token| !token.trim().is_empty())
-        .unwrap_or_else(generate_auth_token)
+        .unwrap_or_else(|| generate_auth_token().expect("failed to generate auth token"))
 }
 
 fn collect_allowed_origins() -> Vec<HeaderValue> {
