@@ -10,6 +10,7 @@ use astrcode_context::manager::LlmContextAssembler;
 use astrcode_core::{
     event::{Event, EventPayload, ToolOutputStream},
     llm::LlmProvider,
+    storage::EventStore,
     types::{SessionId, ToolCallId, TurnId, new_background_task_id, new_message_id, new_turn_id},
 };
 use astrcode_extensions::{
@@ -20,8 +21,9 @@ use parking_lot::{Mutex as StdMutex, RwLock};
 use tokio::sync::{Mutex, mpsc};
 
 use super::{
-    SameSessionCompactionInput, SessionManager, agent_turn_completed_payloads,
-    agent_turn_failed_payloads, agent_turn_started_payloads, append_same_session_compaction,
+    SameSessionCompactionInput, Session,
+    agent_turn_completed_payloads, agent_turn_failed_payloads,
+    agent_turn_started_payloads, append_same_session_compaction,
 };
 use crate::{
     agent::{
@@ -40,7 +42,7 @@ use crate::{
 /// 当扩展返回 `ExtensionToolOutcome::RunSession` 时，
 /// 扩展运行器通过此派生器创建子会话并运行 Agent 回合。
 pub(crate) struct ServerSessionSpawner {
-    pub(crate) session_manager: Arc<SessionManager>,
+    pub(crate) store: Arc<dyn EventStore>,
     pub(crate) llm_provider: Arc<RwLock<Arc<dyn LlmProvider>>>,
     pub(crate) context_assembler: Arc<LlmContextAssembler>,
     pub(crate) auto_compact_failures: Arc<AutoCompactFailureTracker>,
@@ -56,8 +58,8 @@ pub(crate) struct ServerSessionSpawner {
 
 /// `prepare_child_session()` 的产出，传给 `spawn_sync` / `spawn_async`。
 struct PreparedChild {
-    parent_session_id: SessionId,
-    child_sid: SessionId,
+    parent_session: Arc<Session>,
+    child_session: Arc<Session>,
     child_turn_id: TurnId,
     child_name: String,
     user_prompt: String,
@@ -94,8 +96,6 @@ impl ServerSessionSpawner {
     }
 
     /// 共享准备阶段：创建子会话、构建 prompt、初始化 AgentLoop。
-    ///
-    /// 无论同步还是异步路径，都需要完成这些步骤。
     async fn prepare_child_session(
         &self,
         parent_session_id: &str,
@@ -109,34 +109,47 @@ impl ServerSessionSpawner {
         let model_id = match request.model_preference.clone() {
             Some(model) => model,
             None => {
-                self.session_manager
-                    .read_model(&parent_session_id)
+                let parent = Session::open(self.store.clone(), parent_session_id.clone())
+                    .await
+                    .map_err(|e| format!("open parent session: {e}"))?;
+                parent
+                    .read_model()
                     .await
                     .map_err(|e| format!("parent session {parent_session_id} not found: {e}"))?
                     .model_id
             },
         };
 
-        let create_event = self
-            .session_manager
-            .create(&request.working_dir, &model_id, Some(&parent_session_id))
-            .await
-            .map_err(|e| format!("create child session: {e}"))?;
+        let child_session = Session::create(
+            self.store.clone(),
+            &request.working_dir,
+            &model_id,
+            Some(&parent_session_id),
+        )
+        .await
+        .map_err(|e| format!("create child session: {e}"))?;
 
-        let child_sid = create_event.session_id.clone();
+        let parent_session = Arc::new(
+            Session::open(self.store.clone(), parent_session_id.clone())
+                .await
+                .map_err(|e| format!("open parent: {e}"))?,
+        );
 
-        self.session_manager
+        parent_session
             .append_event(Event::new(
                 parent_session_id.clone(),
                 None,
                 EventPayload::AgentSessionSpawned {
-                    child_session_id: child_sid.clone(),
+                    child_session_id: child_session.id().clone(),
                     agent_name: child_name.clone(),
                     task: user_prompt.clone(),
                 },
             ))
             .await
             .map_err(|e| format!("append parent spawn event: {e}"))?;
+
+        let child_sid = child_session.id().clone();
+        let child_arc = Arc::new(child_session);
 
         let child_turn_id = new_turn_id();
 
@@ -172,8 +185,7 @@ impl ServerSessionSpawner {
             .map_err(|e| format!("build child system prompt: {e}"))?;
 
         append_child_payload(
-            self.session_manager.as_ref(),
-            &child_sid,
+            child_arc.as_ref(),
             None,
             EventPayload::SystemPromptConfigured {
                 text: system_prompt.clone(),
@@ -183,9 +195,8 @@ impl ServerSessionSpawner {
         .await?;
 
         append_child_progress_payloads(
-            self.session_manager.as_ref(),
+            child_arc.as_ref(),
             &progress,
-            &child_sid,
             Some(&child_turn_id),
             agent_turn_started_payloads(new_message_id(), user_prompt.clone()),
         )
@@ -201,33 +212,25 @@ impl ServerSessionSpawner {
         let (child_bg_result_tx, mut child_bg_result_rx) =
             mpsc::unbounded_channel::<BackgroundTaskCompletion>();
 
-        let child_bg_sm = Arc::clone(&self.session_manager);
+        let child_bg_session = Arc::clone(&child_arc);
         let child_bg_progress = progress.clone();
         let child_bg_turn_id = child_turn_id.clone();
         let handle = tokio::spawn(async move {
             while let Some(completion) = child_bg_result_rx.recv().await {
-                let sid = child_bg_final_sid.lock().await.clone();
-                if let Err(e) = append_child_payload(
-                    child_bg_sm.as_ref(),
-                    &sid,
+                let _sid = child_bg_final_sid.lock().await.clone();
+                let _ = append_child_payload(
+                    child_bg_session.as_ref(),
                     Some(&child_bg_turn_id),
                     completion.to_tool_call_completed(),
                 )
-                .await
-                {
-                    tracing::warn!(session_id = %sid, error = %e, "failed to persist ToolCallCompleted for background task");
-                }
+                .await;
                 let bg_event = completion.to_background_task_completed();
-                if let Err(e) = append_child_payload(
-                    child_bg_sm.as_ref(),
-                    &sid,
+                let _ = append_child_payload(
+                    child_bg_session.as_ref(),
                     Some(&child_bg_turn_id),
                     bg_event.clone(),
                 )
-                .await
-                {
-                    tracing::warn!(session_id = %sid, error = %e, "failed to persist BackgroundTaskCompleted");
-                }
+                .await;
                 child_bg_progress.forward(&bg_event);
             }
         });
@@ -247,7 +250,7 @@ impl ServerSessionSpawner {
                 tool_registry: Arc::clone(&tool_registry),
                 extension_runner: Arc::clone(&self.extension_runner),
                 context_assembler: Arc::clone(&self.context_assembler),
-                session_manager: Arc::clone(&self.session_manager),
+                session: Arc::clone(&child_arc),
                 auto_compact_failures: Arc::clone(&self.auto_compact_failures),
                 background_result_tx: Some(child_bg_result_tx),
                 background_tasks: Arc::clone(&self.background_tasks),
@@ -256,8 +259,8 @@ impl ServerSessionSpawner {
         );
 
         Ok(PreparedChild {
-            parent_session_id,
-            child_sid,
+            parent_session,
+            child_session: child_arc,
             child_turn_id,
             child_name,
             user_prompt,
@@ -275,8 +278,8 @@ impl ServerSessionSpawner {
     /// 阻塞等待子 Agent 完成并返回结果。
     async fn spawn_sync(&self, p: PreparedChild) -> Result<SpawnResult, String> {
         let PreparedChild {
-            parent_session_id,
-            child_sid,
+            parent_session,
+            child_session,
             child_turn_id,
             user_prompt,
             system_prompt,
@@ -289,7 +292,7 @@ impl ServerSessionSpawner {
         let (output, emitted_error, final_child_sid) = drive_child_agent_turn(
             &agent,
             &user_prompt,
-            Arc::clone(&self.session_manager),
+            Arc::clone(&child_session),
             current_child_sid,
             child_turn_id.clone(),
             progress.clone(),
@@ -300,19 +303,18 @@ impl ServerSessionSpawner {
         match output {
             Ok(output) => {
                 append_child_progress_payloads(
-                    self.session_manager.as_ref(),
+                    child_session.as_ref(),
                     &progress,
-                    &final_child_sid,
                     Some(&child_turn_id),
                     agent_turn_completed_payloads(output.finish_reason.clone()),
                 )
                 .await?;
-                self.session_manager
+                parent_session
                     .append_event(Event::new(
-                        parent_session_id,
+                        parent_session.id().clone(),
                         None,
                         EventPayload::AgentSessionCompleted {
-                            child_session_id: child_sid.clone(),
+                            child_session_id: child_session.id().clone(),
                             final_session_id: final_child_sid.clone(),
                             summary: one_line_summary(&output.text),
                         },
@@ -327,9 +329,8 @@ impl ServerSessionSpawner {
             },
             Err(e) => {
                 append_child_progress_payloads(
-                    self.session_manager.as_ref(),
+                    child_session.as_ref(),
                     &progress,
-                    &final_child_sid,
                     Some(&child_turn_id),
                     agent_turn_failed_payloads(
                         (!emitted_error).then(|| e.to_string()),
@@ -341,12 +342,12 @@ impl ServerSessionSpawner {
                     ToolOutputStream::Stderr,
                     format!("child agent error: {e}\n"),
                 );
-                self.session_manager
+                parent_session
                     .append_event(Event::new(
-                        parent_session_id,
+                        parent_session.id().clone(),
                         None,
                         EventPayload::AgentSessionFailed {
-                            child_session_id: child_sid.clone(),
+                            child_session_id: child_session.id().clone(),
                             final_session_id: final_child_sid.clone(),
                             error: e.to_string(),
                         },
@@ -367,8 +368,8 @@ impl ServerSessionSpawner {
     /// 启动子 Agent 后立即返回占位结果，Agent 在后台完成。
     async fn spawn_async(&self, p: PreparedChild) -> Result<SpawnResult, String> {
         let PreparedChild {
-            parent_session_id,
-            child_sid,
+            parent_session,
+            child_session,
             child_turn_id,
             child_name,
             user_prompt,
@@ -383,26 +384,27 @@ impl ServerSessionSpawner {
         let task_id = new_background_task_id();
         let task_id_str = task_id.to_string();
 
-        let parent_sid = parent_session_id.clone();
-        let parent_sm = Arc::clone(&self.session_manager);
+        let parent_sid = parent_session.id().clone();
+        let register_sid = parent_sid.clone();
+        let parent_arc = parent_session;
         let watcher_bg_tasks = Arc::clone(&self.background_tasks);
         let watcher_task_id = task_id.clone();
         let watcher_progress = progress.clone();
         let tool_call_id_for_result = tool_call_id.clone();
         let cti_for_completion = child_turn_id.clone();
-        let drive_session_manager = Arc::clone(&self.session_manager);
+        let drive_session = Arc::clone(&child_session);
         let drive_current_child_sid = Arc::clone(&current_child_sid);
         let drive_child_turn_id = child_turn_id.clone();
         let drive_progress = progress.clone();
         let drive_system_prompt = system_prompt.clone();
-        let async_child_sid = child_sid.clone();
-        let return_child_sid = child_sid.clone();
+        let async_child_sid = child_session.id().clone();
+        let return_child_sid = child_session.id().clone();
 
         let agent_handle = tokio::spawn(async move {
             let (output, emitted_error, final_child_sid) = drive_child_agent_turn(
                 &agent,
                 &user_prompt,
-                drive_session_manager,
+                drive_session,
                 drive_current_child_sid,
                 drive_child_turn_id,
                 drive_progress,
@@ -413,14 +415,13 @@ impl ServerSessionSpawner {
             let result_content = match &output {
                 Ok(o) => {
                     let _ = append_child_progress_payloads(
-                        parent_sm.as_ref(),
+                        parent_arc.as_ref(),
                         &watcher_progress,
-                        &final_child_sid,
                         Some(&cti_for_completion),
                         agent_turn_completed_payloads(o.finish_reason.clone()),
                     )
                     .await;
-                    let _ = parent_sm
+                    let _ = parent_arc
                         .append_event(Event::new(
                             parent_sid.clone(),
                             None,
@@ -435,9 +436,8 @@ impl ServerSessionSpawner {
                 },
                 Err(e) => {
                     let _ = append_child_progress_payloads(
-                        parent_sm.as_ref(),
+                        parent_arc.as_ref(),
                         &watcher_progress,
-                        &final_child_sid,
                         Some(&cti_for_completion),
                         agent_turn_failed_payloads(
                             (!emitted_error).then(|| e.to_string()),
@@ -449,7 +449,7 @@ impl ServerSessionSpawner {
                         ToolOutputStream::Stderr,
                         format!("child agent error: {e}\n"),
                     );
-                    let _ = parent_sm
+                    let _ = parent_arc
                         .append_event(Event::new(
                             parent_sid.clone(),
                             None,
@@ -479,7 +479,7 @@ impl ServerSessionSpawner {
                     metadata: meta,
                     duration_ms: None,
                 };
-                let _ = parent_sm
+                let _ = parent_arc
                     .append_event(Event::new(
                         parent_sid.clone(),
                         None,
@@ -500,7 +500,7 @@ impl ServerSessionSpawner {
         let dummy_watcher = tokio::spawn(async {});
         self.background_tasks.lock().register(
             task_id.clone(),
-            parent_session_id,
+            register_sid,
             agent_handle,
             dummy_watcher,
         );
@@ -528,7 +528,7 @@ impl ServerSessionSpawner {
 async fn drive_child_agent_turn(
     agent: &AgentLoop,
     user_prompt: &str,
-    session_manager: Arc<SessionManager>,
+    child_session: Arc<Session>,
     current_child_sid: Arc<Mutex<SessionId>>,
     child_turn_id: TurnId,
     progress: ProgressTx,
@@ -536,7 +536,7 @@ async fn drive_child_agent_turn(
 ) -> (Result<AgentTurnOutput, AgentError>, bool, SessionId) {
     let signal_child_sid = Arc::clone(&current_child_sid);
     let (output, emitted_error) = drive_agent(agent, user_prompt, Vec::new(), move |signal| {
-        let session_manager = Arc::clone(&session_manager);
+        let child_session = Arc::clone(&child_session);
         let current_child_sid = Arc::clone(&signal_child_sid);
         let child_turn_id = child_turn_id.clone();
         let progress = progress.clone();
@@ -544,11 +544,10 @@ async fn drive_child_agent_turn(
         async move {
             match signal {
                 AgentSignal::Event(payload) => {
-                    let sid = current_child_sid.lock().await.clone();
+                    let _sid = current_child_sid.lock().await.clone();
                     let _ = append_child_progress_payload(
-                        &session_manager,
+                        &child_session,
                         &progress,
-                        &sid,
                         Some(&child_turn_id),
                         payload.clone(),
                     )
@@ -561,7 +560,7 @@ async fn drive_child_agent_turn(
                 } => {
                     let parent_sid = current_child_sid.lock().await.clone();
                     let result = append_same_session_compaction(
-                        &session_manager,
+                        &child_session,
                         SameSessionCompactionInput {
                             session_id: parent_sid.clone(),
                             system_prompt_fingerprint: prompt_fingerprint(&system_prompt),
@@ -626,15 +625,14 @@ impl ProgressTx {
 // ─── 子会话事件持久化 ──────────────────────────────────────────────────
 
 async fn append_child_payload(
-    session_manager: &SessionManager,
-    child_sid: &SessionId,
+    session: &Session,
     child_turn_id: Option<&TurnId>,
     payload: EventPayload,
 ) -> Result<(), String> {
     if payload.is_durable() {
-        session_manager
+        session
             .append_event(Event::new(
-                child_sid.clone(),
+                session.id().clone(),
                 child_turn_id.cloned(),
                 payload,
             ))
@@ -645,23 +643,21 @@ async fn append_child_payload(
 }
 
 async fn append_child_progress_payload(
-    session_manager: &SessionManager,
+    session: &Session,
     progress: &ProgressTx,
-    child_sid: &SessionId,
     child_turn_id: Option<&TurnId>,
     payload: EventPayload,
 ) -> Result<(), String> {
     progress.forward(&payload);
     if payload.is_durable() {
-        append_child_payload(session_manager, child_sid, child_turn_id, payload).await?;
+        append_child_payload(session, child_turn_id, payload).await?;
     }
     Ok(())
 }
 
 async fn append_child_progress_payloads<I>(
-    session_manager: &SessionManager,
+    session: &Session,
     progress: &ProgressTx,
-    child_sid: &SessionId,
     child_turn_id: Option<&TurnId>,
     payloads: I,
 ) -> Result<(), String>
@@ -669,8 +665,7 @@ where
     I: IntoIterator<Item = EventPayload>,
 {
     for payload in payloads {
-        append_child_progress_payload(session_manager, progress, child_sid, child_turn_id, payload)
-            .await?;
+        append_child_progress_payload(session, progress, child_turn_id, payload).await?;
     }
     Ok(())
 }
@@ -755,6 +750,7 @@ mod tests {
     use astrcode_context::manager::LlmContextAssembler;
     use astrcode_core::{
         llm::{LlmError, LlmEvent, LlmMessage, LlmProvider, ModelLimits},
+        storage::EventStore,
         tool::ToolDefinition,
     };
     use astrcode_extensions::{
@@ -805,8 +801,6 @@ mod tests {
             _messages: Vec<LlmMessage>,
             _tools: Vec<ToolDefinition>,
         ) -> Result<mpsc::UnboundedReceiver<LlmEvent>, LlmError> {
-            // Call 0 asks for a missing tool (tool execution fails, growing
-            // messages); call 1 returns the final text.
             let call = self.call_count.fetch_add(1, Ordering::SeqCst);
             let (tx, rx) = mpsc::unbounded_channel();
             match call {
@@ -841,7 +835,7 @@ mod tests {
     }
 
     fn test_spawner(
-        session_manager: Arc<SessionManager>,
+        store: Arc<dyn EventStore>,
         llm: Arc<ToolThenTextLlm>,
     ) -> ServerSessionSpawner {
         let settings = astrcode_context::ContextSettings {
@@ -850,7 +844,7 @@ mod tests {
         };
         let llm_provider: Arc<dyn LlmProvider> = llm;
         ServerSessionSpawner {
-            session_manager,
+            store,
             llm_provider: Arc::new(RwLock::new(llm_provider)),
             context_assembler: Arc::new(LlmContextAssembler::new(settings)),
             auto_compact_failures: Arc::new(AutoCompactFailureTracker::default()),
@@ -863,17 +857,19 @@ mod tests {
 
     #[tokio::test]
     async fn spawned_session_runs_agent_loop_and_records_events() {
-        let session_manager = Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new())));
-        let parent = session_manager.create(".", "mock", None).await.unwrap();
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
+        let parent = Session::create(store.clone(), ".", "mock", None)
+            .await
+            .unwrap();
         let llm = Arc::new(ToolThenTextLlm {
             call_count: AtomicUsize::new(0),
         });
-        let spawner = test_spawner(Arc::clone(&session_manager), Arc::clone(&llm));
+        let spawner = test_spawner(Arc::clone(&store), Arc::clone(&llm));
         let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
 
         let result = spawner
             .spawn(
-                parent.session_id.as_str(),
+                parent.id().as_str(),
                 SpawnRequest {
                     name: "nested".into(),
                     system_prompt: "nested extra prompt".into(),
@@ -892,7 +888,10 @@ mod tests {
         assert_eq!(result.content, "leaf ok");
         assert!(llm.call_count.load(Ordering::SeqCst) >= 2);
 
-        let child = session_manager.read_model(&child_session_id).await.unwrap();
+        let child_session = Session::open(store.clone(), child_session_id.clone())
+            .await
+            .unwrap();
+        let child = child_session.read_model().await.unwrap();
         assert!(
             child.messages.iter().any(|message| {
                 message
@@ -904,10 +903,7 @@ mod tests {
         );
 
         // 父 session 应记录派生的子 Agent
-        let parent_model = session_manager
-            .read_model(&parent.session_id)
-            .await
-            .unwrap();
+        let parent_model = parent.read_model().await.unwrap();
         assert_eq!(parent_model.agent_sessions.len(), 1);
         assert_eq!(parent_model.agent_sessions[0].agent_name, "nested");
         assert_eq!(parent_model.agent_sessions[0].task, "current nested prompt");
@@ -915,12 +911,14 @@ mod tests {
 
     #[tokio::test]
     async fn spawned_session_uses_latest_llm_provider() {
-        let session_manager = Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new())));
-        let parent = session_manager.create(".", "mock", None).await.unwrap();
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
+        let parent = Session::create(store.clone(), ".", "mock", None)
+            .await
+            .unwrap();
         let initial_provider: Arc<dyn LlmProvider> = Arc::new(StaticTextLlm { text: "old" });
         let llm_provider = Arc::new(RwLock::new(initial_provider));
         let spawner = ServerSessionSpawner {
-            session_manager,
+            store,
             llm_provider: Arc::clone(&llm_provider),
             context_assembler: Arc::new(LlmContextAssembler::new(Default::default())),
             auto_compact_failures: Arc::new(AutoCompactFailureTracker::default()),
@@ -933,7 +931,7 @@ mod tests {
 
         let result = spawner
             .spawn(
-                parent.session_id.as_str(),
+                parent.id().as_str(),
                 SpawnRequest {
                     name: "nested".into(),
                     system_prompt: "nested extra prompt".into(),
@@ -953,15 +951,17 @@ mod tests {
 
     #[tokio::test]
     async fn async_spawn_returns_immediately_with_background_task_id() {
-        let session_manager = Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new())));
-        let parent = session_manager.create(".", "mock", None).await.unwrap();
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
+        let parent = Session::create(store.clone(), ".", "mock", None)
+            .await
+            .unwrap();
         let llm = Arc::new(StaticTextLlm {
             text: "async result",
         });
         let llm_provider: Arc<dyn LlmProvider> = llm;
         let background_tasks: Arc<StdMutex<BackgroundTaskManager>> = Default::default();
         let spawner = ServerSessionSpawner {
-            session_manager: Arc::clone(&session_manager),
+            store: Arc::clone(&store),
             llm_provider: Arc::new(RwLock::new(llm_provider)),
             context_assembler: Arc::new(LlmContextAssembler::new(Default::default())),
             auto_compact_failures: Arc::new(AutoCompactFailureTracker::default()),
@@ -973,7 +973,7 @@ mod tests {
 
         let result = spawner
             .spawn(
-                parent.session_id.as_str(),
+                parent.id().as_str(),
                 SpawnRequest {
                     name: "async-agent".into(),
                     system_prompt: "do work".into(),
@@ -1006,12 +1006,15 @@ mod tests {
         // 后台任务应已完成
         {
             let bg = background_tasks.lock();
-            let active = bg.list_active(&parent.session_id);
+            let active = bg.list_active(parent.id());
             assert!(active.is_empty(), "background task should be cleaned up");
         }
 
         // 子会话应存在
-        let child = session_manager.read_model(&child_sid).await.unwrap();
+        let child_session = Session::open(store.clone(), child_sid.clone())
+            .await
+            .unwrap();
+        let child = child_session.read_model().await.unwrap();
         assert!(
             child.messages.iter().any(|message| {
                 message
@@ -1023,10 +1026,7 @@ mod tests {
         );
 
         // 父会话应有 AgentSessionCompleted 事件
-        let parent_model = session_manager
-            .read_model(&parent.session_id)
-            .await
-            .unwrap();
+        let parent_model = parent.read_model().await.unwrap();
         assert_eq!(parent_model.agent_sessions.len(), 1);
         assert_eq!(
             parent_model.agent_sessions[0].status,

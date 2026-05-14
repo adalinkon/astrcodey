@@ -16,7 +16,8 @@ use astrcode_protocol::{
         PromptSubmitResponse, SlashCommandListResponseDto,
     },
 };
-use astrcode_server::{bootstrap::ServerRuntime, http::router, session::SessionManager};
+use astrcode_server::{bootstrap::ServerRuntime, http::router, session::Session};
+use astrcode_core::storage::EventStore;
 use astrcode_storage::in_memory::InMemoryEventStore;
 use axum::{
     Router,
@@ -183,12 +184,10 @@ async fn concurrent_prompt_accepts_one_and_conflicts_one() {
 #[tokio::test]
 async fn sse_receiver_lag_emits_rehydrate_and_closes() {
     let runtime = runtime(Arc::new(ImmediateLlm));
-    let start = runtime
-        .session_manager
-        .create(".", "mock-model", None)
+    let session = Session::create(runtime.event_store.clone(), ".", "mock-model", None)
         .await
         .unwrap();
-    let session_id = start.session_id.clone();
+    let session_id = session.id().clone();
     let (event_tx, _) = broadcast::channel(1);
     let (app, token) = router(Arc::clone(&runtime), event_tx.clone());
 
@@ -206,7 +205,7 @@ async fn sse_receiver_lag_emits_rehydrate_and_closes() {
 
     for text in ["one", "two", "three"] {
         let event = runtime
-            .session_manager
+            .event_store
             .append_event(Event::new(
                 session_id.clone(),
                 None,
@@ -328,7 +327,7 @@ async fn stream_replays_events_after_snapshot_cursor() {
     let sid = SessionId::from(session_id.clone());
 
     runtime
-        .session_manager
+        .event_store
         .append_event(Event::new(
             sid.clone(),
             None,
@@ -349,7 +348,7 @@ async fn stream_replays_events_after_snapshot_cursor() {
     assert_eq!(snapshot.blocks.len(), 1);
 
     runtime
-        .session_manager
+        .event_store
         .append_event(Event::new(
             sid,
             None,
@@ -361,7 +360,7 @@ async fn stream_replays_events_after_snapshot_cursor() {
         .await
         .unwrap();
     runtime
-        .session_manager
+        .event_store
         .append_event(Event::new(
             SessionId::from(session_id.clone()),
             None,
@@ -451,7 +450,7 @@ async fn prompt_route_compact_returns_handled_and_streams_continuation() {
 
     for text in ["one", "two", "three"] {
         runtime
-            .session_manager
+            .event_store
             .append_event(Event::new(
                 sid.clone(),
                 None,
@@ -463,7 +462,7 @@ async fn prompt_route_compact_returns_handled_and_streams_continuation() {
             .await
             .unwrap();
         runtime
-            .session_manager
+            .event_store
             .append_event(Event::new(
                 sid.clone(),
                 None,
@@ -505,8 +504,8 @@ async fn prompt_route_compact_returns_handled_and_streams_continuation() {
     assert!(sse.contains("sessionContinued"));
     assert!(
         !runtime
-            .session_manager
-            .read_model(&sid)
+            .event_store
+            .session_read_model(&sid)
             .await
             .unwrap()
             .messages
@@ -528,7 +527,7 @@ async fn compact_route_returns_same_session_and_hydrates_post_compact_context() 
     fs::write(read_fixture, "pub fn compact_restore_fixture() {}").unwrap();
 
     runtime
-        .session_manager
+        .event_store
         .append_event(Event::new(
             sid.clone(),
             None,
@@ -541,7 +540,7 @@ async fn compact_route_returns_same_session_and_hydrates_post_compact_context() 
         .await
         .unwrap();
     runtime
-        .session_manager
+        .event_store
         .append_event(Event::new(
             sid.clone(),
             None,
@@ -563,7 +562,7 @@ async fn compact_route_returns_same_session_and_hydrates_post_compact_context() 
 
     for text in ["one", "two", "three"] {
         runtime
-            .session_manager
+            .event_store
             .append_event(Event::new(
                 sid.clone(),
                 None,
@@ -575,7 +574,7 @@ async fn compact_route_returns_same_session_and_hydrates_post_compact_context() 
             .await
             .unwrap();
         runtime
-            .session_manager
+            .event_store
             .append_event(Event::new(
                 sid.clone(),
                 None,
@@ -618,7 +617,7 @@ async fn compact_route_returns_same_session_and_hydrates_post_compact_context() 
     let sse = read_sse_until(stream_response.into_body(), "sessionContinued").await;
     assert!(sse.contains(&session_id));
 
-    let state = runtime.session_manager.read_model(&sid).await.unwrap();
+    let state = runtime.event_store.session_read_model(&sid).await.unwrap();
     assert!(!state.context_messages.is_empty());
     let restored_context = state
         .context_messages
@@ -719,7 +718,7 @@ async fn read_sse_until(mut body: Body, needle: &str) -> String {
 
 fn runtime(llm_provider: Arc<dyn LlmProvider>) -> Arc<ServerRuntime> {
     Arc::new(ServerRuntime {
-        session_manager: Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new()))),
+        event_store: Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>,
         llm_provider: Arc::new(parking_lot::RwLock::new(llm_provider)),
         context_assembler: Arc::new(LlmContextAssembler::new(ContextSettings::default())),
         auto_compact_failures: Arc::new(

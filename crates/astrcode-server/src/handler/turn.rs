@@ -23,9 +23,7 @@ use crate::{
         tool_types::BackgroundTaskCompletion,
     },
     bootstrap::ServerRuntime,
-    session::{
-        agent_turn_completed_payloads, agent_turn_failed_payloads, agent_turn_started_payloads,
-    },
+    session::{Session, agent_turn_completed_payloads, agent_turn_failed_payloads, agent_turn_started_payloads},
 };
 
 /// Agent Turn 的输入参数，用于启动后台任务。
@@ -108,19 +106,20 @@ impl CommandHandler {
         }
 
         // 恢复会话并修复可能的遗留状态
-        self.runtime
-            .session_manager
-            .resume(&sid)
-            .await
-            .map_err(|e| HandlerError::SessionNotFound(format!("Session {sid} not found: {e}")))?;
+        {
+            let store = self.runtime.event_store.clone();
+            Session::open(store, sid.clone())
+                .await
+                .map_err(|e| HandlerError::SessionNotFound(format!("Session {sid} not found: {e}")))?;
+        }
         self.repair_stale_pending_tool_calls(&sid)
             .await
             .map_err(HandlerError::Other)?;
         // 读取会话状态
         let state = self
             .runtime
-            .session_manager
-            .read_model(&sid)
+            .event_store
+            .session_read_model(&sid)
             .await
             .map_err(|e| HandlerError::Other(format!("read session {sid}: {e}")))?;
         let history = state.provider_messages();
@@ -321,8 +320,8 @@ impl CommandHandler {
 
         let state = self
             .runtime
-            .session_manager
-            .read_model(session_id)
+            .event_store
+            .session_read_model(session_id)
             .await
             .map_err(|e| format!("read session {session_id}: {e}"))?;
         // 仅处理 CallingTool 阶段且有待处理调用的会话
@@ -437,6 +436,9 @@ async fn run_agent_turn_task(runtime: Arc<ServerRuntime>, input: AgentTurnInput)
         .unwrap_or(system_prompt);
 
     // 组装 AgentLoop
+    let session = Session::open(runtime.event_store.clone(), sid.clone())
+        .await
+        .expect("session should be openable at agent turn start");
     let agent = AgentLoop::new(
         sid.clone(),
         working_dir,
@@ -447,7 +449,7 @@ async fn run_agent_turn_task(runtime: Arc<ServerRuntime>, input: AgentTurnInput)
             tool_registry,
             extension_runner: runtime.extension_runner.clone(),
             context_assembler: runtime.context_assembler.clone(),
-            session_manager: runtime.session_manager.clone(),
+            session: Arc::new(session),
             auto_compact_failures: runtime.auto_compact_failures.clone(),
             background_result_tx: Some(background_result_tx),
             background_tasks: runtime.background_tasks.clone(),

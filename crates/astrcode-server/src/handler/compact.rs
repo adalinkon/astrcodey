@@ -19,7 +19,7 @@ use crate::{
         post_compact::enrich_post_compact_context,
     },
     bootstrap::prompt_fingerprint,
-    session::{SameSessionCompactionInput, append_same_session_compaction},
+    session::{Session, SameSessionCompactionInput, append_same_session_compaction},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,10 +57,12 @@ impl CommandHandler {
             return Err(HandlerError::CompactBlocked);
         }
 
-        let state = self
-            .runtime
-            .session_manager
-            .read_model(sid)
+        let session = Session::open(self.runtime.event_store.clone(), sid.clone())
+            .await
+            .map_err(|e| HandlerError::Other(format!("open session {sid}: {e}")))?;
+
+        let state = session
+            .read_model()
             .await
             .map_err(|e| HandlerError::Other(format!("read session {sid}: {e}")))?;
         let tool_registry = self.ensure_tool_registry(sid, &state.working_dir).await;
@@ -80,19 +82,14 @@ impl CommandHandler {
                     return Err(HandlerError::Other(format!("Compaction failed: {error}")));
                 },
             };
-        let snapshot_path = match self
-            .runtime
-            .session_manager
-            .write_compact_snapshot(
-                sid,
-                CompactSnapshotInput {
-                    trigger: compact_trigger_name(CompactTrigger::ManualCommand).into(),
-                    model_id: state.model_id.clone(),
-                    working_dir: state.working_dir.clone(),
-                    system_prompt: state.system_prompt.clone(),
-                    provider_messages: provider_messages.clone(),
-                },
-            )
+        let snapshot_path = match session
+            .write_compact_snapshot(CompactSnapshotInput {
+                trigger: compact_trigger_name(CompactTrigger::ManualCommand).into(),
+                model_id: state.model_id.clone(),
+                working_dir: state.working_dir.clone(),
+                system_prompt: state.system_prompt.clone(),
+                provider_messages: provider_messages.clone(),
+            })
             .await
         {
             Ok(path) => path,
@@ -155,7 +152,7 @@ impl CommandHandler {
             .map_err(HandlerError::Other)?;
 
         let events = append_same_session_compaction(
-            &self.runtime.session_manager,
+            &session,
             SameSessionCompactionInput {
                 session_id: sid.clone(),
                 system_prompt_fingerprint: prompt_fingerprint(&system_prompt),
@@ -171,10 +168,8 @@ impl CommandHandler {
             let _ = self.event_tx.send(ClientNotification::Event(event));
         }
 
-        let state = self
-            .runtime
-            .session_manager
-            .read_model(sid)
+        let state = session
+            .read_model()
             .await
             .map_err(|e| HandlerError::Other(format!("read session {sid}: {e}")))?;
         let _ = self.event_tx.send(ClientNotification::SessionResumed {
@@ -203,9 +198,13 @@ impl CommandHandler {
         }
         let system_prompt = active_turn.system_prompt.clone();
 
+        let session = Session::open(self.runtime.event_store.clone(), session_id.clone())
+            .await
+            .map_err(|e| HandlerError::Other(format!("open session: {e}")))?;
+
         // Auto compact 的 CompactionStarted 已由 agent loop 发出，不再重复。
         let events = append_same_session_compaction(
-            &self.runtime.session_manager,
+            &session,
             SameSessionCompactionInput {
                 session_id: session_id.clone(),
                 system_prompt_fingerprint: prompt_fingerprint(&system_prompt),
@@ -221,10 +220,8 @@ impl CommandHandler {
             let _ = self.event_tx.send(ClientNotification::Event(event));
         }
 
-        let state = self
-            .runtime
-            .session_manager
-            .read_model(&session_id)
+        let state = session
+            .read_model()
             .await
             .map_err(|e| HandlerError::Other(format!("read session {session_id}: {e}")))?;
         let _ = self.event_tx.send(ClientNotification::SessionResumed {

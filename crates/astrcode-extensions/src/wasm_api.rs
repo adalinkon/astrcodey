@@ -96,6 +96,12 @@ impl HostState {
     }
 }
 
+impl Default for HostState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ─── Memory helpers ─────────────────────────────────────────────────────
 
 fn read_memory_string(caller: &mut Caller<'_, HostState>, ptr: u32, len: u32) -> String {

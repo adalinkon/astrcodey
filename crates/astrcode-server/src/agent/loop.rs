@@ -72,7 +72,7 @@ enum StreamOutcome {
         message_started: bool,
     },
 }
-use crate::{agent::AutoCompactFailureTracker, session::SessionManager};
+use crate::{agent::AutoCompactFailureTracker, session::Session};
 
 /// 运行 agent 的一次 process_prompt，通过 select! + drain 实时处理事件。
 ///
@@ -136,7 +136,7 @@ pub struct AgentLoop {
     extension_runner: Arc<ExtensionRunner>,
     tools: ToolPipeline,
     context_assembler: Arc<LlmContextAssembler>,
-    session_manager: Arc<SessionManager>,
+    session_manager: Arc<Session>,
     auto_compact_failures: Arc<AutoCompactFailureTracker>,
 }
 
@@ -146,7 +146,7 @@ pub struct AgentServices {
     pub tool_registry: Arc<ToolRegistry>,
     pub extension_runner: Arc<ExtensionRunner>,
     pub context_assembler: Arc<LlmContextAssembler>,
-    pub session_manager: Arc<SessionManager>,
+    pub session: Arc<Session>,
     pub auto_compact_failures: Arc<AutoCompactFailureTracker>,
     pub background_result_tx: Option<mpsc::UnboundedSender<BackgroundTaskCompletion>>,
     pub background_tasks: Arc<parking_lot::Mutex<super::background::BackgroundTaskManager>>,
@@ -351,7 +351,7 @@ impl AgentLoop {
             shared.clone(),
             services.tool_registry,
             services.extension_runner.clone(),
-            services.session_manager.clone(),
+            services.session.clone(),
             capabilities,
         );
         Self {
@@ -361,7 +361,7 @@ impl AgentLoop {
             extension_runner: services.extension_runner,
             tools,
             context_assembler: services.context_assembler,
-            session_manager: services.session_manager,
+            session_manager: services.session,
             auto_compact_failures: services.auto_compact_failures,
         }
     }
@@ -792,7 +792,7 @@ impl AgentLoop {
         };
         match self
             .session_manager
-            .write_compact_snapshot(&self.shared.session_id, snapshot)
+            .write_compact_snapshot(snapshot)
             .await
         {
             Ok(path) => path,

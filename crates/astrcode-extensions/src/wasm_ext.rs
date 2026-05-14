@@ -45,7 +45,7 @@ fn call_guest(
     let mut guard = inner.lock();
     let request_bytes = request_json.as_bytes();
 
-    let memory = guard.memory.clone();
+    let memory = guard.memory;
     let alloc_fn = guard.alloc_fn.clone();
 
     let (ptr, len) = wasm_api::write_to_guest(

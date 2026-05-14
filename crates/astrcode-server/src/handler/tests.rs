@@ -14,6 +14,7 @@ use astrcode_core::{
         HookMode, HookResult, LifecycleContext, Registrar, SlashCommand,
     },
     llm::{LlmContent, LlmError, LlmEvent, LlmMessage, LlmProvider, LlmRole, ModelLimits},
+    storage::EventStore,
     tool::ToolDefinition,
     types::{SessionId, ToolCallId},
 };
@@ -24,9 +25,7 @@ use tokio::sync::mpsc;
 use super::*;
 use crate::{
     agent::AgentTurnOutput,
-    session::{
-        SessionManager, compact_boundary_payload, session_continued_from_compaction_payload,
-    },
+    session::{Session, compact_boundary_payload, session_continued_from_compaction_payload},
 };
 
 struct MockLlm;
@@ -240,7 +239,7 @@ fn test_runtime_with_settings(
     context_settings: astrcode_context::ContextSettings,
 ) -> Arc<ServerRuntime> {
     Arc::new(ServerRuntime {
-        session_manager: Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new()))),
+        event_store: Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>,
         llm_provider: Arc::new(parking_lot::RwLock::new(llm_provider)),
         context_assembler: Arc::new(LlmContextAssembler::new(context_settings.clone())),
         auto_compact_failures: Arc::new(crate::agent::AutoCompactFailureTracker::default()),
@@ -423,16 +422,14 @@ fn compact_payload_helpers_split_projection_and_audit_fields() {
 #[tokio::test]
 async fn record_and_broadcast_updates_projection_before_broadcast() {
     let runtime = test_runtime();
-    let start_event = runtime
-        .session_manager
-        .create(".", "mock-model", None)
+    let session = Session::create(runtime.event_store.clone(), ".", "mock-model", None)
         .await
         .unwrap();
-    let sid = start_event.session_id.clone();
+    let sid = session.id().clone();
     let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(64);
 
     record_and_broadcast(
-        &runtime,
+        &runtime.event_store,
         &event_tx,
         &sid,
         None,
@@ -449,7 +446,7 @@ async fn record_and_broadcast_updates_projection_before_broadcast() {
     };
     assert!(event.seq.is_some());
 
-    let model = runtime.session_manager.read_model(&sid).await.unwrap();
+    let model = runtime.event_store.session_read_model(&sid).await.unwrap();
     assert_eq!(model.system_prompt.as_deref(), Some("ordered prompt"));
 }
 
@@ -473,7 +470,7 @@ async fn create_session_configures_system_prompt() {
     }
     assert!(saw_configured);
 
-    let state = runtime.session_manager.read_model(&sid).await.unwrap();
+    let state = runtime.event_store.session_read_model(&sid).await.unwrap();
     assert!(
         state
             .system_prompt
@@ -519,7 +516,7 @@ async fn submit_prompt_reuses_session_system_prompt() {
 
     let sid = handler.create_session(".".into()).await.unwrap();
     let initial_prompt = {
-        let state = runtime.session_manager.read_model(&sid).await.unwrap();
+        let state = runtime.event_store.session_read_model(&sid).await.unwrap();
         state.system_prompt.clone()
     };
 
@@ -535,19 +532,17 @@ async fn submit_prompt_reuses_session_system_prompt() {
         .unwrap();
     assert_eq!(wait_for_turn_completed(&mut event_rx).await, "stop");
 
-    let state = runtime.session_manager.read_model(&sid).await.unwrap();
+    let state = runtime.event_store.session_read_model(&sid).await.unwrap();
     assert_eq!(state.system_prompt, initial_prompt);
 }
 
 #[tokio::test]
 async fn submit_prompt_configures_missing_session_system_prompt() {
     let runtime = test_runtime();
-    let start_event = runtime
-        .session_manager
-        .create(".", "mock-model", None)
+    let session = Session::create(runtime.event_store.clone(), ".", "mock-model", None)
         .await
         .unwrap();
-    let sid = start_event.session_id.clone();
+    let sid = session.id().clone();
     let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(128);
     let handler = CommandHandler::spawn_actor(Arc::clone(&runtime), event_tx);
 
@@ -557,7 +552,7 @@ async fn submit_prompt_configures_missing_session_system_prompt() {
         .unwrap();
     assert_eq!(wait_for_turn_completed(&mut event_rx).await, "stop");
 
-    let state = runtime.session_manager.read_model(&sid).await.unwrap();
+    let state = runtime.event_store.session_read_model(&sid).await.unwrap();
     assert!(
         state
             .system_prompt
@@ -594,14 +589,12 @@ async fn submit_prompt_uses_one_turn_id_for_turn_events() {
 #[tokio::test]
 async fn stale_pending_tool_calls_are_repaired_on_explicit_repair() {
     let runtime = test_runtime();
-    let start = runtime
-        .session_manager
-        .create(".", "mock", None)
+    let session = Session::create(runtime.event_store.clone(), ".", "mock", None)
         .await
         .unwrap();
-    let sid = start.session_id.clone();
+    let sid = session.id().clone();
     runtime
-        .session_manager
+        .event_store
         .append_event(Event::new(
             sid.clone(),
             Some("stale-turn".into()),
@@ -613,7 +606,7 @@ async fn stale_pending_tool_calls_are_repaired_on_explicit_repair() {
         ))
         .await
         .unwrap();
-    let stale_state = runtime.session_manager.read_model(&sid).await.unwrap();
+    let stale_state = runtime.event_store.session_read_model(&sid).await.unwrap();
     assert_eq!(stale_state.phase, Phase::CallingTool);
     assert!(
         stale_state
@@ -627,7 +620,7 @@ async fn stale_pending_tool_calls_are_repaired_on_explicit_repair() {
 
     handler.repair_stale_pending_tool_calls(&sid).await.unwrap();
 
-    let state = runtime.session_manager.read_model(&sid).await.unwrap();
+    let state = runtime.event_store.session_read_model(&sid).await.unwrap();
     assert_eq!(state.phase, Phase::Idle);
     assert!(state.pending_tool_calls.is_empty());
     assert!(state.messages.iter().any(|message| {
@@ -804,8 +797,8 @@ async fn compact_command_rewrites_provider_history_without_exposing_summary() {
     assert_eq!(continued_session_id, session_id);
 
     let state = runtime
-        .session_manager
-        .read_model(&session_id)
+        .event_store
+        .session_read_model(&session_id)
         .await
         .unwrap();
     assert!(!state.context_messages.is_empty());
@@ -848,8 +841,8 @@ async fn slash_compact_uses_backend_command_without_user_message() {
     assert_eq!(continued_session_id, session_id, "same-session compact");
 
     let state = runtime
-        .session_manager
-        .read_model(&session_id)
+        .event_store
+        .session_read_model(&session_id)
         .await
         .unwrap();
     assert!(
@@ -876,7 +869,7 @@ async fn unknown_slash_command_does_not_enter_llm_or_transcript() {
         matches!(&error, HandlerError::UnknownCommand(cmd) if cmd == "missing-command"),
         "expected UnknownCommand(missing-command), got {error:?}"
     );
-    let state = runtime.session_manager.read_model(&sid).await.unwrap();
+    let state = runtime.event_store.session_read_model(&sid).await.unwrap();
     assert!(state.messages.is_empty());
 }
 
@@ -920,7 +913,7 @@ async fn skill_slash_command_injects_transient_instructions_only() {
     assert!(system_text.contains("<skill-name>reviewnow</skill-name>"));
     assert!(system_text.contains("Invocation arguments: src/lib.rs"));
 
-    let state = runtime.session_manager.read_model(&sid).await.unwrap();
+    let state = runtime.event_store.session_read_model(&sid).await.unwrap();
     assert!(
         state
             .messages
@@ -1012,8 +1005,8 @@ async fn compact_command_compacts_existing_hidden_context_again() {
     );
     let first_summary = {
         let state = runtime
-            .session_manager
-            .read_model(&session_id)
+            .event_store
+        .session_read_model(&session_id)
             .await
             .unwrap();
         message_to_dto(&state.context_messages[0]).content
@@ -1036,8 +1029,8 @@ async fn compact_command_compacts_existing_hidden_context_again() {
     );
 
     let state = runtime
-        .session_manager
-        .read_model(&session_id)
+        .event_store
+        .session_read_model(&session_id)
         .await
         .unwrap();
     let second_summary = message_to_dto(&state.context_messages[0]).content;
@@ -1064,7 +1057,7 @@ async fn auto_compact_applies_same_session_boundary() {
     let session_id = handler.create_session(".".into()).await.unwrap();
     for index in 0..3 {
         runtime
-            .session_manager
+            .event_store
             .append_event(Event::new(
                 session_id.clone(),
                 None,
@@ -1076,7 +1069,7 @@ async fn auto_compact_applies_same_session_boundary() {
             .await
             .unwrap();
         runtime
-            .session_manager
+            .event_store
             .append_event(Event::new(
                 session_id.clone(),
                 None,
@@ -1140,8 +1133,8 @@ async fn auto_compact_applies_same_session_boundary() {
     assert!(compact_boundary_seen);
 
     let state = runtime
-        .session_manager
-        .read_model(&session_id)
+        .event_store
+        .session_read_model(&session_id)
         .await
         .unwrap();
     assert!(!state.context_messages.is_empty());
@@ -1171,7 +1164,7 @@ async fn compact_command_does_not_fallback_when_summary_is_invalid() {
     let error = handler.compact_session(sid.clone()).await.unwrap_err();
     assert!(error.to_string().contains("Compaction failed"));
 
-    let state = runtime.session_manager.read_model(&sid).await.unwrap();
+    let state = runtime.event_store.session_read_model(&sid).await.unwrap();
     assert!(state.context_messages.is_empty());
 
     while let Ok(notification) = event_rx.try_recv() {

@@ -32,15 +32,16 @@ use super::{
     },
     util::{discovered_mcp_tool_names, parse_and_repair_json, tool_is_visible},
 };
-use crate::session::SessionManager;
+use crate::session::Session;
 
+// TODO:Config可配置
 const MAX_PARALLEL_TOOL_CALLS: usize = 5;
 
 pub(in crate::agent) struct ToolPipeline {
     shared: SharedTurnContext,
     tool_registry: Arc<ToolRegistry>,
     extension_runner: Arc<ExtensionRunner>,
-    session_manager: Arc<SessionManager>,
+    session_manager: Arc<Session>,
     capabilities: ToolRuntimeCapabilities,
 }
 
@@ -49,7 +50,7 @@ impl ToolPipeline {
         shared: SharedTurnContext,
         tool_registry: Arc<ToolRegistry>,
         extension_runner: Arc<ExtensionRunner>,
-        session_manager: Arc<SessionManager>,
+        session_manager: Arc<Session>,
         capabilities: ToolRuntimeCapabilities,
     ) -> Self {
         Self {
@@ -525,8 +526,7 @@ impl ToolPipeline {
         let original_content = result.content.clone();
         let reference = self
             .session_manager
-            .write_tool_result_artifact(
-                &self.shared.session_id,
+            .write_tool_artifact(
                 astrcode_core::storage::ToolResultArtifactInput {
                     call_id: call_id.to_string(),
                     tool_name: tool_name.to_string(),

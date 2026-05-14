@@ -12,6 +12,7 @@ use astrcode_core::{
     extension::{ExtensionError, PromptBuildContext},
     llm::{LlmClientConfig, LlmProvider},
     prompt::{ExtensionPromptBlock, ExtensionSection, PromptProvider, SystemPromptInput},
+    storage::EventStore,
     tool::{AgentSessionControl, ToolDefinition},
 };
 use astrcode_extensions::{loader::ExtensionLoader, runner::ExtensionRunner};
@@ -23,7 +24,7 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::{
     agent::{AutoCompactFailureTracker, BackgroundTaskManager},
-    session::{SessionManager, spawner::ServerSessionSpawner},
+    session::spawner::ServerSessionSpawner,
 };
 
 #[derive(Clone, Default)]
@@ -60,8 +61,8 @@ pub(crate) type AgentSessionControlSlot = Arc<RwLock<Option<Arc<dyn AgentSession
 /// 这是服务器运行时的核心容器，持有所有共享服务的引用。
 /// 各组件通过 `Arc` 共享，支持并发访问。
 pub struct ServerRuntime {
-    /// 会话管理器，负责会话的创建、恢复、事件追加和删除
-    pub session_manager: Arc<SessionManager>,
+    /// 事件存储后端，用于创建/恢复/删除会话等集合操作
+    pub event_store: Arc<dyn EventStore>,
     /// LLM 提供者，用于生成 AI 回复（运行时可重建）
     pub llm_provider: Arc<RwLock<Arc<dyn LlmProvider>>>,
     /// 上下文组装器，负责窗口估算和摘要压缩
@@ -237,7 +238,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     let store: Arc<dyn astrcode_core::storage::EventStore> = Arc::new(
         astrcode_storage::session_repo::FileSystemSessionRepository::for_project_path(&cwd),
     );
-    let session_manager = Arc::new(SessionManager::new(store));
+    let event_store = store;
 
     // 6. 加载扩展并创建 extension runner。
     //
@@ -278,11 +279,11 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
 
     // 7. 给扩展运行时绑定”创建子会话”的宿主能力。
     //
-    // 扩展本身不能直接拿到 SessionManager；当扩展工具返回 RunSession 声明式结果时，
+    // 扩展本身不能直接拿到 EventStore；当扩展工具返回 RunSession 声明式结果时，
     // 绑定会话派生器，使扩展工具可通过 RunSession 声明式结果创建子 session。
     // 子 session 也会生成自己的工具快照，而不是复用父会话或启动期的工具表。
     extension_runner.bind(Arc::new(ServerSessionSpawner {
-        session_manager: Arc::clone(&session_manager),
+        store: Arc::clone(&event_store),
         llm_provider: Arc::clone(&llm_provider),
         context_assembler: Arc::clone(&context_assembler),
         auto_compact_failures: Arc::clone(&auto_compact_failures),
@@ -298,7 +299,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     // 配置和上下文预算。注意这里故意没有 tool_registry：
     // 工具表是 session 级别的快照，不再是 bootstrap 级全局单例。
     Ok(ServerRuntime {
-        session_manager,
+        event_store,
         llm_provider,
         context_assembler,
         auto_compact_failures,

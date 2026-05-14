@@ -1,12 +1,13 @@
 //! Server-side AgentSessionControl 实现。
 //!
 //! 使用 `CommandHandle` 提供的 submit/abort 能力，
-//! 和 `SessionManager` 提供的读模型查询能力。
+//! 和 `EventStore` 提供的读模型查询能力。
 
 use std::sync::Arc;
 
 use astrcode_core::{
     llm::{LlmContent, LlmRole},
+    storage::EventStore,
     tool::{AgentSessionControl, AgentSessionInfo, TurnResult},
     types::SessionId,
 };
@@ -14,36 +15,35 @@ use parking_lot::RwLock;
 
 use crate::{
     handler::{CommandHandle, TurnCompletion},
-    session::SessionManager,
+    session::Session,
 };
 
 /// Server-side AgentSessionControl 实现。
 ///
-/// 持有 `CommandHandle`（通过共享槽延迟注入）和 `SessionManager`。
+/// 持有 `CommandHandle`（通过共享槽延迟注入）和 `EventStore`。
 /// 不存储中间状态，`send_and_wait` 内部直接 await completion receiver。
 pub struct ServerAgentSessionControl {
-    session_manager: Arc<SessionManager>,
+    store: Arc<dyn EventStore>,
     command_handle: Arc<RwLock<Option<CommandHandle>>>,
 }
 
 impl ServerAgentSessionControl {
     pub fn new(
-        session_manager: Arc<SessionManager>,
+        store: Arc<dyn EventStore>,
         command_handle: Arc<RwLock<Option<CommandHandle>>>,
     ) -> Self {
         Self {
-            session_manager,
+            store,
             command_handle,
         }
     }
 
     /// 读取 session 最后一条 assistant 消息的文本内容。
     async fn read_last_output(&self, session_id: &str) -> Option<String> {
-        let model = self
-            .session_manager
-            .read_model(&SessionId::from(session_id))
+        let session = Session::open(self.store.clone(), SessionId::from(session_id))
             .await
             .ok()?;
+        let model = session.read_model().await.ok()?;
 
         model.messages.iter().rev().find_map(|msg| {
             if matches!(msg.role, LlmRole::Assistant) {
@@ -108,9 +108,11 @@ impl AgentSessionControl for ServerAgentSessionControl {
     }
 
     async fn list_children(&self, session_id: &str) -> Result<Vec<AgentSessionInfo>, String> {
-        let model = self
-            .session_manager
-            .read_model(&SessionId::from(session_id))
+        let session = Session::open(self.store.clone(), SessionId::from(session_id))
+            .await
+            .map_err(|e| format!("open session: {e}"))?;
+        let model = session
+            .read_model()
             .await
             .map_err(|e| format!("read session: {e}"))?;
 

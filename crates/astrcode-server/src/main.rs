@@ -66,7 +66,7 @@ async fn main() {
 
     // 创建 AgentSessionControl 并注入到 runtime（handler 和 spawner 共享同一个 slot）。
     let session_control = Arc::new(ServerAgentSessionControl::new(
-        runtime.session_manager.clone(),
+        runtime.event_store.clone(),
         Arc::clone(&command_handle_slot),
     ));
     *runtime.agent_session_control.write() = Some(session_control);

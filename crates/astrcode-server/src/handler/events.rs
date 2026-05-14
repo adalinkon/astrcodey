@@ -1,20 +1,21 @@
 //! 事件处理 — 持久化与广播。
 
+use std::sync::Arc;
+
 use astrcode_core::{
     event::{Event, EventPayload},
+    storage::EventStore,
     types::{SessionId, TurnId},
 };
 use astrcode_protocol::events::ClientNotification;
 use tokio::sync::broadcast;
-
-use crate::bootstrap::ServerRuntime;
 
 /// 将事件持久化到存储（如果是持久化事件）并广播给所有订阅者。
 ///
 /// 只有 `is_durable()` 返回 true 的事件才会写入磁盘，
 /// 非持久化事件（如流式 delta）仅广播不存储。
 pub(super) async fn record_and_broadcast(
-    runtime: &ServerRuntime,
+    store: &Arc<dyn EventStore>,
     event_tx: &broadcast::Sender<ClientNotification>,
     session_id: &SessionId,
     turn_id: Option<&TurnId>,
@@ -23,8 +24,7 @@ pub(super) async fn record_and_broadcast(
     let event = Event::new(session_id.clone(), turn_id.cloned(), payload);
     // 判断是否需要持久化
     let event = if event.payload.is_durable() {
-        runtime
-            .session_manager
+        store
             .append_event(event)
             .await
             .map_err(|e| e.to_string())?
