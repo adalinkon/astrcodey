@@ -85,13 +85,17 @@ impl McpShared {
     }
 
     fn get_entry(&self, working_dir: &str) -> Option<Arc<McpCacheEntry>> {
-        self.cache.lock().unwrap().get(working_dir).cloned()
+        self.cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(working_dir)
+            .cloned()
     }
 
     fn store(&self, working_dir: &str, entry: McpCacheEntry) {
         self.cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(working_dir.to_string(), Arc::new(entry));
     }
 }

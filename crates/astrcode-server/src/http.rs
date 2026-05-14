@@ -664,7 +664,9 @@ async fn session_stream(
                             })
                             .collect();
                         let mut items = items;
-                        let first = items.pop_front().unwrap();
+                        let Some(first) = items.pop_front() else {
+                            continue;
+                        };
                         return Some((
                             first,
                             (

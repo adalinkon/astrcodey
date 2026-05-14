@@ -78,13 +78,18 @@ impl SkillShared {
     }
 
     fn get_or_discover(&self, working_dir: &str) -> Vec<SkillDefinition> {
-        if let Some(skills) = self.cache.lock().unwrap().get(working_dir) {
+        if let Some(skills) = self
+            .cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(working_dir)
+        {
             return skills.clone();
         }
         let skills = discover_skills(working_dir);
         self.cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .entry(working_dir.to_string())
             .or_insert_with(|| skills.clone());
         skills

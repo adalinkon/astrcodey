@@ -191,7 +191,9 @@ impl CommandHandler {
         if !self.active_turn_matches(&session_id, &turn_id) {
             return;
         }
-        let mut turn = self.active_turns.remove(&session_id).unwrap();
+        let Some(mut turn) = self.active_turns.remove(&session_id) else {
+            return;
+        };
         let finish_reason = output.finish_reason.clone();
         let _ = self
             .record_turn_payloads(
@@ -215,7 +217,9 @@ impl CommandHandler {
         if !self.active_turn_matches(&session_id, &turn_id) {
             return;
         }
-        let mut turn = self.active_turns.remove(&session_id).unwrap();
+        let Some(mut turn) = self.active_turns.remove(&session_id) else {
+            return;
+        };
         let error_message = error.to_string();
         let _ = self
             .record_turn_payloads(
