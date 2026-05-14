@@ -13,7 +13,7 @@ use uuid::Uuid;
 const SNAPSHOT_VERSION: u32 = 1;
 
 /// 保留的最大快照数量。创建新快照后自动清理超出数量的旧快照。
-const MAX_SNAPSHOTS: usize = 3;
+const MAX_SNAPSHOTS: usize = 4;
 
 /// Projection snapshot persisted by astrcode-storage.
 ///
