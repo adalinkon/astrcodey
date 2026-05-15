@@ -5,6 +5,7 @@
 pub mod background;
 pub mod compact;
 pub mod event_bus;
+pub mod llm_stream;
 pub mod payload;
 pub mod post_compact;
 pub mod session;
