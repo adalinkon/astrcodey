@@ -409,7 +409,7 @@ async fn run_agent_turn_task(runtime: Arc<ServerRuntime>, input: AgentTurnInput)
     }
 
     // model_id 来自 runtime 配置（可被热更新覆盖 session 创建时的值）
-    // 写入 session 事件，确保 session 反映当前生效的模型
+    // 仅在 model_id 与 session 当前值不同时写入事件
     let model_id = runtime.read_effective().llm.model_id.clone();
     if let Err(e) = session.update_model_id(&model_id).await {
         tracing::warn!(session_id = %sid, error = %e, "failed to update session model_id");

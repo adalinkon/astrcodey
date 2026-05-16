@@ -72,8 +72,12 @@ impl Session {
 
     /// 更新会话使用的模型标识。
     ///
-    /// 写入 `ModelIdChanged` 事件，projection 会更新 read_model 中的 `model_id`。
-    pub async fn update_model_id(&self, model_id: &str) -> Result<Event, SessionError> {
+    /// 仅在 model_id 与当前值不同时写入 `ModelIdChanged` 事件，避免冗余事件。
+    pub async fn update_model_id(&self, model_id: &str) -> Result<Option<Event>, SessionError> {
+        let current = self.read_model().await?;
+        if current.model_id == model_id {
+            return Ok(None);
+        }
         self.append_event(Event::new(
             self.id.clone(),
             None,
@@ -82,6 +86,7 @@ impl Session {
             },
         ))
         .await
+        .map(Some)
     }
 
     /// 返回会话读模型。
