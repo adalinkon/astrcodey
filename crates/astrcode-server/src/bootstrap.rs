@@ -6,10 +6,8 @@
 use std::{sync::Arc, time::Duration};
 
 use astrcode_ai::create_provider;
-use astrcode_context::{
-    context_engine::LlmContextAssembler,
-    prompt_engine::PromptEngine,
-};
+pub(crate) use astrcode_context::prompt_engine::{PromptFiles, load_system_prompt_files};
+use astrcode_context::{context_engine::LlmContextAssembler, prompt_engine::PromptEngine};
 use astrcode_core::{
     config::{ConfigStore, EffectiveConfig, ModelSelection},
     extension::{ExtensionError, PromptBuildContext},
@@ -21,14 +19,11 @@ use astrcode_core::{
 use astrcode_extensions::{loader::ExtensionLoader, runner::ExtensionRunner};
 use astrcode_session::background::BackgroundTaskManager;
 use astrcode_storage::config_store::FileConfigStore;
-use astrcode_support::hash::hex_fingerprint;
-use astrcode_support::shell::resolve_shell;
+use astrcode_support::{hash::hex_fingerprint, shell::resolve_shell};
 use astrcode_tools::registry::{ToolRegistry, builtin_tools};
 use parking_lot::{Mutex, RwLock};
 
 use crate::session_spawner::ServerSessionSpawner;
-
-pub(crate) use astrcode_context::prompt_engine::{PromptFiles, load_system_prompt_files};
 
 pub(crate) struct SystemPromptSnapshotInput<'a> {
     pub(crate) extension_runner: &'a ExtensionRunner,

@@ -1,12 +1,5 @@
 //! Agent 模块 — ServerAgentSessionControl + re-exports。
 
-pub use astrcode_session::{
-    SessionServices,
-    background::BackgroundTaskManager,
-    turn_context::{TurnError, AgentSignal},
-    turn_runner::{TurnOutput, TurnRunner, drive_agent},
-};
-
 use std::sync::Arc;
 
 use astrcode_core::{
@@ -16,6 +9,12 @@ use astrcode_core::{
     types::SessionId,
 };
 use astrcode_session::Session;
+pub use astrcode_session::{
+    SessionServices,
+    background::BackgroundTaskManager,
+    turn_context::{AgentSignal, TurnError},
+    turn_runner::{TurnOutput, TurnRunner, drive_agent},
+};
 use parking_lot::RwLock;
 
 use crate::handler::{CommandHandle, TurnCompletion};

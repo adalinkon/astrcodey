@@ -27,7 +27,7 @@ use super::{
         ToolExecutionStep, ToolRuntimeCapabilities, committed_tool_result_content_len,
         missing_tool_result, send_tool_requested,
     },
-    turn_context::{TurnError, AgentSignal, SharedTurnContext, send_event},
+    turn_context::{AgentSignal, SharedTurnContext, TurnError, send_event},
     util::{
         TOOL_SEARCH_TOOL_NAME, discovered_mcp_tool_names, parse_and_repair_json, tool_is_visible,
     },

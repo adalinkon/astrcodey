@@ -28,14 +28,13 @@ use crate::{
     tool_pipeline::ToolPipeline,
     tool_types::{ExecuteToolCalls, assistant_tool_call_message},
     turn_context::{
-        TurnError, AgentSignal, SharedTurnContext, end_turn_with_error_typed, send_event,
+        AgentSignal, EventBus, SharedTurnContext, TurnError, end_turn_with_error_typed, send_event,
     },
     util::{
         activate_discovered_mcp_tools, append_deferred_mcp_tools_reminder, clone_tools_by_index,
         provider_visible_tool_indexes,
     },
 };
-use crate::turn_context::EventBus;
 
 /// 运行 agent 的一次 process_prompt，通过 select! + drain 实时处理事件。
 ///
@@ -44,7 +43,7 @@ use crate::turn_context::EventBus;
 pub async fn drive_agent<F, Fut>(
     agent: &TurnRunner,
     user_text: &str,
-    history: Vec<LlmMessage>,
+    transient_instructions: Option<String>,
     event_bus: &dyn EventBus,
     mut on_signal: F,
 ) -> (Result<TurnOutput, TurnError>, bool)
@@ -53,7 +52,7 @@ where
     Fut: Future<Output = ()>,
 {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    let agent_future = agent.process_prompt(user_text, history, Some(event_tx));
+    let agent_future = agent.process_prompt(user_text, transient_instructions, Some(event_tx));
     tokio::pin!(agent_future);
 
     let mut emitted_error = false;
@@ -82,7 +81,9 @@ where
         if matches!(payload, EventPayload::ErrorOccurred { .. }) {
             emitted_error = true;
         }
-        event_bus.emit(&agent.shared.session_id, payload.clone()).await;
+        event_bus
+            .emit(&agent.shared.session_id, payload.clone())
+            .await;
         on_signal(signal).await;
     }
 
@@ -95,6 +96,7 @@ where
 /// and is discarded. Durable event persistence stays in the handler; compact
 /// transcript snapshots are written through the injected session manager.
 pub struct TurnRunner {
+    session: Arc<crate::session::Session>,
     system_prompt: String,
     shared: SharedTurnContext,
     llm: Arc<dyn LlmProvider>,
@@ -106,16 +108,23 @@ pub struct TurnRunner {
 impl TurnRunner {
     /// 创建一个新的 TurnRunner 实例。
     ///
-    /// `SessionServices` 中的依赖被分配给相应的子对象；
-    /// `TurnRunner` 本身只保留编排职责。
-    pub fn new(
-        session_id: SessionId,
-        working_dir: String,
-        system_prompt: String,
+    /// 从 `services.session` 读取 `working_dir`、`system_prompt` 等事实，
+    /// `model_id` 由调用方传入（runtime 决策，不一定等于 session 创建时的值）。
+    pub async fn new(
         model_id: String,
         services: crate::session_services::SessionServices,
-    ) -> Self {
-        let shared = SharedTurnContext { session_id, working_dir, model_id };
+    ) -> Result<Self, TurnError> {
+        let state = services
+            .session
+            .read_model()
+            .await
+            .map_err(|e| TurnError::Internal(e.to_string()))?;
+        let shared = SharedTurnContext {
+            session_id: services.session.id().clone(),
+            working_dir: state.working_dir,
+            model_id,
+        };
+        let system_prompt = state.system_prompt.unwrap_or_default();
         let background_task_reader: Option<Arc<dyn BackgroundTaskReader>> = Some(Arc::new(
             crate::background::BackgroundTaskReaderImpl::new(services.background_tasks.clone()),
         ));
@@ -132,24 +141,25 @@ impl TurnRunner {
             shared.clone(),
             services.tool_registry,
             services.extension_runner.clone(),
-            services.session,
+            services.session.clone(),
             capabilities,
         );
-        Self {
+        Ok(Self {
+            session: services.session,
             system_prompt,
             shared,
             llm: services.llm,
             extension_runner: services.extension_runner,
             tools,
             context_assembler: services.context_assembler,
-        }
+        })
     }
 
     /// 处理用户输入的完整 Agent 循环。
     pub(crate) async fn process_prompt(
         &self,
         user_text: &str,
-        history: Vec<LlmMessage>,
+        transient_instructions: Option<String>,
         event_tx: Option<mpsc::UnboundedSender<AgentSignal>>,
     ) -> Result<TurnOutput, TurnError> {
         let all_tools = self.tools.list_definitions();
@@ -174,9 +184,29 @@ impl TurnRunner {
             return end_turn_with_error_typed(&self.extension_runner, &self.shared, e).await;
         }
 
+        // 从 session 读取 history
+        let state = self
+            .session
+            .read_model()
+            .await
+            .map_err(|e| TurnError::Internal(e.to_string()))?;
+        let history = state.provider_messages();
+
+        // 合并 transient_instructions（斜杠命令注入，turn 级别）
+        let effective_prompt = transient_instructions
+            .filter(|i| !i.trim().is_empty())
+            .map(|i| {
+                format!(
+                    "{}\n\n[Slash Command Instructions]\n{}",
+                    self.system_prompt,
+                    i.trim()
+                )
+            })
+            .unwrap_or_else(|| self.system_prompt.clone());
+
         let mut messages = Vec::with_capacity(history.len() + 2);
-        if !self.system_prompt.trim().is_empty() {
-            messages.push(LlmMessage::system(self.system_prompt.clone()));
+        if !effective_prompt.trim().is_empty() {
+            messages.push(LlmMessage::system(effective_prompt));
         }
         messages.extend(
             history
@@ -427,9 +457,8 @@ pub struct RunTurnResult {
 pub async fn run_turn<F, Fut>(
     agent: &TurnRunner,
     user_text: &str,
-    history: Vec<LlmMessage>,
+    transient_instructions: Option<String>,
     event_bus: &dyn EventBus,
-    _session_id: SessionId,
     on_signal: F,
 ) -> RunTurnResult
 where
@@ -439,7 +468,7 @@ where
     let (output, emitted_error) = drive_agent(
         agent,
         user_text,
-        history,
+        transient_instructions,
         event_bus,
         on_signal,
     )

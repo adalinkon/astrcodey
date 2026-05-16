@@ -22,5 +22,5 @@ pub use payload::{
 };
 pub use session::{Session, SessionError};
 pub use session_services::SessionServices;
-pub use turn_context::{EventBus, NoopEventBus, TurnError, AgentSignal};
+pub use turn_context::{AgentSignal, EventBus, NoopEventBus, TurnError};
 pub use turn_runner::{RunTurnResult, TurnOutput, TurnRunner, drive_agent, run_turn};

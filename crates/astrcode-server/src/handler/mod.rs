@@ -20,9 +20,8 @@ use astrcode_tools::registry::ToolRegistry;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::bootstrap::{
-    ServerRuntime, SystemPromptSnapshotInput,
-    build_system_prompt_snapshot_with_files, build_tool_registry_snapshot,
-    load_system_prompt_files, PromptFiles,
+    PromptFiles, ServerRuntime, SystemPromptSnapshotInput, build_system_prompt_snapshot_with_files,
+    build_tool_registry_snapshot, load_system_prompt_files,
 };
 
 mod actor;

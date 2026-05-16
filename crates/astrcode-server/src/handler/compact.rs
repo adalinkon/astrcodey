@@ -1,17 +1,16 @@
 use astrcode_context::compaction::{
-    CompactSkipReason, CompactSummaryRenderOptions,
-    compact_messages_with_render_options,
+    CompactSkipReason, CompactSummaryRenderOptions, compact_messages_with_render_options,
 };
 use astrcode_core::{
-    event::EventPayload,
-    extension::CompactTrigger,
-    storage::CompactSnapshotInput,
-    types::SessionId,
+    event::EventPayload, extension::CompactTrigger, storage::CompactSnapshotInput, types::SessionId,
 };
 use astrcode_protocol::events::ClientNotification;
 use astrcode_session::{
     Session,
-    compact::{CompactHookContext, collect_compact_instructions, compact_trigger_name, dispatch_post_compact},
+    compact::{
+        CompactHookContext, collect_compact_instructions, compact_trigger_name,
+        dispatch_post_compact,
+    },
     post_compact::enrich_post_compact_context,
 };
 

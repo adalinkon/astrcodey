@@ -27,13 +27,9 @@ use crate::bootstrap::ServerRuntime;
 
 /// Agent Turn 的输入参数，用于启动后台任务。
 pub(in crate::handler) struct AgentTurnInput {
-    pub sid: SessionId,
     pub turn_id: TurnId,
     pub session: Arc<Session>,
-    pub working_dir: String,
     pub tool_registry: Arc<ToolRegistry>,
-    pub system_prompt: String,
-    pub history: Vec<astrcode_core::llm::LlmMessage>,
     pub text: String,
     /// 斜杠命令注入的一次性指令
     pub transient_instructions: Option<String>,
@@ -117,19 +113,15 @@ impl CommandHandler {
             .read_model()
             .await
             .map_err(|e| HandlerError::Other(format!("read session {sid}: {e}")))?;
-        let history = state.provider_messages();
         let working_dir = state.working_dir;
         let model_id = state.model_id;
-        let system_prompt = state.system_prompt;
         let tool_registry = self.ensure_tool_registry(&sid, &working_dir).await;
-        // 如未配置 system prompt，自动配置
-        let system_prompt = match system_prompt {
-            Some(system_prompt) => system_prompt,
-            None => self
-                .configure_session_prompt(&sid, &working_dir, &tool_registry, None)
+        // 如未配置 system prompt，自动配置（写入 session 事件）
+        if state.system_prompt.is_none() {
+            self.configure_session_prompt(&sid, &working_dir, &tool_registry, None)
                 .await
-                .map_err(HandlerError::Other)?,
-        };
+                .map_err(HandlerError::Other)?;
+        }
         let turn_id = new_turn_id();
 
         // 记录 Turn 开始事件
@@ -143,13 +135,9 @@ impl CommandHandler {
 
         // 启动 Agent 后台任务
         let handle = self.spawn_agent_turn(AgentTurnInput {
-            sid: sid.clone(),
             turn_id: turn_id.clone(),
             session: Arc::new(session),
-            working_dir: working_dir.clone(),
             tool_registry: Arc::clone(&tool_registry),
-            system_prompt: system_prompt.clone(),
-            history,
             text: user_text,
             transient_instructions,
             actor_tx: self.actor_tx.clone(),
@@ -390,18 +378,15 @@ fn interrupted_tool_result(call_id: &str) -> ToolResult {
 /// Agent Turn 后台任务：组装 TurnRunner 并驱动 LLM ↔ 工具循环。
 async fn run_agent_turn_task(runtime: Arc<ServerRuntime>, input: AgentTurnInput) {
     let AgentTurnInput {
-        sid,
         turn_id,
         session,
-        working_dir,
         tool_registry,
-        system_prompt,
-        history,
         text,
         transient_instructions,
         actor_tx,
         event_tx,
     } = input;
+    let sid = session.id().clone();
 
     // 后台子任务结果转发到 Actor
     let (background_result_tx, mut background_result_rx) =
@@ -420,23 +405,12 @@ async fn run_agent_turn_task(runtime: Arc<ServerRuntime>, input: AgentTurnInput)
         });
     }
 
-    // 合并斜杠命令的一次性指令到 system prompt
+    // model_id 来自 runtime 配置（可被热更新覆盖 session 创建时的值）
     let model_id = runtime.read_effective().llm.model_id.clone();
-    let system_prompt = transient_instructions
-        .filter(|instructions| !instructions.trim().is_empty())
-        .map(|instructions| {
-            format!(
-                "{system_prompt}\n\n[Slash Command Instructions]\n{}",
-                instructions.trim()
-            )
-        })
-        .unwrap_or(system_prompt);
 
-    // 组装 TurnRunner
-    let agent = TurnRunner::new(
-        sid.clone(),
-        working_dir,
-        system_prompt,
+    // 组装 TurnRunner（从 session 读取 working_dir、system_prompt 等事实）
+    let agent_session_control = runtime.agent_session_control.read().clone();
+    let agent = match TurnRunner::new(
         model_id,
         SessionServices::new(
             runtime.read_llm_provider(),
@@ -447,22 +421,39 @@ async fn run_agent_turn_task(runtime: Arc<ServerRuntime>, input: AgentTurnInput)
             runtime.background_tasks.clone(),
         )
         .with_background_result_tx(background_result_tx)
-        .with_agent_session_control(runtime.agent_session_control.read().clone()),
-    );
+        .with_agent_session_control(agent_session_control),
+    )
+    .await
+    {
+        Ok(agent) => agent,
+        Err(e) => {
+            let _ = actor_tx.send(CommandMessage::AgentTurnFailed {
+                session_id: sid,
+                turn_id,
+                error: e,
+                emitted_error: false,
+            });
+            return;
+        },
+    };
 
     // 驱动 Agent 循环，事件通过 ServerEventBus 直接持久化+广播
-    let event_bus = crate::server_event_bus::ServerEventBus::new(
-        runtime.event_store.clone(),
-        event_tx,
+    let event_bus =
+        crate::server_event_bus::ServerEventBus::new(runtime.event_store.clone(), event_tx)
+            .with_turn_id(turn_id.clone());
+    let result = run_turn(
+        &agent,
+        &text,
+        transient_instructions,
+        &event_bus,
+        |signal| {
+            let _actor_tx = actor_tx.clone();
+            async move {
+                let AgentSignal::Event(_) = signal;
+                // 事件已由 ServerEventBus 处理，无需转发
+            }
+        },
     )
-    .with_turn_id(turn_id.clone());
-    let result = run_turn(&agent, &text, history, &event_bus, sid.clone(), |signal| {
-        let _actor_tx = actor_tx.clone();
-        async move {
-            let AgentSignal::Event(_) = signal;
-            // 事件已由 ServerEventBus 处理，无需转发
-        }
-    })
     .await;
 
     // 发送完成或失败结果到 Actor

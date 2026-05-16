@@ -18,9 +18,8 @@ use astrcode_extensions::{
     runtime::{SpawnRequest, SpawnResult},
 };
 use astrcode_session::{
-    TurnError, AgentSignal, Session, SessionServices, TurnOutput,
-    TurnRunner, agent_turn_completed_payloads, agent_turn_failed_payloads,
-    agent_turn_started_payloads,
+    AgentSignal, Session, SessionServices, TurnError, TurnOutput, TurnRunner,
+    agent_turn_completed_payloads, agent_turn_failed_payloads, agent_turn_started_payloads,
     background::{BackgroundTaskCompletion, BackgroundTaskManager, complete_background_task},
     run_turn,
 };
@@ -58,7 +57,6 @@ struct PreparedChild {
     child_name: String,
     user_prompt: String,
     tool_call_id: Option<String>,
-    system_prompt: String,
     model_id: String,
     agent: TurnRunner,
     progress: ProgressTx,
@@ -234,10 +232,8 @@ impl ServerSessionSpawner {
             }
         });
 
+        let agent_session_control = self.agent_session_control.read().clone();
         let agent = TurnRunner::new(
-            child_sid.clone(),
-            request.working_dir.clone(),
-            system_prompt.clone(),
             model_id.clone(),
             SessionServices::new(
                 self.read_llm_provider(),
@@ -248,8 +244,10 @@ impl ServerSessionSpawner {
                 Arc::clone(&self.background_tasks),
             )
             .with_background_result_tx(child_bg_result_tx)
-            .with_agent_session_control(self.agent_session_control.read().clone()),
-        );
+            .with_agent_session_control(agent_session_control),
+        )
+        .await
+        .map_err(|e| format!("create child turn runner: {e}"))?;
 
         Ok(PreparedChild {
             parent_session,
@@ -258,7 +256,6 @@ impl ServerSessionSpawner {
             child_name,
             user_prompt,
             tool_call_id,
-            system_prompt,
             model_id,
             agent,
             progress,
@@ -275,7 +272,6 @@ impl ServerSessionSpawner {
             child_session,
             child_turn_id,
             user_prompt,
-            system_prompt,
             agent,
             progress,
             current_child_sid,
@@ -289,7 +285,6 @@ impl ServerSessionSpawner {
             current_child_sid,
             child_turn_id.clone(),
             progress.clone(),
-            system_prompt,
         )
         .await;
 
@@ -367,7 +362,6 @@ impl ServerSessionSpawner {
             child_name,
             user_prompt,
             tool_call_id,
-            system_prompt,
             model_id,
             agent,
             progress,
@@ -389,7 +383,6 @@ impl ServerSessionSpawner {
         let drive_current_child_sid = Arc::clone(&current_child_sid);
         let drive_child_turn_id = child_turn_id.clone();
         let drive_progress = progress.clone();
-        let drive_system_prompt = system_prompt.clone();
         let async_child_sid = child_session.id().clone();
         let return_child_sid = child_session.id().clone();
 
@@ -401,7 +394,6 @@ impl ServerSessionSpawner {
                 drive_current_child_sid,
                 drive_child_turn_id,
                 drive_progress,
-                drive_system_prompt,
             )
             .await;
 
@@ -525,32 +517,24 @@ async fn drive_child_agent_turn(
     current_child_sid: Arc<Mutex<SessionId>>,
     child_turn_id: TurnId,
     progress: ProgressTx,
-    _system_prompt: String,
 ) -> (Result<TurnOutput, TurnError>, bool, SessionId) {
     let initial_sid = current_child_sid.lock().await.clone();
     let noop_bus = astrcode_session::NoopEventBus;
-    let result = run_turn(
-        agent,
-        user_prompt,
-        Vec::new(),
-        &noop_bus,
-        initial_sid.clone(),
-        move |signal| {
-            let child_session = Arc::clone(&child_session);
-            let child_turn_id = child_turn_id.clone();
-            let progress = progress.clone();
-            async move {
-                let AgentSignal::Event(payload) = signal;
-                let _ = append_child_progress_payload(
-                    &child_session,
-                    &progress,
-                    Some(&child_turn_id),
-                    payload.clone(),
-                )
-                .await;
-            }
-        },
-    )
+    let result = run_turn(agent, user_prompt, None, &noop_bus, move |signal| {
+        let child_session = Arc::clone(&child_session);
+        let child_turn_id = child_turn_id.clone();
+        let progress = progress.clone();
+        async move {
+            let AgentSignal::Event(payload) = signal;
+            let _ = append_child_progress_payload(
+                &child_session,
+                &progress,
+                Some(&child_turn_id),
+                payload.clone(),
+            )
+            .await;
+        }
+    })
     .await;
     (result.output, result.emitted_error, initial_sid)
 }

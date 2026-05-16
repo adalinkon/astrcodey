@@ -2,7 +2,11 @@
 
 use std::sync::Arc;
 
-use astrcode_core::{event::Event, storage::EventStore, types::SessionId, types::TurnId};
+use astrcode_core::{
+    event::Event,
+    storage::EventStore,
+    types::{SessionId, TurnId},
+};
 use astrcode_protocol::events::ClientNotification;
 use astrcode_session::EventBus;
 use tokio::sync::broadcast;

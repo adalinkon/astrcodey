@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     tool_types::PendingToolCall,
-    turn_context::{TurnError, AgentSignal, send_event},
+    turn_context::{AgentSignal, TurnError, send_event},
 };
 
 // ─── StreamOutcome ───────────────────────────────────────────────────────

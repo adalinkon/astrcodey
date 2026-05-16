@@ -8,9 +8,7 @@ use astrcode_core::{
     event::EventPayload,
     llm::{LlmContent, LlmMessage, LlmRole},
     storage::ToolResultArtifactReader,
-    tool::{
-        AgentSessionControl, BackgroundTaskReader, ExecutionMode, ToolDefinition, ToolResult,
-    },
+    tool::{AgentSessionControl, BackgroundTaskReader, ExecutionMode, ToolDefinition, ToolResult},
     types::*,
 };
 use tokio::sync::mpsc;
@@ -179,7 +177,8 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct ToolRuntimeCapabilities {
     /// 后台任务完成后的通知通道。
-    pub background_result_tx: Option<mpsc::UnboundedSender<crate::background::BackgroundTaskCompletion>>,
+    pub background_result_tx:
+        Option<mpsc::UnboundedSender<crate::background::BackgroundTaskCompletion>>,
     /// 后台任务管理器，用于注册 watcher handle 以支持取消。
     pub background_tasks: Arc<parking_lot::Mutex<BackgroundTaskManager>>,
     /// 后台任务只读接口，注入到 ToolExecutionContext 供 TaskTool 使用。
