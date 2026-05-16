@@ -11,7 +11,10 @@ use astrcode_context::context_engine::{ContextPrepareInput, LlmContextAssembler}
 use astrcode_core::{
     config::ModelSelection,
     event::EventPayload,
-    extension::{ExtensionEvent, LifecycleContext, ProviderContext, ProviderEvent, ProviderResult},
+    extension::{
+        CompactTrigger, ExtensionEvent, LifecycleContext, ProviderContext, ProviderEvent,
+        ProviderResult,
+    },
     llm::{LlmContent, LlmEvent, LlmMessage, LlmProvider, LlmRole},
     tool::{BackgroundTaskReader, ToolDefinition},
     types::*,
@@ -20,6 +23,7 @@ use astrcode_extensions::runner::ExtensionRunner;
 use tokio::sync::mpsc;
 
 use crate::{
+    compact::{CompactHookContext, collect_compact_instructions, dispatch_post_compact},
     llm_stream::{
         StreamOutcome, assistant_message_with_thinking, consume_llm_stream,
         non_empty_reasoning_content, provider_visible_messages,
@@ -214,6 +218,20 @@ impl TurnRunner {
         let mut all_tool_results: Vec<astrcode_core::tool::ToolResult> = Vec::new();
 
         loop {
+            // 收集插件 compact 指令
+            let custom_instructions = collect_compact_instructions(
+                &self.extension_runner,
+                CompactHookContext {
+                    session_id: self.shared.session_id.as_str(),
+                    working_dir: &self.shared.working_dir,
+                    model_id: &self.shared.model_id,
+                    trigger: CompactTrigger::AutoThreshold,
+                    message_count: messages.len(),
+                },
+            )
+            .await
+            .unwrap_or_default();
+
             // 上下文准备：context assembler 内部处理阈值检查和 deterministic compact。
             let (system_messages, visible_messages): (Vec<_>, Vec<_>) = messages
                 .iter()
@@ -223,6 +241,7 @@ impl TurnRunner {
                 messages: visible_messages,
                 system_prompt: Some(&self.system_prompt),
                 model_limits: self.llm.model_limits(),
+                custom_instructions,
             };
             let mut prepared = self.context_assembler.prepare_messages(input);
 
@@ -238,6 +257,18 @@ impl TurnRunner {
                     self.context_assembler.settings(),
                 )
                 .await;
+                let hook_ctx = CompactHookContext {
+                    session_id: self.shared.session_id.as_str(),
+                    working_dir: &self.shared.working_dir,
+                    model_id: &self.shared.model_id,
+                    trigger: CompactTrigger::AutoThreshold,
+                    message_count: messages.len(),
+                };
+                if let Err(e) =
+                    dispatch_post_compact(&self.extension_runner, hook_ctx, compaction).await
+                {
+                    tracing::warn!(error = %e, "PostCompact extension dispatch failed");
+                }
             }
 
             let mut context_messages = prepared.messages;

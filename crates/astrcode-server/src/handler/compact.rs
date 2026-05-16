@@ -71,11 +71,13 @@ impl CommandHandler {
             trigger: CompactTrigger::ManualCommand,
             message_count: provider_messages.len(),
         };
-        if let Err(error) =
-            collect_compact_instructions(&self.runtime.extension_runner, hook_ctx).await
-        {
-            return Err(HandlerError::Other(format!("Compaction failed: {error}")));
-        }
+        let custom_instructions =
+            match collect_compact_instructions(&self.runtime.extension_runner, hook_ctx).await {
+                Ok(instructions) => instructions,
+                Err(error) => {
+                    return Err(HandlerError::Other(format!("Compaction failed: {error}")));
+                },
+            };
 
         let snapshot_path = match session
             .write_compact_snapshot(CompactSnapshotInput {
@@ -96,6 +98,7 @@ impl CommandHandler {
         };
         let render_options = CompactSummaryRenderOptions {
             transcript_path: snapshot_path,
+            custom_instructions,
         };
         let mut compaction = match compact_messages_with_render_options(
             &provider_messages,

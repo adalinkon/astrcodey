@@ -2,7 +2,10 @@ use astrcode_core::llm::{LlmMessage, ModelLimits};
 
 use crate::{
     ContextSettings,
-    compaction::{CompactResult, CompactSkipReason, compact_messages_with_render_options},
+    compaction::{
+        CompactResult, CompactSkipReason, CompactSummaryRenderOptions,
+        compact_messages_with_render_options,
+    },
     token_budget::{build_prompt_snapshot, should_compact},
 };
 
@@ -18,6 +21,8 @@ pub struct ContextPrepareInput<'a> {
     pub system_prompt: Option<&'a str>,
     /// 当前 provider/model 的上下文限制。
     pub model_limits: ModelLimits,
+    /// 插件提供的 compact 指令，追加到 compact summary 中。
+    pub custom_instructions: Vec<String>,
 }
 
 /// 已准备好的 provider 消息。
@@ -51,10 +56,14 @@ impl LlmContextAssembler {
         let mut messages = input.messages;
         let snapshot = self.snapshot(&messages, input.system_prompt, input.model_limits);
         let compaction = if self.settings.auto_compact_enabled && should_compact(snapshot) {
+            let render_options = CompactSummaryRenderOptions {
+                custom_instructions: input.custom_instructions,
+                ..Default::default()
+            };
             match compact_messages_with_render_options(
                 &messages,
                 input.system_prompt,
-                &Default::default(),
+                &render_options,
             ) {
                 Ok(compaction) => {
                     let prepared = prepared_context_from_compaction(compaction);
@@ -141,6 +150,7 @@ mod tests {
                 max_input_tokens: 200_000,
                 max_output_tokens: 1024,
             },
+            custom_instructions: Vec::new(),
         });
         let small_window = assembler.prepare_messages(ContextPrepareInput {
             messages,
@@ -149,6 +159,7 @@ mod tests {
                 max_input_tokens: 100,
                 max_output_tokens: 1024,
             },
+            custom_instructions: Vec::new(),
         });
 
         assert!(large_window.compaction.is_none());

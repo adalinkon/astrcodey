@@ -610,6 +610,7 @@ scratchpad that should not survive
             "1. Primary Request and Intent:\n   keep user intent",
             &CompactSummaryRenderOptions {
                 transcript_path: Some("C:\\Users\\18794\\.astrcode\\compact.jsonl".into()),
+                custom_instructions: Vec::new(),
             },
         );
 
