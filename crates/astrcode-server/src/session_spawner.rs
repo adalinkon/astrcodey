@@ -799,6 +799,7 @@ mod tests {
                     supports_prompt_cache_key: false,
                     prompt_cache_retention: None,
                     reasoning: false,
+                    reasoning_split: false,
                 },
                 context: Default::default(),
             },
