@@ -3,6 +3,12 @@
 //! [`ServerSessionSpawner`] 创建子会话、用子 Agent 执行一轮对话，
 //! 将事件持久化到子会话存储，并经由 [`ProgressTx`] 将关键进展
 //! 转译为 [`ToolOutputDelta`] 实时反馈给父会话的 TUI。
+//!
+//! 最大嵌套深度由 [`MAX_AGENT_DEPTH`] 控制；同层级可并发生成任意多个子 agent。
+
+/// 子 agent 最大嵌套深度（root=0, child=1, grandchild=2）。
+// TODO: 可配置
+const MAX_AGENT_DEPTH: usize = 2;
 
 use std::sync::Arc;
 
@@ -73,6 +79,29 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
 }
 
 impl ServerSessionSpawner {
+    /// 沿 parent 链向上遍历，计算当前 session 的嵌套深度。
+    ///
+    /// root session depth=0，每向上一级 parent +1。
+    async fn session_depth(&self, session_id: &SessionId) -> Result<usize, String> {
+        let mut depth = 0;
+        let mut current = session_id.clone();
+        loop {
+            let model = self
+                .session_manager
+                .read_model(&current)
+                .await
+                .map_err(|e| format!("read session: {e}"))?;
+            match model.parent_session_id {
+                Some(parent) => {
+                    depth += 1;
+                    current = parent;
+                },
+                None => break,
+            }
+        }
+        Ok(depth)
+    }
+
     /// 共享准备阶段：创建子会话、构建 prompt、初始化 TurnRunner。
     async fn prepare_child_session(
         &self,
@@ -99,6 +128,13 @@ impl ServerSessionSpawner {
                     .model_id
             },
         };
+
+        let depth = self.session_depth(&parent_session_id).await?;
+        if depth >= MAX_AGENT_DEPTH {
+            return Err(format!(
+                "已达最大 agent 嵌套深度 ({MAX_AGENT_DEPTH})，无法继续创建子 agent"
+            ));
+        }
 
         let child_session = self
             .session_manager
