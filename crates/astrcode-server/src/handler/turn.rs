@@ -94,6 +94,7 @@ impl CommandHandler {
     ) -> Result<TurnId, HandlerError> {
         tracing::info!(session_id = %sid, text_len = user_text.len(), "start_turn");
         // 拒绝：已有 Turn 在运行
+        // TODO: 支持排队
         if self.active_turns.contains_key(&sid) {
             self.send_error(40900, "A turn is already running");
             return Err(HandlerError::TurnAlreadyRunning);
@@ -219,6 +220,9 @@ impl CommandHandler {
                 .emit(&active_turn.session_id, Some(&active_turn.turn_id), payload)
                 .await;
         }
+        self.event_bus
+            .sync_durable_events(&active_turn.session_id)
+            .await;
 
         active_turn.resolve_completion(TurnCompletion::Aborted);
         Ok(())
@@ -283,6 +287,7 @@ impl CommandHandler {
         for payload in agent_turn_completed_payloads("interrupted".into()) {
             self.event_bus.emit(session_id, None, payload).await;
         }
+        self.event_bus.sync_durable_events(session_id).await;
         Ok(())
     }
 }
@@ -351,6 +356,9 @@ async fn run_agent_turn_task(runtime: Arc<ServerRuntime>, input: AgentTurnInput)
                 bg_event_bus
                     .emit(&completion.session_id, None, completion.to_background_task_completed())
                     .await;
+                bg_event_bus
+                    .sync_durable_events(&completion.session_id)
+                    .await;
             }
         });
         tokio::spawn(async move {
@@ -409,6 +417,7 @@ async fn run_agent_turn_task(runtime: Arc<ServerRuntime>, input: AgentTurnInput)
             for payload in agent_turn_completed_payloads(output.finish_reason.clone()) {
                 event_bus.emit(&sid, Some(&turn_id), payload).await;
             }
+            event_bus.sync_durable_events(&sid).await;
             let _ = actor_tx.send(CommandMessage::AgentTurnCleanup {
                 session_id: sid,
                 turn_id,
@@ -424,6 +433,7 @@ async fn run_agent_turn_task(runtime: Arc<ServerRuntime>, input: AgentTurnInput)
             ) {
                 event_bus.emit(&sid, Some(&turn_id), payload).await;
             }
+            event_bus.sync_durable_events(&sid).await;
             let _ = actor_tx.send(CommandMessage::AgentTurnCleanup {
                 session_id: sid,
                 turn_id,

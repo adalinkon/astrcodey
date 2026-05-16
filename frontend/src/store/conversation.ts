@@ -506,6 +506,34 @@ export const useAppStore = create<ConversationState>((set, get) => ({
 
 const SSE_RECONNECT_DELAY_MS = 3000
 
+/** Merge consecutive patchBlock/thinkingDelta deltas for the same blockId. */
+function mergeDeltas(deltas: ConversationDelta[]): ConversationDelta[] {
+  if (deltas.length <= 1) return deltas
+
+  const result: ConversationDelta[] = []
+  const textAcc = new Map<string, string>()
+  const thinkAcc = new Map<string, string>()
+
+  for (const delta of deltas) {
+    if (delta.kind === 'patchBlock') {
+      textAcc.set(delta.blockId, (textAcc.get(delta.blockId) ?? '') + delta.textDelta)
+    } else if (delta.kind === 'thinkingDelta') {
+      thinkAcc.set(delta.blockId, (thinkAcc.get(delta.blockId) ?? '') + delta.delta)
+    } else {
+      result.push(delta)
+    }
+  }
+
+  for (const [blockId, textDelta] of textAcc) {
+    if (textDelta) result.push({ kind: 'patchBlock', blockId, textDelta })
+  }
+  for (const [blockId, delta] of thinkAcc) {
+    if (delta) result.push({ kind: 'thinkingDelta', blockId, delta })
+  }
+
+  return result
+}
+
 function connectSse(
   sessionId: string,
   cursor: string,
@@ -519,6 +547,54 @@ function connectSse(
   const abortController = new AbortController()
   set({ streamAbortController: abortController })
 
+  // rAF batcher: collect high-frequency deltas and flush once per animation frame.
+  const pendingDeltas: ConversationDelta[] = []
+  let latestCursor: string | null = null
+  let rafId: number | null = null
+  let timeoutId: number | null = null
+
+  const flushPending = () => {
+    if (rafId !== null) {
+      cancelAnimationFrame(rafId)
+      rafId = null
+    }
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId)
+      timeoutId = null
+    }
+
+    // Always commit cursor regardless of pending deltas.
+    if (latestCursor !== null) {
+      set({ cursor: latestCursor })
+      latestCursor = null
+    }
+
+    if (pendingDeltas.length === 0) return
+
+    // Merge consecutive patchBlock / thinkingDelta for the same blockId
+    const merged = mergeDeltas(pendingDeltas)
+    pendingDeltas.length = 0
+
+    for (const delta of merged) {
+      get().applyDelta(delta)
+    }
+  }
+
+  const scheduleFlush = () => {
+    if (rafId === null) {
+      rafId = requestAnimationFrame(flushPending)
+    }
+    if (timeoutId === null) {
+      timeoutId = window.setTimeout(flushPending, 32)
+    }
+  }
+
+  const isDeferrable = (delta: ConversationDelta): boolean =>
+    delta.kind === 'patchBlock' ||
+    delta.kind === 'thinkingDelta' ||
+    delta.kind === 'patchArguments' ||
+    delta.kind === 'toolOutput'
+
   consumeSseStream(
     sessionId,
     cursor,
@@ -526,9 +602,15 @@ function connectSse(
       const current = get()
       if (current.activeSessionId !== sessionId) return
       if (envelope.cursor) {
-        set({ cursor: envelope.cursor.value })
+        latestCursor = envelope.cursor.value
       }
-      current.applyDelta(envelope.delta)
+      if (isDeferrable(envelope.delta)) {
+        pendingDeltas.push(envelope.delta)
+        scheduleFlush()
+      } else {
+        flushPending()
+        get().applyDelta(envelope.delta)
+      }
     },
     abortController.signal
   )

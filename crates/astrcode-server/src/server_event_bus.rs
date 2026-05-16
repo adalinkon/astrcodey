@@ -33,6 +33,13 @@ impl ServerEventBus {
     pub fn send_notification(&self, notification: ClientNotification) {
         let _ = self.tx.send(notification);
     }
+
+    /// 强制 fsync 指定会话的 durable event log。
+    pub async fn sync_durable_events(&self, session_id: &SessionId) {
+        if let Err(e) = self.store.sync_durable_events(session_id).await {
+            tracing::error!(session_id = %session_id, error = %e, "failed to sync durable events");
+        }
+    }
 }
 
 #[async_trait::async_trait]
