@@ -119,7 +119,7 @@ impl CommandHandler {
         {
             // 显示结果到客户端
             Ok(ExtensionCommandResult::Display { content, is_error }) => {
-                let _ = self.event_tx.send(
+                self.event_bus.send_notification(
                     astrcode_protocol::events::ClientNotification::ExtensionCommandResult {
                         command_name: command.name,
                         content,

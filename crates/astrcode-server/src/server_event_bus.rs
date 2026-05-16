@@ -1,4 +1,7 @@
 //! ServerEventBus — 持久化到 EventStore + 广播到客户端。
+//!
+//! 唯一的事件发射路径。Actor、Turn task、Background task 共用此类型，
+//! 避免持久化/广播逻辑散落在多处。
 
 use std::sync::Arc;
 
@@ -14,28 +17,33 @@ use tokio::sync::broadcast;
 pub struct ServerEventBus {
     store: Arc<dyn EventStore>,
     tx: broadcast::Sender<ClientNotification>,
-    turn_id: Option<TurnId>,
 }
 
 impl ServerEventBus {
     pub fn new(store: Arc<dyn EventStore>, tx: broadcast::Sender<ClientNotification>) -> Self {
-        Self {
-            store,
-            tx,
-            turn_id: None,
-        }
+        Self { store, tx }
     }
 
-    pub fn with_turn_id(mut self, turn_id: TurnId) -> Self {
-        self.turn_id = Some(turn_id);
-        self
+    /// 返回内部 broadcast sender 的引用。
+    pub fn broadcast_sender(&self) -> &broadcast::Sender<ClientNotification> {
+        &self.tx
+    }
+
+    /// 广播任意 ClientNotification（如 SessionResumed、Error 等）。
+    pub fn send_notification(&self, notification: ClientNotification) {
+        let _ = self.tx.send(notification);
     }
 }
 
 #[async_trait::async_trait]
 impl EventBus for ServerEventBus {
-    async fn emit(&self, session_id: &SessionId, payload: astrcode_core::event::EventPayload) {
-        let event = Event::new(session_id.clone(), self.turn_id.clone(), payload);
+    async fn emit(
+        &self,
+        session_id: &SessionId,
+        turn_id: Option<&TurnId>,
+        payload: astrcode_core::event::EventPayload,
+    ) {
+        let event = Event::new(session_id.clone(), turn_id.cloned(), payload);
         if event.payload.is_durable() {
             if let Err(e) = self.store.append_event(event.clone()).await {
                 tracing::error!(session_id = %session_id, error = %e, "failed to persist event via EventBus");

@@ -58,7 +58,7 @@ pub const ASTRCODE_HTTP_TOKEN_ENV: &str = "ASTRCODE_HTTP_TOKEN";
 pub struct HttpState {
     runtime: Arc<ServerRuntime>,
     handler: crate::handler::CommandHandle,
-    event_tx: broadcast::Sender<ClientNotification>,
+    event_bus: Arc<crate::server_event_bus::ServerEventBus>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,11 +81,14 @@ pub fn router(
     event_tx: broadcast::Sender<ClientNotification>,
 ) -> (Router, String) {
     let auth_token = configured_auth_token();
-    let handler = CommandHandler::spawn_actor(Arc::clone(&runtime), event_tx.clone());
+    let event_bus = Arc::new(
+        crate::server_event_bus::ServerEventBus::new(runtime.event_store.clone(), event_tx.clone()),
+    );
+    let handler = CommandHandler::spawn_actor(Arc::clone(&runtime), Arc::clone(&event_bus));
     let state = HttpState {
         runtime,
         handler,
-        event_tx,
+        event_bus,
     };
     let expected_bearer = format!("Bearer {auth_token}");
 
@@ -538,7 +541,7 @@ async fn session_stream(
         );
     }
 
-    let rx = http_state.event_tx.subscribe();
+    let rx = http_state.event_bus.broadcast_sender().subscribe();
     let (missed_events, replay_error) = match query.cursor.as_ref() {
         Some(cursor) if cursor.parse::<u64>().is_err() => (Vec::new(), true),
         Some(cursor) => match http_state

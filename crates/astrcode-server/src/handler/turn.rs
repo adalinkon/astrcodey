@@ -10,20 +10,19 @@ use astrcode_core::{
     tool::ToolResult,
     types::*,
 };
-use astrcode_protocol::events::ClientNotification;
 use astrcode_session::{
-    AgentSignal, Session, SessionServices, TurnOutput, TurnRunner, agent_turn_completed_payloads,
+    EventBus, Session, SessionServices, TurnRunner, agent_turn_completed_payloads,
     agent_turn_failed_payloads, agent_turn_started_payloads, background::BackgroundTaskCompletion,
     run_turn,
 };
 use astrcode_tools::registry::ToolRegistry;
 use tokio::{
-    sync::{broadcast, mpsc, oneshot},
+    sync::{mpsc, oneshot},
     task::JoinHandle,
 };
 
 use super::{CommandHandler, CommandMessage, HandlerError};
-use crate::bootstrap::ServerRuntime;
+use crate::{bootstrap::ServerRuntime, server_event_bus::ServerEventBus};
 
 /// Agent Turn 的输入参数，用于启动后台任务。
 pub(in crate::handler) struct AgentTurnInput {
@@ -34,7 +33,7 @@ pub(in crate::handler) struct AgentTurnInput {
     /// 斜杠命令注入的一次性指令
     pub transient_instructions: Option<String>,
     pub actor_tx: mpsc::UnboundedSender<CommandMessage>,
-    pub event_tx: broadcast::Sender<ClientNotification>,
+    pub event_bus: Arc<ServerEventBus>,
 }
 
 /// 待处理的工具调用请求。
@@ -127,13 +126,9 @@ impl CommandHandler {
         let session_arc = Arc::new(session);
 
         // 记录 Turn 开始事件
-        self.record_turn_payloads(
-            &sid,
-            Some(&turn_id),
-            agent_turn_started_payloads(new_message_id(), visible_text),
-        )
-        .await
-        .map_err(HandlerError::Other)?;
+        for payload in agent_turn_started_payloads(new_message_id(), visible_text) {
+            self.event_bus.emit(&sid, Some(&turn_id), payload).await;
+        }
 
         // 启动 Agent 后台任务
         let handle = self.spawn_agent_turn(AgentTurnInput {
@@ -143,7 +138,7 @@ impl CommandHandler {
             text: user_text,
             transient_instructions,
             actor_tx: self.actor_tx.clone(),
-            event_tx: self.event_tx.clone(),
+            event_bus: Arc::clone(&self.event_bus),
         });
         self.active_turns.insert(
             sid.clone(),
@@ -164,61 +159,20 @@ impl CommandHandler {
         tokio::spawn(run_agent_turn_task(runtime, input))
     }
 
-    /// 处理 Agent Turn 成功完成。
-    pub(in crate::handler) async fn finish_agent_turn(
+    /// 清理已完成的 Agent Turn（终态事件已由 turn task 广播，此处仅做 map 清理）。
+    pub(in crate::handler) fn cleanup_agent_turn(
         &mut self,
         session_id: SessionId,
         turn_id: TurnId,
-        output: TurnOutput,
+        completion: TurnCompletion,
     ) {
-        // 忽略：Turn 已被中止或替换
         if !self.active_turn_matches(&session_id, &turn_id) {
             return;
         }
         let Some(mut turn) = self.active_turns.remove(&session_id) else {
             return;
         };
-        let finish_reason = output.finish_reason.clone();
-        let _ = self
-            .record_turn_payloads(
-                &session_id,
-                Some(&turn_id),
-                agent_turn_completed_payloads(output.finish_reason),
-            )
-            .await;
-        turn.resolve_completion(TurnCompletion::Completed { finish_reason });
-    }
-
-    /// 处理 Agent Turn 失败。
-    pub(in crate::handler) async fn fail_agent_turn(
-        &mut self,
-        session_id: SessionId,
-        turn_id: TurnId,
-        error: astrcode_session::TurnError,
-        emitted_error: bool,
-    ) {
-        // 忽略：Turn 已被中止或替换
-        if !self.active_turn_matches(&session_id, &turn_id) {
-            return;
-        }
-        let Some(mut turn) = self.active_turns.remove(&session_id) else {
-            return;
-        };
-        let error_message = error.to_string();
-        let _ = self
-            .record_turn_payloads(
-                &session_id,
-                Some(&turn_id),
-                agent_turn_failed_payloads(
-                    // 如 agent 未发送错误事件，补充发送
-                    (!emitted_error).then(|| error.to_string()),
-                    "error".into(),
-                ),
-            )
-            .await;
-        turn.resolve_completion(TurnCompletion::Failed {
-            error: error_message,
-        });
+        turn.resolve_completion(completion);
     }
 
     /// 中止指定会话的活跃 Turn。
@@ -260,13 +214,11 @@ impl CommandHandler {
             .cleanup_background_tasks(&active_turn.session_id);
 
         // 记录中止完成事件
-        self.record_turn_payloads(
-            &active_turn.session_id,
-            Some(&active_turn.turn_id),
-            agent_turn_completed_payloads("aborted".into()),
-        )
-        .await
-        .map_err(HandlerError::Other)?;
+        for payload in agent_turn_completed_payloads("aborted".into()) {
+            self.event_bus
+                .emit(&active_turn.session_id, Some(&active_turn.turn_id), payload)
+                .await;
+        }
 
         active_turn.resolve_completion(TurnCompletion::Aborted);
         Ok(())
@@ -315,24 +267,22 @@ impl CommandHandler {
 
         // 标记所有待处理调用为中断
         for pending in pending_requested_tool_calls(&state) {
-            self.record_and_broadcast(
-                session_id,
-                None,
-                EventPayload::ToolCallCompleted {
-                    call_id: pending.call_id.clone().into(),
-                    tool_name: pending.tool_name,
-                    result: interrupted_tool_result(&pending.call_id),
-                },
-            )
-            .await?;
+            self.event_bus
+                .emit(
+                    session_id,
+                    None,
+                    EventPayload::ToolCallCompleted {
+                        call_id: pending.call_id.clone().into(),
+                        tool_name: pending.tool_name,
+                        result: interrupted_tool_result(&pending.call_id),
+                    },
+                )
+                .await;
         }
         // 标记 Turn 为中断完成
-        self.record_turn_payloads(
-            session_id,
-            None,
-            agent_turn_completed_payloads("interrupted".into()),
-        )
-        .await?;
+        for payload in agent_turn_completed_payloads("interrupted".into()) {
+            self.event_bus.emit(session_id, None, payload).await;
+        }
         Ok(())
     }
 }
@@ -384,18 +334,23 @@ async fn run_agent_turn_task(runtime: Arc<ServerRuntime>, input: AgentTurnInput)
         text,
         transient_instructions,
         actor_tx,
-        event_tx,
+        event_bus,
     } = input;
     let sid = session.id().clone();
 
-    // 后台子任务结果转发到 Actor
+    // 后台子任务结果通过 EventBus 直接持久化+广播，不经过 Actor
     let (background_result_tx, mut background_result_rx) =
         mpsc::unbounded_channel::<BackgroundTaskCompletion>();
     {
-        let bg_actor_tx = actor_tx.clone();
+        let bg_event_bus = Arc::clone(&event_bus);
         let handle = tokio::spawn(async move {
             while let Some(completion) = background_result_rx.recv().await {
-                let _ = bg_actor_tx.send(CommandMessage::BackgroundTaskCompleted(completion));
+                bg_event_bus
+                    .emit(&completion.session_id, None, completion.to_tool_call_completed())
+                    .await;
+                bg_event_bus
+                    .emit(&completion.session_id, None, completion.to_background_task_completed())
+                    .await;
             }
         });
         tokio::spawn(async move {
@@ -431,50 +386,50 @@ async fn run_agent_turn_task(runtime: Arc<ServerRuntime>, input: AgentTurnInput)
     {
         Ok(agent) => agent,
         Err(e) => {
-            let _ = actor_tx.send(CommandMessage::AgentTurnFailed {
+            for payload in agent_turn_failed_payloads(Some(e.to_string()), "error".into()) {
+                event_bus.emit(&sid, Some(&turn_id), payload).await;
+            }
+            let _ = actor_tx.send(CommandMessage::AgentTurnCleanup {
                 session_id: sid,
                 turn_id,
-                error: e,
-                emitted_error: false,
+                completion: TurnCompletion::Failed {
+                    error: e.to_string(),
+                },
             });
             return;
         },
     };
 
-    // 驱动 Agent 循环，事件通过 ServerEventBus 直接持久化+广播
-    let event_bus =
-        crate::server_event_bus::ServerEventBus::new(runtime.event_store.clone(), event_tx)
-            .with_turn_id(turn_id.clone());
-    let result = run_turn(
-        &agent,
-        &text,
-        transient_instructions,
-        &event_bus,
-        |signal| {
-            let _actor_tx = actor_tx.clone();
-            async move {
-                let AgentSignal::Event(_) = signal;
-                // 事件已由 ServerEventBus 处理，无需转发
-            }
-        },
-    )
-    .await;
+    // 驱动 Agent 循环，事件通过 EventBus 直接持久化+广播
+    let result = run_turn(&agent, &text, transient_instructions, &turn_id, event_bus.as_ref()).await;
 
-    // 发送完成或失败结果到 Actor
+    // 终态事件通过 EventBus 直接广播，避免绕 actor 通道导致的 SSE 延迟。
     match result.output {
         Ok(output) => {
-            let _ = actor_tx.send(CommandMessage::AgentTurnFinished {
+            for payload in agent_turn_completed_payloads(output.finish_reason.clone()) {
+                event_bus.emit(&sid, Some(&turn_id), payload).await;
+            }
+            let _ = actor_tx.send(CommandMessage::AgentTurnCleanup {
                 session_id: sid,
                 turn_id,
-                output,
+                completion: TurnCompletion::Completed {
+                    finish_reason: output.finish_reason,
+                },
             });
         },
         Err(error) => {
-            let _ = actor_tx.send(CommandMessage::AgentTurnFailed {
+            for payload in agent_turn_failed_payloads(
+                (!result.emitted_error).then(|| error.to_string()),
+                "error".into(),
+            ) {
+                event_bus.emit(&sid, Some(&turn_id), payload).await;
+            }
+            let _ = actor_tx.send(CommandMessage::AgentTurnCleanup {
                 session_id: sid,
                 turn_id,
-                error,
-                emitted_error: result.emitted_error,
+                completion: TurnCompletion::Failed {
+                    error: error.to_string(),
+                },
             });
         },
     }

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use astrcode_client::transport::{ClientTransport, TransportError};
 use astrcode_protocol::{commands::ClientCommand, events::ClientNotification};
-use astrcode_server::{bootstrap, handler::CommandHandler};
+use astrcode_server::{bootstrap, handler::CommandHandler, server_event_bus::ServerEventBus};
 use tokio::sync::{broadcast, mpsc, watch};
 
 #[derive(Debug, Clone)]
@@ -55,7 +55,8 @@ impl InProcessTransport {
             };
 
             // 创建命令 actor，循环接收并处理客户端命令
-            let handler = CommandHandler::spawn_actor(runtime, tx);
+            let event_bus = Arc::new(ServerEventBus::new(runtime.event_store.clone(), tx));
+            let handler = CommandHandler::spawn_actor(runtime, event_bus);
             let _ = ready_tx.send(BootstrapState::Ready);
             while let Some(cmd) = cmd_rx.recv().await {
                 if let Err(e) = handler.handle(cmd).await {

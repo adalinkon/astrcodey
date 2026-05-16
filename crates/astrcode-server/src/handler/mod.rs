@@ -14,9 +14,9 @@ use astrcode_protocol::{
     events::{ClientNotification, SessionListItem},
 };
 use astrcode_tools::registry::ToolRegistry;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 
-use crate::{bootstrap::ServerRuntime, session_manager::SessionManagerError};
+use crate::{bootstrap::ServerRuntime, server_event_bus::ServerEventBus, session_manager::SessionManagerError};
 
 mod actor;
 mod compact;
@@ -69,8 +69,8 @@ pub(crate) use turn::TurnCompletion;
 /// 维护当前活跃会话和活跃回合的状态，确保同一时间只有一个回合在运行。
 pub struct CommandHandler {
     runtime: Arc<ServerRuntime>,
-    /// 事件广播发送端，所有客户端通知都通过此通道发送
-    event_tx: broadcast::Sender<ClientNotification>,
+    /// 事件总线，统一处理持久化和广播
+    event_bus: Arc<ServerEventBus>,
     /// 当前活跃的会话 ID
     active_session_id: Option<SessionId>,
     /// 当前正在执行的回合，按 session 隔离
@@ -110,7 +110,8 @@ impl CommandHandler {
                     })
                     .collect();
                 let _ = self
-                    .event_tx
+                    .event_bus
+                    .broadcast_sender()
                     .send(ClientNotification::SessionList { sessions: items });
             },
 
@@ -160,7 +161,8 @@ impl CommandHandler {
                 };
                 let infos = self.command_infos_for_working_dir(&working_dir).await;
                 let _ = self
-                    .event_tx
+                    .event_bus
+                    .broadcast_sender()
                     .send(ClientNotification::ExtensionCommandList { commands: infos });
             },
 
@@ -212,7 +214,7 @@ impl CommandHandler {
         {
             Ok(state) => {
                 let snapshot = session_snapshot(&state);
-                let _ = self.event_tx.send(ClientNotification::SessionResumed {
+                self.event_bus.send_notification(ClientNotification::SessionResumed {
                     session_id: session_id.into_string(),
                     snapshot,
                 });
@@ -236,9 +238,7 @@ impl CommandHandler {
         self.active_session_id = Some(sid.clone());
 
         tracing::info!(session_id = %sid, "session created, dispatching SessionStart");
-        let _ = self
-            .event_tx
-            .send(ClientNotification::Event(created.start_event));
+        self.broadcast_event(created.start_event);
 
         match self.initialize_session_prompt(&sid, &working_dir).await {
             Ok(()) => {
@@ -338,7 +338,7 @@ impl CommandHandler {
                     }
                 }
                 self.active_session_id = Some(session_id.clone());
-                let _ = self.event_tx.send(ClientNotification::SessionResumed {
+                self.event_bus.send_notification(ClientNotification::SessionResumed {
                     session_id: session_id.into_string(),
                     snapshot,
                 });
@@ -361,9 +361,7 @@ impl CommandHandler {
         let created = self.runtime.session_manager.create(&wd).await?;
         let sid = created.session.id().clone();
         self.active_session_id = Some(sid.clone());
-        let _ = self
-            .event_tx
-            .send(ClientNotification::Event(created.start_event));
+        self.broadcast_event(created.start_event);
         self.initialize_session_prompt(&sid, &wd)
             .await
             .map_err(HandlerError::Other)?;
@@ -421,51 +419,13 @@ impl CommandHandler {
 
     // ─── 事件记录与内部辅助 ──────────────────────────────────────────
 
-    /// 记录事件并广播给客户端。
-    async fn record_and_broadcast(
-        &self,
-        session_id: &SessionId,
-        turn_id: Option<&TurnId>,
-        payload: EventPayload,
-    ) -> Result<Event, String> {
-        let event = Event::new(session_id.clone(), turn_id.cloned(), payload);
-        let event = if event.payload.is_durable() {
-            self.runtime
-                .event_store
-                .append_event(event)
-                .await
-                .map_err(|e| e.to_string())?
-        } else {
-            event
-        };
-        let _ = self.event_tx.send(ClientNotification::Event(event.clone()));
-        Ok(event)
-    }
-
     fn broadcast_event(&self, event: Event) {
-        let _ = self.event_tx.send(ClientNotification::Event(event));
-    }
-
-    /// 批量记录多个事件。
-    async fn record_turn_payloads<I>(
-        &self,
-        session_id: &SessionId,
-        turn_id: Option<&TurnId>,
-        payloads: I,
-    ) -> Result<(), String>
-    where
-        I: IntoIterator<Item = EventPayload>,
-    {
-        for payload in payloads {
-            self.record_and_broadcast(session_id, turn_id, payload)
-                .await?;
-        }
-        Ok(())
+        self.event_bus.send_notification(ClientNotification::Event(event));
     }
 
     /// 发送错误通知给客户端。
     fn send_error(&self, code: i32, message: &str) {
-        let _ = self.event_tx.send(ClientNotification::Error {
+        self.event_bus.send_notification(ClientNotification::Error {
             code,
             message: message.into(),
         });

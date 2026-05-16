@@ -6,6 +6,7 @@ use astrcode_core::{
 };
 use astrcode_protocol::events::ClientNotification;
 use astrcode_session::{
+    EventBus,
     compact::{
         CompactHookContext, collect_compact_instructions, compact_trigger_name,
         dispatch_post_compact,
@@ -136,9 +137,7 @@ impl CommandHandler {
         })?;
 
         // Manual compact has no agent loop, so emit CompactionStarted here.
-        self.record_and_broadcast(sid, None, EventPayload::CompactionStarted)
-            .await
-            .map_err(HandlerError::Other)?;
+        self.event_bus.emit(sid, None, EventPayload::CompactionStarted).await;
 
         let fp = hex_fingerprint(system_prompt.as_bytes());
         let trigger = compact_trigger_name(CompactTrigger::ManualCommand).into();
@@ -148,14 +147,14 @@ impl CommandHandler {
             .map_err(|e| HandlerError::Other(e.to_string()))?;
 
         for event in &events {
-            let _ = self.event_tx.send(ClientNotification::Event(event.clone()));
+            self.broadcast_event(event.clone());
         }
 
         let state = session
             .read_model()
             .await
             .map_err(|e| HandlerError::Other(format!("read session {sid}: {e}")))?;
-        let _ = self.event_tx.send(ClientNotification::SessionResumed {
+        self.event_bus.send_notification(ClientNotification::SessionResumed {
             session_id: sid.clone().into_string(),
             snapshot: session_snapshot(&state),
         });

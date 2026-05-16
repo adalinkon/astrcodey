@@ -18,7 +18,17 @@ use tokio::sync::mpsc;
 #[async_trait::async_trait]
 pub trait EventBus: Send + Sync {
     /// 发射一个事件。实现应同时处理持久化和客户端广播。
-    async fn emit(&self, session_id: &SessionId, payload: EventPayload);
+    ///
+    /// `turn_id = None` 表示会话级事件（不属于任何 turn），
+    /// `turn_id = Some(..)` 表示 turn 级事件。
+    /// Option 只应出现在这个边界：上层调用方（run_turn / drive_agent）
+    /// 直接接收 `&TurnId`，由它们负责传 `Some(turn_id)` 进来。
+    async fn emit(
+        &self,
+        session_id: &SessionId,
+        turn_id: Option<&TurnId>,
+        payload: EventPayload,
+    );
 }
 
 /// 丢弃所有事件的空实现，用于测试。
@@ -26,7 +36,13 @@ pub struct NoopEventBus;
 
 #[async_trait::async_trait]
 impl EventBus for NoopEventBus {
-    async fn emit(&self, _session_id: &SessionId, _payload: EventPayload) {}
+    async fn emit(
+        &self,
+        _session_id: &SessionId,
+        _turn_id: Option<&TurnId>,
+        _payload: EventPayload,
+    ) {
+    }
 }
 
 // ─── Signal ──────────────────────────────────────────────────────────────

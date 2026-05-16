@@ -383,6 +383,16 @@ impl Event {
             payload,
         }
     }
+
+    /// 构造 session 级事件（不属于任何 turn）。
+    pub fn session(session_id: SessionId, payload: EventPayload) -> Self {
+        Self::new(session_id, None, payload)
+    }
+
+    /// 构造 turn 级事件。
+    pub fn turn(session_id: SessionId, turn_id: TurnId, payload: EventPayload) -> Self {
+        Self::new(session_id, Some(turn_id), payload)
+    }
 }
 
 #[cfg(test)]

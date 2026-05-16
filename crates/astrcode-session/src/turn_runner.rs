@@ -5,7 +5,7 @@
 //! Agent 是无状态的短暂对象，处理完一个回合后即被丢弃。
 //! `drive_agent` 负责在回合执行时转发事件流并等待最终输出。
 
-use std::{future::Future, sync::Arc};
+use std::sync::Arc;
 
 use astrcode_context::context_engine::{ContextPrepareInput, LlmContextAssembler};
 use astrcode_core::{
@@ -41,19 +41,15 @@ use crate::{
 
 /// 运行 agent 的一次 process_prompt，通过 select! + drain 实时处理事件。
 ///
-/// `on_signal` 在每个事件或控制信号到达时被调用（包含 select 阶段和 drain 阶段）。
+/// 每个事件通过 `EventBus::emit()` 处理持久化和广播。
 /// 返回 `(output, emitted_error)`。
-pub async fn drive_agent<F, Fut>(
+pub async fn drive_agent(
     agent: &TurnRunner,
     user_text: &str,
     transient_instructions: Option<String>,
+    turn_id: &TurnId,
     event_bus: &dyn EventBus,
-    mut on_signal: F,
-) -> (Result<TurnOutput, TurnError>, bool)
-where
-    F: FnMut(AgentSignal) -> Fut,
-    Fut: Future<Output = ()>,
-{
+) -> (Result<TurnOutput, TurnError>, bool) {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let agent_future = agent.process_prompt(user_text, transient_instructions, Some(event_tx));
     tokio::pin!(agent_future);
@@ -65,13 +61,11 @@ where
             result = &mut agent_future => break result,
             payload = event_rx.recv(), if !events_closed => {
                 match payload {
-                    Some(signal) => {
-                        let AgentSignal::Event(ref payload) = signal;
+                    Some(AgentSignal::Event(ref payload)) => {
                         if matches!(payload, EventPayload::ErrorOccurred { .. }) {
                             emitted_error = true;
                         }
-                        event_bus.emit(&agent.shared.session_id, payload.clone()).await;
-                        on_signal(signal).await;
+                        event_bus.emit(&agent.shared.session_id, Some(turn_id), payload.clone()).await;
                     },
                     None => events_closed = true,
                 }
@@ -79,15 +73,13 @@ where
         }
     };
 
-    while let Some(signal) = event_rx.recv().await {
-        let AgentSignal::Event(ref payload) = signal;
+    while let Some(AgentSignal::Event(ref payload)) = event_rx.recv().await {
         if matches!(payload, EventPayload::ErrorOccurred { .. }) {
             emitted_error = true;
         }
         event_bus
-            .emit(&agent.shared.session_id, payload.clone())
+            .emit(&agent.shared.session_id, Some(turn_id), payload.clone())
             .await;
-        on_signal(signal).await;
     }
 
     (output, emitted_error)
@@ -505,28 +497,20 @@ pub struct RunTurnResult {
 
 /// 执行一轮完整的 agent turn。
 ///
-/// 封装 `drive_agent` 调用。
-/// handler 和 spawner 共用此函数，通过 `on_signal` 闭包处理各自的差异。
-///
-/// `on_signal` 接收 `AgentSignal`：
-/// - Event 信号已由 EventBus 处理，闭包可做额外副作用（如 progress 转发）。
-pub async fn run_turn<F, Fut>(
+/// 封装 `drive_agent` 调用。所有事件通过 `EventBus::emit()` 处理。
+pub async fn run_turn(
     agent: &TurnRunner,
     user_text: &str,
     transient_instructions: Option<String>,
+    turn_id: &TurnId,
     event_bus: &dyn EventBus,
-    on_signal: F,
-) -> RunTurnResult
-where
-    F: FnMut(AgentSignal) -> Fut,
-    Fut: Future<Output = ()>,
-{
+) -> RunTurnResult {
     let (output, emitted_error) = drive_agent(
         agent,
         user_text,
         transient_instructions,
+        turn_id,
         event_bus,
-        on_signal,
     )
     .await;
 

@@ -16,7 +16,7 @@ use astrcode_extensions::{
     runtime::{SpawnRequest, SpawnResult},
 };
 use astrcode_session::{
-    AgentSignal, Session, SessionServices, TurnError, TurnOutput, TurnRunner,
+    EventBus, Session, SessionServices, TurnError, TurnOutput, TurnRunner,
     agent_turn_completed_payloads, agent_turn_failed_payloads, agent_turn_started_payloads,
     background::{BackgroundTaskCompletion, BackgroundTaskManager, complete_background_task},
     run_turn,
@@ -482,6 +482,31 @@ impl ServerSessionSpawner {
 
 // ─── 子 Agent 驱动 ────────────────────────────────────────────────────
 
+/// 子会话 EventBus：持久化事件到子会话并转发进度给父会话。
+struct ChildEventBus {
+    child_session: Arc<Session>,
+    child_turn_id: TurnId,
+    progress: ProgressTx,
+}
+
+#[async_trait::async_trait]
+impl EventBus for ChildEventBus {
+    async fn emit(
+        &self,
+        _session_id: &SessionId,
+        _turn_id: Option<&TurnId>,
+        payload: EventPayload,
+    ) {
+        let _ = append_child_progress_payload(
+            &self.child_session,
+            &self.progress,
+            Some(&self.child_turn_id),
+            payload,
+        )
+        .await;
+    }
+}
+
 async fn drive_child_agent_turn(
     agent: &TurnRunner,
     user_prompt: &str,
@@ -491,23 +516,12 @@ async fn drive_child_agent_turn(
     progress: ProgressTx,
 ) -> (Result<TurnOutput, TurnError>, bool, SessionId) {
     let initial_sid = current_child_sid.lock().await.clone();
-    let noop_bus = astrcode_session::NoopEventBus;
-    let result = run_turn(agent, user_prompt, None, &noop_bus, move |signal| {
-        let child_session = Arc::clone(&child_session);
-        let child_turn_id = child_turn_id.clone();
-        let progress = progress.clone();
-        async move {
-            let AgentSignal::Event(payload) = signal;
-            let _ = append_child_progress_payload(
-                &child_session,
-                &progress,
-                Some(&child_turn_id),
-                payload.clone(),
-            )
-            .await;
-        }
-    })
-    .await;
+    let bus = ChildEventBus {
+        child_session,
+        child_turn_id: child_turn_id.clone(),
+        progress,
+    };
+    let result = run_turn(agent, user_prompt, None, &child_turn_id, &bus).await;
     (result.output, result.emitted_error, initial_sid)
 }
 
