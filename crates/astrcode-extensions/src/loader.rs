@@ -66,7 +66,7 @@ impl ExtensionLoader {
         let mut extensions = Vec::new();
         let mut errors = Vec::new();
 
-        let paths = match Self::extension_dirs(dir) {
+        let paths = match Self::extension_dirs(dir).await {
             Ok(paths) => paths,
             Err(e) => {
                 errors.push(e);
@@ -84,14 +84,29 @@ impl ExtensionLoader {
         (extensions, errors)
     }
 
-    fn extension_dirs(dir: &Path) -> Result<Vec<PathBuf>, String> {
-        let entries = std::fs::read_dir(dir)
+    async fn extension_dirs(dir: &Path) -> Result<Vec<PathBuf>, String> {
+        let mut entries = tokio::fs::read_dir(dir)
+            .await
             .map_err(|e| format!("Cannot read extensions dir {}: {e}", dir.display()))?;
-        let mut paths = entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.is_dir() && path.join("extension.json").exists())
-            .collect::<Vec<_>>();
+        let mut paths = Vec::new();
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| format!("read dir entry: {e}"))?
+        {
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .await
+                .map_err(|e| format!("read file type: {e}"))?;
+            if file_type.is_dir()
+                && tokio::fs::metadata(path.join("extension.json"))
+                    .await
+                    .is_ok()
+            {
+                paths.push(path);
+            }
+        }
         paths.sort();
         Ok(paths)
     }
@@ -99,8 +114,9 @@ impl ExtensionLoader {
     /// 加载单个扩展：读取并验证清单，加载 WASM 模块。
     async fn load_extension(ext_dir: &Path) -> Result<Arc<dyn Extension>, String> {
         let manifest_path = ext_dir.join("extension.json");
-        let manifest_bytes =
-            std::fs::read(&manifest_path).map_err(|e| format!("read manifest: {e}"))?;
+        let manifest_bytes = tokio::fs::read(&manifest_path)
+            .await
+            .map_err(|e| format!("read manifest: {e}"))?;
         let manifest: astrcode_core::extension::ExtensionManifest =
             serde_json::from_slice(&manifest_bytes).map_err(|e| format!("parse manifest: {e}"))?;
         Self::validate_manifest(&manifest)?;
@@ -137,8 +153,8 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn extension_dirs_are_sorted_and_manifest_bound() {
+    #[tokio::test]
+    async fn extension_dirs_are_sorted_and_manifest_bound() {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -150,7 +166,7 @@ mod tests {
         fs::write(root.join("zeta").join("extension.json"), "{}").unwrap();
         fs::write(root.join("alpha").join("extension.json"), "{}").unwrap();
 
-        let dirs = ExtensionLoader::extension_dirs(&root).unwrap();
+        let dirs = ExtensionLoader::extension_dirs(&root).await.unwrap();
         let names = dirs
             .iter()
             .map(|path| path.file_name().unwrap().to_string_lossy().to_string())

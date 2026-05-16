@@ -65,6 +65,12 @@ struct HandlerIndex {
     compact: HashMap<CompactEvent, Vec<Arc<dyn CompactHandler>>>,
     post_tool_use_failure: Vec<Arc<dyn PostToolUseFailureHandler>>,
     lifecycle: HashMap<ExtensionEvent, Vec<(HookMode, Arc<dyn LifecycleHandler>)>>,
+    // 预计算的 collect 缓存
+    tool_metadata: std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata>,
+    static_tools: Vec<(ToolDefinition, Arc<dyn ToolHandler>)>,
+    tool_discoveries: Vec<Arc<dyn ToolDiscoveryHandler>>,
+    static_commands: Vec<(String, SlashCommand, Arc<dyn CommandHandler>)>,
+    command_discoveries: Vec<Arc<dyn CommandDiscoveryHandler>>,
 }
 
 fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
@@ -75,6 +81,11 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
     let mut cmp: Vec<(CompactEvent, i32, Arc<dyn CompactHandler>)> = Vec::new();
     let mut ptuf: Vec<(i32, Arc<dyn PostToolUseFailureHandler>)> = Vec::new();
     let mut lc: Vec<(ExtensionEvent, i32, HookMode, Arc<dyn LifecycleHandler>)> = Vec::new();
+    let mut tool_metadata = std::collections::HashMap::new();
+    let mut static_tools: Vec<(ToolDefinition, Arc<dyn ToolHandler>)> = Vec::new();
+    let mut tool_discoveries: Vec<Arc<dyn ToolDiscoveryHandler>> = Vec::new();
+    let mut static_commands: Vec<(String, SlashCommand, Arc<dyn CommandHandler>)> = Vec::new();
+    let mut command_discoveries: Vec<Arc<dyn CommandDiscoveryHandler>> = Vec::new();
 
     for record in records {
         for (mode, pri, h) in record.reg.pre_tool_use() {
@@ -98,6 +109,20 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
         for (ev, mode, pri, h) in record.reg.lifecycle() {
             lc.push((ev.clone(), *pri, *mode, Arc::clone(h)));
         }
+        // collect 缓存
+        tool_metadata.extend(record.reg.all_tool_metadata().clone());
+        for (def, handler) in record.reg.tools().iter() {
+            static_tools.push((def.clone(), Arc::clone(handler)));
+        }
+        for discovery in record.reg.tool_discoveries().iter() {
+            tool_discoveries.push(Arc::clone(discovery));
+        }
+        for (cmd, handler) in record.reg.commands().iter() {
+            static_commands.push((record.id.clone(), cmd.clone(), Arc::clone(handler)));
+        }
+        for discovery in record.reg.command_discoveries().iter() {
+            command_discoveries.push(Arc::clone(discovery));
+        }
     }
 
     pre.sort_by_key(|b| std::cmp::Reverse(b.0));
@@ -116,6 +141,11 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
         compact: group_by_event_plain(cmp),
         post_tool_use_failure: ptuf.into_iter().map(|(_, h)| h).collect(),
         lifecycle: group_by_event_with_mode(lc),
+        tool_metadata,
+        static_tools,
+        tool_discoveries,
+        static_commands,
+        command_discoveries,
     }
 }
 
@@ -161,6 +191,11 @@ impl ExtensionRunner {
                 compact: HashMap::new(),
                 post_tool_use_failure: Vec::new(),
                 lifecycle: HashMap::new(),
+                tool_metadata: std::collections::HashMap::new(),
+                static_tools: Vec::new(),
+                tool_discoveries: Vec::new(),
+                static_commands: Vec::new(),
+                command_discoveries: Vec::new(),
             })),
             spawner: Arc::new(StdRwLock::new(None)),
             timeout,
@@ -500,74 +535,65 @@ impl ExtensionRunner {
 
     // ─── 收集方法（仍从 records 读取，注册时不变） ──────────────────
 
-    /// 从 ExtensionRecord 收集工具适配器。
+    /// 从 HandlerIndex 缓存收集工具适配器。
     pub async fn collect_tool_adapters_typed(&self, working_dir: &str) -> Vec<Arc<dyn Tool>> {
-        let records = self.records.read().await;
+        let index = self.load_index();
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-        for record in records.iter() {
-            for (def, handler) in record.reg.tools().iter() {
-                tools.push(Arc::new(HandlerTool {
-                    definition: def.clone(),
-                    handler: Arc::clone(handler),
-                    working_dir: working_dir.to_string(),
-                    spawner: Arc::clone(&self.spawner),
-                }));
-            }
-            for discovery in record.reg.tool_discoveries().iter() {
-                match tokio::time::timeout(self.timeout, discovery.discover(working_dir)).await {
-                    Ok(discovered) => {
-                        for (def, handler) in discovered {
-                            tools.push(Arc::new(HandlerTool {
-                                definition: def,
-                                handler,
-                                working_dir: working_dir.to_string(),
-                                spawner: Arc::clone(&self.spawner),
-                            }));
-                        }
-                    },
-                    Err(_) => {
-                        tracing::warn!("tool discovery timed out for extension {}", record.id);
-                    },
-                }
+        for (def, handler) in &index.static_tools {
+            tools.push(Arc::new(HandlerTool {
+                definition: def.clone(),
+                handler: Arc::clone(handler),
+                working_dir: working_dir.to_string(),
+                spawner: Arc::clone(&self.spawner),
+            }));
+        }
+        for discovery in &index.tool_discoveries {
+            match tokio::time::timeout(self.timeout, discovery.discover(working_dir)).await {
+                Ok(discovered) => {
+                    for (def, handler) in discovered {
+                        tools.push(Arc::new(HandlerTool {
+                            definition: def,
+                            handler,
+                            working_dir: working_dir.to_string(),
+                            spawner: Arc::clone(&self.spawner),
+                        }));
+                    }
+                },
+                Err(_) => {
+                    tracing::warn!("tool discovery timed out");
+                },
             }
         }
         tools
     }
 
-    /// 从 ExtensionRecord 收集工具提示词元数据。
+    /// 从 HandlerIndex 缓存收集工具提示词元数据。
     pub async fn collect_tool_prompt_metadata_typed(
         &self,
     ) -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata> {
-        let records = self.records.read().await;
-        let mut map = std::collections::HashMap::new();
-        for record in records.iter() {
-            map.extend(record.reg.all_tool_metadata().clone());
-        }
-        map
+        self.load_index().tool_metadata.clone()
     }
 
-    /// 从 ExtensionRecord 收集斜杠命令。
+    /// 从 HandlerIndex 缓存收集斜杠命令。
     pub async fn collect_commands_for_typed(
         &self,
         working_dir: &str,
     ) -> Vec<(String, SlashCommand, Arc<dyn CommandHandler>)> {
-        let records = self.records.read().await;
+        let index = self.load_index();
         let mut cmds = Vec::new();
-        for record in records.iter() {
-            for (cmd, handler) in record.reg.commands().iter() {
-                cmds.push((record.id.clone(), cmd.clone(), Arc::clone(handler)));
-            }
-            for discovery in record.reg.command_discoveries().iter() {
-                match tokio::time::timeout(self.timeout, discovery.discover(working_dir)).await {
-                    Ok(discovered) => {
-                        for (cmd, handler) in discovered {
-                            cmds.push((record.id.clone(), cmd, handler));
-                        }
-                    },
-                    Err(_) => {
-                        tracing::warn!("command discovery timed out for extension {}", record.id);
-                    },
-                }
+        for (ext_id, cmd, handler) in &index.static_commands {
+            cmds.push((ext_id.clone(), cmd.clone(), Arc::clone(handler)));
+        }
+        for discovery in &index.command_discoveries {
+            match tokio::time::timeout(self.timeout, discovery.discover(working_dir)).await {
+                Ok(discovered) => {
+                    for (cmd, handler) in discovered {
+                        cmds.push(("discovery".into(), cmd, handler));
+                    }
+                },
+                Err(_) => {
+                    tracing::warn!("command discovery timed out");
+                },
             }
         }
         cmds
