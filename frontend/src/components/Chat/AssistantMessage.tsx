@@ -141,24 +141,42 @@ const markdownComponents = {
 
 const MarkdownContent = memo(function MarkdownContent({
   text,
-  defer = false,
 }: {
   text: string
-  defer?: boolean
 }) {
-  const deferredText = React.useDeferredValue(text)
-  const renderedText = defer ? deferredText : text
   return (
-    <MarkdownGuard fallback={renderedText}>
+    <MarkdownGuard fallback={text}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={markdownComponents}
       >
-        {renderedText}
+        {text}
       </ReactMarkdown>
     </MarkdownGuard>
   )
 })
+
+/** Streaming 时按换行边界分割：已稳定行走 ReactMarkdown，未完成尾巴纯文本。 */
+function StreamingMarkdown({ text }: { text: string }) {
+  const lastNewline = text.lastIndexOf('\n')
+  if (lastNewline === -1) {
+    return (
+      <>
+        <span className="whitespace-pre-wrap break-words">{text}</span>
+        <span className="ml-px inline-block animate-blink text-text-secondary motion-reduce:animate-none">▋</span>
+      </>
+    )
+  }
+  const committed = text.slice(0, lastNewline + 1)
+  const tail = text.slice(lastNewline + 1)
+  return (
+    <>
+      <MarkdownContent text={committed} />
+      <span className="whitespace-pre-wrap break-words">{tail}</span>
+      <span className="ml-px inline-block animate-blink text-text-secondary motion-reduce:animate-none">▋</span>
+    </>
+  )
+}
 
 function extractThinkingBlocks(text: string): {
   visibleText: string
@@ -255,18 +273,19 @@ function AssistantMessage({ block, reasoningText }: AssistantMessageProps) {
                 </span>
               </summary>
               <div className="mb-3 ml-2 mt-2 border-l-2 border-border pl-4 overflow-wrap-anywhere text-sm leading-relaxed text-text-secondary prose-chat">
-                <MarkdownContent text={block} defer={streaming} />
+                {streaming ? (
+                  <StreamingMarkdown text={block} />
+                ) : (
+                  <MarkdownContent text={block} />
+                )}
               </div>
             </details>
           ))}
-          {visibleText ? (
-            <MarkdownContent text={visibleText} defer={streaming} />
+          {streaming ? (
+            visibleText ? <StreamingMarkdown text={visibleText} /> : null
+          ) : visibleText ? (
+            <MarkdownContent text={visibleText} />
           ) : null}
-          {streaming && (
-            <span className="ml-px inline-block animate-blink text-text-secondary motion-reduce:animate-none">
-              ▋
-            </span>
-          )}
         </div>
       </div>
     </div>
