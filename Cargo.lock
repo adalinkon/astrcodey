@@ -354,8 +354,10 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
+ "wasm-encoder 0.245.1",
  "wasmtime",
 ]
 

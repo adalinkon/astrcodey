@@ -20,3 +20,7 @@ tracing = { workspace = true }
 dirs = "6"
 parking_lot = "0.12"
 wasmtime = { version = "43", default-features = false, features = ["cranelift", "runtime"] }
+
+[dev-dependencies]
+wasm-encoder = "0.245"
+tempfile = "3"

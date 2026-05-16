@@ -124,7 +124,7 @@ impl Default for HostState {
 // ─── Memory helpers ─────────────────────────────────────────────────────
 
 fn read_memory_string(caller: &mut Caller<'_, HostState>, ptr: u32, len: u32) -> String {
-    if len == 0 || ptr == 0 {
+    if len == 0 {
         return String::new();
     }
     let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
@@ -226,7 +226,7 @@ pub fn create_linker(engine: &wasmtime::Engine) -> Result<Linker<HostState>, Str
 pub fn take_response(store: &wasmtime::Store<HostState>, memory: &wasmtime::Memory) -> String {
     let state = store.data();
     let (ptr, len) = (state.response_ptr, state.response_len);
-    if len == 0 || ptr == 0 {
+    if len == 0 {
         return String::new();
     }
     let data = memory.data(store);
