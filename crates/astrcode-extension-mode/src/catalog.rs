@@ -64,8 +64,6 @@ pub struct ModeSpec {
     pub description: String,
     /// Tool names that are blocked in this mode.
     pub restricted_tools: HashSet<String>,
-    /// Whether child agent delegation is allowed.
-    pub allow_delegation: bool,
     /// Mode IDs this mode can transition to.
     pub allowed_transitions: Vec<ModeId>,
     /// Whether this mode requires a plan artifact to exist before allowing exit.
@@ -129,7 +127,6 @@ pub fn builtin_mode_specs() -> Vec<ModeSpec> {
             name: "Code".into(),
             description: "Default execution mode with full capabilities.".into(),
             restricted_tools: HashSet::new(),
-            allow_delegation: true,
             allowed_transitions: transitions.clone(),
             requires_plan_artifact: false,
             exit_review_passes: 0,
@@ -143,7 +140,6 @@ pub fn builtin_mode_specs() -> Vec<ModeSpec> {
                 .iter()
                 .map(|s| (*s).to_string())
                 .collect(),
-            allow_delegation: true,
             allowed_transitions: transitions,
             requires_plan_artifact: true,
             exit_review_passes: 1,
@@ -175,15 +171,16 @@ mod tests {
     }
 
     #[test]
-    fn plan_mode_allows_delegation() {
+    // TODO: a better way to enforce that critical tools like "agent" are not accidentally restricted by mode definitions.
+    fn plan_mode_does_not_restrict_agent_tool() {
         let catalog = builtin_catalog();
-        assert!(catalog.get(&ModeId::plan()).unwrap().allow_delegation);
+        assert!(!catalog.get(&ModeId::plan()).unwrap().restricted_tools.contains("agent"));
     }
 
     #[test]
-    fn code_mode_allows_delegation() {
+    fn code_mode_does_not_restrict_agent_tool() {
         let catalog = builtin_catalog();
-        assert!(catalog.get(&ModeId::code()).unwrap().allow_delegation);
+        assert!(!catalog.get(&ModeId::code()).unwrap().restricted_tools.contains("agent"));
     }
 
     #[test]

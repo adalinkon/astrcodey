@@ -7,16 +7,16 @@ use serde::{Deserialize, Serialize};
 
 /// Per-session mode state persisted to disk.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct ModeState {
+    #[serde(alias = "currentMode")]
     pub current_mode: String,
-    #[serde(default)]
+    #[serde(default, alias = "previousMode")]
     pub previous_mode: Option<String>,
     /// Set when a transition just happened; cleared after injection.
-    #[serde(default)]
+    #[serde(default, alias = "pendingTransitionContext")]
     pub pending_transition_context: Option<String>,
     /// Exit gate: number of review passes completed during current plan mode session.
-    #[serde(default)]
+    #[serde(default, alias = "exitReviewPassesCompleted")]
     pub exit_review_passes_completed: u32,
 }
 

@@ -44,12 +44,12 @@ use crate::{
 
 pub fn extension() -> Arc<dyn Extension> {
     Arc::new(ModeExtension {
-        catalog: builtin_catalog(),
+        catalog: Arc::new(builtin_catalog()),
     })
 }
 
 struct ModeExtension {
-    catalog: ModeCatalog,
+    catalog: Arc<ModeCatalog>,
 }
 
 #[async_trait::async_trait]
@@ -63,13 +63,13 @@ impl Extension for ModeExtension {
         reg.tool(
             switch_mode_tool_definition(),
             Arc::new(ModeToolHandler {
-                catalog: catalog.clone(),
+                catalog: Arc::clone(&catalog),
             }),
         );
         reg.tool(
             upsert_plan_tool_definition(),
             Arc::new(ModeToolHandler {
-                catalog: catalog.clone(),
+                catalog: Arc::clone(&catalog),
             }),
         );
         reg.tool_metadata(mode_tool_metadata());
@@ -77,7 +77,7 @@ impl Extension for ModeExtension {
             HookMode::Blocking,
             100,
             Arc::new(ModePreToolUseHandler {
-                catalog: catalog.clone(),
+                catalog: Arc::clone(&catalog),
             }),
         );
         reg.on_provider(
@@ -90,7 +90,7 @@ impl Extension for ModeExtension {
 }
 
 struct ModeToolHandler {
-    catalog: ModeCatalog,
+    catalog: Arc<ModeCatalog>,
 }
 
 #[async_trait::async_trait]
@@ -132,7 +132,7 @@ impl ToolHandler for ModeToolHandler {
 }
 
 struct ModePreToolUseHandler {
-    catalog: ModeCatalog,
+    catalog: Arc<ModeCatalog>,
 }
 
 #[async_trait::async_trait]
@@ -151,12 +151,6 @@ impl PreToolUseHandler for ModePreToolUseHandler {
                     "Tool '{}' is not available in {} mode",
                     ctx.tool_name, spec.name
                 ),
-            });
-        }
-
-        if !spec.allow_delegation && ctx.tool_name == "agent" {
-            return Ok(PreToolUseResult::Block {
-                reason: format!("Agent delegation is not allowed in {} mode", spec.name),
             });
         }
 
