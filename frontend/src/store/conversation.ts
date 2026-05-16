@@ -506,40 +506,6 @@ export const useAppStore = create<ConversationState>((set, get) => ({
 
 const SSE_RECONNECT_DELAY_MS = 3000
 
-/** Merge consecutive patchBlock/thinkingDelta deltas for the same blockId. */
-function mergeDeltas(deltas: ConversationDelta[]): ConversationDelta[] {
-  if (deltas.length <= 1) return deltas
-
-  const result: ConversationDelta[] = []
-  const textAcc = new Map<string, string>()
-  const thinkAcc = new Map<string, string>()
-
-  for (const delta of deltas) {
-    if (delta.kind === 'patchBlock') {
-      textAcc.set(
-        delta.blockId,
-        (textAcc.get(delta.blockId) ?? '') + delta.textDelta
-      )
-    } else if (delta.kind === 'thinkingDelta') {
-      thinkAcc.set(
-        delta.blockId,
-        (thinkAcc.get(delta.blockId) ?? '') + delta.delta
-      )
-    } else {
-      result.push(delta)
-    }
-  }
-
-  for (const [blockId, textDelta] of textAcc) {
-    if (textDelta) result.push({ kind: 'patchBlock', blockId, textDelta })
-  }
-  for (const [blockId, delta] of thinkAcc) {
-    if (delta) result.push({ kind: 'thinkingDelta', blockId, delta })
-  }
-
-  return result
-}
-
 function connectSse(
   sessionId: string,
   cursor: string,
@@ -577,11 +543,8 @@ function connectSse(
 
     if (pendingDeltas.length === 0) return
 
-    // Merge consecutive patchBlock / thinkingDelta for the same blockId
-    const merged = mergeDeltas(pendingDeltas)
-    pendingDeltas.length = 0
-
-    for (const delta of merged) {
+    const deltas = pendingDeltas.splice(0)
+    for (const delta of deltas) {
       get().applyDelta(delta)
     }
   }
