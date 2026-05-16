@@ -138,10 +138,10 @@ The `ToolPipeline` struct owns tool preprocessing, parallel scheduling, and resu
 
 When conversation history approaches 83.5% of the model's context limit, `astrcode-context` triggers automatic compaction:
 
-1. Deterministic compaction (rule-based summarization) runs by default
-2. Provider-backed compaction (LLM generates summary) is attempted when available
+1. LLM-backed compaction (model generates a structured 9-section summary) runs by default for both auto and manual compact
+2. On LLM failure (network error, parse error, timeout), the system falls back to deterministic rule-based summarization
 3. Compact transcripts are persisted as snapshots for debugging
-4. Consecutive provider failures fall back to deterministic mode
+4. Post-compact context restoration re-reads recent files and preserves agent/skill/tool state
 
 ### Tool Execution
 

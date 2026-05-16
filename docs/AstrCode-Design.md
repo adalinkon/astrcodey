@@ -39,19 +39,19 @@ Compact是一个**严格的 XML contract**：
 - 输出有 token 上限（`COMPACT_OUTPUT_TOKEN_CAP`）
 - 解析器容忍外层 markdown fence、大小写不敏感的 XML tag，但不容忍结构缺失
 
-### Forked provider
+### 闭包式 LLM 调用
 
-Compact 使用独立的 `ForkedProviderRunner` 执行 LLM 调用：
+Compact 通过 `make_compact_request_fn` 从 `LlmProvider` 构造请求闭包：
 
-- 复用主请求的 system prompt + tools，**共享 prompt cache key**（基于 system prompt + tools 的稳定哈希，忽略 user/assistant 内容），降低计费成本
-- Forked 调用强制 `max_turns = 1`，如果模型尝试调用工具则直接报错——compact 不是对话
-- 模型返回的 compact 请求如果 prompt-too-long，按 API round 边界丢弃最早的历史重试（最多 3 轮）
+- 闭包调用 `llm.generate(messages, vec![])`（不传工具），收集流式文本输出并返回
+- 闭包传入 `compact_messages_with_fallback`，`LlmContextAssembler` 不持有 provider 引用，保持模型切换时的无状态设计
+- compact prompt 禁止工具调用，如果模型尝试调用工具则解析失败，触发 contract repair 重试
 
 ### 双路径 + 熔断
 
-- 优先使用 LLM 驱动的 provider-backed compact
-- 连续失败 3 次后自动降级到确定性 fallback（基于规则的摘要）
-- 失败计数基于 session ID 在全局 `AutoCompactFailureTracker` 中跟踪，compact continuation children 共享同一条 session 线
+- 自动压缩和手动压缩统一走 `compact_messages_with_fallback`：先尝试 LLM 生成结构化摘要，失败时降级到确定性模板
+- LLM 调用通过闭包注入（`make_compact_request_fn`），`LlmContextAssembler` 不持有 provider 引用
+- 确定性 fallback 仅在 LLM 完全不可用时触发，作为最后保障
 
 ### Post-compact 上下文恢复
 
