@@ -70,6 +70,25 @@ pub fn mode_from_discriminant(d: u8) -> Option<HookMode> {
     }
 }
 
+// ─── Guest response effect codes ─────────────────────────────────────────
+
+/// WASM guest `handle_event` / `handle_tool` 返回的 effect code。
+pub const GUEST_EFFECT_OK: i8 = 0;
+/// 操作失败，content 为错误信息。
+pub const GUEST_EFFECT_ERROR: i8 = 1;
+/// 工具执行结果包含 `RunSession` outcome。
+pub const GUEST_EFFECT_TOOL_OUTCOME: i8 = 2;
+/// `PreToolUse` 返回 `ModifiedInput`，content 为新 tool_input JSON。
+pub const GUEST_EFFECT_MODIFIED_INPUT: i8 = 3;
+/// `PromptBuild` 返回贡献，content 为 `PromptContributions` JSON。
+pub const GUEST_EFFECT_PROMPT_CONTRIBUTIONS: i8 = 4;
+/// `Compact` 返回贡献，content 为 `CompactContributions` JSON。
+pub const GUEST_EFFECT_COMPACT_CONTRIBUTIONS: i8 = 5;
+/// `Provider` 返回 `ReplaceMessages`，content 为 messages JSON。
+pub const GUEST_EFFECT_REPLACE_MESSAGES: i8 = 6;
+/// `Provider` 返回 `AppendMessages`，content 为 messages JSON。
+pub const GUEST_EFFECT_APPEND_MESSAGES: i8 = 7;
+
 // ─── Host State ─────────────────────────────────────────────────────────
 
 /// 宿主在 wasmtime Store 中携带的状态。

@@ -8,10 +8,10 @@ use std::sync::Arc;
 
 use astrcode_core::{
     extension::{
-        CommandContext, CommandHandler, CompactContext, CompactEvent, CompactHandler,
-        CompactResult, EXTENSION_TOOL_OUTCOME_KEY, Extension, ExtensionCommandResult,
-        ExtensionError, ExtensionEvent, ExtensionToolOutcome, HookMode, HookResult,
-        LifecycleContext, LifecycleHandler, PostToolUseContext, PostToolUseHandler,
+        CommandContext, CommandHandler, CompactContext, CompactContributions, CompactEvent,
+        CompactHandler, CompactResult, EXTENSION_TOOL_OUTCOME_KEY, Extension,
+        ExtensionCommandResult, ExtensionError, ExtensionEvent, ExtensionToolOutcome, HookMode,
+        HookResult, LifecycleContext, LifecycleHandler, PostToolUseContext, PostToolUseHandler,
         PostToolUseResult, PreToolUseContext, PreToolUseHandler, PreToolUseResult,
         PromptBuildContext, PromptBuildHandler, PromptContributions, ProviderContext,
         ProviderEvent, ProviderHandler, ProviderResult, Registrar, SlashCommand, ToolHandler,
@@ -21,7 +21,11 @@ use astrcode_core::{
 use parking_lot::Mutex;
 use serde_json::json;
 
-use crate::wasm_api::{self, HostState};
+use crate::wasm_api::{
+    self, GUEST_EFFECT_APPEND_MESSAGES, GUEST_EFFECT_COMPACT_CONTRIBUTIONS, GUEST_EFFECT_ERROR,
+    GUEST_EFFECT_MODIFIED_INPUT, GUEST_EFFECT_OK, GUEST_EFFECT_PROMPT_CONTRIBUTIONS,
+    GUEST_EFFECT_REPLACE_MESSAGES, GUEST_EFFECT_TOOL_OUTCOME, HostState,
+};
 
 // ─── Shared WASM runtime state ──────────────────────────────────────────
 
@@ -60,6 +64,24 @@ fn call_guest(
     guard.store.data_mut().response_len = 0;
 
     Ok((status as i8, response))
+}
+
+/// 调用 WASM guest 的 handle_event 函数。
+/// 无 handle_event_fn 导出时返回 (GUEST_EFFECT_OK, "")。
+fn call_wasm_event(
+    inner: &Mutex<WasmInner>,
+    event: &str,
+    context: serde_json::Value,
+) -> Result<(i8, String), ExtensionError> {
+    let func = {
+        let guard = inner.lock();
+        guard.handle_event_fn.clone()
+    };
+    let Some(func) = func else {
+        return Ok((GUEST_EFFECT_OK, String::new()));
+    };
+    let request = json!({ "event": event, "context": context });
+    call_guest(inner, &func, &request.to_string())
 }
 
 // ─── WasmExtension ──────────────────────────────────────────────────────
@@ -286,7 +308,7 @@ impl ToolHandler for WasmToolHandler {
         let (status, response) = call_guest(&self.inner, &func, &request.to_string())?;
 
         match status {
-            0 => {
+            GUEST_EFFECT_OK => {
                 let content = if response.is_empty() {
                     String::new()
                 } else {
@@ -296,8 +318,8 @@ impl ToolHandler for WasmToolHandler {
                 };
                 Ok(ToolResult::text(content, false, Default::default()))
             },
-            1 => Ok(ToolResult::text(response.clone(), true, Default::default())),
-            2 => {
+            GUEST_EFFECT_ERROR => Ok(ToolResult::text(response.clone(), true, Default::default())),
+            GUEST_EFFECT_TOOL_OUTCOME => {
                 let outcome: ExtensionToolOutcome = serde_json::from_str(&response)
                     .map_err(|e| ExtensionError::Internal(format!("parse outcome: {e}")))?;
                 let outcome_json = serde_json::to_value(&outcome)
@@ -348,14 +370,134 @@ impl CommandHandler for WasmCommandHandler {
         let (status, response) = call_guest(&self.inner, &func, &request.to_string())?;
 
         match status {
-            0 => serde_json::from_str(&response)
+            GUEST_EFFECT_OK => serde_json::from_str(&response)
                 .map_err(|e| ExtensionError::Internal(format!("parse command result: {e}"))),
-            1 => Err(ExtensionError::Internal(response)),
+            GUEST_EFFECT_ERROR => Err(ExtensionError::Internal(response)),
             other => Err(ExtensionError::Internal(format!(
                 "extension {} command handler unknown status: {other}",
                 self.extension_id
             ))),
         }
+    }
+}
+
+// ─── Event context builders & result parsers ────────────────────────────
+
+fn build_pre_tool_use_context(ctx: &PreToolUseContext) -> serde_json::Value {
+    json!({
+        "session_id": ctx.session_id, "working_dir": ctx.working_dir,
+        "model": ctx.model, "tool_name": ctx.tool_name,
+        "tool_input": ctx.tool_input, "available_tools": ctx.available_tools,
+    })
+}
+
+fn parse_pre_tool_use_result(
+    effect: i8,
+    content: String,
+) -> Result<PreToolUseResult, ExtensionError> {
+    match effect {
+        GUEST_EFFECT_ERROR => Ok(PreToolUseResult::Block { reason: content }),
+        GUEST_EFFECT_MODIFIED_INPUT => Ok(PreToolUseResult::ModifyInput {
+            tool_input: serde_json::from_str(&content)
+                .map_err(|e| ExtensionError::Internal(format!("invalid ModifiedInput: {e}")))?,
+        }),
+        _ => Ok(PreToolUseResult::Allow),
+    }
+}
+
+fn build_post_tool_use_context(ctx: &PostToolUseContext) -> serde_json::Value {
+    json!({
+        "session_id": ctx.session_id, "working_dir": ctx.working_dir,
+        "model": ctx.model, "tool_name": ctx.tool_name,
+        "tool_input": ctx.tool_input, "tool_result": ctx.tool_result,
+        "is_error": ctx.is_error,
+    })
+}
+
+fn parse_post_tool_use_result(
+    effect: i8,
+    content: String,
+) -> Result<PostToolUseResult, ExtensionError> {
+    match effect {
+        GUEST_EFFECT_ERROR => Ok(PostToolUseResult::Block { reason: content }),
+        GUEST_EFFECT_TOOL_OUTCOME => Ok(PostToolUseResult::ModifyResult { content }),
+        _ => Ok(PostToolUseResult::Allow),
+    }
+}
+
+fn build_provider_context(ctx: &ProviderContext) -> serde_json::Value {
+    json!({
+        "session_id": ctx.session_id, "working_dir": ctx.working_dir,
+        "model": ctx.model, "messages": ctx.messages,
+    })
+}
+
+fn parse_provider_result(effect: i8, content: String) -> Result<ProviderResult, ExtensionError> {
+    match effect {
+        GUEST_EFFECT_ERROR => Ok(ProviderResult::Block { reason: content }),
+        GUEST_EFFECT_REPLACE_MESSAGES => Ok(ProviderResult::ReplaceMessages {
+            messages: serde_json::from_str(&content)
+                .map_err(|e| ExtensionError::Internal(format!("invalid ReplaceMessages: {e}")))?,
+        }),
+        GUEST_EFFECT_APPEND_MESSAGES => Ok(ProviderResult::AppendMessages {
+            messages: serde_json::from_str(&content)
+                .map_err(|e| ExtensionError::Internal(format!("invalid AppendMessages: {e}")))?,
+        }),
+        _ => Ok(ProviderResult::Allow),
+    }
+}
+
+fn build_prompt_build_context(ctx: &PromptBuildContext) -> serde_json::Value {
+    json!({
+        "session_id": ctx.session_id, "working_dir": ctx.working_dir,
+        "model": ctx.model,
+    })
+}
+
+fn parse_prompt_build_result(
+    effect: i8,
+    content: String,
+) -> Result<PromptContributions, ExtensionError> {
+    if effect == GUEST_EFFECT_PROMPT_CONTRIBUTIONS {
+        serde_json::from_str(&content)
+            .map_err(|e| ExtensionError::Internal(format!("invalid PromptContributions: {e}")))
+    } else {
+        Ok(PromptContributions::default())
+    }
+}
+
+fn build_compact_context(ctx: &CompactContext) -> serde_json::Value {
+    json!({
+        "session_id": ctx.session_id, "working_dir": ctx.working_dir,
+        "model": ctx.model, "trigger": ctx.trigger,
+        "message_count": ctx.message_count,
+        "pre_tokens": ctx.pre_tokens, "post_tokens": ctx.post_tokens,
+        "summary": ctx.summary,
+    })
+}
+
+fn parse_compact_result(effect: i8, content: String) -> Result<CompactResult, ExtensionError> {
+    if effect == GUEST_EFFECT_COMPACT_CONTRIBUTIONS {
+        let contributions = serde_json::from_str::<CompactContributions>(&content)
+            .map_err(|e| ExtensionError::Internal(format!("invalid CompactContributions: {e}")))?;
+        Ok(CompactResult::Contributions(contributions))
+    } else {
+        Ok(CompactResult::Allow)
+    }
+}
+
+fn build_lifecycle_context(ctx: &LifecycleContext) -> serde_json::Value {
+    json!({
+        "session_id": ctx.session_id, "working_dir": ctx.working_dir,
+        "model": ctx.model,
+    })
+}
+
+fn parse_lifecycle_result(effect: i8, content: String) -> Result<HookResult, ExtensionError> {
+    if effect == GUEST_EFFECT_ERROR {
+        Ok(HookResult::Block { reason: content })
+    } else {
+        Ok(HookResult::Allow)
     }
 }
 
@@ -368,36 +510,9 @@ struct WasmPreToolUseHandler {
 #[async_trait::async_trait]
 impl PreToolUseHandler for WasmPreToolUseHandler {
     async fn handle(&self, ctx: PreToolUseContext) -> Result<PreToolUseResult, ExtensionError> {
-        let inner = self.inner.lock();
-        let Some(func) = &inner.handle_event_fn else {
-            return Ok(PreToolUseResult::Allow);
-        };
-        let func = func.clone();
-        drop(inner);
-
-        let request = json!({
-            "event": "PreToolUse",
-            "context": {
-                "session_id": ctx.session_id,
-                "working_dir": ctx.working_dir,
-                "model": ctx.model,
-                "tool_name": ctx.tool_name,
-                "tool_input": ctx.tool_input,
-                "available_tools": ctx.available_tools,
-            },
-        });
-
-        let (effect, content) = call_guest(&self.inner, &func, &request.to_string())?;
-
-        match effect {
-            1 => Ok(PreToolUseResult::Block { reason: content }),
-            3 => {
-                let tool_input = serde_json::from_str(&content)
-                    .map_err(|e| ExtensionError::Internal(format!("invalid ModifiedInput: {e}")))?;
-                Ok(PreToolUseResult::ModifyInput { tool_input })
-            },
-            _ => Ok(PreToolUseResult::Allow),
-        }
+        let context = build_pre_tool_use_context(&ctx);
+        let (effect, content) = call_wasm_event(&self.inner, "PreToolUse", context)?;
+        parse_pre_tool_use_result(effect, content)
     }
 }
 
@@ -408,33 +523,9 @@ struct WasmPostToolUseHandler {
 #[async_trait::async_trait]
 impl PostToolUseHandler for WasmPostToolUseHandler {
     async fn handle(&self, ctx: PostToolUseContext) -> Result<PostToolUseResult, ExtensionError> {
-        let inner = self.inner.lock();
-        let Some(func) = &inner.handle_event_fn else {
-            return Ok(PostToolUseResult::Allow);
-        };
-        let func = func.clone();
-        drop(inner);
-
-        let request = json!({
-            "event": "PostToolUse",
-            "context": {
-                "session_id": ctx.session_id,
-                "working_dir": ctx.working_dir,
-                "model": ctx.model,
-                "tool_name": ctx.tool_name,
-                "tool_input": ctx.tool_input,
-                "tool_result": ctx.tool_result,
-                "is_error": ctx.is_error,
-            },
-        });
-
-        let (effect, content) = call_guest(&self.inner, &func, &request.to_string())?;
-
-        match effect {
-            1 => Ok(PostToolUseResult::Block { reason: content }),
-            2 => Ok(PostToolUseResult::ModifyResult { content }),
-            _ => Ok(PostToolUseResult::Allow),
-        }
+        let context = build_post_tool_use_context(&ctx);
+        let (effect, content) = call_wasm_event(&self.inner, "PostToolUse", context)?;
+        parse_post_tool_use_result(effect, content)
     }
 }
 
@@ -445,41 +536,9 @@ struct WasmProviderHandler {
 #[async_trait::async_trait]
 impl ProviderHandler for WasmProviderHandler {
     async fn handle(&self, ctx: ProviderContext) -> Result<ProviderResult, ExtensionError> {
-        let inner = self.inner.lock();
-        let Some(func) = &inner.handle_event_fn else {
-            return Ok(ProviderResult::Allow);
-        };
-        let func = func.clone();
-        drop(inner);
-
-        let request = json!({
-            "event": "Provider",
-            "context": {
-                "session_id": ctx.session_id,
-                "working_dir": ctx.working_dir,
-                "model": ctx.model,
-                "messages": ctx.messages,
-            },
-        });
-
-        let (effect, content) = call_guest(&self.inner, &func, &request.to_string())?;
-
-        match effect {
-            1 => Ok(ProviderResult::Block { reason: content }),
-            6 => {
-                let messages = serde_json::from_str(&content).map_err(|e| {
-                    ExtensionError::Internal(format!("invalid ReplaceMessages: {e}"))
-                })?;
-                Ok(ProviderResult::ReplaceMessages { messages })
-            },
-            7 => {
-                let messages = serde_json::from_str(&content).map_err(|e| {
-                    ExtensionError::Internal(format!("invalid AppendMessages: {e}"))
-                })?;
-                Ok(ProviderResult::AppendMessages { messages })
-            },
-            _ => Ok(ProviderResult::Allow),
-        }
+        let context = build_provider_context(&ctx);
+        let (effect, content) = call_wasm_event(&self.inner, "Provider", context)?;
+        parse_provider_result(effect, content)
     }
 }
 
@@ -490,30 +549,9 @@ struct WasmPromptBuildHandler {
 #[async_trait::async_trait]
 impl PromptBuildHandler for WasmPromptBuildHandler {
     async fn handle(&self, ctx: PromptBuildContext) -> Result<PromptContributions, ExtensionError> {
-        let inner = self.inner.lock();
-        let Some(func) = &inner.handle_event_fn else {
-            return Ok(PromptContributions::default());
-        };
-        let func = func.clone();
-        drop(inner);
-
-        let request = json!({
-            "event": "PromptBuild",
-            "context": {
-                "session_id": ctx.session_id,
-                "working_dir": ctx.working_dir,
-                "model": ctx.model,
-            },
-        });
-
-        let (effect, content) = call_guest(&self.inner, &func, &request.to_string())?;
-
-        if effect == 4 {
-            serde_json::from_str(&content)
-                .map_err(|e| ExtensionError::Internal(format!("invalid PromptContributions: {e}")))
-        } else {
-            Ok(PromptContributions::default())
-        }
+        let context = build_prompt_build_context(&ctx);
+        let (effect, content) = call_wasm_event(&self.inner, "PromptBuild", context)?;
+        parse_prompt_build_result(effect, content)
     }
 }
 
@@ -524,37 +562,9 @@ struct WasmCompactHandler {
 #[async_trait::async_trait]
 impl CompactHandler for WasmCompactHandler {
     async fn handle(&self, ctx: CompactContext) -> Result<CompactResult, ExtensionError> {
-        let inner = self.inner.lock();
-        let Some(func) = &inner.handle_event_fn else {
-            return Ok(CompactResult::Allow);
-        };
-        let func = func.clone();
-        drop(inner);
-
-        let request = json!({
-            "event": "Compact",
-            "context": {
-                "session_id": ctx.session_id,
-                "working_dir": ctx.working_dir,
-                "model": ctx.model,
-                "trigger": ctx.trigger,
-                "message_count": ctx.message_count,
-                "pre_tokens": ctx.pre_tokens,
-                "post_tokens": ctx.post_tokens,
-                "summary": ctx.summary,
-            },
-        });
-
-        let (effect, content) = call_guest(&self.inner, &func, &request.to_string())?;
-
-        if effect == 5 {
-            let contributions = serde_json::from_str(&content).map_err(|e| {
-                ExtensionError::Internal(format!("invalid CompactContributions: {e}"))
-            })?;
-            Ok(CompactResult::Contributions(contributions))
-        } else {
-            Ok(CompactResult::Allow)
-        }
+        let context = build_compact_context(&ctx);
+        let (effect, content) = call_wasm_event(&self.inner, "Compact", context)?;
+        parse_compact_result(effect, content)
     }
 }
 
@@ -565,28 +575,8 @@ struct WasmLifecycleHandler {
 #[async_trait::async_trait]
 impl LifecycleHandler for WasmLifecycleHandler {
     async fn handle(&self, ctx: LifecycleContext) -> Result<HookResult, ExtensionError> {
-        let inner = self.inner.lock();
-        let Some(func) = &inner.handle_event_fn else {
-            return Ok(HookResult::Allow);
-        };
-        let func = func.clone();
-        drop(inner);
-
-        let request = json!({
-            "event": "Lifecycle",
-            "context": {
-                "session_id": ctx.session_id,
-                "working_dir": ctx.working_dir,
-                "model": ctx.model,
-            },
-        });
-
-        let (effect, content) = call_guest(&self.inner, &func, &request.to_string())?;
-
-        if effect == 1 {
-            Ok(HookResult::Block { reason: content })
-        } else {
-            Ok(HookResult::Allow)
-        }
+        let context = build_lifecycle_context(&ctx);
+        let (effect, content) = call_wasm_event(&self.inner, "Lifecycle", context)?;
+        parse_lifecycle_result(effect, content)
     }
 }
