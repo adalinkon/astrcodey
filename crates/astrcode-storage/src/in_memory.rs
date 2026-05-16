@@ -135,7 +135,7 @@ impl EventStore for InMemoryEventStore {
     ) -> Result<Vec<Event>, StorageError> {
         let events = self.replay_events(session_id).await?;
         let Ok(seq) = cursor.parse::<u64>() else {
-            return Ok(events);
+            return Err(StorageError::InvalidId(format!("Invalid cursor: {cursor}")));
         };
         Ok(events
             .into_iter()
@@ -249,4 +249,31 @@ fn format_memory_tool_result_path(
     }
     let stem = file_name.trim_end_matches(".txt");
     format!("memory://{session_id}/tool-results/{stem}-{suffix}.txt")
+}
+
+#[cfg(test)]
+mod tests {
+    use astrcode_core::types::SessionId;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn replay_from_rejects_invalid_cursor_like_filesystem_store() {
+        let store = InMemoryEventStore::new();
+        let session_id = SessionId::from("session-test");
+        store
+            .create_session(&session_id, ".", "mock", None)
+            .await
+            .unwrap();
+
+        let error = store
+            .replay_from(&session_id, &"not-a-cursor".into())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            StorageError::InvalidId(message) if message.contains("Invalid cursor")
+        ));
+    }
 }

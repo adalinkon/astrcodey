@@ -12,8 +12,8 @@ use astrcode_core::{
     config::ModelSelection,
     event::EventPayload,
     extension::{ExtensionEvent, LifecycleContext, ProviderContext, ProviderEvent, ProviderResult},
-    llm::{LlmEvent, LlmMessage, LlmProvider, LlmRole},
-    tool::{BackgroundTaskReader, FileObservationStore, ToolDefinition},
+    llm::{LlmContent, LlmEvent, LlmMessage, LlmProvider, LlmRole},
+    tool::{BackgroundTaskReader, ToolDefinition},
     types::*,
 };
 use astrcode_extensions::runner::ExtensionRunner;
@@ -24,9 +24,8 @@ use crate::{
         StreamOutcome, assistant_message_with_thinking, consume_llm_stream,
         non_empty_reasoning_content, provider_visible_messages,
     },
-    tool_exec::InMemoryFileObservationStore,
     tool_pipeline::ToolPipeline,
-    tool_types::{ExecuteToolCalls, assistant_tool_call_message},
+    tool_types::ExecuteToolCalls,
     turn_context::{
         AgentSignal, EventBus, SharedTurnContext, TurnError, end_turn_with_error_typed, send_event,
     },
@@ -126,13 +125,11 @@ impl TurnRunner {
         let background_task_reader: Option<Arc<dyn BackgroundTaskReader>> = Some(Arc::new(
             crate::background::BackgroundTaskReaderImpl::new(services.background_tasks.clone()),
         ));
-        let file_observation_store: Option<Arc<dyn FileObservationStore>> =
-            Some(Arc::new(InMemoryFileObservationStore::default()));
         let capabilities = crate::tool_types::ToolRuntimeCapabilities {
             background_result_tx: services.background_result_tx,
             background_tasks: services.background_tasks,
             background_task_reader,
-            file_observation_store,
+            file_observation_store: Some(services.file_observation_store),
             agent_session_control: services.agent_session_control,
         };
         let tools = ToolPipeline::new(
@@ -259,7 +256,13 @@ impl TurnRunner {
                 .await?;
             let message_id = new_message_id();
 
-            let outcome = consume_llm_stream(rx, &event_tx, message_id).await?;
+            let outcome = match consume_llm_stream(rx, &event_tx, message_id).await {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    return end_turn_with_error_typed(&self.extension_runner, &self.shared, error)
+                        .await;
+                },
+            };
 
             match outcome {
                 StreamOutcome::Complete {
@@ -287,6 +290,8 @@ impl TurnRunner {
                             );
                         }
                     }
+                    self.dispatch_after_provider_response(&lifecycle_ctx)
+                        .await?;
                     self.extension_runner
                         .emit_lifecycle(ExtensionEvent::TurnEnd, lifecycle_ctx.clone())
                         .await?;
@@ -322,16 +327,27 @@ impl TurnRunner {
                     self.dispatch_after_provider_response(&lifecycle_ctx)
                         .await?;
 
-                    let prepared_tool_calls = self
+                    let prepared_tool_calls = match self
                         .tools
                         .prepare_tool_calls(&tool_calls, &tools, &event_tx)
-                        .await?;
+                        .await
+                    {
+                        Ok(prepared_tool_calls) => prepared_tool_calls,
+                        Err(error) => {
+                            return end_turn_with_error_typed(
+                                &self.extension_runner,
+                                &self.shared,
+                                error,
+                            )
+                            .await;
+                        },
+                    };
                     messages.push(assistant_tool_call_message(
                         &prepared_tool_calls,
                         visible_text,
                         reasoning_content,
                     ));
-                    let discovered_tools = self
+                    let discovered_tools = match self
                         .tools
                         .execute_and_commit(ExecuteToolCalls {
                             prepared: &prepared_tool_calls,
@@ -340,7 +356,18 @@ impl TurnRunner {
                             all_tool_results: &mut all_tool_results,
                             event_tx: &event_tx,
                         })
-                        .await?;
+                        .await
+                    {
+                        Ok(discovered_tools) => discovered_tools,
+                        Err(error) => {
+                            return end_turn_with_error_typed(
+                                &self.extension_runner,
+                                &self.shared,
+                                error,
+                            )
+                            .await;
+                        },
+                    };
                     if activate_discovered_mcp_tools(
                         &mut active_mcp_tools,
                         &all_tools,
@@ -475,5 +502,32 @@ where
     RunTurnResult {
         output,
         emitted_error,
+    }
+}
+
+// ─── Message construction helpers ────────────────────────────────────────
+
+fn assistant_tool_call_message(
+    prepared: &[crate::tool_types::PreparedToolCall],
+    text: &str,
+    reasoning_content: Option<String>,
+) -> LlmMessage {
+    let mut content = Vec::with_capacity(prepared.len() + usize::from(!text.is_empty()));
+    if !text.is_empty() {
+        content.push(LlmContent::Text {
+            text: text.to_string(),
+        });
+    }
+    content.extend(prepared.iter().map(|call| LlmContent::ToolCall {
+        call_id: call.call_id.clone(),
+        name: call.name.clone(),
+        arguments: call.tool_input.clone(),
+    }));
+
+    LlmMessage {
+        role: LlmRole::Assistant,
+        content,
+        name: None,
+        reasoning_content,
     }
 }

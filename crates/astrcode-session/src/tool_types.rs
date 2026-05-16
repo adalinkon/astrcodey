@@ -5,18 +5,14 @@
 use std::collections::BTreeMap;
 
 use astrcode_core::{
-    event::EventPayload,
-    llm::{LlmContent, LlmMessage, LlmRole},
+    llm::LlmMessage,
     storage::ToolResultArtifactReader,
     tool::{AgentSessionControl, BackgroundTaskReader, ExecutionMode, ToolDefinition, ToolResult},
     types::*,
 };
 use tokio::sync::mpsc;
 
-use super::{
-    background::BackgroundTaskManager,
-    turn_context::{AgentSignal, send_event},
-};
+use super::{background::BackgroundTaskManager, turn_context::AgentSignal};
 
 /// 等待执行的工具调用，在 LLM 流式响应中逐步积累参数。
 pub struct PendingToolCall {
@@ -97,73 +93,6 @@ impl PreparedToolCall {
             name: self.name.clone(),
             tool_input: self.tool_input.clone(),
         }
-    }
-}
-
-/// 向客户端报告工具调用已经通过预处理并准备执行。
-pub fn send_tool_requested(
-    event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
-    tc: &PendingToolCall,
-    arguments: &serde_json::Value,
-) {
-    send_event(
-        event_tx,
-        EventPayload::ToolCallRequested {
-            call_id: tc.call_id.clone().into(),
-            tool_name: tc.name.clone(),
-            arguments: arguments.clone(),
-        },
-    );
-}
-
-/// 将本轮 assistant 产生的工具调用整理成 LLM 历史消息。
-pub fn assistant_tool_call_message(
-    prepared: &[PreparedToolCall],
-    text: &str,
-    reasoning_content: Option<String>,
-) -> LlmMessage {
-    let mut content = Vec::with_capacity(prepared.len() + usize::from(!text.is_empty()));
-    if !text.is_empty() {
-        content.push(LlmContent::Text {
-            text: text.to_string(),
-        });
-    }
-    content.extend(prepared.iter().map(|call| LlmContent::ToolCall {
-        call_id: call.call_id.clone(),
-        name: call.name.clone(),
-        arguments: call.tool_input.clone(),
-    }));
-
-    LlmMessage {
-        role: LlmRole::Assistant,
-        content,
-        name: None,
-        reasoning_content,
-    }
-}
-
-pub fn committed_tool_result_content_len(messages: &[LlmMessage]) -> usize {
-    messages
-        .iter()
-        .filter(|message| message.role == LlmRole::Tool)
-        .flat_map(|message| &message.content)
-        .filter_map(|content| match content {
-            LlmContent::ToolResult { content, .. } => Some(content.len()),
-            _ => None,
-        })
-        .sum()
-}
-
-/// 为没有产出结果的工具调用生成占位错误结果。
-pub fn missing_tool_result(call: &PreparedToolCall) -> ToolResult {
-    let message = format!("Tool '{}' did not produce a result", call.name);
-    ToolResult {
-        call_id: call.call_id.clone(),
-        content: message.clone(),
-        is_error: true,
-        error: Some(message),
-        metadata: Default::default(),
-        duration_ms: None,
     }
 }
 

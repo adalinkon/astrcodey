@@ -24,8 +24,7 @@ use super::{
     tool_types::{
         CommitToolResults, ExecutableToolCall, ExecuteToolCalls, PendingCommittedToolResult,
         PendingToolCall, PreparedToolCall, PreparedToolOutcome, ToolCallRuntimeContext,
-        ToolExecutionStep, ToolRuntimeCapabilities, committed_tool_result_content_len,
-        missing_tool_result, send_tool_requested,
+        ToolExecutionStep, ToolRuntimeCapabilities,
     },
     turn_context::{AgentSignal, SharedTurnContext, TurnError, send_event},
     util::{
@@ -600,4 +599,45 @@ impl ToolPipeline {
 
 fn is_artifact_read(result: &ToolResult) -> bool {
     result.metadata.get("source").and_then(|v| v.as_str()) == Some("toolResultArtifact")
+}
+
+// ─── Tool event & message helpers ────────────────────────────────────────
+
+fn send_tool_requested(
+    event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
+    tc: &PendingToolCall,
+    arguments: &serde_json::Value,
+) {
+    send_event(
+        event_tx,
+        EventPayload::ToolCallRequested {
+            call_id: tc.call_id.clone().into(),
+            tool_name: tc.name.clone(),
+            arguments: arguments.clone(),
+        },
+    );
+}
+
+fn missing_tool_result(call: &PreparedToolCall) -> ToolResult {
+    let message = format!("Tool '{}' did not produce a result", call.name);
+    ToolResult {
+        call_id: call.call_id.clone(),
+        content: message.clone(),
+        is_error: true,
+        error: Some(message),
+        metadata: Default::default(),
+        duration_ms: None,
+    }
+}
+
+fn committed_tool_result_content_len(messages: &[LlmMessage]) -> usize {
+    messages
+        .iter()
+        .filter(|message| message.role == LlmRole::Tool)
+        .flat_map(|message| &message.content)
+        .filter_map(|content| match content {
+            LlmContent::ToolResult { content, .. } => Some(content.len()),
+            _ => None,
+        })
+        .sum()
 }

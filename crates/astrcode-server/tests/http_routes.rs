@@ -723,6 +723,7 @@ fn runtime(llm_provider: Arc<dyn LlmProvider>) -> Arc<ServerRuntime> {
         llm_provider: Arc::new(parking_lot::RwLock::new(llm_provider)),
         context_assembler: Arc::new(LlmContextAssembler::new(ContextSettings::default())),
         background_tasks: Default::default(),
+        file_observation_stores: Default::default(),
         extension_runner: Arc::new(ExtensionRunner::new(Duration::from_secs(1))),
         shutdown_token: tokio_util::sync::CancellationToken::new(),
         config_store: Arc::new(astrcode_storage::config_store::FileConfigStore::new(

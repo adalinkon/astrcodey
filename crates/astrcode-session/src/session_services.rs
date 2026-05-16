@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use astrcode_context::context_engine::LlmContextAssembler;
-use astrcode_core::{llm::LlmProvider, tool::AgentSessionControl};
+use astrcode_core::{
+    llm::LlmProvider,
+    tool::{AgentSessionControl, FileObservationStore},
+};
 use astrcode_extensions::runner::ExtensionRunner;
 use astrcode_tools::registry::ToolRegistry;
 use tokio::sync::mpsc;
@@ -24,6 +27,7 @@ pub struct SessionServices {
     pub session: Arc<Session>,
     pub background_result_tx: Option<mpsc::UnboundedSender<BackgroundTaskCompletion>>,
     pub background_tasks: Arc<parking_lot::Mutex<BackgroundTaskManager>>,
+    pub file_observation_store: Arc<dyn FileObservationStore>,
     pub agent_session_control: Option<Arc<dyn AgentSessionControl>>,
 }
 
@@ -35,6 +39,7 @@ impl SessionServices {
         context_assembler: Arc<LlmContextAssembler>,
         session: Arc<Session>,
         background_tasks: Arc<parking_lot::Mutex<BackgroundTaskManager>>,
+        file_observation_store: Arc<dyn FileObservationStore>,
     ) -> Self {
         Self {
             llm,
@@ -44,6 +49,7 @@ impl SessionServices {
             session,
             background_result_tx: None,
             background_tasks,
+            file_observation_store,
             agent_session_control: None,
         }
     }

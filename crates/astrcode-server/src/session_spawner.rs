@@ -40,6 +40,7 @@ pub(crate) struct ServerSessionSpawner {
     pub(crate) llm_provider: Arc<RwLock<Arc<dyn LlmProvider>>>,
     pub(crate) context_assembler: Arc<LlmContextAssembler>,
     pub(crate) background_tasks: Arc<StdMutex<BackgroundTaskManager>>,
+    pub(crate) file_observation_stores: crate::bootstrap::FileObservationStoreMap,
     pub(crate) extension_runner: Arc<ExtensionRunner>,
     // bind 时从 effective.llm 快照，不会随配置热更新变化。
     // TODO: 如需配置热更新生效，改为持有 RwLock<EffectiveConfig> 引用，在 spawn 时动态读取。
@@ -85,6 +86,19 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
 impl ServerSessionSpawner {
     fn read_llm_provider(&self) -> Arc<dyn LlmProvider> {
         self.llm_provider.read().clone()
+    }
+
+    fn file_observation_store(
+        &self,
+        session_id: &SessionId,
+    ) -> Arc<dyn astrcode_core::tool::FileObservationStore> {
+        let mut stores = self.file_observation_stores.lock();
+        stores
+            .entry(session_id.clone())
+            .or_insert_with(|| {
+                Arc::new(astrcode_session::tool_exec::InMemoryFileObservationStore::default())
+            })
+            .clone()
     }
 
     /// 共享准备阶段：创建子会话、构建 prompt、初始化 TurnRunner。
@@ -241,6 +255,7 @@ impl ServerSessionSpawner {
                 Arc::clone(&self.context_assembler),
                 Arc::clone(&child_arc),
                 Arc::clone(&self.background_tasks),
+                self.file_observation_store(&child_sid),
             )
             .with_background_result_tx(child_bg_result_tx)
             .with_agent_session_control(agent_session_control),
@@ -379,6 +394,7 @@ impl ServerSessionSpawner {
         let tool_call_id_for_result = tool_call_id.clone();
         let cti_for_completion = child_turn_id.clone();
         let drive_session = Arc::clone(&child_session);
+        let watcher_child_session = Arc::clone(&child_session);
         let drive_current_child_sid = Arc::clone(&current_child_sid);
         let drive_child_turn_id = child_turn_id.clone();
         let drive_progress = progress.clone();
@@ -399,7 +415,7 @@ impl ServerSessionSpawner {
             let result_content = match &output {
                 Ok(o) => {
                     let _ = append_child_progress_payloads(
-                        parent_arc.as_ref(),
+                        watcher_child_session.as_ref(),
                         &watcher_progress,
                         Some(&cti_for_completion),
                         agent_turn_completed_payloads(o.finish_reason.clone()),
@@ -420,7 +436,7 @@ impl ServerSessionSpawner {
                 },
                 Err(e) => {
                     let _ = append_child_progress_payloads(
-                        parent_arc.as_ref(),
+                        watcher_child_session.as_ref(),
                         &watcher_progress,
                         Some(&cti_for_completion),
                         agent_turn_failed_payloads(
@@ -796,6 +812,7 @@ mod tests {
             llm_provider: Arc::new(RwLock::new(llm_provider)),
             context_assembler: Arc::new(LlmContextAssembler::new(settings)),
             background_tasks: Default::default(),
+            file_observation_stores: Default::default(),
             extension_runner: Arc::new(ExtensionRunner::new(Duration::from_secs(1))),
             read_timeout_secs: 1,
             agent_session_control: Arc::new(RwLock::new(None)),
@@ -869,6 +886,7 @@ mod tests {
             llm_provider: Arc::clone(&llm_provider),
             context_assembler: Arc::new(LlmContextAssembler::new(Default::default())),
             background_tasks: Default::default(),
+            file_observation_stores: Default::default(),
             extension_runner: Arc::new(ExtensionRunner::new(Duration::from_secs(1))),
             read_timeout_secs: 1,
             agent_session_control: Arc::new(RwLock::new(None)),
@@ -911,6 +929,7 @@ mod tests {
             llm_provider: Arc::new(RwLock::new(llm_provider)),
             context_assembler: Arc::new(LlmContextAssembler::new(Default::default())),
             background_tasks: Arc::clone(&background_tasks),
+            file_observation_stores: Default::default(),
             extension_runner: Arc::new(ExtensionRunner::new(Duration::from_secs(1))),
             read_timeout_secs: 1,
             agent_session_control: Arc::new(RwLock::new(None)),
@@ -969,6 +988,13 @@ mod tests {
             }),
             "async agent response should be persisted to child session"
         );
+        let child_events = store.replay_events(&child_sid).await.unwrap();
+        assert!(
+            child_events
+                .iter()
+                .any(|event| matches!(event.payload, EventPayload::TurnCompleted { .. })),
+            "async child completion should be persisted to the child session"
+        );
 
         // 父会话应有 AgentSessionCompleted 事件
         let parent_model = parent.read_model().await.unwrap();
@@ -976,6 +1002,13 @@ mod tests {
         assert_eq!(
             parent_model.agent_sessions[0].status,
             astrcode_core::storage::AgentSessionStatus::Completed
+        );
+        let parent_events = store.replay_events(parent.id()).await.unwrap();
+        assert!(
+            parent_events
+                .iter()
+                .all(|event| !matches!(event.payload, EventPayload::TurnCompleted { .. })),
+            "async child completion must not be persisted to the parent session"
         );
     }
 }

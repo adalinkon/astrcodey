@@ -425,6 +425,7 @@ async fn run_agent_turn_task(runtime: Arc<ServerRuntime>, input: AgentTurnInput)
             runtime.context_assembler.clone(),
             session,
             runtime.background_tasks.clone(),
+            runtime.file_observation_store(&sid),
         )
         .with_background_result_tx(background_result_tx)
         .with_agent_session_control(agent_session_control),

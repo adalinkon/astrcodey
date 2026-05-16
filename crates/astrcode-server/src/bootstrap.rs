@@ -3,7 +3,7 @@
 //! 负责在启动时初始化所有核心组件：LLM 提供者、提示词组装器、
 //! 会话管理器、扩展运行器和上下文窗口设置。
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use astrcode_ai::create_provider;
 pub(crate) use astrcode_context::prompt_engine::{PromptFiles, load_system_prompt_files};
@@ -14,10 +14,13 @@ use astrcode_core::{
     llm::{LlmClientConfig, LlmProvider},
     prompt::{ExtensionPromptBlock, ExtensionSection, PromptProvider, SystemPromptInput},
     storage::EventStore,
-    tool::{AgentSessionControl, ToolDefinition},
+    tool::{AgentSessionControl, FileObservationStore, ToolDefinition},
+    types::SessionId,
 };
 use astrcode_extensions::{loader::ExtensionLoader, runner::ExtensionRunner};
-use astrcode_session::background::BackgroundTaskManager;
+use astrcode_session::{
+    background::BackgroundTaskManager, tool_exec::InMemoryFileObservationStore,
+};
 use astrcode_storage::config_store::FileConfigStore;
 use astrcode_support::{hash::hex_fingerprint, shell::resolve_shell};
 use astrcode_tools::registry::{ToolRegistry, builtin_tools};
@@ -44,6 +47,8 @@ pub(crate) struct SystemPromptSnapshotInput<'a> {
 /// Bootstrap 时创建空槽位，spawn_actor 后注入 `CommandHandle` 实现。
 /// 消费者通过 `.read().clone()` 获取 `Option<Arc<...>>`。
 pub(crate) type AgentSessionControlSlot = Arc<RwLock<Option<Arc<dyn AgentSessionControl>>>>;
+pub(crate) type FileObservationStoreMap =
+    Arc<Mutex<HashMap<SessionId, Arc<dyn FileObservationStore>>>>;
 
 // ─── ServerRuntime ───────────────────────────────────────────────────────
 
@@ -60,6 +65,8 @@ pub struct ServerRuntime {
     pub context_assembler: Arc<LlmContextAssembler>,
     /// 跨回合共享的后台任务管理器。
     pub background_tasks: Arc<Mutex<BackgroundTaskManager>>,
+    /// 按 session 复用的文件观察快照，用于跨 turn 的 read-before-edit 保护。
+    pub file_observation_stores: FileObservationStoreMap,
     /// 扩展运行器，负责加载和分发扩展钩子事件
     pub extension_runner: Arc<ExtensionRunner>,
     /// 已解析的最终配置（运行时可通过 `sync_effective` 刷新）
@@ -96,6 +103,18 @@ impl ServerRuntime {
 
     pub fn read_llm_provider(&self) -> Arc<dyn LlmProvider> {
         self.llm_provider.read().clone()
+    }
+
+    pub fn file_observation_store(&self, session_id: &SessionId) -> Arc<dyn FileObservationStore> {
+        let mut stores = self.file_observation_stores.lock();
+        stores
+            .entry(session_id.clone())
+            .or_insert_with(|| Arc::new(InMemoryFileObservationStore::default()))
+            .clone()
+    }
+
+    pub fn remove_file_observation_store(&self, session_id: &SessionId) {
+        self.file_observation_stores.lock().remove(session_id);
     }
 
     pub fn rebuild_provider_from_effective(&self) -> Result<(), String> {
@@ -197,6 +216,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     let context_settings = effective.context.clone();
     let context_assembler = Arc::new(LlmContextAssembler::new(context_settings));
     let background_tasks = Arc::new(Mutex::new(BackgroundTaskManager::default()));
+    let file_observation_stores = Arc::new(Mutex::new(HashMap::new()));
 
     // 4. 确定当前项目工作目录。
     //
@@ -261,6 +281,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
         llm_provider: Arc::clone(&llm_provider),
         context_assembler: Arc::clone(&context_assembler),
         background_tasks: Arc::clone(&background_tasks),
+        file_observation_stores: Arc::clone(&file_observation_stores),
         extension_runner: Arc::clone(&extension_runner),
         read_timeout_secs: effective.llm.read_timeout_secs,
         agent_session_control: Arc::clone(&agent_session_control_slot),
@@ -276,6 +297,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
         llm_provider,
         context_assembler,
         background_tasks,
+        file_observation_stores,
         extension_runner,
         effective: RwLock::new(effective),
         config_store: Arc::new(config_store),

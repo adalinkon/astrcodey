@@ -167,6 +167,7 @@ impl CommandHandler {
                             turn.resolve_completion(turn::TurnCompletion::Aborted);
                         }
                         self.cleanup_background_tasks_for_session(&session_id);
+                        self.runtime.remove_file_observation_store(&session_id);
                         self.session_tool_registries.remove(&session_id);
                         if self.active_session_id.as_ref() == Some(&session_id) {
                             self.active_session_id = None;

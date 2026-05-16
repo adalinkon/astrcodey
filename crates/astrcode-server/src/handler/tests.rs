@@ -1,7 +1,10 @@
 use std::{
     fs, future,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -83,8 +86,17 @@ impl LlmProvider for MockLlm {
 }
 
 struct PendingLlm;
+struct StreamErrorLlm;
+struct ReadThenEditAcrossTurnsLlm {
+    call_count: AtomicUsize,
+}
 
 struct FailSessionStartExtension;
+
+#[derive(Clone)]
+struct RecordingLifecycleExtension {
+    events: Arc<Mutex<Vec<ExtensionEvent>>>,
+}
 
 #[derive(Clone, Default)]
 struct CapturingLlm {
@@ -94,6 +106,43 @@ struct CapturingLlm {
 struct StaticCommandExtension {
     id: &'static str,
     command_name: &'static str,
+}
+
+#[async_trait::async_trait]
+impl Extension for RecordingLifecycleExtension {
+    fn id(&self) -> &str {
+        "recording-lifecycle"
+    }
+
+    fn register(&self, reg: &mut Registrar) {
+        for event in [
+            ExtensionEvent::AfterProviderResponse,
+            ExtensionEvent::TurnEnd,
+        ] {
+            reg.on_event(
+                event.clone(),
+                HookMode::Blocking,
+                0,
+                Arc::new(RecordingLifecycleHandler {
+                    event,
+                    events: Arc::clone(&self.events),
+                }),
+            );
+        }
+    }
+}
+
+struct RecordingLifecycleHandler {
+    event: ExtensionEvent,
+    events: Arc<Mutex<Vec<ExtensionEvent>>>,
+}
+
+#[async_trait::async_trait]
+impl astrcode_core::extension::LifecycleHandler for RecordingLifecycleHandler {
+    async fn handle(&self, _ctx: LifecycleContext) -> Result<HookResult, ExtensionError> {
+        self.events.lock().unwrap().push(self.event.clone());
+        Ok(HookResult::Allow)
+    }
 }
 
 #[async_trait::async_trait]
@@ -181,6 +230,91 @@ impl LlmProvider for PendingLlm {
 }
 
 #[async_trait::async_trait]
+impl LlmProvider for StreamErrorLlm {
+    async fn generate(
+        &self,
+        _messages: Vec<LlmMessage>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<mpsc::UnboundedReceiver<LlmEvent>, LlmError> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let _ = tx.send(LlmEvent::Error {
+            message: "stream failed".into(),
+        });
+        Ok(rx)
+    }
+
+    fn model_limits(&self) -> ModelLimits {
+        ModelLimits {
+            max_input_tokens: 1024,
+            max_output_tokens: 1024,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for ReadThenEditAcrossTurnsLlm {
+    async fn generate(
+        &self,
+        _messages: Vec<LlmMessage>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<mpsc::UnboundedReceiver<LlmEvent>, LlmError> {
+        let call = self.call_count.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = mpsc::unbounded_channel();
+        match call {
+            0 => {
+                let _ = tx.send(LlmEvent::ToolCallStart {
+                    call_id: "read-call".into(),
+                    name: "read".into(),
+                    arguments: serde_json::json!({ "path": "note.txt" }).to_string(),
+                });
+                let _ = tx.send(LlmEvent::Done {
+                    finish_reason: "tool_calls".into(),
+                });
+            },
+            1 => {
+                let _ = tx.send(LlmEvent::ContentDelta {
+                    delta: "read complete".into(),
+                });
+                let _ = tx.send(LlmEvent::Done {
+                    finish_reason: "stop".into(),
+                });
+            },
+            2 => {
+                let _ = tx.send(LlmEvent::ToolCallStart {
+                    call_id: "edit-call".into(),
+                    name: "edit".into(),
+                    arguments: serde_json::json!({
+                        "path": "note.txt",
+                        "oldStr": "alpha",
+                        "newStr": "gamma"
+                    })
+                    .to_string(),
+                });
+                let _ = tx.send(LlmEvent::Done {
+                    finish_reason: "tool_calls".into(),
+                });
+            },
+            _ => {
+                let _ = tx.send(LlmEvent::ContentDelta {
+                    delta: "edit complete".into(),
+                });
+                let _ = tx.send(LlmEvent::Done {
+                    finish_reason: "stop".into(),
+                });
+            },
+        }
+        Ok(rx)
+    }
+
+    fn model_limits(&self) -> ModelLimits {
+        ModelLimits {
+            max_input_tokens: 200000,
+            max_output_tokens: 1024,
+        }
+    }
+}
+
+#[async_trait::async_trait]
 impl LlmProvider for CapturingLlm {
     async fn generate(
         &self,
@@ -215,6 +349,7 @@ fn test_runtime_with_settings(
         llm_provider: Arc::new(parking_lot::RwLock::new(llm_provider)),
         context_assembler: Arc::new(LlmContextAssembler::new(context_settings.clone())),
         background_tasks: Default::default(),
+        file_observation_stores: Default::default(),
         extension_runner: Arc::new(astrcode_extensions::runner::ExtensionRunner::new(
             Duration::from_secs(1),
         )),
@@ -638,6 +773,106 @@ async fn submit_prompt_rejects_second_running_turn() {
     assert!(saw_busy, "second prompt should be rejected while turn runs");
 
     handler.abort_session(sid).await.unwrap();
+}
+
+#[tokio::test]
+async fn successful_text_turn_dispatches_after_provider_response_before_turn_end() {
+    let runtime = test_runtime_with_llm(Arc::new(CapturingLlm::default()));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    runtime
+        .extension_runner
+        .register(Arc::new(RecordingLifecycleExtension {
+            events: Arc::clone(&events),
+        }))
+        .await;
+    let (event_tx, _) = tokio::sync::broadcast::channel(64);
+    let handler = CommandHandler::spawn_actor(runtime, event_tx);
+    let sid = handler.create_session(".".into()).await.unwrap();
+
+    let (_turn_id, completion) = handler
+        .submit_prompt_with_completion(sid, "hello".into())
+        .await
+        .unwrap();
+    let completion = completion.await.unwrap();
+
+    assert!(matches!(completion, TurnCompletion::Completed { .. }));
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![
+            ExtensionEvent::AfterProviderResponse,
+            ExtensionEvent::TurnEnd
+        ]
+    );
+}
+
+#[tokio::test]
+async fn stream_error_still_dispatches_turn_end() {
+    let runtime = test_runtime_with_llm(Arc::new(StreamErrorLlm));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    runtime
+        .extension_runner
+        .register(Arc::new(RecordingLifecycleExtension {
+            events: Arc::clone(&events),
+        }))
+        .await;
+    let (event_tx, _) = tokio::sync::broadcast::channel(64);
+    let handler = CommandHandler::spawn_actor(runtime, event_tx);
+    let sid = handler.create_session(".".into()).await.unwrap();
+
+    let (_turn_id, completion) = handler
+        .submit_prompt_with_completion(sid, "hello".into())
+        .await
+        .unwrap();
+    let completion = completion.await.unwrap();
+
+    assert!(matches!(completion, TurnCompletion::Failed { .. }));
+    assert_eq!(*events.lock().unwrap(), vec![ExtensionEvent::TurnEnd]);
+}
+
+#[tokio::test]
+async fn read_before_edit_guard_survives_across_turns() {
+    let workspace = unique_workspace("read-before-edit-cross-turn");
+    let path = workspace.join("note.txt");
+    fs::write(&path, "alpha").unwrap();
+    let runtime = test_runtime_with_llm(Arc::new(ReadThenEditAcrossTurnsLlm {
+        call_count: AtomicUsize::new(0),
+    }));
+    let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(128);
+    let handler = CommandHandler::spawn_actor(Arc::clone(&runtime), event_tx);
+    let sid = handler
+        .create_session(workspace.to_string_lossy().into_owned())
+        .await
+        .unwrap();
+
+    handler
+        .submit_input_for_session(sid.clone(), "read the file".into())
+        .await
+        .unwrap();
+    assert_eq!(wait_for_turn_completed(&mut event_rx).await, "stop");
+
+    fs::write(&path, "beta").unwrap();
+
+    handler
+        .submit_input_for_session(sid.clone(), "edit the file".into())
+        .await
+        .unwrap();
+    assert_eq!(wait_for_turn_completed(&mut event_rx).await, "stop");
+
+    assert_eq!(fs::read_to_string(&path).unwrap(), "beta");
+    let events = runtime.event_store.replay_events(&sid).await.unwrap();
+    assert!(events.iter().any(|event| {
+        matches!(
+            &event.payload,
+            EventPayload::ToolCallCompleted {
+                call_id,
+                tool_name,
+                result,
+            } if call_id.as_str() == "edit-call"
+                && tool_name == "edit"
+                && result.is_error
+                && result.metadata.get("staleFile") == Some(&serde_json::json!(true))
+        )
+    }));
 }
 
 #[tokio::test]
