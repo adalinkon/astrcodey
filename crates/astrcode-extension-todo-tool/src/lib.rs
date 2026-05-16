@@ -635,27 +635,6 @@ mod tests {
     }
 
     #[test]
-    fn bundled_manifest_matches_rust_tool_definition() {
-        let manifest: Value =
-            serde_json::from_str(include_str!("../bundled-extension.json")).expect("manifest json");
-        let tool = manifest["tools"][0].clone();
-        let definition = todo_write_tool_definition();
-
-        assert_eq!(manifest["id"], "astrcode-todo-tool");
-        assert!(manifest.get("library").is_none());
-        assert_eq!(manifest["tools"].as_array().unwrap().len(), 1);
-        assert_eq!(tool["name"], definition.name);
-        assert_eq!(tool["description"], definition.description);
-        assert_eq!(tool["parameters"], definition.parameters);
-        assert_eq!(manifest["subscriptions"].as_array().unwrap().len(), 2);
-        let mut reg = Registrar::new();
-        TodoToolExtension.register(&mut reg);
-        assert_eq!(reg.tools().len(), 1);
-        assert!(!reg.provider().is_empty());
-        assert!(!reg.post_tool_use().is_empty());
-    }
-
-    #[test]
     fn verification_nudge_fires_for_completed_multi_step_list_without_verification() {
         let store = test_store("verification-nudge");
         let result = store

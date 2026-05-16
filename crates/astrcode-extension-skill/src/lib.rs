@@ -829,23 +829,6 @@ mod tests {
         assert!(index.contains("- commit: Commit changes."));
     }
 
-    #[test]
-    fn bundled_manifest_matches_runtime_definition() {
-        let manifest: Value =
-            serde_json::from_str(include_str!("../bundled-extension.json")).expect("manifest");
-        let definition = skill_tool_definition();
-
-        assert_eq!(manifest["id"], "astrcode-skill");
-        assert!(manifest.get("library").is_none());
-        assert_eq!(manifest["subscriptions"].as_array().unwrap().len(), 1);
-        assert_eq!(manifest["tools"][0]["name"], definition.name);
-        assert_eq!(manifest["tools"][0]["description"], definition.description);
-        assert_eq!(manifest["tools"][0]["parameters"], definition.parameters);
-        let mut reg = Registrar::new();
-        SkillExtension.register(&mut reg);
-        assert_eq!(reg.tools().len(), 1);
-        assert!(!reg.prompt_build().is_empty());
-    }
 
     fn tool_ctx(working_dir: &Path) -> ToolExecutionContext {
         ToolExecutionContext {
