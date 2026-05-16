@@ -15,7 +15,7 @@ use astrcode_protocol::{
     version::negotiate_version,
 };
 use astrcode_server::{
-    agent::collaboration::ServerAgentSessionControl,
+    agent::ServerAgentSessionControl,
     handler::CommandHandler,
     transport::{ServerTransport, StdioTransport, write_error_response, write_initialize_response},
 };
@@ -66,12 +66,16 @@ async fn main() {
 
     // 创建 AgentSessionControl 并注入到 runtime（handler 和 spawner 共享同一个 slot）。
     let session_control = Arc::new(ServerAgentSessionControl::new(
-        runtime.session_manager.clone(),
+        Arc::clone(&runtime.session_manager),
         Arc::clone(&command_handle_slot),
     ));
     *runtime.agent_session_control.write() = Some(session_control);
 
-    let handler = CommandHandler::spawn_actor(runtime, event_tx.clone());
+    let event_bus = Arc::new(astrcode_server::server_event_bus::ServerEventBus::new(
+        runtime.event_store.clone(),
+        event_tx.clone(),
+    ));
+    let handler = CommandHandler::spawn_actor(runtime, Arc::clone(&event_bus));
 
     // spawn_actor 后绑定 CommandHandle 到 agent_session_control 的共享槽。
     *command_handle_slot.write() = Some(handler.clone());

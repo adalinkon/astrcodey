@@ -12,7 +12,7 @@ use astrcode_core::{
     event::{Event, EventPayload, Phase},
     llm::{LlmContent, LlmMessage, LlmRole},
     storage::{BackgroundToolCallView, SessionReadModel, SessionSummary},
-    types::{SessionId, ToolCallId},
+    types::{Cursor, SessionId, ToolCallId},
 };
 use astrcode_protocol::{
     commands::ClientCommand,
@@ -53,12 +53,29 @@ use crate::{
 
 pub const ASTRCODE_HTTP_TOKEN_ENV: &str = "ASTRCODE_HTTP_TOKEN";
 
+/// HTTP server startup and runtime errors.
+#[derive(Debug, thiserror::Error)]
+pub enum HttpServerError {
+    /// Failed to generate or read auth token.
+    #[error("auth token error")]
+    Auth(getrandom::Error),
+    /// I/O error during server operation.
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+}
+
+impl From<getrandom::Error> for HttpServerError {
+    fn from(e: getrandom::Error) -> Self {
+        HttpServerError::Auth(e)
+    }
+}
+
 /// HTTP router shared state.
 #[derive(Clone)]
 pub struct HttpState {
     runtime: Arc<ServerRuntime>,
     handler: crate::handler::CommandHandle,
-    event_tx: broadcast::Sender<ClientNotification>,
+    event_bus: Arc<crate::server_event_bus::ServerEventBus>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,13 +96,17 @@ struct DeleteProjectParams {
 pub fn router(
     runtime: Arc<ServerRuntime>,
     event_tx: broadcast::Sender<ClientNotification>,
-) -> (Router, String) {
-    let auth_token = configured_auth_token();
-    let handler = CommandHandler::spawn_actor(Arc::clone(&runtime), event_tx.clone());
+) -> Result<(Router, String), HttpServerError> {
+    let auth_token = configured_auth_token()?;
+    let event_bus = Arc::new(crate::server_event_bus::ServerEventBus::new(
+        runtime.event_store.clone(),
+        event_tx.clone(),
+    ));
+    let handler = CommandHandler::spawn_actor(Arc::clone(&runtime), Arc::clone(&event_bus));
     let state = HttpState {
         runtime,
         handler,
-        event_tx,
+        event_bus,
     };
     let expected_bearer = format!("Bearer {auth_token}");
 
@@ -129,17 +150,17 @@ pub fn router(
         .layer(cors)
         .with_state(state);
 
-    (app, auth_token)
+    Ok((app, auth_token))
 }
 
 /// Convenience wrapper: build router and run until graceful shutdown.
 pub async fn run_http_server(
     runtime: Arc<ServerRuntime>,
     addr: std::net::SocketAddr,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), HttpServerError> {
     let (event_tx, _) = broadcast::channel(256);
     let shutdown_token = runtime.shutdown_token.clone();
-    let (app, auth_token) = router(Arc::clone(&runtime), event_tx);
+    let (app, auth_token) = router(Arc::clone(&runtime), event_tx)?;
     tracing::info!(
         "Auth token: {}...{}",
         &auth_token[..4],
@@ -358,8 +379,14 @@ async fn delete_project(
 }
 
 async fn get_config(State(state): State<HttpState>) -> Response {
-    let raw = state.runtime.read_raw_config();
-    let config_path = state.runtime.config_store.path().display().to_string();
+    let raw = state.runtime.config.read_raw_config();
+    let config_path = state
+        .runtime
+        .config
+        .config_store()
+        .path()
+        .display()
+        .to_string();
     let profiles: Vec<ProfileDto> = raw
         .profiles
         .iter()
@@ -390,7 +417,7 @@ async fn get_config(State(state): State<HttpState>) -> Response {
 }
 
 async fn reload_config(State(state): State<HttpState>) -> Response {
-    let config = match state.runtime.config_store.load().await {
+    let config = match state.runtime.config.config_store().load().await {
         Ok(c) => c,
         Err(error) => {
             return error_response(
@@ -403,7 +430,7 @@ async fn reload_config(State(state): State<HttpState>) -> Response {
     let active_profile = config.active_profile.clone();
     let active_model = config.active_model.clone();
 
-    if let Err(error) = state.runtime.apply_raw_config_and_rebuild(config) {
+    if let Err(error) = state.runtime.config.apply_raw_config_and_rebuild(config) {
         return error_response(
             StatusCode::BAD_REQUEST,
             "invalid_config",
@@ -422,7 +449,7 @@ async fn update_active_selection(
     State(state): State<HttpState>,
     Json(request): Json<UpdateActiveSelectionRequest>,
 ) -> Response {
-    let mut candidate = state.runtime.read_raw_config().clone();
+    let mut candidate = state.runtime.config.read_raw_config().clone();
     candidate.active_profile = request.active_profile;
     candidate.active_model = request.active_model;
 
@@ -436,7 +463,7 @@ async fn update_active_selection(
     };
 
     // Persist the validated candidate.
-    if let Err(error) = state.runtime.config_store.save(&candidate).await {
+    if let Err(error) = state.runtime.config.config_store().save(&candidate).await {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "save_failed",
@@ -446,7 +473,7 @@ async fn update_active_selection(
 
     // apply_raw_config_and_rebuild re-validates internally; failure here after
     // the explicit check above indicates a race or I/O issue.
-    if let Err(error) = state.runtime.apply_raw_config_and_rebuild(candidate) {
+    if let Err(error) = state.runtime.config.apply_raw_config_and_rebuild(candidate) {
         tracing::warn!("apply_raw_config_and_rebuild failed after save: {error}");
     }
 
@@ -458,8 +485,8 @@ async fn update_active_selection(
 }
 
 async fn get_current_model(State(state): State<HttpState>) -> Response {
-    let raw = state.runtime.read_raw_config();
-    let eff = state.runtime.read_effective();
+    let raw = state.runtime.config.read_raw_config();
+    let eff = state.runtime.config.read_effective();
     Json(CurrentModelResponseDto {
         profile_name: raw.active_profile.clone(),
         model_id: eff.llm.model_id.clone(),
@@ -469,7 +496,7 @@ async fn get_current_model(State(state): State<HttpState>) -> Response {
 }
 
 async fn list_models(State(state): State<HttpState>) -> Response {
-    let raw = state.runtime.read_raw_config();
+    let raw = state.runtime.config.read_raw_config();
     let models: Vec<AvailableModelDto> = raw
         .profiles
         .iter()
@@ -488,6 +515,7 @@ async fn test_model(State(state): State<HttpState>) -> Response {
     let start = std::time::Instant::now();
     match state
         .runtime
+        .config
         .read_llm_provider()
         .generate(vec![astrcode_core::llm::LlmMessage::user("Hi")], vec![])
         .await
@@ -531,13 +559,13 @@ async fn session_stream(
         );
     }
 
-    let rx = http_state.event_tx.subscribe();
+    let rx = http_state.event_bus.broadcast_sender().subscribe();
     let (missed_events, replay_error) = match query.cursor.as_ref() {
         Some(cursor) if cursor.parse::<u64>().is_err() => (Vec::new(), true),
         Some(cursor) => match http_state
             .runtime
             .session_manager
-            .replay_after(&session_id, cursor)
+            .replay_from(&session_id, &Cursor::from(cursor.as_str()))
             .await
         {
             Ok(events) => (events, false),
@@ -1247,13 +1275,18 @@ async fn event_cursor(runtime: &ServerRuntime, event: &Event) -> String {
 }
 
 async fn state_cursor(runtime: &ServerRuntime, session_id: &SessionId) -> String {
-    runtime
-        .session_manager
-        .latest_cursor(session_id)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "0".into())
+    match runtime.session_manager.latest_cursor(session_id).await {
+        Ok(Some(cursor)) => cursor,
+        Ok(None) => "0".to_string(),
+        Err(error) => {
+            tracing::warn!(
+                session_id = %session_id,
+                %error,
+                "failed to read latest cursor from storage, falling back to 0"
+            );
+            "0".to_string()
+        },
+    }
 }
 
 fn sse_event<T: serde::Serialize>(value: &T) -> SseEvent {
@@ -1313,11 +1346,12 @@ fn generate_auth_token() -> Result<String, getrandom::Error> {
     Ok(bytes.iter().map(|b| format!("{:02x}", b)).collect())
 }
 
-fn configured_auth_token() -> String {
+fn configured_auth_token() -> Result<String, getrandom::Error> {
     std::env::var(ASTRCODE_HTTP_TOKEN_ENV)
         .ok()
         .filter(|token| !token.trim().is_empty())
-        .unwrap_or_else(|| generate_auth_token().expect("failed to generate auth token"))
+        .map(Ok)
+        .unwrap_or_else(generate_auth_token)
 }
 
 fn collect_allowed_origins() -> Vec<HeaderValue> {

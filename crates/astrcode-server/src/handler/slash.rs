@@ -97,16 +97,13 @@ impl CommandHandler {
         }
 
         // 扩展命令分发
-        let state = self
-            .runtime
-            .session_manager
-            .read_model(&sid)
-            .await
-            .map_err(|e| HandlerError::Other(format!("read session {sid}: {e}")))?;
+        let state = self.runtime.session_manager.read_model(&sid).await?;
         let cmd_ctx = astrcode_core::extension::CommandContext {
             session_id: sid.to_string(),
             working_dir: state.working_dir.clone(),
-            model: ModelSelection::simple(self.runtime.read_effective().llm.model_id.clone()),
+            model: ModelSelection::simple(
+                self.runtime.config.read_effective().llm.model_id.clone(),
+            ),
         };
 
         match self
@@ -122,7 +119,7 @@ impl CommandHandler {
         {
             // 显示结果到客户端
             Ok(ExtensionCommandResult::Display { content, is_error }) => {
-                let _ = self.event_tx.send(
+                self.event_bus.send_notification(
                     astrcode_protocol::events::ClientNotification::ExtensionCommandResult {
                         command_name: command.name,
                         content,

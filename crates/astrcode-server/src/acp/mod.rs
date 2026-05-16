@@ -32,7 +32,11 @@ use crate::{
 /// error occurs.
 pub async fn run_acp_server(runtime: Arc<ServerRuntime>) -> agent_client_protocol::Result<()> {
     let (event_tx, _) = broadcast::channel(256);
-    let command_handle = CommandHandle::spawn(runtime, event_tx.clone());
+    let event_bus = Arc::new(crate::server_event_bus::ServerEventBus::new(
+        runtime.event_store.clone(),
+        event_tx,
+    ));
+    let command_handle = CommandHandle::spawn(runtime, Arc::clone(&event_bus));
 
     Agent
         .builder()
@@ -77,12 +81,12 @@ pub async fn run_acp_server(runtime: Arc<ServerRuntime>) -> agent_client_protoco
         .on_receive_request(
             {
                 let command_handle = command_handle.clone();
-                let event_tx = event_tx.clone();
+                let event_bus = Arc::clone(&event_bus);
 
                 async move |req: PromptRequest,
                             responder: Responder<PromptResponse>,
                             cx: ConnectionTo<Client>| {
-                    match handle_prompt(req, &command_handle, &event_tx, &cx).await {
+                    match handle_prompt(req, &command_handle, &event_bus, &cx).await {
                         Ok(stop_reason) => responder.respond(PromptResponse::new(stop_reason)),
                         Err(error) => responder.respond_with_error(error),
                     }
@@ -121,12 +125,12 @@ pub async fn run_acp_server(runtime: Arc<ServerRuntime>) -> agent_client_protoco
 async fn handle_prompt(
     req: PromptRequest,
     command_handle: &CommandHandle,
-    event_tx: &broadcast::Sender<ClientNotification>,
+    event_bus: &Arc<crate::server_event_bus::ServerEventBus>,
     cx: &ConnectionTo<Client>,
 ) -> Result<StopReason, Error> {
     let session_id = SessionId::from(req.session_id.to_string());
     let text = prompt_to_text(&req.prompt)?;
-    let mut event_rx = event_tx.subscribe();
+    let mut event_rx = event_bus.broadcast_sender().subscribe();
 
     let (turn_id, mut completion_rx) = command_handle
         .submit_prompt_with_completion(session_id.clone(), text)
@@ -311,6 +315,7 @@ fn handler_error_to_acp(error: HandlerError) -> Error {
         HandlerError::NoActiveTurn
         | HandlerError::CompactBlocked
         | HandlerError::CompactionSkipped(_)
+        | HandlerError::SessionManager(_)
         | HandlerError::Other(_) => Error::internal_error().data(error.to_string()),
     }
 }

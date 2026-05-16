@@ -148,8 +148,8 @@ pub async fn start_server(
     });
 
     let health_url = format!("http://127.0.0.1:{port}/api/sessions");
-    for attempt in 0..40 {
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let still_tracked = {
             let inner = lock_inner(&state);
             inner.port == port as i32 && inner.child.is_some()
@@ -165,7 +165,7 @@ pub async fn start_server(
             .await
             .is_ok_and(|response| response.status().is_success());
         if still_tracked && ready {
-            tracing::info!("Server ready (attempt {})", attempt + 1);
+            tracing::info!("Server ready on port {port}");
             let token = {
                 let inner = lock_inner(&state);
                 inner.token.clone()
@@ -225,14 +225,13 @@ pub async fn stop_server(state: State<'_, Arc<SidecarState>>) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub fn select_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
+pub async fn select_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    let dir = app
-        .dialog()
-        .file()
-        .blocking_pick_folder()
-        .map(|p| p.to_string());
-    Ok(dir)
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_folder(move |path| {
+        let _ = tx.send(path.map(|p| p.to_string()));
+    });
+    rx.await.map_err(|_| "dialog cancelled".to_string())
 }
 
 #[tauri::command]

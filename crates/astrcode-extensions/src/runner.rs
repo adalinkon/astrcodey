@@ -171,27 +171,28 @@ impl ExtensionRunner {
     pub async fn register(&self, ext: Arc<dyn Extension>) {
         let id = ext.id().to_string();
 
-        {
-            let exts = self.extensions.read().await;
-            if exts.iter().any(|e| e.id() == id) {
-                tracing::warn!(extension_id = %id, "extension already registered, skipping duplicate");
-                return;
-            }
-        }
-
+        // ext.register() 只读扩展自身元数据，不涉及共享状态，在锁外调用
         let mut reg = Registrar::new();
         ext.register(&mut reg);
+
+        // 单次写锁：去重检查 + 插入，消除 TOCTOU
+        let mut exts = self.extensions.write().await;
+        if exts.iter().any(|e| e.id() == id) {
+            tracing::warn!(extension_id = %id, "extension already registered, skipping duplicate");
+            return;
+        }
+
+        // 在释放 extensions 锁之前先插入 ext，确保去重结果一致
+        exts.push(ext);
+        drop(exts);
+
+        // records + index 的更新与 extensions 写锁解耦，减少阻塞读并发的时间
         if !reg.is_empty() {
             let mut records = self.records.write().await;
-            records.push(ExtensionRecord {
-                id: id.clone(),
-                reg,
-            });
+            records.push(ExtensionRecord { id, reg });
             let index = Arc::new(build_handler_index(&records));
             *self.index.write() = index;
         }
-        let mut exts = self.extensions.write().await;
-        exts.push(ext);
     }
 
     /// 绑定会话创建能力。
@@ -215,8 +216,9 @@ impl ExtensionRunner {
         ctx: PreToolUseContext,
     ) -> Result<PreToolUseResult, ExtensionError> {
         let index = self.load_index();
-
         let mut ctx = ctx;
+        let mut modified = false;
+
         for (mode, handler) in &index.pre_tool_use {
             match mode {
                 HookMode::Blocking => {
@@ -229,13 +231,14 @@ impl ExtensionRunner {
                         },
                         PreToolUseResult::ModifyInput { tool_input } => {
                             ctx = PreToolUseContext { tool_input, ..ctx };
+                            modified = true;
                         },
                         PreToolUseResult::Allow => {},
                     }
                 },
                 HookMode::Advisory => {
                     if let Err(e) = handler.handle(ctx.clone()).await {
-                        tracing::warn!(extension_event = "pre_tool_use", error = %e, "advisory handler failed");
+                        tracing::warn!(error = %e, "advisory pre_tool_use handler failed");
                     }
                 },
                 HookMode::NonBlocking => {
@@ -243,13 +246,19 @@ impl ExtensionRunner {
                     let handler = Arc::clone(handler);
                     spawn_nonblocking(async move {
                         if let Err(e) = handler.handle(ctx).await {
-                            tracing::warn!(extension_event = "pre_tool_use", error = %e, "non-blocking handler failed");
+                            tracing::warn!(error = %e, "non-blocking pre_tool_use handler failed");
                         }
                     });
                 },
             }
         }
-        Ok(PreToolUseResult::Allow)
+        if modified {
+            Ok(PreToolUseResult::ModifyInput {
+                tool_input: ctx.tool_input,
+            })
+        } else {
+            Ok(PreToolUseResult::Allow)
+        }
     }
 
     /// PostToolUse 钩子分发。
@@ -258,9 +267,9 @@ impl ExtensionRunner {
         ctx: PostToolUseContext,
     ) -> Result<PostToolUseResult, ExtensionError> {
         let index = self.load_index();
-
         let mut ctx = ctx;
         let mut modified = false;
+
         for (mode, handler) in &index.post_tool_use {
             match mode {
                 HookMode::Blocking => {
@@ -273,17 +282,14 @@ impl ExtensionRunner {
                         },
                         PostToolUseResult::ModifyResult { content } => {
                             let is_error = ctx.tool_result.is_error;
-                            ctx = PostToolUseContext {
-                                tool_result: ToolResult {
-                                    content: content.clone(),
-                                    error: if is_error {
-                                        Some(content)
-                                    } else {
-                                        ctx.tool_result.error.clone()
-                                    },
-                                    ..ctx.tool_result
+                            ctx.tool_result = ToolResult {
+                                content: content.clone(),
+                                error: if is_error {
+                                    Some(content)
+                                } else {
+                                    ctx.tool_result.error.clone()
                                 },
-                                ..ctx
+                                ..ctx.tool_result.clone()
                             };
                             modified = true;
                         },
@@ -292,7 +298,7 @@ impl ExtensionRunner {
                 },
                 HookMode::Advisory => {
                     if let Err(e) = handler.handle(ctx.clone()).await {
-                        tracing::warn!(extension_event = "post_tool_use", error = %e, "advisory handler failed");
+                        tracing::warn!(error = %e, "advisory post_tool_use handler failed");
                     }
                 },
                 HookMode::NonBlocking => {
@@ -300,7 +306,7 @@ impl ExtensionRunner {
                     let handler = Arc::clone(handler);
                     spawn_nonblocking(async move {
                         if let Err(e) = handler.handle(ctx).await {
-                            tracing::warn!(extension_event = "post_tool_use", error = %e, "non-blocking handler failed");
+                            tracing::warn!(error = %e, "non-blocking post_tool_use handler failed");
                         }
                     });
                 },
@@ -358,7 +364,7 @@ impl ExtensionRunner {
                 },
                 HookMode::Advisory => {
                     if let Err(e) = handler.handle(ctx.clone()).await {
-                        tracing::warn!(extension_event = "provider", error = %e, "advisory handler failed");
+                        tracing::warn!(error = %e, "advisory provider handler failed");
                     }
                 },
                 HookMode::NonBlocking => {
@@ -366,7 +372,7 @@ impl ExtensionRunner {
                     let handler = Arc::clone(handler);
                     spawn_nonblocking(async move {
                         if let Err(e) = handler.handle(ctx).await {
-                            tracing::warn!(extension_event = "provider", error = %e, "non-blocking handler failed");
+                            tracing::warn!(error = %e, "non-blocking provider handler failed");
                         }
                     });
                 },
@@ -475,7 +481,7 @@ impl ExtensionRunner {
                 },
                 HookMode::Advisory => {
                     if let Err(e) = handler.handle(ctx.clone()).await {
-                        tracing::warn!(extension_event = "lifecycle", error = %e, "advisory handler failed");
+                        tracing::warn!(error = %e, "advisory lifecycle handler failed");
                     }
                 },
                 HookMode::NonBlocking => {
@@ -483,7 +489,7 @@ impl ExtensionRunner {
                     let handler = Arc::clone(handler);
                     spawn_nonblocking(async move {
                         if let Err(e) = handler.handle(ctx).await {
-                            tracing::warn!(extension_event = "lifecycle", error = %e, "non-blocking handler failed");
+                            tracing::warn!(error = %e, "non-blocking lifecycle handler failed");
                         }
                     });
                 },

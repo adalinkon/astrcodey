@@ -15,6 +15,7 @@ pub const COMPACT_TRANSCRIPT_HINT_PREFIX: &str =
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompactSummaryRenderOptions {
     pub transcript_path: Option<String>,
+    pub custom_instructions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +59,14 @@ pub(crate) fn compact_summary_message_text(
             String::new(),
             format!("{COMPACT_TRANSCRIPT_HINT_PREFIX}{path}"),
         ]);
+    }
+
+    if !options.custom_instructions.is_empty() {
+        body.push(String::new());
+        body.push("Extension instructions to preserve:".to_string());
+        for instruction in &options.custom_instructions {
+            body.push(format!("- {instruction}"));
+        }
     }
 
     format!(

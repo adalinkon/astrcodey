@@ -1,0 +1,18 @@
+[package]
+name = "astrcode-session"
+version = "0.1.0"
+edition = "2021"
+description = "Session runtime: Session handle, turn execution, and event bus"
+
+[dependencies]
+astrcode-core = { path = "../astrcode-core" }
+astrcode-context = { path = "../astrcode-context" }
+astrcode-extensions = { path = "../astrcode-extensions" }
+astrcode-tools = { path = "../astrcode-tools" }
+astrcode-support = { path = "../astrcode-support" }
+async-trait = { workspace = true }
+parking_lot = "0.12"
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

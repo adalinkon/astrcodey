@@ -638,6 +638,10 @@ impl TuiState {
             } => {
                 self.apply_background_status(format!("{tool_name} background done ({task_id})"));
             },
+            EventPayload::ModelIdChanged { model_id } => {
+                self.model_name = model_id.clone();
+                self.mark_dirty();
+            },
         }
     }
 

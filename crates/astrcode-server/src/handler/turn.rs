@@ -10,6 +10,11 @@ use astrcode_core::{
     tool::ToolResult,
     types::*,
 };
+use astrcode_session::{
+    EventBus, Session, SessionServices, TurnRunner, agent_turn_completed_payloads,
+    agent_turn_failed_payloads, agent_turn_started_payloads, background::BackgroundTaskCompletion,
+    run_turn,
+};
 use astrcode_tools::registry::ToolRegistry;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -17,29 +22,18 @@ use tokio::{
 };
 
 use super::{CommandHandler, CommandMessage, HandlerError};
-use crate::{
-    agent::{
-        AgentLoop, AgentServices, AgentSignal, AgentTurnOutput, drive_agent,
-        tool_types::BackgroundTaskCompletion,
-    },
-    bootstrap::ServerRuntime,
-    session::{
-        agent_turn_completed_payloads, agent_turn_failed_payloads, agent_turn_started_payloads,
-    },
-};
+use crate::{bootstrap::ServerRuntime, server_event_bus::ServerEventBus};
 
 /// Agent Turn 的输入参数，用于启动后台任务。
 pub(in crate::handler) struct AgentTurnInput {
-    pub sid: SessionId,
     pub turn_id: TurnId,
-    pub working_dir: String,
+    pub session: Arc<Session>,
     pub tool_registry: Arc<ToolRegistry>,
-    pub system_prompt: String,
-    pub history: Vec<astrcode_core::llm::LlmMessage>,
     pub text: String,
     /// 斜杠命令注入的一次性指令
     pub transient_instructions: Option<String>,
     pub actor_tx: mpsc::UnboundedSender<CommandMessage>,
+    pub event_bus: Arc<ServerEventBus>,
 }
 
 /// 待处理的工具调用请求。
@@ -61,9 +55,7 @@ pub(in crate::handler) struct ActiveTurn {
     pub session_id: SessionId,
     pub turn_id: TurnId,
     pub handle: JoinHandle<()>,
-    pub working_dir: String,
-    pub model_id: String,
-    pub system_prompt: String,
+    pub session: Arc<Session>,
     /// Turn 完成时通知等待者的通道
     pub completion_tx: Option<oneshot::Sender<TurnCompletion>>,
 }
@@ -102,62 +94,52 @@ impl CommandHandler {
     ) -> Result<TurnId, HandlerError> {
         tracing::info!(session_id = %sid, text_len = user_text.len(), "start_turn");
         // 拒绝：已有 Turn 在运行
+        // TODO: 支持排队
         if self.active_turns.contains_key(&sid) {
             self.send_error(40900, "A turn is already running");
             return Err(HandlerError::TurnAlreadyRunning);
         }
 
         // 恢复会话并修复可能的遗留状态
-        self.runtime
+        let session = self
+            .runtime
             .session_manager
-            .resume(&sid)
+            .open(sid.clone())
             .await
             .map_err(|e| HandlerError::SessionNotFound(format!("Session {sid} not found: {e}")))?;
         self.repair_stale_pending_tool_calls(&sid)
             .await
             .map_err(HandlerError::Other)?;
         // 读取会话状态
-        let state = self
-            .runtime
-            .session_manager
-            .read_model(&sid)
+        let state = session
+            .read_model()
             .await
             .map_err(|e| HandlerError::Other(format!("read session {sid}: {e}")))?;
-        let history = state.provider_messages();
         let working_dir = state.working_dir;
-        let model_id = state.model_id;
-        let system_prompt = state.system_prompt;
         let tool_registry = self.ensure_tool_registry(&sid, &working_dir).await;
-        // 如未配置 system prompt，自动配置
-        let system_prompt = match system_prompt {
-            Some(system_prompt) => system_prompt,
-            None => self
-                .configure_session_prompt(&sid, &working_dir, &tool_registry, None)
+        // 如未配置 system prompt，自动配置（写入 session 事件）
+        if state.system_prompt.is_none() {
+            self.configure_session_prompt(&sid, &working_dir, &tool_registry, None)
                 .await
-                .map_err(HandlerError::Other)?,
-        };
+                .map_err(HandlerError::Other)?;
+        }
         let turn_id = new_turn_id();
+        let session_arc = Arc::new(session);
 
         // 记录 Turn 开始事件
-        self.record_turn_payloads(
-            &sid,
-            Some(&turn_id),
-            agent_turn_started_payloads(new_message_id(), visible_text),
-        )
-        .await
-        .map_err(HandlerError::Other)?;
+        for payload in agent_turn_started_payloads(new_message_id(), visible_text) {
+            self.event_bus.emit(&sid, Some(&turn_id), payload).await;
+        }
 
         // 启动 Agent 后台任务
         let handle = self.spawn_agent_turn(AgentTurnInput {
-            sid: sid.clone(),
             turn_id: turn_id.clone(),
-            working_dir: working_dir.clone(),
+            session: Arc::clone(&session_arc),
             tool_registry: Arc::clone(&tool_registry),
-            system_prompt: system_prompt.clone(),
-            history,
             text: user_text,
             transient_instructions,
             actor_tx: self.actor_tx.clone(),
+            event_bus: Arc::clone(&self.event_bus),
         });
         self.active_turns.insert(
             sid.clone(),
@@ -165,9 +147,7 @@ impl CommandHandler {
                 session_id: sid,
                 turn_id: turn_id.clone(),
                 handle,
-                working_dir,
-                model_id,
-                system_prompt,
+                session: session_arc,
                 completion_tx,
             },
         );
@@ -180,61 +160,20 @@ impl CommandHandler {
         tokio::spawn(run_agent_turn_task(runtime, input))
     }
 
-    /// 处理 Agent Turn 成功完成。
-    pub(in crate::handler) async fn finish_agent_turn(
+    /// 清理已完成的 Agent Turn（终态事件已由 turn task 广播，此处仅做 map 清理）。
+    pub(in crate::handler) fn cleanup_agent_turn(
         &mut self,
         session_id: SessionId,
         turn_id: TurnId,
-        output: AgentTurnOutput,
+        completion: TurnCompletion,
     ) {
-        // 忽略：Turn 已被中止或替换
         if !self.active_turn_matches(&session_id, &turn_id) {
             return;
         }
         let Some(mut turn) = self.active_turns.remove(&session_id) else {
             return;
         };
-        let finish_reason = output.finish_reason.clone();
-        let _ = self
-            .record_turn_payloads(
-                &session_id,
-                Some(&turn_id),
-                agent_turn_completed_payloads(output.finish_reason),
-            )
-            .await;
-        turn.resolve_completion(TurnCompletion::Completed { finish_reason });
-    }
-
-    /// 处理 Agent Turn 失败。
-    pub(in crate::handler) async fn fail_agent_turn(
-        &mut self,
-        session_id: SessionId,
-        turn_id: TurnId,
-        error: crate::agent::AgentError,
-        emitted_error: bool,
-    ) {
-        // 忽略：Turn 已被中止或替换
-        if !self.active_turn_matches(&session_id, &turn_id) {
-            return;
-        }
-        let Some(mut turn) = self.active_turns.remove(&session_id) else {
-            return;
-        };
-        let error_message = error.to_string();
-        let _ = self
-            .record_turn_payloads(
-                &session_id,
-                Some(&turn_id),
-                agent_turn_failed_payloads(
-                    // 如 agent 未发送错误事件，补充发送
-                    (!emitted_error).then(|| error.to_string()),
-                    "error".into(),
-                ),
-            )
-            .await;
-        turn.resolve_completion(TurnCompletion::Failed {
-            error: error_message,
-        });
+        turn.resolve_completion(completion);
     }
 
     /// 中止指定会话的活跃 Turn。
@@ -247,11 +186,16 @@ impl CommandHandler {
             return Err(HandlerError::NoActiveTurn);
         };
 
-        // 发送 TurnAborted 生命周期事件
+        // 从 session 读取 working_dir 和 model_id 构建 lifecycle context
+        let session_state = active_turn
+            .session
+            .read_model()
+            .await
+            .map_err(|e| HandlerError::Other(format!("read session for abort: {e}")))?;
         let lifecycle_ctx = LifecycleContext {
             session_id: active_turn.session_id.to_string(),
-            working_dir: active_turn.working_dir.clone(),
-            model: astrcode_core::config::ModelSelection::simple(active_turn.model_id.clone()),
+            working_dir: session_state.working_dir,
+            model: astrcode_core::config::ModelSelection::simple(session_state.model_id),
         };
         if let Err(e) = self
             .runtime
@@ -266,16 +210,19 @@ impl CommandHandler {
         if !active_turn.handle.is_finished() {
             active_turn.handle.abort();
         }
-        self.cleanup_background_tasks_for_session(&active_turn.session_id);
+        self.runtime
+            .session_manager
+            .cleanup_background_tasks(&active_turn.session_id);
 
         // 记录中止完成事件
-        self.record_turn_payloads(
-            &active_turn.session_id,
-            Some(&active_turn.turn_id),
-            agent_turn_completed_payloads("aborted".into()),
-        )
-        .await
-        .map_err(HandlerError::Other)?;
+        for payload in agent_turn_completed_payloads("aborted".into()) {
+            self.event_bus
+                .emit(&active_turn.session_id, Some(&active_turn.turn_id), payload)
+                .await;
+        }
+        self.event_bus
+            .sync_durable_events(&active_turn.session_id)
+            .await;
 
         active_turn.resolve_completion(TurnCompletion::Aborted);
         Ok(())
@@ -301,14 +248,6 @@ impl CommandHandler {
             .is_some_and(|active_turn| &active_turn.turn_id == turn_id)
     }
 
-    /// 清理会话的所有后台任务。
-    pub(in crate::handler) fn cleanup_background_tasks_for_session(&self, session_id: &SessionId) {
-        self.runtime
-            .background_tasks
-            .lock()
-            .cleanup_session(session_id);
-    }
-
     /// 修复遗留的待处理工具调用状态（如服务重启后）。
     pub(in crate::handler) async fn repair_stale_pending_tool_calls(
         &self,
@@ -332,24 +271,23 @@ impl CommandHandler {
 
         // 标记所有待处理调用为中断
         for pending in pending_requested_tool_calls(&state) {
-            self.record_and_broadcast(
-                session_id,
-                None,
-                EventPayload::ToolCallCompleted {
-                    call_id: pending.call_id.clone().into(),
-                    tool_name: pending.tool_name,
-                    result: interrupted_tool_result(&pending.call_id),
-                },
-            )
-            .await?;
+            self.event_bus
+                .emit(
+                    session_id,
+                    None,
+                    EventPayload::ToolCallCompleted {
+                        call_id: pending.call_id.clone().into(),
+                        tool_name: pending.tool_name,
+                        result: interrupted_tool_result(&pending.call_id),
+                    },
+                )
+                .await;
         }
         // 标记 Turn 为中断完成
-        self.record_turn_payloads(
-            session_id,
-            None,
-            agent_turn_completed_payloads("interrupted".into()),
-        )
-        .await?;
+        for payload in agent_turn_completed_payloads("interrupted".into()) {
+            self.event_bus.emit(session_id, None, payload).await;
+        }
+        self.event_bus.sync_durable_events(session_id).await;
         Ok(())
     }
 }
@@ -392,29 +330,31 @@ fn interrupted_tool_result(call_id: &str) -> ToolResult {
     }
 }
 
-/// Agent Turn 后台任务：组装 AgentLoop 并驱动 LLM ↔ 工具循环。
+/// Agent Turn 后台任务：组装 TurnRunner 并驱动 LLM ↔ 工具循环。
 async fn run_agent_turn_task(runtime: Arc<ServerRuntime>, input: AgentTurnInput) {
     let AgentTurnInput {
-        sid,
         turn_id,
-        working_dir,
+        session,
         tool_registry,
-        system_prompt,
-        history,
         text,
         transient_instructions,
         actor_tx,
+        event_bus,
     } = input;
+    let sid = session.id().clone();
 
-    // 后台子任务结果转发到 Actor
-    let current_session_id = Arc::new(tokio::sync::Mutex::new(sid.clone()));
+    // 后台子任务结果通过 EventBus 直接持久化+广播，不经过 Actor
     let (background_result_tx, mut background_result_rx) =
         mpsc::unbounded_channel::<BackgroundTaskCompletion>();
     {
-        let bg_actor_tx = actor_tx.clone();
+        let bg_event_bus = Arc::clone(&event_bus);
         let handle = tokio::spawn(async move {
             while let Some(completion) = background_result_rx.recv().await {
-                let _ = bg_actor_tx.send(CommandMessage::BackgroundTaskCompleted(completion));
+                let session_id = completion.session_id.clone();
+                let (tool_call_event, bg_event) = completion.into_events();
+                bg_event_bus.emit(&session_id, None, tool_call_event).await;
+                bg_event_bus.emit(&session_id, None, bg_event).await;
+                bg_event_bus.sync_durable_events(&session_id).await;
             }
         });
         tokio::spawn(async move {
@@ -424,106 +364,85 @@ async fn run_agent_turn_task(runtime: Arc<ServerRuntime>, input: AgentTurnInput)
         });
     }
 
-    // 合并斜杠命令的一次性指令到 system prompt
-    let model_id = runtime.read_effective().llm.model_id.clone();
-    let system_prompt = transient_instructions
-        .filter(|instructions| !instructions.trim().is_empty())
-        .map(|instructions| {
-            format!(
-                "{system_prompt}\n\n[Slash Command Instructions]\n{}",
-                instructions.trim()
-            )
-        })
-        .unwrap_or(system_prompt);
+    // model_id 来自 runtime 配置（可被热更新覆盖 session 创建时的值）
+    // 仅在 model_id 与 session 当前值不同时写入事件
+    let model_id = runtime.config.read_effective().llm.model_id.clone();
+    if let Err(e) = session.update_model_id(&model_id).await {
+        tracing::warn!(session_id = %sid, error = %e, "failed to update session model_id");
+    }
 
-    // 组装 AgentLoop
-    let agent = AgentLoop::new(
-        sid.clone(),
-        working_dir,
-        system_prompt,
-        model_id,
-        AgentServices {
-            llm: runtime.read_llm_provider(),
+    // 组装 TurnRunner（从 session 读取所有事实）
+    let agent_session_control = runtime.agent_session_control.read().clone();
+    let agent = match TurnRunner::new(
+        SessionServices::new(
+            runtime.config.read_llm_provider(),
             tool_registry,
-            extension_runner: runtime.extension_runner.clone(),
-            context_assembler: runtime.context_assembler.clone(),
-            session_manager: runtime.session_manager.clone(),
-            auto_compact_failures: runtime.auto_compact_failures.clone(),
-            background_result_tx: Some(background_result_tx),
-            background_tasks: runtime.background_tasks.clone(),
-            agent_session_control: runtime.agent_session_control.read().clone(),
-        },
-    );
-
-    // 驱动 Agent 循环，通过回调转发事件到 Actor
-    let (output, emitted_error) = drive_agent(&agent, &text, history, |signal| {
-        let actor_tx = actor_tx.clone();
-        let current_session_id = Arc::clone(&current_session_id);
-        let turn_id = turn_id.clone();
-        async move {
-            match signal {
-                AgentSignal::Event(payload) => {
-                    let session_id = current_session_id.lock().await.clone();
-                    let _ = actor_tx.send(CommandMessage::AgentEvent {
-                        session_id,
-                        turn_id,
-                        payload,
-                    });
-                },
-                // 自动压缩触发：请求 Actor 执行压缩并返回新会话 ID
-                AgentSignal::AutoCompact {
-                    trigger,
-                    compaction,
-                    reply,
-                } => {
-                    let session_id = current_session_id.lock().await.clone();
-                    let (actor_reply, actor_rx) = oneshot::channel();
-                    let result: Result<SessionId, HandlerError> = if actor_tx
-                        .send(CommandMessage::AgentAutoCompact {
-                            session_id,
-                            turn_id,
-                            trigger,
-                            compaction,
-                            reply: actor_reply,
-                        })
-                        .is_err()
-                    {
-                        Err(HandlerError::Other("command actor is unavailable".into()))
-                    } else {
-                        match actor_rx.await {
-                            Ok(result) => result,
-                            Err(_) => Err(HandlerError::Other(
-                                "command actor dropped auto compact response".into(),
-                            )),
-                        }
-                    };
-                    // 更新当前会话 ID（压缩后可能切换到子会话）
-                    if let Ok(child_session_id) = &result {
-                        *current_session_id.lock().await = child_session_id.clone();
-                    }
-                    let _ = reply.send(result.map_err(|e| e.to_string()));
-                },
+            runtime.extension_runner.clone(),
+            runtime.context_assembler.clone(),
+            session,
+            runtime.background_tasks.clone(),
+            runtime.session_manager.file_observation_store(&sid),
+        )
+        .with_background_result_tx(background_result_tx)
+        .with_agent_session_control(agent_session_control),
+    )
+    .await
+    {
+        Ok(agent) => agent,
+        Err(e) => {
+            for payload in agent_turn_failed_payloads(Some(e.to_string()), "error".into()) {
+                event_bus.emit(&sid, Some(&turn_id), payload).await;
             }
-        }
-    })
-    .await;
-    let final_session_id = current_session_id.lock().await.clone();
-
-    // 发送完成或失败结果到 Actor
-    match output {
-        Ok(output) => {
-            let _ = actor_tx.send(CommandMessage::AgentTurnFinished {
-                session_id: final_session_id,
+            let _ = actor_tx.send(CommandMessage::AgentTurnCleanup {
+                session_id: sid,
                 turn_id,
-                output,
+                completion: TurnCompletion::Failed {
+                    error: e.to_string(),
+                },
+            });
+            return;
+        },
+    };
+
+    // 驱动 Agent 循环，事件通过 EventBus 直接持久化+广播
+    let result = run_turn(
+        &agent,
+        &text,
+        transient_instructions,
+        &turn_id,
+        event_bus.as_ref(),
+    )
+    .await;
+
+    // 终态事件通过 EventBus 直接广播，避免绕 actor 通道导致的 SSE 延迟。
+    match result.output {
+        Ok(output) => {
+            for payload in agent_turn_completed_payloads(output.finish_reason.clone()) {
+                event_bus.emit(&sid, Some(&turn_id), payload).await;
+            }
+            event_bus.sync_durable_events(&sid).await;
+            let _ = actor_tx.send(CommandMessage::AgentTurnCleanup {
+                session_id: sid,
+                turn_id,
+                completion: TurnCompletion::Completed {
+                    finish_reason: output.finish_reason,
+                },
             });
         },
         Err(error) => {
-            let _ = actor_tx.send(CommandMessage::AgentTurnFailed {
-                session_id: final_session_id,
+            for payload in agent_turn_failed_payloads(
+                (!result.emitted_error).then(|| error.to_string()),
+                "error".into(),
+            ) {
+                event_bus.emit(&sid, Some(&turn_id), payload).await;
+            }
+            event_bus.sync_durable_events(&sid).await;
+            let _ = actor_tx.send(CommandMessage::AgentTurnCleanup {
+                session_id: sid,
                 turn_id,
-                error,
-                emitted_error,
+                completion: TurnCompletion::Failed {
+                    error: error.to_string(),
+                },
             });
         },
     }

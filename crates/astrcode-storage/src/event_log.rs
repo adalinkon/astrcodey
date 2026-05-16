@@ -7,7 +7,10 @@ use std::{
     fs::{self, File},
     io::{BufRead, BufReader, BufWriter, ErrorKind, Read, Seek, Write},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use astrcode_core::{
@@ -25,6 +28,7 @@ pub struct EventLog {
     path: PathBuf,
     writer: Mutex<BufWriter<File>>,
     next_seq: Mutex<u64>,
+    sync_pending: AtomicBool,
 }
 
 impl Drop for EventLog {
@@ -66,6 +70,7 @@ impl EventLog {
                 path,
                 writer: Mutex::new(writer),
                 next_seq: Mutex::new(1),
+                sync_pending: AtomicBool::new(false),
             },
             event,
         ))
@@ -90,10 +95,14 @@ impl EventLog {
             path,
             writer: Mutex::new(BufWriter::new(file)),
             next_seq: Mutex::new(next_seq),
+            sync_pending: AtomicBool::new(false),
         })
     }
 
     /// Append a durable event to the log and return it with its assigned seq.
+    ///
+    /// Writes to the OS page cache immediately (process-crash-safe) but defers
+    /// `sync_all()` until [`force_sync`] is called, typically at turn boundaries.
     pub async fn append(&self, mut event: Event) -> Result<Event, StorageError> {
         let mut next_seq = self
             .next_seq
@@ -108,7 +117,13 @@ impl EventLog {
             .map_err(|_| StorageError::LockError("event log writer lock poisoned".into()))?;
         let line = serde_json::to_string(&event)?;
         writeln!(writer, "{}", line)?;
-        Self::flush_and_sync_writer(&mut writer, &self.path)?;
+        writer.flush().map_err(|e| {
+            StorageError::Io(std::io::Error::new(
+                e.kind(),
+                enhance_flush_error(&self.path, e),
+            ))
+        })?;
+        self.sync_pending.store(true, Ordering::Release);
         *next_seq += 1;
         Ok(event)
     }
@@ -157,6 +172,34 @@ impl EventLog {
             .lock()
             .map_err(|_| StorageError::LockError("event log sequence lock poisoned".into()))?;
         Ok(*next_seq as usize)
+    }
+
+    /// Force-fsync the event log if there are pending writes.
+    ///
+    /// Called at turn boundaries to ensure all events written since the last
+    /// sync are durable (power-loss-safe). No-op if nothing is pending.
+    pub fn force_sync(&self) -> Result<(), StorageError> {
+        if !self.sync_pending.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| StorageError::LockError("event log writer lock poisoned".into()))?;
+        writer.flush().map_err(|e| {
+            StorageError::Io(std::io::Error::new(
+                e.kind(),
+                enhance_flush_error(&self.path, e),
+            ))
+        })?;
+        writer.get_ref().sync_all().map_err(|e| {
+            StorageError::Io(std::io::Error::new(
+                e.kind(),
+                enhance_sync_error(&self.path, e),
+            ))
+        })?;
+        self.sync_pending.store(false, Ordering::Release);
+        Ok(())
     }
 
     /// Get the file path.

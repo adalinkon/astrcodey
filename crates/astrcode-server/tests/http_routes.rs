@@ -1,10 +1,11 @@
 use std::{collections::BTreeMap, fs, sync::Arc, time::Duration};
 
-use astrcode_context::{ContextSettings, manager::LlmContextAssembler};
+use astrcode_context::{ContextSettings, context_assembler::LlmContextAssembler};
 use astrcode_core::{
     config::{EffectiveConfig, LlmSettings, OpenAiApiMode},
     event::{Event, EventPayload},
     llm::{LlmContent, LlmError, LlmEvent, LlmMessage, LlmProvider, ModelLimits},
+    storage::EventStore,
     tool::{ToolDefinition, ToolResult},
     types::{SessionId, new_message_id},
 };
@@ -16,7 +17,8 @@ use astrcode_protocol::{
         PromptSubmitResponse, SlashCommandListResponseDto,
     },
 };
-use astrcode_server::{bootstrap::ServerRuntime, http::router, session::SessionManager};
+use astrcode_server::{bootstrap::ServerRuntime, http::router};
+use astrcode_session::Session;
 use astrcode_storage::in_memory::InMemoryEventStore;
 use axum::{
     Router,
@@ -133,7 +135,7 @@ impl LlmProvider for SummaryLlm {
 async fn http_routes_require_bearer_token() {
     let runtime = runtime(Arc::new(ImmediateLlm));
     let (event_tx, _) = broadcast::channel(64);
-    let (app, token) = router(Arc::clone(&runtime), event_tx);
+    let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
 
     let unauthorized = app
         .clone()
@@ -166,7 +168,7 @@ async fn http_routes_require_bearer_token() {
 async fn concurrent_prompt_accepts_one_and_conflicts_one() {
     let runtime = runtime(Arc::new(PendingLlm));
     let (event_tx, _) = broadcast::channel(64);
-    let (app, token) = router(Arc::clone(&runtime), event_tx);
+    let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
     let session_id = create_session(app.clone(), &token).await;
     let prompt_uri = format!("/api/sessions/{session_id}/prompt");
 
@@ -183,14 +185,12 @@ async fn concurrent_prompt_accepts_one_and_conflicts_one() {
 #[tokio::test]
 async fn sse_receiver_lag_emits_rehydrate_and_closes() {
     let runtime = runtime(Arc::new(ImmediateLlm));
-    let start = runtime
-        .session_manager
-        .create(".", "mock-model", None)
+    let session = Session::create(runtime.event_store.clone(), ".", "mock-model", None)
         .await
         .unwrap();
-    let session_id = start.session_id.clone();
+    let session_id = session.id().clone();
     let (event_tx, _) = broadcast::channel(1);
-    let (app, token) = router(Arc::clone(&runtime), event_tx.clone());
+    let (app, token) = router(Arc::clone(&runtime), event_tx.clone()).unwrap();
 
     let response = app
         .oneshot(
@@ -206,7 +206,7 @@ async fn sse_receiver_lag_emits_rehydrate_and_closes() {
 
     for text in ["one", "two", "three"] {
         let event = runtime
-            .session_manager
+            .event_store
             .append_event(Event::new(
                 session_id.clone(),
                 None,
@@ -235,7 +235,7 @@ async fn sse_receiver_lag_emits_rehydrate_and_closes() {
 async fn create_snapshot_then_stream_receives_live_prompt_delta() {
     let runtime = runtime(Arc::new(ImmediateLlm));
     let (event_tx, _) = broadcast::channel(64);
-    let (app, token) = router(Arc::clone(&runtime), event_tx);
+    let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
     let session_id = create_session(app.clone(), &token).await;
 
     let snapshot = get_json::<ConversationSnapshotResponseDto>(
@@ -276,7 +276,7 @@ async fn create_snapshot_then_stream_receives_live_prompt_delta() {
     assert!(body.contains("hello from http"));
     assert!(body.contains(r#""status":"complete""#));
 
-    let (after_app, after_token) = router(runtime, broadcast::channel(64).0);
+    let (after_app, after_token) = router(runtime, broadcast::channel(64).0).unwrap();
     let after = get_json::<ConversationSnapshotResponseDto>(
         after_app,
         &format!("/api/sessions/{session_id}/conversation"),
@@ -290,7 +290,7 @@ async fn create_snapshot_then_stream_receives_live_prompt_delta() {
 async fn prompt_stream_returns_control_to_idle_when_turn_finishes() {
     let runtime = runtime(Arc::new(ImmediateLlm));
     let (event_tx, _) = broadcast::channel(64);
-    let (app, token) = router(Arc::clone(&runtime), event_tx);
+    let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
     let session_id = create_session(app.clone(), &token).await;
 
     let stream_response = app
@@ -323,12 +323,12 @@ async fn prompt_stream_returns_control_to_idle_when_turn_finishes() {
 async fn stream_replays_events_after_snapshot_cursor() {
     let runtime = runtime(Arc::new(ImmediateLlm));
     let (event_tx, _) = broadcast::channel(64);
-    let (app, token) = router(Arc::clone(&runtime), event_tx.clone());
+    let (app, token) = router(Arc::clone(&runtime), event_tx.clone()).unwrap();
     let session_id = create_session(app.clone(), &token).await;
     let sid = SessionId::from(session_id.clone());
 
     runtime
-        .session_manager
+        .event_store
         .append_event(Event::new(
             sid.clone(),
             None,
@@ -349,7 +349,7 @@ async fn stream_replays_events_after_snapshot_cursor() {
     assert_eq!(snapshot.blocks.len(), 1);
 
     runtime
-        .session_manager
+        .event_store
         .append_event(Event::new(
             sid,
             None,
@@ -361,7 +361,7 @@ async fn stream_replays_events_after_snapshot_cursor() {
         .await
         .unwrap();
     runtime
-        .session_manager
+        .event_store
         .append_event(Event::new(
             SessionId::from(session_id.clone()),
             None,
@@ -399,7 +399,7 @@ async fn stream_replays_events_after_snapshot_cursor() {
 async fn stream_invalid_cursor_requests_rehydrate() {
     let runtime = runtime(Arc::new(ImmediateLlm));
     let (event_tx, _) = broadcast::channel(64);
-    let (app, token) = router(Arc::clone(&runtime), event_tx);
+    let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
     let session_id = create_session(app.clone(), &token).await;
 
     let response = app
@@ -422,7 +422,7 @@ async fn stream_invalid_cursor_requests_rehydrate() {
 async fn command_list_route_exposes_backend_slash_commands() {
     let runtime = runtime(Arc::new(ImmediateLlm));
     let (event_tx, _) = broadcast::channel(64);
-    let (app, token) = router(Arc::clone(&runtime), event_tx);
+    let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
     let session_id = create_session(app.clone(), &token).await;
 
     let body = get_json::<SlashCommandListResponseDto>(
@@ -445,13 +445,13 @@ async fn command_list_route_exposes_backend_slash_commands() {
 async fn prompt_route_compact_returns_handled_and_streams_continuation() {
     let runtime = runtime(Arc::new(SummaryLlm));
     let (event_tx, _) = broadcast::channel(64);
-    let (app, token) = router(Arc::clone(&runtime), event_tx);
+    let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
     let session_id = create_session(app.clone(), &token).await;
     let sid = SessionId::from(session_id.clone());
 
     for text in ["one", "two", "three"] {
         runtime
-            .session_manager
+            .event_store
             .append_event(Event::new(
                 sid.clone(),
                 None,
@@ -463,7 +463,7 @@ async fn prompt_route_compact_returns_handled_and_streams_continuation() {
             .await
             .unwrap();
         runtime
-            .session_manager
+            .event_store
             .append_event(Event::new(
                 sid.clone(),
                 None,
@@ -505,8 +505,8 @@ async fn prompt_route_compact_returns_handled_and_streams_continuation() {
     assert!(sse.contains("sessionContinued"));
     assert!(
         !runtime
-            .session_manager
-            .read_model(&sid)
+            .event_store
+            .session_read_model(&sid)
             .await
             .unwrap()
             .messages
@@ -520,7 +520,7 @@ async fn prompt_route_compact_returns_handled_and_streams_continuation() {
 async fn compact_route_returns_same_session_and_hydrates_post_compact_context() {
     let runtime = runtime(Arc::new(SummaryLlm));
     let (event_tx, _) = broadcast::channel(64);
-    let (app, token) = router(Arc::clone(&runtime), event_tx);
+    let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
     let session_id = create_session(app.clone(), &token).await;
     let sid = SessionId::from(session_id.clone());
     let read_fixture = "target/post-compact-read-fixture.txt";
@@ -528,7 +528,7 @@ async fn compact_route_returns_same_session_and_hydrates_post_compact_context() 
     fs::write(read_fixture, "pub fn compact_restore_fixture() {}").unwrap();
 
     runtime
-        .session_manager
+        .event_store
         .append_event(Event::new(
             sid.clone(),
             None,
@@ -541,7 +541,7 @@ async fn compact_route_returns_same_session_and_hydrates_post_compact_context() 
         .await
         .unwrap();
     runtime
-        .session_manager
+        .event_store
         .append_event(Event::new(
             sid.clone(),
             None,
@@ -563,7 +563,7 @@ async fn compact_route_returns_same_session_and_hydrates_post_compact_context() 
 
     for text in ["one", "two", "three"] {
         runtime
-            .session_manager
+            .event_store
             .append_event(Event::new(
                 sid.clone(),
                 None,
@@ -575,7 +575,7 @@ async fn compact_route_returns_same_session_and_hydrates_post_compact_context() 
             .await
             .unwrap();
         runtime
-            .session_manager
+            .event_store
             .append_event(Event::new(
                 sid.clone(),
                 None,
@@ -618,7 +618,7 @@ async fn compact_route_returns_same_session_and_hydrates_post_compact_context() 
     let sse = read_sse_until(stream_response.into_body(), "sessionContinued").await;
     assert!(sse.contains(&session_id));
 
-    let state = runtime.session_manager.read_model(&sid).await.unwrap();
+    let state = runtime.event_store.session_read_model(&sid).await.unwrap();
     assert!(!state.context_messages.is_empty());
     let restored_context = state
         .context_messages
@@ -718,48 +718,60 @@ async fn read_sse_until(mut body: Body, needle: &str) -> String {
 }
 
 fn runtime(llm_provider: Arc<dyn LlmProvider>) -> Arc<ServerRuntime> {
-    Arc::new(ServerRuntime {
-        session_manager: Arc::new(SessionManager::new(Arc::new(InMemoryEventStore::new()))),
-        llm_provider: Arc::new(parking_lot::RwLock::new(llm_provider)),
-        context_assembler: Arc::new(LlmContextAssembler::new(ContextSettings::default())),
-        auto_compact_failures: Arc::new(
-            astrcode_server::agent::AutoCompactFailureTracker::default(),
-        ),
-        background_tasks: Default::default(),
-        extension_runner: Arc::new(ExtensionRunner::new(Duration::from_secs(1))),
-        shutdown_token: tokio_util::sync::CancellationToken::new(),
-        config_store: Arc::new(astrcode_storage::config_store::FileConfigStore::new(
+    let effective = EffectiveConfig {
+        llm: LlmSettings {
+            provider_kind: "mock".into(),
+            base_url: String::new(),
+            api_key: String::new(),
+            api_mode: OpenAiApiMode::ChatCompletions,
+            model_id: "mock-model".into(),
+            max_tokens: 1024,
+            context_limit: 1024,
+            connect_timeout_secs: 1,
+            read_timeout_secs: 1,
+            max_retries: 0,
+            retry_base_delay_ms: 0,
+            temperature: None,
+            supports_prompt_cache_key: false,
+            prompt_cache_retention: None,
+            reasoning: false,
+            reasoning_split: false,
+        },
+        context: ContextSettings {
+            auto_compact_enabled: true,
+            compact_threshold_percent: 83.5,
+            compact_max_retry_attempts: 3,
+            compact_max_output_tokens: 20_000,
+            post_compact_max_files: 5,
+            post_compact_token_budget: 50_000,
+            post_compact_max_tokens_per_file: 5_000,
+        },
+    };
+    let event_store = Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>;
+    let config = Arc::new(astrcode_server::bootstrap::ConfigManager::new(
+        Arc::new(astrcode_storage::config_store::FileConfigStore::new(
             std::path::PathBuf::from("target/test-config.json"),
         )),
-        raw_config: parking_lot::RwLock::new(astrcode_core::config::Config::default()),
-        effective: parking_lot::RwLock::new(EffectiveConfig {
-            llm: LlmSettings {
-                provider_kind: "mock".into(),
-                base_url: String::new(),
-                api_key: String::new(),
-                api_mode: OpenAiApiMode::ChatCompletions,
-                model_id: "mock-model".into(),
-                max_tokens: 1024,
-                context_limit: 1024,
-                connect_timeout_secs: 1,
-                read_timeout_secs: 1,
-                max_retries: 0,
-                retry_base_delay_ms: 0,
-                temperature: None,
-                supports_prompt_cache_key: false,
-                prompt_cache_retention: None,
-                reasoning: false,
-            },
-            context: ContextSettings {
-                auto_compact_enabled: true,
-                compact_threshold_percent: 83.5,
-                compact_max_retry_attempts: 3,
-                compact_max_output_tokens: 20_000,
-                post_compact_max_files: 5,
-                post_compact_token_budget: 50_000,
-                post_compact_max_tokens_per_file: 5_000,
-            },
-        }),
+        astrcode_core::config::Config::default(),
+        effective,
+        llm_provider,
+    ));
+    let extension_runner = Arc::new(ExtensionRunner::new(Duration::from_secs(1)));
+    let session_manager = Arc::new(astrcode_server::session_manager::SessionManager::new(
+        Arc::clone(&event_store),
+        Arc::clone(&config),
+        Arc::clone(&extension_runner),
+        Arc::new(astrcode_session::SessionRuntimeRegistry::default()),
+        Default::default(),
+    ));
+    Arc::new(ServerRuntime {
+        event_store,
+        config,
+        context_assembler: Arc::new(LlmContextAssembler::new(ContextSettings::default())),
+        background_tasks: Default::default(),
+        session_manager,
+        extension_runner,
+        shutdown_token: tokio_util::sync::CancellationToken::new(),
         agent_session_control: Arc::new(parking_lot::RwLock::new(None)),
     })
 }

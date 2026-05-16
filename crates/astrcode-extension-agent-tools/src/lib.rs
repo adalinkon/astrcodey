@@ -102,12 +102,13 @@ impl AgentShared {
 // 定义 → 参数 → 构建逻辑 → 渲染 → Handler，自上而下阅读即可理解完整流程。
 
 const AGENT_TOOL_DESCRIPTION: &str =
-    "Launch a specialized subagent for one narrow, delegated task. By default, blocks until the \
-     agent completes and returns its result. Set waitForResult to false to run the agent in the \
-     background — you can continue working and the result will be available in the next turn. See \
-     the [Agents] section in the system prompt for available agent types.";
+    "Launch a specialized subagent for one narrow, delegated task. Agents run in the background \
+     by default — you can continue working and results arrive in the next turn. Set waitForResult \
+     to true only when your next step depends on the agent's output. You may launch multiple \
+     agents in a single response to parallelize independent tasks. See the [Agents] section in \
+     the system prompt for available agent types.";
 
-const AGENT_TOOL_PARAMETERS: &str = r#"{"type":"object","properties":{"description":{"type":"string","description":"Short 3-5 word description of the task"},"prompt":{"type":"string","description":"Task for the subagent"},"subagentType":{"type":"string","description":"Agent name from agents/ directory"},"waitForResult":{"type":"boolean","default":true,"description":"If true (default), block until the agent completes. If false, run in the background and return immediately."}},"required":["prompt","description"]}"#;
+const AGENT_TOOL_PARAMETERS: &str = r#"{"type":"object","properties":{"description":{"type":"string","description":"Short 3-5 word description of the task"},"prompt":{"type":"string","description":"Task for the subagent"},"subagentType":{"type":"string","description":"Agent name from agents/ directory"},"waitForResult":{"type":"boolean","default":false,"description":"If true, block until the agent completes. If false (default), run in the background and return immediately."}},"required":["prompt","description"]}"#;
 
 fn agent_tool_definition() -> ToolDefinition {
     ToolDefinition {
@@ -134,7 +135,7 @@ struct AgentArgs {
 }
 
 const fn default_wait_for_result() -> bool {
-    true
+    false
 }
 
 #[derive(Debug)]
@@ -418,17 +419,18 @@ fn agent_tool_metadata()
     map.insert(
         "agent".to_string(),
         astrcode_core::tool::ToolPromptMetadata::new(
-            "Use `agent` to delegate isolated tasks to specialized subagents. By default, the \
-             agent runs synchronously and blocks until completion — use this when your next step \
-             depends on the result. Set waitForResult to false to run the agent in the background \
-             and continue working. Background agent results arrive as a notification in the next \
-             turn.",
+            "Use `agent` to delegate isolated tasks to specialized subagents. Agents run in the \
+             background by default — launch them and continue working; results arrive in the next \
+             turn. Prefer launching multiple agents in a single response to parallelize \
+             independent tasks (e.g. investigate bug A while agent B searches for related code). \
+             Only set waitForResult to true when your very next step depends on the agent's \
+             output.",
         )
         .caveat(
             "For simple file reads or targeted searches, use Read/Grep directly instead of \
-             spawning an agent. When running agents in the background (waitForResult: false), \
-             avoid duplicating their work — work on non-overlapping tasks. Background agents are \
-             automatically cancelled if the session ends.",
+             spawning an agent. When launching multiple background agents, ensure their tasks are \
+             non-overlapping to avoid duplicated work. Background agents are automatically \
+             cancelled if the session ends.",
         )
         .prompt_tag("collaboration"),
     );
@@ -518,7 +520,7 @@ mod tests {
         assert!(properties.contains_key("waitForResult"));
         assert_eq!(
             properties["waitForResult"]["default"],
-            serde_json::json!(true)
+            serde_json::json!(false)
         );
         assert!(!properties.contains_key("mode"));
     }
@@ -534,17 +536,6 @@ mod tests {
         assert_eq!(args.prompt, "find the bug");
         assert_eq!(args.description, "bug hunt");
         assert_eq!(args.subagent_type.as_deref(), Some("explore"));
-        assert!(args.wait_for_result);
-    }
-
-    #[test]
-    fn agent_args_async_mode() {
-        let input = json!({
-            "prompt": "find the bug",
-            "description": "bug hunt",
-            "waitForResult": false
-        });
-        let args: AgentArgs = serde_json::from_value(input).unwrap();
         assert!(!args.wait_for_result);
     }
 

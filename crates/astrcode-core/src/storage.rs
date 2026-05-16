@@ -118,6 +118,13 @@ pub trait EventStore: Send + Sync {
             "tool result artifact storage is not supported".into(),
         ))
     }
+
+    /// 将会话的 durable event log 强制 fsync 到磁盘。
+    ///
+    /// 默认空实现；文件系统实现延迟 `sync_all()` 到 turn 边界调用。
+    async fn sync_durable_events(&self, _session_id: &SessionId) -> Result<(), StorageError> {
+        Ok(())
+    }
 }
 
 /// 工具结果 artifact 读取能力。
