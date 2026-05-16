@@ -12,9 +12,9 @@ use astrcode_session::{
     },
     post_compact::enrich_post_compact_context,
 };
+use astrcode_support::hash::hex_fingerprint;
 
 use super::{CommandHandler, HandlerError, session_snapshot};
-use crate::bootstrap::prompt_fingerprint;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManualCompactOutcome {
@@ -140,7 +140,7 @@ impl CommandHandler {
             .await
             .map_err(HandlerError::Other)?;
 
-        let fp = prompt_fingerprint(&system_prompt);
+        let fp = hex_fingerprint(system_prompt.as_bytes());
         let trigger = compact_trigger_name(CompactTrigger::ManualCommand).into();
         let events = session
             .append_compact_boundary(system_prompt, fp, trigger, compaction)

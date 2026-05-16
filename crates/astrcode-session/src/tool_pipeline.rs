@@ -20,11 +20,10 @@ use astrcode_tools::registry::ToolRegistry;
 use tokio::{sync::mpsc, task::JoinSet};
 
 use super::{
-    tool_exec::execute_tool_call,
+    tool_exec::{ToolCallRuntimeContext, ToolRuntimeCapabilities, execute_tool_call},
     tool_types::{
         CommitToolResults, ExecutableToolCall, ExecuteToolCalls, PendingCommittedToolResult,
-        PendingToolCall, PreparedToolCall, PreparedToolOutcome, ToolCallRuntimeContext,
-        ToolExecutionStep, ToolRuntimeCapabilities,
+        PendingToolCall, PreparedToolCall, PreparedToolOutcome, ToolExecutionStep,
     },
     turn_context::{AgentSignal, SharedTurnContext, TurnError, send_event},
     util::{
@@ -40,7 +39,7 @@ pub struct ToolPipeline {
     shared: SharedTurnContext,
     tool_registry: Arc<ToolRegistry>,
     extension_runner: Arc<ExtensionRunner>,
-    session_manager: Arc<Session>,
+    session: Arc<Session>,
     capabilities: ToolRuntimeCapabilities,
 }
 
@@ -49,14 +48,14 @@ impl ToolPipeline {
         shared: SharedTurnContext,
         tool_registry: Arc<ToolRegistry>,
         extension_runner: Arc<ExtensionRunner>,
-        session_manager: Arc<Session>,
+        session: Arc<Session>,
         capabilities: ToolRuntimeCapabilities,
     ) -> Self {
         Self {
             shared,
             tool_registry,
             extension_runner,
-            session_manager,
+            session,
             capabilities,
         }
     }
@@ -76,9 +75,7 @@ impl ToolPipeline {
             working_dir: self.shared.working_dir.clone(),
             model_id: self.shared.model_id.clone(),
             tools: tools.to_vec(),
-            tool_result_reader: Some(
-                Arc::clone(&self.session_manager) as Arc<dyn ToolResultArtifactReader>
-            ),
+            tool_result_reader: Some(Arc::clone(&self.session) as Arc<dyn ToolResultArtifactReader>),
             event_tx,
             capabilities: self.capabilities.clone(),
         }
@@ -111,7 +108,7 @@ impl ToolPipeline {
                     metadata: Default::default(),
                     duration_ms: None,
                 };
-                send_tool_requested(event_tx, tc, &args);
+                send_tool_requested(event_tx.as_ref(), tc, &args);
                 prepared.push(PreparedToolCall {
                     index,
                     call_id: tc.call_id.clone(),
@@ -139,7 +136,7 @@ impl ToolPipeline {
                 _ => args.clone(),
             };
 
-            send_tool_requested(event_tx, tc, &tool_input);
+            send_tool_requested(event_tx.as_ref(), tc, &tool_input);
 
             let outcome = if let PreToolUseResult::Block { reason } = pre_hook_result {
                 PreparedToolOutcome::Blocked(ToolResult {
@@ -471,7 +468,7 @@ impl ToolPipeline {
             }
             if input.event_tx.is_some() {
                 send_event(
-                    input.event_tx,
+                    input.event_tx.as_ref(),
                     EventPayload::ToolCallCompleted {
                         call_id: pending.call_id.clone().into(),
                         tool_name: pending.tool_name.clone(),
@@ -524,7 +521,7 @@ impl ToolPipeline {
         }
         let original_content = result.content.clone();
         let reference = self
-            .session_manager
+            .session
             .write_tool_artifact(astrcode_core::storage::ToolResultArtifactInput {
                 call_id: call_id.to_string(),
                 tool_name: tool_name.to_string(),
@@ -604,7 +601,7 @@ fn is_artifact_read(result: &ToolResult) -> bool {
 // ─── Tool event & message helpers ────────────────────────────────────────
 
 fn send_tool_requested(
-    event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
+    event_tx: Option<&mpsc::UnboundedSender<AgentSignal>>,
     tc: &PendingToolCall,
     arguments: &serde_json::Value,
 ) {

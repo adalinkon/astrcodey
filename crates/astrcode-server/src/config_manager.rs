@@ -5,13 +5,12 @@
 
 use std::sync::Arc;
 
+use astrcode_ai::create_provider;
 use astrcode_core::{
     config::{Config, ConfigStore, EffectiveConfig},
-    llm::LlmProvider,
+    llm::{LlmClientConfig, LlmProvider},
 };
 use parking_lot::RwLock;
-
-use crate::bootstrap::build_provider_from_effective;
 
 pub struct ConfigManager {
     config_store: Arc<dyn ConfigStore>,
@@ -20,7 +19,40 @@ pub struct ConfigManager {
     llm_provider: RwLock<Arc<dyn LlmProvider>>,
 }
 
+fn build_provider_from_effective(effective: &EffectiveConfig) -> Arc<dyn LlmProvider> {
+    let llm_config = LlmClientConfig {
+        base_url: effective.llm.base_url.clone(),
+        api_key: effective.llm.api_key.clone(),
+        connect_timeout_secs: effective.llm.connect_timeout_secs,
+        read_timeout_secs: effective.llm.read_timeout_secs,
+        max_retries: effective.llm.max_retries,
+        retry_base_delay_ms: effective.llm.retry_base_delay_ms,
+        temperature: effective.llm.temperature,
+        reasoning: effective.llm.reasoning,
+        supports_prompt_cache_key: effective.llm.supports_prompt_cache_key,
+        prompt_cache_retention: effective.llm.prompt_cache_retention,
+        extra_headers: Default::default(),
+    };
+    create_provider(
+        &effective.llm.provider_kind,
+        llm_config,
+        effective.llm.api_mode,
+        effective.llm.model_id.clone(),
+        Some(effective.llm.max_tokens),
+        Some(effective.llm.context_limit),
+    )
+}
+
 impl ConfigManager {
+    pub(crate) fn from_loaded_config(
+        config_store: Arc<dyn ConfigStore>,
+        raw_config: Config,
+        effective: EffectiveConfig,
+    ) -> Self {
+        let llm_provider = build_provider_from_effective(&effective);
+        Self::new(config_store, raw_config, effective, llm_provider)
+    }
+
     pub fn new(
         config_store: Arc<dyn ConfigStore>,
         raw_config: Config,

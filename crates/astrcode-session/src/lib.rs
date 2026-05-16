@@ -4,18 +4,18 @@
 
 pub mod background;
 pub mod compact;
-pub mod llm_stream;
+pub(crate) mod llm_stream;
 pub mod payload;
 pub mod post_compact;
 pub mod session;
 pub mod session_runtime;
 pub mod session_services;
-pub mod tool_exec;
-pub mod tool_pipeline;
-pub mod tool_types;
+pub(crate) mod tool_exec;
+pub(crate) mod tool_pipeline;
+pub(crate) mod tool_types;
 pub mod turn_context;
 pub mod turn_runner;
-pub mod util;
+pub(crate) mod util;
 
 pub use payload::{
     agent_turn_completed_payloads, agent_turn_failed_payloads, agent_turn_started_payloads,

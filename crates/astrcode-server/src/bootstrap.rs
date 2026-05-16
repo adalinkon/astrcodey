@@ -5,38 +5,15 @@
 
 use std::{sync::Arc, time::Duration};
 
-use astrcode_ai::create_provider;
-pub(crate) use astrcode_context::prompt_engine::{PromptFiles, load_system_prompt_files};
-use astrcode_context::{context_engine::LlmContextAssembler, prompt_engine::PromptEngine};
-use astrcode_core::{
-    config::{ConfigStore, EffectiveConfig, ModelSelection},
-    extension::{ExtensionError, PromptBuildContext},
-    llm::{LlmClientConfig, LlmProvider},
-    prompt::{ExtensionPromptBlock, ExtensionSection, PromptProvider, SystemPromptInput},
-    storage::EventStore,
-    tool::{AgentSessionControl, ToolDefinition},
-};
+use astrcode_context::context_engine::LlmContextAssembler;
+use astrcode_core::{config::ConfigStore, storage::EventStore, tool::AgentSessionControl};
 use astrcode_extensions::{loader::ExtensionLoader, runner::ExtensionRunner};
 use astrcode_session::{SessionRuntimeRegistry, background::BackgroundTaskManager};
 use astrcode_storage::config_store::FileConfigStore;
-use astrcode_support::{hash::hex_fingerprint, shell::resolve_shell};
-use astrcode_tools::registry::{ToolRegistry, builtin_tools};
 use parking_lot::{Mutex, RwLock};
 
 pub use crate::config_manager::ConfigManager;
 use crate::{session_manager::SessionManager, session_spawner::ServerSessionSpawner};
-
-pub(crate) struct SystemPromptSnapshotInput<'a> {
-    pub(crate) extension_runner: &'a ExtensionRunner,
-    pub(crate) session_id: &'a str,
-    pub(crate) working_dir: &'a str,
-    pub(crate) model_id: &'a str,
-    pub(crate) tools: &'a [ToolDefinition],
-    pub(crate) extra_system_prompt: Option<&'a str>,
-    pub(crate) tool_prompt_metadata:
-        std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata>,
-    pub(crate) prompt_files: PromptFiles,
-}
 
 // ─── AgentSessionControl 延迟注入槽 ────────────────────────────────────
 
@@ -93,8 +70,8 @@ pub async fn bootstrap() -> Result<ServerRuntime, BootstrapError> {
 /// 使用指定选项引导服务器运行时。
 ///
 /// 这个函数只负责“把长期共享服务装起来”，不会为某个会话创建工具表。
-/// 工具表现在是 session 级快照，由 [`build_tool_registry_snapshot`] 在
-/// 创建/恢复 session 时按对应 working_dir 单独构建。
+/// 工具表现在是 session 级快照，由 `SessionManager` 在创建/恢复 session 时
+/// 按对应 working_dir 单独构建。
 ///
 /// 启动顺序：
 /// 1. 加载并解析配置
@@ -118,17 +95,14 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     let config = config_store.load().await?;
     let effective = config.clone().into_effective()?;
 
-    // 2. 构建 LLM provider。
+    // 2. 构建配置管理器及其初始 LLM provider。
     //
     // 根据 `provider_kind` 路由到对应的 provider 实现。
     // 后续所有主会话和子会话都会共享这个 provider。
-    let llm_provider = build_provider_from_effective(&effective);
-
-    let config_manager = Arc::new(crate::config_manager::ConfigManager::new(
+    let config_manager = Arc::new(crate::config_manager::ConfigManager::from_loaded_config(
         Arc::new(config_store),
         config,
         effective.clone(),
-        llm_provider,
     ));
 
     // 3. 初始化上下文组装器。
@@ -226,247 +200,6 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
         shutdown_token: tokio_util::sync::CancellationToken::new(),
         agent_session_control: agent_session_control_slot,
     })
-}
-
-pub(crate) fn build_provider_from_effective(effective: &EffectiveConfig) -> Arc<dyn LlmProvider> {
-    let llm_config = LlmClientConfig {
-        base_url: effective.llm.base_url.clone(),
-        api_key: effective.llm.api_key.clone(),
-        connect_timeout_secs: effective.llm.connect_timeout_secs,
-        read_timeout_secs: effective.llm.read_timeout_secs,
-        max_retries: effective.llm.max_retries,
-        retry_base_delay_ms: effective.llm.retry_base_delay_ms,
-        temperature: effective.llm.temperature,
-        reasoning: effective.llm.reasoning,
-        supports_prompt_cache_key: effective.llm.supports_prompt_cache_key,
-        prompt_cache_retention: effective.llm.prompt_cache_retention,
-        extra_headers: Default::default(),
-    };
-    create_provider(
-        &effective.llm.provider_kind,
-        llm_config,
-        effective.llm.api_mode,
-        effective.llm.model_id.clone(),
-        Some(effective.llm.max_tokens),
-        Some(effective.llm.context_limit),
-    )
-}
-
-/// 构建一个工作目录绑定的工具表快照。
-///
-/// 每次新建/恢复 session 时调用一次；工具执行期间只读取这份快照，
-/// 不再维护运行中的动态工具层。
-pub(crate) async fn build_tool_registry_snapshot(
-    extension_runner: &ExtensionRunner,
-    working_dir: &str,
-    timeout_secs: u64,
-) -> Arc<ToolRegistry> {
-    let mut tool_registry = ToolRegistry::new();
-
-    for tool in builtin_tools(std::path::PathBuf::from(working_dir), timeout_secs) {
-        tool_registry.register(tool);
-    }
-
-    // Extensions override builtins, and earlier registered extensions keep
-    // precedence over later registered extensions with the same tool name.
-    for tool in extension_runner
-        .collect_tool_adapters_typed(working_dir)
-        .await
-        .into_iter()
-        .rev()
-    {
-        tool_registry.register(tool);
-    }
-
-    Arc::new(tool_registry)
-}
-
-pub(crate) async fn build_system_prompt_snapshot_with_files(
-    input: SystemPromptSnapshotInput<'_>,
-) -> Result<(String, String), ExtensionError> {
-    let SystemPromptSnapshotInput {
-        extension_runner,
-        session_id,
-        working_dir,
-        model_id,
-        tools,
-        extra_system_prompt,
-        tool_prompt_metadata,
-        prompt_files,
-    } = input;
-
-    let prompt_ctx = PromptBuildContext {
-        session_id: session_id.to_string(),
-        working_dir: working_dir.to_string(),
-        model: ModelSelection::simple(model_id),
-        tools: tools.to_vec(),
-    };
-
-    let contributions = extension_runner
-        .collect_prompt_contributions_typed(prompt_ctx)
-        .await?;
-
-    let mut extension_blocks = Vec::new();
-    for sp in contributions.system_prompts {
-        extension_blocks.push(ExtensionPromptBlock {
-            section: ExtensionSection::PlatformInstructions,
-            content: sp,
-        });
-    }
-    for instruction in contributions.additional_instructions {
-        extension_blocks.push(ExtensionPromptBlock {
-            section: ExtensionSection::AdditionalInstructions,
-            content: instruction,
-        });
-    }
-    for s in contributions.skills {
-        extension_blocks.push(ExtensionPromptBlock {
-            section: ExtensionSection::Skills,
-            content: s,
-        });
-    }
-    for a in contributions.agents {
-        extension_blocks.push(ExtensionPromptBlock {
-            section: ExtensionSection::Agents,
-            content: a,
-        });
-    }
-    let extra_instructions = extra_system_prompt.and_then(|s| {
-        let trimmed = s.trim();
-        (!trimmed.is_empty()).then(|| trimmed.to_string())
-    });
-
-    // Merge extension prompt metadata with caller-provided metadata.
-    let mut merged_metadata = tool_prompt_metadata;
-    merged_metadata.extend(extension_runner.collect_tool_prompt_metadata_typed().await);
-
-    let input = SystemPromptInput {
-        working_dir: working_dir.to_string(),
-        os: std::env::consts::OS.into(),
-        shell: resolve_shell().name,
-        date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
-        identity: prompt_files.identity,
-        user_rules: prompt_files.user_rules,
-        project_rules: prompt_files.project_rules,
-        tools: tools.to_vec(),
-        tool_prompt_metadata: merged_metadata,
-        extension_blocks,
-        extra_instructions,
-    };
-
-    let system_prompt = PromptEngine::new()
-        .assemble(input)
-        .await
-        .system_prompt
-        .unwrap_or_default();
-    let fingerprint = prompt_fingerprint(&system_prompt);
-    Ok((system_prompt, fingerprint))
-}
-
-pub(crate) fn prompt_fingerprint(text: &str) -> String {
-    hex_fingerprint(text.as_bytes())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{sync::Arc, time::Duration};
-
-    use astrcode_core::{
-        extension::{Extension, Registrar, ToolHandler},
-        tool::{ExecutionMode, ToolDefinition, ToolOrigin, ToolResult},
-    };
-
-    use super::*;
-
-    struct StaticToolExtension {
-        id: &'static str,
-        tool_name: &'static str,
-        description: &'static str,
-    }
-
-    #[async_trait::async_trait]
-    impl Extension for StaticToolExtension {
-        fn id(&self) -> &str {
-            self.id
-        }
-
-        fn register(&self, reg: &mut Registrar) {
-            reg.tool(
-                ToolDefinition {
-                    name: self.tool_name.into(),
-                    description: self.description.into(),
-                    parameters: serde_json::json!({"type": "object"}),
-                    origin: ToolOrigin::Extension,
-                    execution_mode: ExecutionMode::Sequential,
-                },
-                Arc::new(StaticToolHandler),
-            );
-        }
-    }
-
-    struct StaticToolHandler;
-
-    #[async_trait::async_trait]
-    impl ToolHandler for StaticToolHandler {
-        async fn execute(
-            &self,
-            tool_name: &str,
-            _arguments: serde_json::Value,
-            _working_dir: &str,
-            _ctx: &astrcode_core::tool::ToolExecutionContext,
-        ) -> Result<ToolResult, astrcode_core::extension::ExtensionError> {
-            Err(astrcode_core::extension::ExtensionError::NotFound(
-                tool_name.into(),
-            ))
-        }
-    }
-
-    #[tokio::test]
-    async fn child_extra_system_prompt_participates_in_snapshot_build() {
-        let runner = ExtensionRunner::new(Duration::from_secs(1));
-        let prompt_files = load_system_prompt_files(".").await;
-        let (system_prompt, fingerprint) =
-            build_system_prompt_snapshot_with_files(SystemPromptSnapshotInput {
-                extension_runner: &runner,
-                session_id: "session-1",
-                working_dir: ".",
-                model_id: "mock",
-                tools: &[],
-                extra_system_prompt: Some("child body"),
-                tool_prompt_metadata: std::collections::HashMap::new(),
-                prompt_files,
-            })
-            .await
-            .unwrap();
-
-        assert!(system_prompt.contains("child body"));
-        assert!(!fingerprint.is_empty());
-    }
-
-    #[tokio::test]
-    async fn tool_snapshot_precedence_is_explicit() {
-        let runner = ExtensionRunner::new(Duration::from_secs(1));
-        runner
-            .register(Arc::new(StaticToolExtension {
-                id: "first",
-                tool_name: "shell",
-                description: "first extension shell",
-            }))
-            .await;
-        runner
-            .register(Arc::new(StaticToolExtension {
-                id: "second",
-                tool_name: "shell",
-                description: "second extension shell",
-            }))
-            .await;
-
-        let registry = build_tool_registry_snapshot(&runner, ".", 1).await;
-        let shell = registry.find_definition("shell").unwrap();
-
-        assert_eq!(shell.origin, ToolOrigin::Extension);
-        assert_eq!(shell.description, "first extension shell");
-    }
 }
 
 /// 引导过程中可能出现的错误。

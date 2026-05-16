@@ -1,27 +1,24 @@
 use std::{collections::HashMap, sync::Arc};
 
+use astrcode_context::prompt_engine::{PromptEngine, PromptFiles, load_system_prompt_files};
 use astrcode_core::{
     config::ModelSelection,
     event::{Event, EventPayload},
-    extension::ExtensionEvent,
+    extension::{ExtensionError, ExtensionEvent, PromptBuildContext},
+    prompt::{ExtensionPromptBlock, ExtensionSection, PromptProvider, SystemPromptInput},
     storage::{EventStore, SessionReadModel, SessionSummary, StorageError},
-    tool::FileObservationStore,
+    tool::{FileObservationStore, ToolDefinition, ToolPromptMetadata},
     types::{Cursor, SessionId},
 };
 use astrcode_extensions::runner::ExtensionRunner;
 use astrcode_session::{
     Session, SessionError, SessionRuntimeRegistry, background::BackgroundTaskManager,
 };
-use astrcode_tools::registry::ToolRegistry;
+use astrcode_support::{hash::hex_fingerprint, shell::resolve_shell};
+use astrcode_tools::registry::{ToolRegistry, builtin_tools};
 use parking_lot::Mutex;
 
-use crate::{
-    bootstrap::{
-        SystemPromptSnapshotInput, build_system_prompt_snapshot_with_files,
-        build_tool_registry_snapshot, load_system_prompt_files,
-    },
-    config_manager::ConfigManager,
-};
+use crate::config_manager::ConfigManager;
 
 pub(crate) struct CreatedSession {
     pub(crate) session: Session,
@@ -38,6 +35,17 @@ pub enum SessionManagerError {
     Extension(#[from] astrcode_core::extension::ExtensionError),
     #[error("session created but no events found")]
     MissingStartEvent,
+}
+
+struct SystemPromptSnapshotInput<'a> {
+    extension_runner: &'a ExtensionRunner,
+    session_id: &'a str,
+    working_dir: &'a str,
+    model_id: &'a str,
+    tools: &'a [ToolDefinition],
+    extra_system_prompt: Option<&'a str>,
+    tool_prompt_metadata: HashMap<String, ToolPromptMetadata>,
+    prompt_files: PromptFiles,
 }
 
 /// Server 侧的 session 生命周期门面。
@@ -293,7 +301,7 @@ impl SessionManager {
         working_dir: &str,
         tool_registry: &ToolRegistry,
         extra_system_prompt: Option<&str>,
-        prompt_files: astrcode_context::prompt_engine::PromptFiles,
+        prompt_files: PromptFiles,
     ) -> Result<Event, SessionManagerError> {
         let model_id = self.config.read_effective().llm.model_id.clone();
         let (system_prompt, fingerprint) = self
@@ -326,7 +334,7 @@ impl SessionManager {
         model_id: &str,
         tool_registry: &ToolRegistry,
         extra_system_prompt: Option<&str>,
-        prompt_files: astrcode_context::prompt_engine::PromptFiles,
+        prompt_files: PromptFiles,
     ) -> Result<(String, String), SessionManagerError> {
         let tools_with_meta = tool_registry.list_definitions_with_prompt_metadata();
         let tools: Vec<_> = tools_with_meta.iter().map(|(def, _)| def.clone()).collect();
@@ -346,5 +354,217 @@ impl SessionManager {
         })
         .await
         .map_err(SessionManagerError::from)
+    }
+}
+
+/// 构建一个工作目录绑定的工具表快照。
+///
+/// 每次新建/恢复 session 时调用一次；工具执行期间只读取这份快照，
+/// 不再维护运行中的动态工具层。
+async fn build_tool_registry_snapshot(
+    extension_runner: &ExtensionRunner,
+    working_dir: &str,
+    timeout_secs: u64,
+) -> Arc<ToolRegistry> {
+    let mut tool_registry = ToolRegistry::new();
+
+    for tool in builtin_tools(std::path::PathBuf::from(working_dir), timeout_secs) {
+        tool_registry.register(tool);
+    }
+
+    // Extensions override builtins, and earlier registered extensions keep
+    // precedence over later registered extensions with the same tool name.
+    for tool in extension_runner
+        .collect_tool_adapters_typed(working_dir)
+        .await
+        .into_iter()
+        .rev()
+    {
+        tool_registry.register(tool);
+    }
+
+    Arc::new(tool_registry)
+}
+
+async fn build_system_prompt_snapshot_with_files(
+    input: SystemPromptSnapshotInput<'_>,
+) -> Result<(String, String), ExtensionError> {
+    let SystemPromptSnapshotInput {
+        extension_runner,
+        session_id,
+        working_dir,
+        model_id,
+        tools,
+        extra_system_prompt,
+        tool_prompt_metadata,
+        prompt_files,
+    } = input;
+
+    let prompt_ctx = PromptBuildContext {
+        session_id: session_id.to_string(),
+        working_dir: working_dir.to_string(),
+        model: ModelSelection::simple(model_id),
+        tools: tools.to_vec(),
+    };
+
+    let contributions = extension_runner
+        .collect_prompt_contributions_typed(prompt_ctx)
+        .await?;
+
+    let mut extension_blocks = Vec::new();
+    for content in contributions.system_prompts {
+        extension_blocks.push(ExtensionPromptBlock {
+            section: ExtensionSection::PlatformInstructions,
+            content,
+        });
+    }
+    for content in contributions.additional_instructions {
+        extension_blocks.push(ExtensionPromptBlock {
+            section: ExtensionSection::AdditionalInstructions,
+            content,
+        });
+    }
+    for content in contributions.skills {
+        extension_blocks.push(ExtensionPromptBlock {
+            section: ExtensionSection::Skills,
+            content,
+        });
+    }
+    for content in contributions.agents {
+        extension_blocks.push(ExtensionPromptBlock {
+            section: ExtensionSection::Agents,
+            content,
+        });
+    }
+    let extra_instructions = extra_system_prompt.and_then(|s| {
+        let trimmed = s.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    });
+
+    let mut merged_metadata = tool_prompt_metadata;
+    merged_metadata.extend(extension_runner.collect_tool_prompt_metadata_typed().await);
+
+    let input = SystemPromptInput {
+        working_dir: working_dir.to_string(),
+        os: std::env::consts::OS.into(),
+        shell: resolve_shell().name,
+        date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+        identity: prompt_files.identity,
+        user_rules: prompt_files.user_rules,
+        project_rules: prompt_files.project_rules,
+        tools: tools.to_vec(),
+        tool_prompt_metadata: merged_metadata,
+        extension_blocks,
+        extra_instructions,
+    };
+
+    let system_prompt = PromptEngine::new()
+        .assemble(input)
+        .await
+        .system_prompt
+        .unwrap_or_default();
+    let fingerprint = hex_fingerprint(system_prompt.as_bytes());
+    Ok((system_prompt, fingerprint))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::Arc, time::Duration};
+
+    use astrcode_core::{
+        extension::{Extension, Registrar, ToolHandler},
+        tool::{ExecutionMode, ToolDefinition, ToolOrigin, ToolResult},
+    };
+
+    use super::*;
+
+    struct StaticToolExtension {
+        id: &'static str,
+        tool_name: &'static str,
+        description: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl Extension for StaticToolExtension {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn register(&self, reg: &mut Registrar) {
+            reg.tool(
+                ToolDefinition {
+                    name: self.tool_name.into(),
+                    description: self.description.into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                    origin: ToolOrigin::Extension,
+                    execution_mode: ExecutionMode::Sequential,
+                },
+                Arc::new(StaticToolHandler),
+            );
+        }
+    }
+
+    struct StaticToolHandler;
+
+    #[async_trait::async_trait]
+    impl ToolHandler for StaticToolHandler {
+        async fn execute(
+            &self,
+            tool_name: &str,
+            _arguments: serde_json::Value,
+            _working_dir: &str,
+            _ctx: &astrcode_core::tool::ToolExecutionContext,
+        ) -> Result<ToolResult, astrcode_core::extension::ExtensionError> {
+            Err(astrcode_core::extension::ExtensionError::NotFound(
+                tool_name.into(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn child_extra_system_prompt_participates_in_snapshot_build() {
+        let runner = ExtensionRunner::new(Duration::from_secs(1));
+        let prompt_files = load_system_prompt_files(".").await;
+        let (system_prompt, fingerprint) =
+            build_system_prompt_snapshot_with_files(SystemPromptSnapshotInput {
+                extension_runner: &runner,
+                session_id: "session-1",
+                working_dir: ".",
+                model_id: "mock",
+                tools: &[],
+                extra_system_prompt: Some("child body"),
+                tool_prompt_metadata: HashMap::new(),
+                prompt_files,
+            })
+            .await
+            .unwrap();
+
+        assert!(system_prompt.contains("child body"));
+        assert!(!fingerprint.is_empty());
+    }
+
+    #[tokio::test]
+    async fn tool_snapshot_precedence_is_explicit() {
+        let runner = ExtensionRunner::new(Duration::from_secs(1));
+        runner
+            .register(Arc::new(StaticToolExtension {
+                id: "first",
+                tool_name: "shell",
+                description: "first extension shell",
+            }))
+            .await;
+        runner
+            .register(Arc::new(StaticToolExtension {
+                id: "second",
+                tool_name: "shell",
+                description: "second extension shell",
+            }))
+            .await;
+
+        let registry = build_tool_registry_snapshot(&runner, ".", 1).await;
+        let shell = registry.find_definition("shell").unwrap();
+
+        assert_eq!(shell.origin, ToolOrigin::Extension);
+        assert_eq!(shell.description, "first extension shell");
     }
 }

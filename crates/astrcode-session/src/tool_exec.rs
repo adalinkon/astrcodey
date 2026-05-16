@@ -6,9 +6,11 @@ use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
     event::EventPayload,
+    storage::ToolResultArtifactReader,
     tool::{
-        BackgroundPolicy, FileObservation, FileObservationStore, ToolCapabilities, ToolError,
-        ToolExecutionContext, ToolResult,
+        AgentSessionControl, BackgroundPolicy, BackgroundTaskReader, FileObservation,
+        FileObservationStore, ToolCapabilities, ToolDefinition, ToolError, ToolExecutionContext,
+        ToolResult,
     },
     types::*,
 };
@@ -17,10 +19,41 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
 use super::{
-    background::{BackgroundTaskCompletion, backgrounded_placeholder_result},
-    tool_types::{ExecutableToolCall, ToolCallRuntimeContext},
+    background::{
+        BackgroundTaskCompletion, BackgroundTaskManager, backgrounded_placeholder_result,
+    },
+    tool_types::ExecutableToolCall,
     turn_context::{AgentSignal, send_event},
 };
+
+// ─── Runtime context types ──────────────────────────────────────────────
+
+/// 会话级工具运行时能力，从 ToolPipeline 透传到 ToolExecutionContext。
+///
+/// 整合了后台任务、文件观察、agent 会话控制等按 session 生命周期存在的能力。
+#[derive(Clone)]
+pub(crate) struct ToolRuntimeCapabilities {
+    /// 后台任务完成后的通知通道。
+    pub background_result_tx: Option<mpsc::UnboundedSender<BackgroundTaskCompletion>>,
+    /// 后台任务管理器，用于注册 watcher handle 以支持取消。
+    pub background_tasks: Arc<parking_lot::Mutex<BackgroundTaskManager>>,
+    /// 后台任务只读接口，注入到 ToolExecutionContext 供 TaskTool 使用。
+    pub background_task_reader: Option<Arc<dyn BackgroundTaskReader>>,
+    /// 文件观察存储，用于 read/edit 协作的 read-before-edit 守卫。
+    pub file_observation_store: Option<Arc<dyn FileObservationStore>>,
+    /// Agent 会话操控能力，用于 send 等工具与子 session 交互。
+    pub agent_session_control: Option<Arc<dyn AgentSessionControl>>,
+}
+
+pub(crate) struct ToolCallRuntimeContext {
+    pub session_id: SessionId,
+    pub working_dir: String,
+    pub model_id: String,
+    pub tools: Vec<ToolDefinition>,
+    pub tool_result_reader: Option<Arc<dyn ToolResultArtifactReader>>,
+    pub event_tx: Option<mpsc::UnboundedSender<AgentSignal>>,
+    pub capabilities: ToolRuntimeCapabilities,
+}
 
 fn error_tool_result(
     call_id: String,
@@ -346,7 +379,7 @@ async fn background_tool_call(
         "auto_threshold".to_string()
     };
     send_event(
-        &runtime.event_tx,
+        runtime.event_tx.as_ref(),
         EventPayload::ToolCallBackgrounded {
             call_id: ToolCallId::from(call_id.as_str()),
             tool_name: tool_name.clone(),

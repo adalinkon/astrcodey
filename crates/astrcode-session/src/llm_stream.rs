@@ -51,7 +51,7 @@ pub async fn consume_llm_stream(
             LlmEvent::ContentDelta { delta } => {
                 ensure_assistant_message_started(event_tx, &message_id, &mut message_started);
                 send_event(
-                    event_tx,
+                    event_tx.as_ref(),
                     EventPayload::AssistantTextDelta {
                         message_id: message_id.clone(),
                         delta: delta.clone(),
@@ -62,7 +62,7 @@ pub async fn consume_llm_stream(
             LlmEvent::ThinkingDelta { delta } => {
                 ensure_assistant_message_started(event_tx, &message_id, &mut message_started);
                 send_event(
-                    event_tx,
+                    event_tx.as_ref(),
                     EventPayload::ThinkingDelta {
                         message_id: message_id.clone(),
                         delta: delta.clone(),
@@ -87,7 +87,7 @@ pub async fn consume_llm_stream(
                     existing.arguments = arguments.clone();
                 } else {
                     send_event(
-                        event_tx,
+                        event_tx.as_ref(),
                         EventPayload::ToolCallStarted {
                             call_id: call_id.clone().into(),
                             tool_name: name.clone(),
@@ -95,7 +95,7 @@ pub async fn consume_llm_stream(
                     );
                     if !arguments.is_empty() {
                         send_event(
-                            event_tx,
+                            event_tx.as_ref(),
                             EventPayload::ToolCallArgumentsDelta {
                                 call_id: call_id.clone().into(),
                                 delta: arguments.clone(),
@@ -114,7 +114,7 @@ pub async fn consume_llm_stream(
                     tc.arguments.push_str(&delta);
                 }
                 send_event(
-                    event_tx,
+                    event_tx.as_ref(),
                     EventPayload::ToolCallArgumentsDelta {
                         call_id: call_id.into(),
                         delta,
@@ -147,7 +147,7 @@ pub async fn consume_llm_stream(
             LlmEvent::Error { message } => {
                 let recoverable = is_prompt_too_long_message(&message);
                 send_event(
-                    event_tx,
+                    event_tx.as_ref(),
                     EventPayload::ErrorOccurred {
                         code: -32603,
                         message: message.clone(),
@@ -171,7 +171,7 @@ pub fn ensure_assistant_message_started(
         return;
     }
     send_event(
-        event_tx,
+        event_tx.as_ref(),
         EventPayload::AssistantMessageStarted {
             message_id: message_id.clone(),
         },

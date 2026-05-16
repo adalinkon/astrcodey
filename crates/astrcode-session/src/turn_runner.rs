@@ -129,7 +129,7 @@ impl TurnRunner {
         let background_task_reader: Option<Arc<dyn BackgroundTaskReader>> = Some(Arc::new(
             crate::background::BackgroundTaskReaderImpl::new(services.background_tasks.clone()),
         ));
-        let capabilities = crate::tool_types::ToolRuntimeCapabilities {
+        let capabilities = crate::tool_exec::ToolRuntimeCapabilities {
             background_result_tx: services.background_result_tx,
             background_tasks: services.background_tasks,
             background_task_reader,
@@ -246,7 +246,7 @@ impl TurnRunner {
             let mut prepared = self.context_assembler.prepare_messages(input);
 
             if let Some(ref mut compaction) = prepared.compaction {
-                send_event(&event_tx, EventPayload::CompactionStarted);
+                send_event(event_tx.as_ref(), EventPayload::CompactionStarted);
                 crate::post_compact::enrich_post_compact_context(
                     compaction,
                     self.shared.session_id.as_str(),
@@ -312,7 +312,7 @@ impl TurnRunner {
                         final_text.push_str(&text);
                         if message_started {
                             send_event(
-                                &event_tx,
+                                event_tx.as_ref(),
                                 EventPayload::AssistantMessageCompleted {
                                     message_id,
                                     text,
@@ -346,7 +346,7 @@ impl TurnRunner {
                     }
                     if message_started {
                         send_event(
-                            &event_tx,
+                            event_tx.as_ref(),
                             EventPayload::AssistantMessageCompleted {
                                 message_id,
                                 text: visible_text.to_string(),
@@ -460,7 +460,7 @@ impl TurnRunner {
             Ok(rx) => Ok(rx),
             Err(e) => {
                 send_event(
-                    event_tx,
+                    event_tx.as_ref(),
                     EventPayload::ErrorOccurred {
                         code: -32603,
                         message: e.to_string(),

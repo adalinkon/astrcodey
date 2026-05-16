@@ -36,7 +36,7 @@ pub enum AgentSignal {
 }
 
 pub(crate) fn send_event(
-    event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
+    event_tx: Option<&mpsc::UnboundedSender<AgentSignal>>,
     payload: EventPayload,
 ) {
     if let Some(tx) = event_tx {
