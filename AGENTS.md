@@ -2,26 +2,9 @@
 
 不要把项目搞得一堆石山，把代码放在该放的位置，保持清晰的模块边界和职责划分。
 
-## 修改前
-
-- 先读所属模块、调用点、测试和现有命名风格。
-- 默认不要新增文件、trait、DTO、依赖、配置项或公开 API。
-
-但如果新增内容能明确改善边界、复用、测试隔离或依赖方向，可以新增。
-新增前必须说明：
-- 为什么现有位置不合适；
-- 新增抽象服务的边界是什么；
-- 谁依赖它，谁不应该依赖它；
-- 是否可以先用更小改动解决。
-
-## 架构边界
-
-./PROJECT_ARCHITECTURE.md 描述了 astrcode 的目标架构和设计原则。
-
 ## DTO 规则
 
 只有数据跨边界时才创建 DTO：
-内部业务逻辑使用领域类型 / value object，不使用 DTO 命名。
 
 - HTTP 请求 / 响应
 - SSE / 事件流载荷
@@ -40,14 +23,10 @@
 - 只有明显、无损、无需上下文的转换才用 `From`。
 - 不要为了“未来可能用”添加 `Option<T>` 字段。但是可以留下TODO注释说明未来可能添加。
 - 不要把内部 enum 直接暴露成线缆契约，除非它本来就是稳定协议。
-- ``serde(rename_all = "camelCase")` 只应出现在外部契约类型中，例如：
-protocol / wire DTO
-持久化格式
-配置文件格式
-插件 / MCP / 外部进程协议
-LLM tool call 参数类型
-
-不要随意加到纯内部领域结构体上。
+- `serde(rename_all = "camelCase")` 只应出现在 protocol / wire 类型中，不要随意加到内部结构体上。
+  例外：LLM tool call 参数类型（如 `ShellArgs`、`WriteFileArgs`）虽然只在内部使用，
+  但其 JSON schema 定义了 LLM 的调用契约（`camelCase` 字段名），
+  因此 `rename_all = "camelCase"` 在这些类型上是合理的。
 
 ## Rust 实现
 
@@ -85,6 +64,4 @@ cargo test --all-features
 
   必须遵守：
 - 没有遇见bug不准写测试，非复杂逻辑不写测试
-- 项目代码都在crates里面，外置代码不必理会
-- 集单元测试写在被测模块同文件底部的 `#[cfg(test)] mod tests` 中。集成测试放在对应 crate 的 `tests/` 目录下。
-
+- 集成测试单开一个tests/文件夹存放，单元测试写在下面
