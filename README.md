@@ -1,5 +1,8 @@
 # AstrCode
 
+<img width="1401" height="995" alt="image" src="https://github.com/user-attachments/assets/4e59f8fe-2344-4e78-ab36-c1fb19c549fc" />
+
+
 A Rust-built AI coding agent platform.
 
 AstrCode is a full-stack AI coding assistant built from scratch in ~49k lines of Rust across 18 crates, plus a React + TypeScript web frontend (~4.7k lines). It features an agent loop with tool execution, a streaming SSE-based LLM provider layer, a plugin/hook extension system (with native extension loading via FFI and WASM extension support), context window management with auto-compaction, and multiple interfaces: a terminal UI, a web frontend, a Tauri desktop app, an HTTP/SSE API, and an ACP (Agent Client Protocol) adapter.
