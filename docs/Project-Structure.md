@@ -29,7 +29,7 @@ astrcode/
 | `astrcode-tools` | 内置工具、工具注册表、执行包装、agent 协作工具 |
 | `astrcode-storage` | JSONL event log、snapshot、config 持久化、锁 |
 | `astrcode-context` | token 估算、tool result 预算、裁剪、压缩、文件恢复、prompt engine |
-| `astrcode-session` | 会话运行时：session handle、turn 执行、事件总线、工具管线 |
+| `astrcode-session` | 会话运行时：session handle、turn 执行、工具管线、事件 fanout、Capabilities 共享 |
 
 ### Layer 2: Extensions (扩展层)
 
@@ -190,6 +190,6 @@ npx @tauri-apps/cli build    # 发布构建
 
 ## 总计代码统计
 
-- **Rust**: ~49k 行，18 crates，153 源文件
+- **Rust**: ~50k 行，18 crates，156 源文件
 - **TypeScript/TSX**: ~2.8k 行，34 源文件
-- **Total**: ~52k 行
+- **Total**: ~53k 行
