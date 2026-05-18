@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use astrcode_core::{
     event::{Event, EventPayload},
+    extension::ChildToolPolicy,
     storage::{
         CompactSnapshotInput, EventStore, SessionReadModel, StorageError, ToolResultArtifactInput,
         ToolResultArtifactReader, ToolResultArtifactRef, ToolResultArtifactSlice,
@@ -208,10 +209,12 @@ impl Session {
         let caps = &self.caps;
         let runtime = &self.runtime;
         let timeout = caps.read_effective().llm.read_timeout_secs;
+        let tool_policy = runtime.tool_policy();
         let registry = crate::session_setup::build_tool_registry_snapshot(
             caps.extension_runner(),
             working_dir,
             timeout,
+            tool_policy.as_ref(),
         )
         .await;
         let registry = Arc::new(registry);
@@ -440,8 +443,8 @@ impl Session {
     /// 派生子会话。
     ///
     /// 共享父 session 的 store / caps，独立的 runtime（独立工具表/file_obs/bg_tasks）。
-    /// 父侧记录 `AgentSessionSpawned` 事件，子侧的 `extra_system_prompt` 注入子 runtime，
-    /// 在 `submit` 时被 `refresh_prompt` 读取。
+    /// 父侧记录 `AgentSessionSpawned` 事件，子侧的 `extra_system_prompt` / `tool_policy`
+    /// 注入子 runtime，在 `submit` 时被 `refresh_prompt` / `refresh_tools` 读取。
     ///
     /// 调用方拿到 child Session 后通常立刻调 `child.submit(...)` 启动 turn。
     pub async fn spawn_child(
@@ -451,10 +454,14 @@ impl Session {
         agent_name: String,
         task: String,
         extra_system_prompt: Option<String>,
+        tool_policy: Option<ChildToolPolicy>,
     ) -> Result<Session, SessionError> {
         let child_runtime = Arc::new(SessionRuntimeState::default());
         if extra_system_prompt.is_some() {
             child_runtime.set_extra_system_prompt(extra_system_prompt);
+        }
+        if tool_policy.is_some() {
+            child_runtime.set_tool_policy(tool_policy.clone());
         }
         let child_sid = new_session_id();
         let child = Session::create_with_id(
@@ -475,6 +482,7 @@ impl Session {
                 child_session_id: child_sid,
                 agent_name,
                 task,
+                tool_policy,
             },
         ))
         .await?;

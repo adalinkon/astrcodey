@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use astrcode_core::{
     event::{Event, EventPayload, ToolOutputStream},
+    extension::ChildToolPolicy,
     types::{SessionId, ToolCallId, new_background_task_id, new_message_id, new_turn_id},
 };
 use astrcode_extensions::runtime::{SpawnRequest, SpawnResult};
@@ -58,6 +59,24 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
             )
             .await
         }
+    }
+}
+
+/// 校验插件传入的 [`ChildToolPolicy`]：
+/// - `Deny`：空数组等价于 `None`，归一化以便后续不必处理空白名单边界。
+/// - `Allow`：空数组视为非法（语义是「不准用任何工具」，子 agent 必然立刻失败），返回错误。
+///
+/// 无策略 / 已规范化策略原样返回。
+fn validate_tool_policy(
+    policy: Option<ChildToolPolicy>,
+) -> Result<Option<ChildToolPolicy>, String> {
+    match policy {
+        None => Ok(None),
+        Some(ChildToolPolicy::Deny { tools }) if tools.is_empty() => Ok(None),
+        Some(ChildToolPolicy::Allow { tools }) if tools.is_empty() => {
+            Err("ChildToolPolicy::Allow 不能为空：子 agent 至少需要一个工具".into())
+        },
+        Some(other) => Ok(Some(other)),
     }
 }
 
@@ -134,8 +153,10 @@ impl ServerSessionSpawner {
             ));
         }
 
-        // Session::spawn_child 内部完成 create + 注入 extra_system_prompt + 追加
-        // AgentSessionSpawned。
+        let tool_policy = validate_tool_policy(request.tool_policy)?;
+
+        // Session::spawn_child 内部完成 create + 注入 extra_system_prompt / tool_policy
+        // + 追加 AgentSessionSpawned。
         let child_session = parent_session
             .spawn_child(
                 &request.working_dir,
@@ -143,6 +164,7 @@ impl ServerSessionSpawner {
                 child_name.clone(),
                 user_prompt.clone(),
                 Some(request.system_prompt),
+                tool_policy,
             )
             .await
             .map_err(|e| format!("spawn child session: {e}"))?;
@@ -751,6 +773,7 @@ mod tests {
                     tool_call_id: Some("tool-call-1".into()),
                     event_tx: Some(progress_tx),
                     wait_for_result: true,
+                    tool_policy: None,
                 },
             )
             .await
@@ -816,6 +839,7 @@ mod tests {
                     tool_call_id: None,
                     event_tx: None,
                     wait_for_result: true,
+                    tool_policy: None,
                 },
             )
             .await
@@ -870,6 +894,7 @@ mod tests {
                     tool_call_id: Some("call-async-1".into()),
                     event_tx: None,
                     wait_for_result: false,
+                    tool_policy: None,
                 },
             )
             .await

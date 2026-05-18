@@ -305,7 +305,31 @@ pub enum ExtensionToolOutcome {
         /// `true`：同步阻塞直到子 agent 完成并返回结果。
         #[serde(default = "default_wait_for_result")]
         wait_for_result: bool,
+        /// 子会话的工具集策略。`None` 表示继承父 session 的工具全集。
+        ///
+        /// 用于让插件声明子 agent 应当能用哪些工具。详见 [`ChildToolPolicy`]。
+        #[serde(default)]
+        tool_policy: Option<ChildToolPolicy>,
     },
+}
+
+/// 子 session 的工具集策略。
+///
+/// 由 [`ExtensionToolOutcome::RunSession::tool_policy`] 携带，决定子 session 在
+/// `build_tool_registry_snapshot` 时如何裁剪工具表。
+///
+/// 语义：
+/// - `Deny`：从父全集中排除指定工具。常见场景是 `["agent"]` 防止递归生 agent。
+/// - `Allow`：仅保留指定工具。空白名单视为非法配置，spawner 应拒绝。
+///
+/// 过滤在工具表构建阶段一次性完成，避免 LLM 拿到的 schema 与运行时可见性脱节。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ChildToolPolicy {
+    /// 从父工具全集中排除这些工具。空数组等价于不传。
+    Deny { tools: Vec<String> },
+    /// 仅保留这些工具。空数组在 spawner 处会被拒绝。
+    Allow { tools: Vec<String> },
 }
 
 /// `wait_for_result` 的 serde 默认值——`false`（异步）。

@@ -1,6 +1,6 @@
 //! 会话创建和服务派生原语。
 
-use astrcode_core::event::EventPayload;
+use astrcode_core::{event::EventPayload, extension::ChildToolPolicy};
 use tokio::sync::mpsc;
 
 /// 通用的会话创建原语。由服务器实现，由 runner 持有，扩展不可见。
@@ -33,6 +33,8 @@ pub struct SpawnRequest {
     pub event_tx: Option<mpsc::UnboundedSender<EventPayload>>,
     /// 是否同步阻塞等待子 agent 完成。
     pub wait_for_result: bool,
+    /// 子会话的工具集策略。`None` 表示继承父 session 的工具全集。
+    pub tool_policy: Option<ChildToolPolicy>,
 }
 
 /// 子会话执行结果。

@@ -565,6 +565,7 @@ impl TuiState {
                 child_session_id,
                 agent_name,
                 task,
+                tool_policy: _,
             } => self.apply_agent_session_spawned(child_session_id.as_str(), agent_name, task),
             EventPayload::AgentSessionCompleted {
                 child_session_id,

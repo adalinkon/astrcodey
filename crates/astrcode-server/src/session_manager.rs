@@ -290,7 +290,7 @@ mod tests {
             }))
             .await;
 
-        let registry = build_tool_registry_snapshot(&runner, ".", 1).await;
+        let registry = build_tool_registry_snapshot(&runner, ".", 1, None).await;
         let shell = registry.find_definition("shell").unwrap();
 
         assert_eq!(shell.origin, ToolOrigin::Extension);

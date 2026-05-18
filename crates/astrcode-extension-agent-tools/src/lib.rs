@@ -172,6 +172,7 @@ fn build_agent_run(
             user_prompt: args.prompt,
             model_preference: matched.model.clone(),
             wait_for_result: args.wait_for_result,
+            tool_policy: None,
         },
     })
 }

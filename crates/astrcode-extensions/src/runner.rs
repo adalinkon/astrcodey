@@ -790,6 +790,7 @@ impl Tool for HandlerTool {
                 user_prompt,
                 model_preference,
                 wait_for_result,
+                tool_policy,
             }) = serde_json::from_value(outcome_value)
             {
                 let request = SpawnRequest {
@@ -801,6 +802,7 @@ impl Tool for HandlerTool {
                     tool_call_id: _ctx.tool_call_id.clone(),
                     event_tx: _ctx.event_tx.clone(),
                     wait_for_result,
+                    tool_policy,
                 };
 
                 match self.spawn(_ctx.session_id.as_str(), request).await {

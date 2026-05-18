@@ -58,6 +58,7 @@ pub(crate) fn reduce(event: &Event, model: &mut SessionReadModel) {
             child_session_id,
             agent_name,
             task,
+            tool_policy: _,
         } => {
             model.agent_sessions.push(AgentSessionLinkView {
                 child_session_id: child_session_id.clone(),
