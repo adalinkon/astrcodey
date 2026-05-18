@@ -20,6 +20,12 @@ pub struct LoadExtensionsResult {
     pub errors: Vec<String>,
 }
 
+/// WASM 扩展资源限制，从配置系统传入。
+pub struct WasmLimits {
+    pub fuel: u64,
+    pub memory_bytes: usize,
+}
+
 /// 从全局和项目级目录加载扩展。
 ///
 /// 项目级扩展优先级更高（在分发顺序中排在前面）。
@@ -30,17 +36,18 @@ impl ExtensionLoader {
     ///
     /// # 参数
     /// - `working_dir`: 可选的项目工作目录路径，用于发现项目级扩展
+    /// - `limits`: WASM 扩展资源限制
     ///
     /// # 返回
     /// 包含已加载扩展和错误信息的结果
-    pub async fn load_all(working_dir: Option<&str>) -> LoadExtensionsResult {
+    pub async fn load_all(working_dir: Option<&str>, limits: &WasmLimits) -> LoadExtensionsResult {
         let mut extensions: Vec<Arc<dyn Extension>> = Vec::new();
         let mut errors: Vec<String> = Vec::new();
 
         // 全局扩展: ~/.astrcode/extensions/
         let global_dir = hostpaths::extensions_dir();
         if global_dir.exists() {
-            let (exts, errs) = Self::load_from_dir(&global_dir).await;
+            let (exts, errs) = Self::load_from_dir(&global_dir, limits).await;
             extensions.extend(exts);
             errors.extend(errs);
         }
@@ -49,7 +56,7 @@ impl ExtensionLoader {
         if let Some(wd) = working_dir {
             let project_dir = PathBuf::from(wd).join(".astrcode").join("extensions");
             if project_dir.exists() {
-                let (project_exts, project_errs) = Self::load_from_dir(&project_dir).await;
+                let (project_exts, project_errs) = Self::load_from_dir(&project_dir, limits).await;
                 // 项目扩展在分发顺序中排在前面
                 extensions.splice(0..0, project_exts);
                 errors.extend(project_errs);
@@ -62,7 +69,7 @@ impl ExtensionLoader {
     /// 从指定目录加载所有扩展。
     ///
     /// 遍历目录中的每个子目录，查找包含 `extension.json` 清单文件的扩展。
-    async fn load_from_dir(dir: &Path) -> (Vec<Arc<dyn Extension>>, Vec<String>) {
+    async fn load_from_dir(dir: &Path, limits: &WasmLimits) -> (Vec<Arc<dyn Extension>>, Vec<String>) {
         let mut extensions = Vec::new();
         let mut errors = Vec::new();
 
@@ -75,7 +82,7 @@ impl ExtensionLoader {
         };
 
         for path in paths {
-            match Self::load_extension(&path).await {
+            match Self::load_extension(&path, limits).await {
                 Ok(ext) => extensions.push(ext),
                 Err(e) => errors.push(format!("{}: {e}", path.display())),
             }
@@ -112,7 +119,7 @@ impl ExtensionLoader {
     }
 
     /// 加载单个扩展：读取并验证清单，加载 WASM 模块。
-    async fn load_extension(ext_dir: &Path) -> Result<Arc<dyn Extension>, String> {
+    async fn load_extension(ext_dir: &Path, limits: &WasmLimits) -> Result<Arc<dyn Extension>, String> {
         let manifest_path = ext_dir.join("extension.json");
         let manifest_bytes = tokio::fs::read(&manifest_path)
             .await
@@ -122,7 +129,7 @@ impl ExtensionLoader {
         Self::validate_manifest(&manifest)?;
 
         let lib_path = ext_dir.join(&manifest.library);
-        crate::wasm_ext::WasmExtension::load(&lib_path, manifest.id.clone())
+        crate::wasm_ext::WasmExtension::load(&lib_path, manifest.id.clone(), limits.fuel, limits.memory_bytes)
             .map(|ext| ext as Arc<dyn Extension>)
             .map_err(|e| format!("load wasm {}: {e}", lib_path.display()))
     }

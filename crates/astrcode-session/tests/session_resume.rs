@@ -64,6 +64,7 @@ fn test_caps() -> Arc<Capabilities> {
         },
         context: ContextSettings::default(),
         agent: astrcode_core::config::AgentSettings::default(),
+        wasm: astrcode_core::config::WasmSettings::default(),
     };
     Arc::new(Capabilities::new(
         llm,

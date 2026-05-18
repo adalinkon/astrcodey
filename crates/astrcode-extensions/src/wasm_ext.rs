@@ -70,15 +70,25 @@ fn call_guest_blocking(
     let mut guard = inner.lock();
     let request_bytes = request_json.as_bytes();
 
+    let fuel_budget = guard.store.data().fuel_budget;
+    guard
+        .store
+        .set_fuel(fuel_budget)
+        .map_err(|e| ExtensionError::Internal(format!("set_fuel: {e}")))?;
+
     let memory = guard.memory;
     let alloc_fn = guard.alloc_fn.clone();
 
     let (ptr, len) = wasm_api::write_to_guest(&mut guard.store, &memory, &alloc_fn, request_bytes)
         .map_err(ExtensionError::Internal)?;
 
-    let status = func
-        .call(&mut guard.store, (ptr as i32, len as i32))
-        .map_err(|e| ExtensionError::Internal(format!("wasm trap: {e}")))?;
+    let status = func.call(&mut guard.store, (ptr as i32, len as i32)).map_err(|e| {
+        if guard.store.get_fuel().is_ok_and(|remaining| remaining == 0) {
+            ExtensionError::Timeout((fuel_budget / 1_000_000).max(1) * 1000)
+        } else {
+            ExtensionError::Internal(format!("wasm trap: {e}"))
+        }
+    })?;
 
     let response = wasm_api::take_response(&guard.store, &memory);
     guard.store.data_mut().response_ptr = 0;
@@ -120,14 +130,27 @@ pub struct WasmExtension {
 
 impl WasmExtension {
     /// 从 `.wasm` 文件加载扩展。
-    pub fn load(path: &std::path::Path, id: String) -> Result<Arc<Self>, String> {
-        let engine = wasmtime::Engine::default();
+    ///
+    /// `fuel` 和 `memory_bytes` 来自配置系统，控制 guest 每次调用的指令预算和内存上限。
+    pub fn load(
+        path: &std::path::Path,
+        id: String,
+        fuel: u64,
+        memory_bytes: usize,
+    ) -> Result<Arc<Self>, String> {
+        let mut config = wasmtime::Config::new();
+        config.consume_fuel(true);
+        let engine = wasmtime::Engine::new(&config)
+            .map_err(|e| format!("create wasm engine: {e}"))?;
         let module = wasmtime::Module::from_file(&engine, path)
             .map_err(|e| format!("compile wasm module: {e}"))?;
 
         let linker = wasm_api::create_linker(&engine)?;
 
-        let mut store = wasmtime::Store::new(&engine, HostState::new());
+        let host_state = HostState::new().with_limits(fuel, memory_bytes);
+        let mut store = wasmtime::Store::new(&engine, host_state);
+        // ResourceLimiter 通过 Store::limiter 注入，控制 memory/table 增长。
+        store.limiter(|state: &mut HostState| -> &mut dyn wasmtime::ResourceLimiter { state });
         let instance = linker
             .instantiate(&mut store, &module)
             .map_err(|e| format!("instantiate wasm: {e}"))?;
@@ -151,6 +174,8 @@ impl WasmExtension {
             .ok();
 
         if let Ok(init_fn) = instance.get_typed_func::<(), ()>(&mut store, "extension_init") {
+            let fuel_budget = store.data().fuel_budget;
+            store.set_fuel(fuel_budget).map_err(|e| format!("set_fuel: {e}"))?;
             init_fn
                 .call(&mut store, ())
                 .map_err(|e| format!("extension_init trap: {e}"))?;

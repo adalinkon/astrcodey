@@ -4,12 +4,16 @@
 //! 以及扩展运行时的工具注册和取出功能，判别值的往返转换。
 
 use astrcode_core::extension::ExtensionManifest;
-use astrcode_extensions::loader::ExtensionLoader;
+use astrcode_extensions::loader::{ExtensionLoader, WasmLimits};
 
 /// 测试加载器在不存在的路径下返回空结果且不报错
 #[tokio::test]
 async fn loader_returns_empty_result_when_no_extensions_dir() {
-    let result = ExtensionLoader::load_all(Some("/nonexistent/path")).await;
+    let limits = WasmLimits {
+        fuel: 10_000_000,
+        memory_bytes: 64 * 1024 * 1024,
+    };
+    let result = ExtensionLoader::load_all(Some("/nonexistent/path"), &limits).await;
     // 不应报错 — 仅返回空列表
     assert!(result.extensions.is_empty());
     assert!(result.errors.is_empty());
@@ -18,7 +22,11 @@ async fn loader_returns_empty_result_when_no_extensions_dir() {
 /// 测试加载器在 working_dir 为 None 时不崩溃
 #[tokio::test]
 async fn loader_returns_empty_result_for_none_working_dir() {
-    let result = ExtensionLoader::load_all(None).await;
+    let limits = WasmLimits {
+        fuel: 10_000_000,
+        memory_bytes: 64 * 1024 * 1024,
+    };
+    let result = ExtensionLoader::load_all(None, &limits).await;
     // 全局目录可能存在也可能不存在，但不应崩溃
     // 当 working_dir 为 None 时跳过项目目录扫描
     assert!(result.errors.is_empty());

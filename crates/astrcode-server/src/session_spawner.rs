@@ -677,7 +677,7 @@ mod tests {
     fn test_config_manager(
         llm_provider: Arc<dyn LlmProvider>,
     ) -> Arc<crate::config_manager::ConfigManager> {
-        use astrcode_core::config::{EffectiveConfig, LlmSettings, OpenAiApiMode};
+        use astrcode_core::config::{EffectiveConfig, LlmSettings, OpenAiApiMode, WasmSettings};
         Arc::new(crate::config_manager::ConfigManager::new(
             Arc::new(astrcode_storage::config_store::FileConfigStore::new(
                 std::path::PathBuf::from("target/test-config.json"),
@@ -704,6 +704,7 @@ mod tests {
                 },
                 context: Default::default(),
                 agent: Default::default(),
+                wasm: WasmSettings::default(),
             },
             llm_provider,
         ))

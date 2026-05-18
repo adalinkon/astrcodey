@@ -137,6 +137,18 @@ impl Config {
                     .agent_tool_max_parallel_calls
                     .unwrap_or(super::defaults::DEFAULT_AGENT_TOOL_MAX_PARALLEL_CALLS),
             },
+            wasm: WasmSettings {
+                fuel: self
+                    .runtime
+                    .wasm_fuel
+                    .unwrap_or(super::defaults::DEFAULT_WASM_FUEL),
+                memory_bytes: self
+                    .runtime
+                    .wasm_memory_mb
+                    .unwrap_or(super::defaults::DEFAULT_WASM_MEMORY_MB)
+                    * 1024
+                    * 1024,
+            },
         })
     }
 }

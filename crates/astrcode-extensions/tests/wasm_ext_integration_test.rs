@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use astrcode_core::{
     extension::{Extension, HookMode, PreToolUseContext, PreToolUseResult, Registrar},
-    tool::ToolExecutionContext,
+    tool::{ExecutionMode, ToolExecutionContext},
 };
 use astrcode_extensions::wasm_ext::WasmExtension;
 use tempfile::NamedTempFile;
@@ -74,6 +74,16 @@ impl WasmModuleBuilder {
     }
 
     fn register_tool(&mut self, name: &str, desc: &str, schema: &str) {
+        self.register_tool_with_execution_mode(name, desc, schema, 0);
+    }
+
+    fn register_tool_with_execution_mode(
+        &mut self,
+        name: &str,
+        desc: &str,
+        schema: &str,
+        execution_mode: u32,
+    ) {
         let (n_off, n_len) = self.intern(name);
         let (d_off, d_len) = self.intern(desc);
         let (s_off, s_len) = self.intern(schema);
@@ -84,9 +94,7 @@ impl WasmModuleBuilder {
             desc_len: d_len,
             schema_off: s_off,
             schema_len: s_len,
-            // 0 = Sequential（默认）。当前 host import 协议要求显式传 execution_mode；
-            // 测试 fixture 用 Sequential 与之前的隐式行为对齐。
-            execution_mode: 0,
+            execution_mode,
         });
     }
 
@@ -334,7 +342,7 @@ fn align_up(v: u32, align: u32) -> u32 {
 fn load_wasm(bytes: &[u8]) -> Arc<WasmExtension> {
     let mut tmp = NamedTempFile::new().unwrap();
     std::io::Write::write_all(&mut tmp, bytes).unwrap();
-    WasmExtension::load(tmp.path(), "test-ext".into()).unwrap()
+    WasmExtension::load(tmp.path(), "test-ext".into(), 10_000_000, 64 * 1024 * 1024).unwrap()
 }
 
 fn tool_execution_ctx() -> ToolExecutionContext {
@@ -501,4 +509,65 @@ async fn wasm_multiple_tools_registered() {
     let names: Vec<&str> = tools.iter().map(|(def, _)| def.name.as_str()).collect();
     assert!(names.contains(&"tool1"));
     assert!(names.contains(&"tool2"));
+}
+
+#[tokio::test]
+async fn wasm_register_tool_parallel_execution_mode() {
+    let mut b = WasmModuleBuilder::new();
+    b.register_tool_with_execution_mode(
+        "parallelTool",
+        "parallel",
+        r#"{"type":"object","properties":{}}"#,
+        1,
+    );
+    b.set_tool_response("ok", 0);
+
+    let ext = load_wasm(&b.build());
+
+    let mut reg = Registrar::new();
+    ext.register(&mut reg);
+    let tools = reg.tools();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].0.execution_mode, ExecutionMode::Parallel);
+}
+
+#[tokio::test]
+async fn wasm_register_tool_unknown_execution_mode_defaults_to_sequential() {
+    let mut b = WasmModuleBuilder::new();
+    b.register_tool_with_execution_mode(
+        "unknownTool",
+        "unknown mode",
+        r#"{"type":"object","properties":{}}"#,
+        42,
+    );
+    b.set_tool_response("ok", 0);
+
+    let ext = load_wasm(&b.build());
+
+    let mut reg = Registrar::new();
+    ext.register(&mut reg);
+    let tools = reg.tools();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].0.execution_mode, ExecutionMode::Sequential);
+}
+
+#[tokio::test]
+async fn wasm_register_tool_overflow_execution_mode_defaults_to_sequential() {
+    let mut b = WasmModuleBuilder::new();
+    // 257 as i32 would wrap to 1 if cast to u8, incorrectly becoming Parallel
+    b.register_tool_with_execution_mode(
+        "overflowTool",
+        "overflow mode",
+        r#"{"type":"object","properties":{}}"#,
+        257,
+    );
+    b.set_tool_response("ok", 0);
+
+    let ext = load_wasm(&b.build());
+
+    let mut reg = Registrar::new();
+    ext.register(&mut reg);
+    let tools = reg.tools();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].0.execution_mode, ExecutionMode::Sequential);
 }

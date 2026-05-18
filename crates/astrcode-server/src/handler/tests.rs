@@ -371,6 +371,7 @@ fn test_runtime_with_settings(
             post_compact_max_tokens_per_file: context_settings.post_compact_max_tokens_per_file,
         },
         agent: astrcode_core::config::AgentSettings::default(),
+        wasm: astrcode_core::config::WasmSettings::default(),
     };
     let event_store = Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>;
     let config = Arc::new(crate::config_manager::ConfigManager::new(
