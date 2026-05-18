@@ -15,7 +15,11 @@ pub trait SessionSpawner: Send + Sync {
 }
 
 /// 子会话启动请求。
-#[derive(Debug, Clone)]
+///
+/// 所有字段均有合理默认值（字符串为空、Option 为 `None`、`wait_for_result` 为 `false`）。
+/// 建议构造时使用 spread 语法 `SpawnRequest { name: ..., ..Default::default() }`，
+/// 这样新增字段时旧的构造点不需要逐一更新。
+#[derive(Debug, Clone, Default)]
 pub struct SpawnRequest {
     /// 子会话名称
     pub name: String,

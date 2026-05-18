@@ -773,7 +773,7 @@ mod tests {
                     tool_call_id: Some("tool-call-1".into()),
                     event_tx: Some(progress_tx),
                     wait_for_result: true,
-                    tool_policy: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -839,7 +839,7 @@ mod tests {
                     tool_call_id: None,
                     event_tx: None,
                     wait_for_result: true,
-                    tool_policy: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -894,7 +894,7 @@ mod tests {
                     tool_call_id: Some("call-async-1".into()),
                     event_tx: None,
                     wait_for_result: false,
-                    tool_policy: None,
+                    ..Default::default()
                 },
             )
             .await
