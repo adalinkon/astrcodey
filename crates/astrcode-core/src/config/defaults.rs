@@ -42,7 +42,7 @@ pub const DEFAULT_POST_COMPACT_MAX_TOKENS_PER_FILE: usize = 5_000;
 // ── Agent 限制默认值 ────────────────────────────────────────────────────
 
 /// 子 agent 最大嵌套深度（root=0, child=1, grandchild=2）。
-pub const DEFAULT_AGENT_MAX_DEPTH: usize = 1;
+pub const DEFAULT_AGENT_MAX_DEPTH: usize = 2;
 /// 单轮中允许同时执行的并行工具调用数上限。
 pub const DEFAULT_AGENT_TOOL_MAX_PARALLEL_CALLS: usize = 5;
 
