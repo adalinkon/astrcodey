@@ -88,7 +88,12 @@ pub enum ExtensionEvent {
 
 /// 从扩展的 `extension.json` 解析的清单文件。
 ///
-/// 由文件系统加载器在加载原生库之前用于发现扩展。
+/// 用于「发现」阶段：loader 读 manifest 拿到 `id` / `library`，加载 WASM 模块后，
+/// 模块通过 `extension_init` 走 host imports（`host_register_tool` /
+/// `host_register_command` / `host_subscribe`）声明真正的能力。manifest 只承担
+/// 元数据展示职责（`name` / `version` / `description`），不再重复声明能力——
+/// 之前的 `subscriptions` / `tools` / `slash_commands` 字段已删，避免「manifest 写
+/// 一份、register 时再写一份」两份事实漂移。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtensionManifest {
     /// 扩展唯一标识符。
@@ -104,30 +109,8 @@ pub struct ExtensionManifest {
     /// 可选的宿主版本提示。目前仅作为元数据，不做硬性校验。
     #[serde(default)]
     pub astrcode_version: Option<String>,
-    /// 原生库路径（相对于扩展目录，`.dll` / `.so`）。
+    /// 原生库路径（相对于扩展目录，`.dll` / `.so` / `.wasm`）。
     pub library: String,
-    /// 此扩展订阅的事件列表。
-    #[serde(default)]
-    pub subscriptions: Vec<ManifestSubscription>,
-    /// 静态工具定义列表。
-    #[serde(default)]
-    pub tools: Vec<ToolDefinition>,
-    /// 静态斜杠命令定义列表。
-    #[serde(default)]
-    pub slash_commands: Vec<SlashCommand>,
-}
-
-/// 清单 JSON 中的订阅条目。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ManifestSubscription {
-    /// 订阅的事件类型。
-    #[serde(rename = "event")]
-    pub event: ExtensionEvent,
-    /// 钩子执行模式。
-    #[serde(rename = "mode")]
-    pub mode: HookMode,
-    /// 同一事件内的执行优先级，数值越大越先执行。
-    pub priority: i32,
 }
 
 // ─── Compact Trigger ─────────────────────────────────────────────────────
@@ -322,7 +305,31 @@ pub enum ExtensionToolOutcome {
         /// `true`：同步阻塞直到子 agent 完成并返回结果。
         #[serde(default = "default_wait_for_result")]
         wait_for_result: bool,
+        /// 子会话的工具集策略。`None` 表示继承父 session 的工具全集。
+        ///
+        /// 用于让插件声明子 agent 应当能用哪些工具。详见 [`ChildToolPolicy`]。
+        #[serde(default)]
+        tool_policy: Option<ChildToolPolicy>,
     },
+}
+
+/// 子 session 的工具集策略。
+///
+/// 由 [`ExtensionToolOutcome::RunSession::tool_policy`] 携带，决定子 session 在
+/// `build_tool_registry_snapshot` 时如何裁剪工具表。
+///
+/// 语义：
+/// - `Deny`：从父全集中排除指定工具。常见场景是 `["agent"]` 防止递归生 agent。
+/// - `Allow`：仅保留指定工具。空白名单视为非法配置，spawner 应拒绝。
+///
+/// 过滤在工具表构建阶段一次性完成，避免 LLM 拿到的 schema 与运行时可见性脱节。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ChildToolPolicy {
+    /// 从父工具全集中排除这些工具。空数组等价于不传。
+    Deny { tools: Vec<String> },
+    /// 仅保留这些工具。空数组在 spawner 处会被拒绝。
+    Allow { tools: Vec<String> },
 }
 
 /// `wait_for_result` 的 serde 默认值——`false`（异步）。
@@ -366,6 +373,11 @@ pub enum PreToolUseResult {
 }
 
 /// PostToolUse 钩子结果。
+///
+/// `ModifyResult` 仅替换 ToolResult 的文本内容（`content` 字段）；其它结构化
+/// 字段——`is_error` / `metadata` / `artifact_ref` / `duration_ms`——保持不变。
+/// 想要修改错误标记或附加元数据时，本变体不够用：当前协议没有「全字段替换」入口。
+/// 如果未来出现需求，应该新增 `ReplaceFully(ToolResult)` 而非扩张这里的语义。
 #[derive(Debug, Clone)]
 pub enum PostToolUseResult {
     Allow,

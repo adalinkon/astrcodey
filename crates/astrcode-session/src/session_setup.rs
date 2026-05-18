@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use astrcode_context::prompt_engine::{PromptEngine, PromptFiles};
 use astrcode_core::{
     config::ModelSelection,
-    extension::{ExtensionError, PromptBuildContext},
+    extension::{ChildToolPolicy, ExtensionError, PromptBuildContext},
     prompt::{ExtensionPromptBlock, ExtensionSection, PromptProvider, SystemPromptInput},
     tool::{ToolDefinition, ToolPromptMetadata},
 };
@@ -21,10 +21,19 @@ use astrcode_tools::registry::{ToolRegistry, builtin_tools};
 ///
 /// 每次新建/恢复 session 时调用一次；工具执行期间只读取这份快照，
 /// 不再维护运行中的动态工具层。
+///
+/// `tool_policy` 用于子 session 的工具裁剪：
+/// - `None`：保留父全集（即所有 builtin + extension 工具）。
+/// - `Some(Deny)`：从全集排除指定工具。
+/// - `Some(Allow)`：仅保留指定工具。空白名单视为非法配置（spawner 应在调用前拦截）。
+///
+/// 过滤在表构建末尾一次完成，确保 LLM schema、prompt 渲染、运行时白名单三处
+/// 都看到同一份工具集。
 pub async fn build_tool_registry_snapshot(
     extension_runner: &ExtensionRunner,
     working_dir: &str,
     timeout_secs: u64,
+    tool_policy: Option<&ChildToolPolicy>,
 ) -> ToolRegistry {
     let mut tool_registry = ToolRegistry::new();
 
@@ -43,7 +52,41 @@ pub async fn build_tool_registry_snapshot(
         tool_registry.register(tool);
     }
 
+    if let Some(policy) = tool_policy {
+        apply_child_tool_policy(&mut tool_registry, policy);
+    }
+
     tool_registry
+}
+
+/// 按 [`ChildToolPolicy`] 裁剪工具表。
+///
+/// `Deny` 直接 `unregister`；`Allow` 把不在白名单里的工具全部 `unregister`。
+/// 命中不存在的工具名只打 debug 日志，不报错——插件可能针对多版本宿主写策略。
+fn apply_child_tool_policy(registry: &mut ToolRegistry, policy: &ChildToolPolicy) {
+    match policy {
+        ChildToolPolicy::Deny { tools } => {
+            for name in tools {
+                if registry.find_definition(name).is_none() {
+                    tracing::debug!(tool = %name, "deny policy mentions unknown tool, skipping");
+                    continue;
+                }
+                registry.unregister(name);
+            }
+        },
+        ChildToolPolicy::Allow { tools } => {
+            let allow: std::collections::HashSet<&str> = tools.iter().map(String::as_str).collect();
+            let to_remove: Vec<String> = registry
+                .list_definitions()
+                .into_iter()
+                .map(|definition| definition.name)
+                .filter(|name| !allow.contains(name.as_str()))
+                .collect();
+            for name in to_remove {
+                registry.unregister(&name);
+            }
+        },
+    }
 }
 
 pub struct SystemPromptSnapshotInput<'a> {

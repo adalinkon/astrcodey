@@ -370,6 +370,8 @@ fn test_runtime_with_settings(
             post_compact_token_budget: context_settings.post_compact_token_budget,
             post_compact_max_tokens_per_file: context_settings.post_compact_max_tokens_per_file,
         },
+        agent: astrcode_core::config::AgentSettings::default(),
+        wasm: astrcode_core::config::WasmSettings::default(),
     };
     let event_store = Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>;
     let config = Arc::new(crate::config_manager::ConfigManager::new(
@@ -557,7 +559,7 @@ async fn record_and_broadcast_updates_projection_before_broadcast() {
     let sid = new_session_id();
     runtime
         .event_store
-        .create_session(&sid, ".", "mock-model", None)
+        .create_session(&sid, ".", "mock-model", None, None)
         .await
         .unwrap();
     let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(64);
@@ -681,7 +683,7 @@ async fn submit_prompt_configures_missing_session_system_prompt() {
     let sid = new_session_id();
     runtime
         .event_store
-        .create_session(&sid, ".", "mock-model", None)
+        .create_session(&sid, ".", "mock-model", None, None)
         .await
         .unwrap();
     let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(128);
@@ -736,7 +738,7 @@ async fn stale_pending_tool_calls_are_repaired_on_explicit_repair() {
     let sid = new_session_id();
     runtime
         .event_store
-        .create_session(&sid, ".", "mock", None)
+        .create_session(&sid, ".", "mock", None, None)
         .await
         .unwrap();
     runtime

@@ -65,3 +65,4 @@ cargo test --all-features
   必须遵守：
 - 没有遇见bug不准写测试，非复杂逻辑不写测试
 - 集成测试单开一个tests/文件夹存放，单元测试写在下面
+- 只有测试能放.unwarp()

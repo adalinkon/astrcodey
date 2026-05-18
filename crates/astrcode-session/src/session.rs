@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use astrcode_core::{
     event::{Event, EventPayload},
+    extension::ChildToolPolicy,
     storage::{
         CompactSnapshotInput, EventStore, SessionReadModel, StorageError, ToolResultArtifactInput,
         ToolResultArtifactReader, ToolResultArtifactRef, ToolResultArtifactSlice,
@@ -47,18 +48,24 @@ impl Session {
     /// 实例会有不同的 broadcast、不同的工具表、不同的 bg_tasks，订阅者只能看到自己那份
     /// 实例上发出的事件。生产路径走 `SessionManager`，由其内部的 `runtime_states` HashMap
     /// 保证唯一；CLI / 测试若直接调本入口须自行维护一份 sid→runtime 映射，或接受隔离语义。
+    #[allow(clippy::too_many_arguments)] // 构造函数要持有完整依赖图
     pub async fn create_with_id(
         store: Arc<dyn EventStore>,
         sid: SessionId,
         working_dir: &str,
         model_id: &str,
         parent: Option<&SessionId>,
+        tool_policy: Option<&ChildToolPolicy>,
         runtime: Arc<SessionRuntimeState>,
         caps: Arc<Capabilities>,
     ) -> Result<Self, SessionError> {
         store
-            .create_session(&sid, working_dir, model_id, parent)
+            .create_session(&sid, working_dir, model_id, parent, tool_policy)
             .await?;
+        // tool_policy 走 event log 持久化；同步注入 runtime 让首次 refresh_tools 立刻生效。
+        if let Some(policy) = tool_policy {
+            runtime.set_tool_policy(Some(policy.clone()));
+        }
         Ok(Self {
             id: sid,
             store,
@@ -70,6 +77,10 @@ impl Session {
     /// 从磁盘恢复已有会话并附带运行时/能力/事件广播。
     ///
     /// 同 sid 的并发 `open` 必须共享 `runtime`——参见 `create_with_id` 的同条警告。
+    ///
+    /// resume 时从 projection 读 `tool_policy` 并写回 runtime，让 `refresh_tools`
+    /// 重建工具表时与首次创建一致。父子 session 走同一条路：根 session 的 policy
+    /// 是 `None`，子 session 的 policy 来自 spawn 时写入的 `SessionStarted`。
     pub async fn open(
         store: Arc<dyn EventStore>,
         id: SessionId,
@@ -77,6 +88,14 @@ impl Session {
         caps: Arc<Capabilities>,
     ) -> Result<Self, SessionError> {
         store.open_session(&id).await?;
+        // 优先信任 runtime 中已存在的 policy（spawn_child 注入路径），
+        // 仅在 runtime 为空时从 projection 回填——避免覆盖最新的进程内状态。
+        if runtime.tool_policy().is_none() {
+            let model = store.session_read_model(&id).await?;
+            if let Some(policy) = model.tool_policy {
+                runtime.set_tool_policy(Some(policy));
+            }
+        }
         Ok(Self {
             id,
             store,
@@ -208,10 +227,12 @@ impl Session {
         let caps = &self.caps;
         let runtime = &self.runtime;
         let timeout = caps.read_effective().llm.read_timeout_secs;
+        let tool_policy = runtime.tool_policy();
         let registry = crate::session_setup::build_tool_registry_snapshot(
             caps.extension_runner(),
             working_dir,
             timeout,
+            tool_policy.as_ref(),
         )
         .await;
         let registry = Arc::new(registry);
@@ -440,8 +461,8 @@ impl Session {
     /// 派生子会话。
     ///
     /// 共享父 session 的 store / caps，独立的 runtime（独立工具表/file_obs/bg_tasks）。
-    /// 父侧记录 `AgentSessionSpawned` 事件，子侧的 `extra_system_prompt` 注入子 runtime，
-    /// 在 `submit` 时被 `refresh_prompt` 读取。
+    /// 父侧记录 `AgentSessionSpawned` 事件，子侧的 `extra_system_prompt` / `tool_policy`
+    /// 注入子 runtime，在 `submit` 时被 `refresh_prompt` / `refresh_tools` 读取。
     ///
     /// 调用方拿到 child Session 后通常立刻调 `child.submit(...)` 启动 turn。
     pub async fn spawn_child(
@@ -451,6 +472,7 @@ impl Session {
         agent_name: String,
         task: String,
         extra_system_prompt: Option<String>,
+        tool_policy: Option<ChildToolPolicy>,
     ) -> Result<Session, SessionError> {
         let child_runtime = Arc::new(SessionRuntimeState::default());
         if extra_system_prompt.is_some() {
@@ -463,6 +485,7 @@ impl Session {
             working_dir,
             model_id,
             Some(&self.id),
+            tool_policy.as_ref(),
             child_runtime,
             Arc::clone(&self.caps),
         )
@@ -475,6 +498,7 @@ impl Session {
                 child_session_id: child_sid,
                 agent_name,
                 task,
+                tool_policy,
             },
         ))
         .await?;

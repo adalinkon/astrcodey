@@ -187,7 +187,7 @@ async fn sse_receiver_lag_emits_rehydrate_and_closes() {
     let session_id = new_session_id();
     runtime
         .event_store
-        .create_session(&session_id, ".", "mock-model", None)
+        .create_session(&session_id, ".", "mock-model", None, None)
         .await
         .unwrap();
     let (event_tx, _) = broadcast::channel(1);
@@ -747,6 +747,8 @@ fn runtime(llm_provider: Arc<dyn LlmProvider>) -> Arc<ServerRuntime> {
             post_compact_token_budget: 50_000,
             post_compact_max_tokens_per_file: 5_000,
         },
+        agent: astrcode_core::config::AgentSettings::default(),
+        wasm: astrcode_core::config::WasmSettings::default(),
     };
     let event_store = Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>;
     let config = Arc::new(astrcode_server::bootstrap::ConfigManager::new(

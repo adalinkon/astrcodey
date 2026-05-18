@@ -63,6 +63,8 @@ fn test_caps() -> Arc<Capabilities> {
             reasoning_split: false,
         },
         context: ContextSettings::default(),
+        agent: astrcode_core::config::AgentSettings::default(),
+        wasm: astrcode_core::config::WasmSettings::default(),
     };
     Arc::new(Capabilities::new(
         llm,
@@ -86,6 +88,7 @@ async fn refresh_prompt_with_none_preserves_existing_extra() {
         sid.clone(),
         ".",
         "mock-model",
+        None,
         None,
         Arc::clone(&runtime_a),
         Arc::clone(&caps),

@@ -8,7 +8,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{llm::LlmMessage, tool::ToolResult, types::*};
+use crate::{extension::ChildToolPolicy, llm::LlmMessage, tool::ToolResult, types::*};
 
 /// 会话的执行阶段。
 ///
@@ -58,6 +58,13 @@ pub enum EventPayload {
         /// 父会话 ID，用于子会话场景。根会话为 `None`。
         #[serde(skip_serializing_if = "Option::is_none")]
         parent_session_id: Option<SessionId>,
+        /// 子会话出生时被注入的工具集策略。
+        ///
+        /// 写在子 session 的事件日志而不仅仅父 session 的 `AgentSessionSpawned`，
+        /// 是为了让子 session resume 时能从自己的事件流里恢复 policy，不必跨 session 查父。
+        /// 根会话始终为 `None`。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_policy: Option<ChildToolPolicy>,
     },
 
     /// 会话使用的模型已变更。
@@ -95,6 +102,11 @@ pub enum EventPayload {
         child_session_id: SessionId,
         agent_name: String,
         task: String,
+        /// 子会话生效的工具集策略（`None` 表示继承父全集）。
+        ///
+        /// 持久化以便子 session resume 时重建相同的工具表。
+        #[serde(default)]
+        tool_policy: Option<ChildToolPolicy>,
     },
 
     /// Agent 运行开始。
@@ -618,6 +630,7 @@ mod tests {
             child_session_id: "child-1".into(),
             agent_name: "reviewer".into(),
             task: "review current diff".into(),
+            tool_policy: None,
         };
 
         assert!(payload.is_durable());
@@ -627,6 +640,7 @@ mod tests {
         assert_eq!(value["child_session_id"], "child-1");
         assert_eq!(value["agent_name"], "reviewer");
         assert_eq!(value["task"], "review current diff");
+        assert!(value["tool_policy"].is_null());
 
         let round_trip: EventPayload = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(round_trip, payload);

@@ -72,6 +72,10 @@ impl SessionManager {
             .clone()
     }
 
+    pub(crate) fn config(&self) -> &Arc<ConfigManager> {
+        &self.config
+    }
+
     pub(crate) async fn create(
         &self,
         working_dir: &str,
@@ -86,6 +90,7 @@ impl SessionManager {
             sid.clone(),
             working_dir,
             &model_id,
+            None,
             None,
             runtime,
             Arc::clone(&self.capabilities),
@@ -286,7 +291,7 @@ mod tests {
             }))
             .await;
 
-        let registry = build_tool_registry_snapshot(&runner, ".", 1).await;
+        let registry = build_tool_registry_snapshot(&runner, ".", 1, None).await;
         let shell = registry.find_definition("shell").unwrap();
 
         assert_eq!(shell.origin, ToolOrigin::Extension);

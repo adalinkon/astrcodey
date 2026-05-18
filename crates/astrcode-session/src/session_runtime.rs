@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use astrcode_core::{event::Event, tool::FileObservationStore};
+use astrcode_core::{event::Event, extension::ChildToolPolicy, tool::FileObservationStore};
 use astrcode_tools::registry::ToolRegistry;
 use parking_lot::Mutex;
 use tokio::sync::broadcast;
@@ -31,6 +31,11 @@ pub struct SessionRuntimeState {
     bg_tasks: Arc<Mutex<BackgroundTaskManager>>,
     /// 子 session 专用的额外 system prompt，由 SpawnRequest 注入。
     extra_system_prompt: Mutex<Option<String>>,
+    /// 子 session 工具集策略，由 SpawnRequest 注入；父 session 始终为 `None`。
+    ///
+    /// `refresh_tools` 在每次重建工具表时读取此字段，保证子 session 的所有 turn
+    /// 都看到一致的裁剪后工具集（含 resume 路径）。
+    tool_policy: Mutex<Option<ChildToolPolicy>>,
     /// 本 session 事件的 fanout 通道。同一 sid 下所有 Session 实例共享这份 sender，
     /// 通过 SessionRuntimeState 的 Arc 共享保证订阅一致性。
     event_tx: broadcast::Sender<Event>,
@@ -44,6 +49,7 @@ impl Default for SessionRuntimeState {
             tool_registry: Mutex::new(Arc::new(ToolRegistry::new())),
             bg_tasks: Arc::new(Mutex::new(BackgroundTaskManager::new())),
             extra_system_prompt: Mutex::new(None),
+            tool_policy: Mutex::new(None),
             event_tx,
         }
     }
@@ -72,6 +78,14 @@ impl SessionRuntimeState {
 
     pub fn set_extra_system_prompt(&self, prompt: Option<String>) {
         *self.extra_system_prompt.lock() = prompt;
+    }
+
+    pub fn tool_policy(&self) -> Option<ChildToolPolicy> {
+        self.tool_policy.lock().clone()
+    }
+
+    pub fn set_tool_policy(&self, policy: Option<ChildToolPolicy>) {
+        *self.tool_policy.lock() = policy;
     }
 
     /// 订阅本 session 的事件流。

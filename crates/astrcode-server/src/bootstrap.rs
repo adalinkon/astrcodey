@@ -140,7 +140,14 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     // 扩展工具不会在这里写入全局工具表；这里只保存扩展列表。
     // 每个 session 需要工具时，再从 runner 收集工具适配器并生成快照。
     let cwd_str = cwd.to_string_lossy().to_string();
-    let load_result = ExtensionLoader::load_all(Some(&cwd_str)).await;
+    let load_result = ExtensionLoader::load_all(
+        Some(&cwd_str),
+        &astrcode_extensions::loader::WasmLimits {
+            fuel: effective.wasm.fuel,
+            memory_bytes: effective.wasm.memory_bytes,
+        },
+    )
+    .await;
     let extension_runner = Arc::new(ExtensionRunner::new(Duration::from_secs(30)));
     extension_runner.register_builtins().await;
     for ext in load_result.extensions {

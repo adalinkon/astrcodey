@@ -4,16 +4,13 @@
 //! 将事件持久化到子会话存储，并经由 [`ProgressTx`] 将关键进展
 //! 转译为 [`ToolOutputDelta`] 实时反馈给父会话的 TUI。
 //!
-//! 最大嵌套深度由 [`MAX_AGENT_DEPTH`] 控制；同层级可并发生成任意多个子 agent。
-
-/// 子 agent 最大嵌套深度（root=0, child=1, grandchild=2）。
-// TODO: 可配置
-const MAX_AGENT_DEPTH: usize = 2;
+//! 最大嵌套深度由 [`EffectiveConfig::agent.max_depth`] 控制；同层级可并发生成任意多个子 agent。
 
 use std::sync::Arc;
 
 use astrcode_core::{
     event::{Event, EventPayload, ToolOutputStream},
+    extension::ChildToolPolicy,
     types::{SessionId, ToolCallId, new_background_task_id, new_message_id, new_turn_id},
 };
 use astrcode_extensions::runtime::{SpawnRequest, SpawnResult};
@@ -62,6 +59,24 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
             )
             .await
         }
+    }
+}
+
+/// 校验插件传入的 [`ChildToolPolicy`]：
+/// - `Deny`：空数组等价于 `None`，归一化以便后续不必处理空白名单边界。
+/// - `Allow`：空数组视为非法（语义是「不准用任何工具」，子 agent 必然立刻失败），返回错误。
+///
+/// 无策略 / 已规范化策略原样返回。
+fn validate_tool_policy(
+    policy: Option<ChildToolPolicy>,
+) -> Result<Option<ChildToolPolicy>, String> {
+    match policy {
+        None => Ok(None),
+        Some(ChildToolPolicy::Deny { tools }) if tools.is_empty() => Ok(None),
+        Some(ChildToolPolicy::Allow { tools }) if tools.is_empty() => {
+            Err("ChildToolPolicy::Allow 不能为空：子 agent 至少需要一个工具".into())
+        },
+        Some(other) => Ok(Some(other)),
     }
 }
 
@@ -126,14 +141,22 @@ impl ServerSessionSpawner {
         };
 
         let depth = self.session_depth(&parent_session_id).await?;
-        if depth >= MAX_AGENT_DEPTH {
+        let max_depth = self
+            .session_manager
+            .config()
+            .read_effective()
+            .agent
+            .max_depth;
+        if depth >= max_depth {
             return Err(format!(
-                "已达最大 agent 嵌套深度 ({MAX_AGENT_DEPTH})，无法继续创建子 agent"
+                "已达最大 agent 嵌套深度 ({max_depth})，无法继续创建子 agent"
             ));
         }
 
-        // Session::spawn_child 内部完成 create + 注入 extra_system_prompt + 追加
-        // AgentSessionSpawned。
+        let tool_policy = validate_tool_policy(request.tool_policy)?;
+
+        // Session::spawn_child 内部完成 create + 注入 extra_system_prompt / tool_policy
+        // + 追加 AgentSessionSpawned。
         let child_session = parent_session
             .spawn_child(
                 &request.working_dir,
@@ -141,6 +164,7 @@ impl ServerSessionSpawner {
                 child_name.clone(),
                 user_prompt.clone(),
                 Some(request.system_prompt),
+                tool_policy,
             )
             .await
             .map_err(|e| format!("spawn child session: {e}"))?;
@@ -653,7 +677,7 @@ mod tests {
     fn test_config_manager(
         llm_provider: Arc<dyn LlmProvider>,
     ) -> Arc<crate::config_manager::ConfigManager> {
-        use astrcode_core::config::{EffectiveConfig, LlmSettings, OpenAiApiMode};
+        use astrcode_core::config::{EffectiveConfig, LlmSettings, OpenAiApiMode, WasmSettings};
         Arc::new(crate::config_manager::ConfigManager::new(
             Arc::new(astrcode_storage::config_store::FileConfigStore::new(
                 std::path::PathBuf::from("target/test-config.json"),
@@ -679,6 +703,8 @@ mod tests {
                     reasoning_split: false,
                 },
                 context: Default::default(),
+                agent: Default::default(),
+                wasm: WasmSettings::default(),
             },
             llm_provider,
         ))
@@ -727,7 +753,7 @@ mod tests {
         let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
         let parent_id = new_session_id();
         store
-            .create_session(&parent_id, ".", "mock", None)
+            .create_session(&parent_id, ".", "mock", None, None)
             .await
             .unwrap();
         let llm = Arc::new(ToolThenTextLlm {
@@ -748,6 +774,7 @@ mod tests {
                     tool_call_id: Some("tool-call-1".into()),
                     event_tx: Some(progress_tx),
                     wait_for_result: true,
+                    ..Default::default()
                 },
             )
             .await
@@ -780,7 +807,7 @@ mod tests {
         let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
         let parent_id = new_session_id();
         store
-            .create_session(&parent_id, ".", "mock", None)
+            .create_session(&parent_id, ".", "mock", None, None)
             .await
             .unwrap();
         let initial_provider: Arc<dyn LlmProvider> = Arc::new(StaticTextLlm { text: "old" });
@@ -813,6 +840,7 @@ mod tests {
                     tool_call_id: None,
                     event_tx: None,
                     wait_for_result: true,
+                    ..Default::default()
                 },
             )
             .await
@@ -826,7 +854,7 @@ mod tests {
         let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
         let parent_id = new_session_id();
         store
-            .create_session(&parent_id, ".", "mock", None)
+            .create_session(&parent_id, ".", "mock", None, None)
             .await
             .unwrap();
         let llm = Arc::new(StaticTextLlm {
@@ -867,6 +895,7 @@ mod tests {
                     tool_call_id: Some("call-async-1".into()),
                     event_tx: None,
                     wait_for_result: false,
+                    ..Default::default()
                 },
             )
             .await

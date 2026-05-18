@@ -9,6 +9,10 @@ pub struct EffectiveConfig {
     pub llm: LlmSettings,
     /// 上下文窗口 / compact 设置。
     pub context: ContextSettings,
+    /// Agent 行为限制（嵌套深度、并行工具调用数等）。
+    pub agent: AgentSettings,
+    /// WASM 扩展资源限制（fuel、内存上限等）。
+    pub wasm: WasmSettings,
 }
 
 // ─── LLM Settings ────────────────────────────────────────────────────────
@@ -85,6 +89,46 @@ impl Default for ContextSettings {
             post_compact_token_budget: super::defaults::DEFAULT_POST_COMPACT_TOKEN_BUDGET,
             post_compact_max_tokens_per_file:
                 super::defaults::DEFAULT_POST_COMPACT_MAX_TOKENS_PER_FILE,
+        }
+    }
+}
+
+// ─── Agent Settings ──────────────────────────────────────────────────────
+
+/// 已解析的 Agent 行为限制配置。
+#[derive(Debug, Clone)]
+pub struct AgentSettings {
+    /// 子 agent 最大嵌套深度（root=0, child=1, grandchild=2）。
+    pub max_depth: usize,
+    /// 单轮中允许同时执行的并行工具调用数上限。
+    pub tool_max_parallel_calls: usize,
+}
+
+impl Default for AgentSettings {
+    fn default() -> Self {
+        Self {
+            max_depth: super::defaults::DEFAULT_AGENT_MAX_DEPTH,
+            tool_max_parallel_calls: super::defaults::DEFAULT_AGENT_TOOL_MAX_PARALLEL_CALLS,
+        }
+    }
+}
+
+// ─── WASM Settings ──────────────────────────────────────────────────────
+
+/// 已解析的 WASM 扩展资源限制配置。
+#[derive(Debug, Clone)]
+pub struct WasmSettings {
+    /// 单次 guest 调用的 fuel 预算（指令数）。
+    pub fuel: u64,
+    /// 线性内存增长上限（字节）。
+    pub memory_bytes: usize,
+}
+
+impl Default for WasmSettings {
+    fn default() -> Self {
+        Self {
+            fuel: super::defaults::DEFAULT_WASM_FUEL,
+            memory_bytes: super::defaults::DEFAULT_WASM_MEMORY_MB * 1024 * 1024,
         }
     }
 }

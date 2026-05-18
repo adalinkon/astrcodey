@@ -10,7 +10,7 @@ use astrcode_core::{
     extension::{ExtensionEvent, HookMode, SlashCommand},
     tool::{ExecutionMode, ToolDefinition, ToolOrigin},
 };
-use wasmtime::{Caller, Linker};
+use wasmtime::{Caller, Linker, ResourceLimiter};
 
 // ─── Discriminant helpers ───────────────────────────────────────────────
 
@@ -70,6 +70,26 @@ pub fn mode_from_discriminant(d: u8) -> Option<HookMode> {
     }
 }
 
+// ─── Tool execution mode discriminants ───────────────────────────────────
+
+pub const fn execution_mode_discriminant(mode: ExecutionMode) -> u8 {
+    match mode {
+        ExecutionMode::Sequential => 0,
+        ExecutionMode::Parallel => 1,
+    }
+}
+
+/// 把 guest 传过来的判别值转成 `ExecutionMode`。
+///
+/// 未知值默认回退到 `Sequential` ——这是更安全的选择：并发执行可能与共享文件
+/// 状态、subprocess 等冲突。明确想要 `Parallel` 的扩展必须传 `1`。
+pub fn execution_mode_from_discriminant(d: u8) -> ExecutionMode {
+    match d {
+        1 => ExecutionMode::Parallel,
+        _ => ExecutionMode::Sequential,
+    }
+}
+
 // ─── Guest response effect codes ─────────────────────────────────────────
 
 /// WASM guest `handle_event` / `handle_tool` 返回的 effect code。
@@ -89,6 +109,15 @@ pub const GUEST_EFFECT_REPLACE_MESSAGES: i8 = 6;
 /// `Provider` 返回 `AppendMessages`，content 为 messages JSON。
 pub const GUEST_EFFECT_APPEND_MESSAGES: i8 = 7;
 
+// ─── WASM resource limits ────────────────────────────────────────────────
+
+/// WASM guest 单次调用允许的最大 fuel（指令数）。仅作为 `HostState::new()` 的默认值，
+/// 生产路径通过 `with_limits()` 从配置系统注入。
+const DEFAULT_WASM_FUEL: u64 = 10_000_000;
+
+/// WASM guest 线性内存上限（64 MB）。
+const DEFAULT_WASM_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+
 // ─── Host State ─────────────────────────────────────────────────────────
 
 /// 宿主在 wasmtime Store 中携带的状态。
@@ -101,6 +130,10 @@ pub struct HostState {
     pub subscriptions: Vec<(ExtensionEvent, HookMode)>,
     pub response_ptr: u32,
     pub response_len: u32,
+    /// 单次 guest 调用的 fuel 预算。
+    pub fuel_budget: u64,
+    /// 线性内存增长上限。
+    pub memory_limit: usize,
 }
 
 impl HostState {
@@ -111,13 +144,42 @@ impl HostState {
             subscriptions: Vec::new(),
             response_ptr: 0,
             response_len: 0,
+            fuel_budget: DEFAULT_WASM_FUEL,
+            memory_limit: DEFAULT_WASM_MEMORY_BYTES,
         }
+    }
+
+    pub fn with_limits(mut self, fuel: u64, memory_bytes: usize) -> Self {
+        self.fuel_budget = fuel;
+        self.memory_limit = memory_bytes;
+        self
     }
 }
 
 impl Default for HostState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl ResourceLimiter for HostState {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> Result<bool, wasmtime::Error> {
+        Ok(desired <= self.memory_limit && desired >= current)
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> Result<bool, wasmtime::Error> {
+        const TABLE_ENTRY_LIMIT: usize = 1024;
+        Ok(desired <= TABLE_ENTRY_LIMIT && desired >= current)
     }
 }
 
@@ -141,6 +203,7 @@ fn read_memory_string(caller: &mut Caller<'_, HostState>, ptr: u32, len: u32) ->
 
 // ─── Host import functions ──────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn host_register_tool(
     mut caller: Caller<'_, HostState>,
     name_ptr: i32,
@@ -149,17 +212,22 @@ fn host_register_tool(
     desc_len: i32,
     schema_ptr: i32,
     schema_len: i32,
+    execution_mode_disc: i32,
 ) {
     let name = read_memory_string(&mut caller, name_ptr as u32, name_len as u32);
     let desc = read_memory_string(&mut caller, desc_ptr as u32, desc_len as u32);
     let schema = read_memory_string(&mut caller, schema_ptr as u32, schema_len as u32);
     let params: serde_json::Value = serde_json::from_str(&schema).unwrap_or(serde_json::json!({}));
+    let execution_mode = match execution_mode_disc {
+        1 => ExecutionMode::Parallel,
+        _ => ExecutionMode::Sequential,
+    };
     caller.data_mut().tools.push(ToolDefinition {
         name,
         description: desc,
         parameters: params,
         origin: ToolOrigin::Extension,
-        execution_mode: ExecutionMode::Sequential,
+        execution_mode,
     });
 }
 

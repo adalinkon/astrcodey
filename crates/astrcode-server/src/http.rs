@@ -956,6 +956,7 @@ fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDto> {
             child_session_id,
             agent_name,
             task,
+            tool_policy: _,
         } => vec![ConversationDeltaDto::AgentSessionUpdated {
             agent_session: HttpAgentSessionLinkDto {
                 child_session_id: child_session_id.to_string(),
