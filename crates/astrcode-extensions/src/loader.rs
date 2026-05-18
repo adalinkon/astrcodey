@@ -69,7 +69,10 @@ impl ExtensionLoader {
     /// 从指定目录加载所有扩展。
     ///
     /// 遍历目录中的每个子目录，查找包含 `extension.json` 清单文件的扩展。
-    async fn load_from_dir(dir: &Path, limits: &WasmLimits) -> (Vec<Arc<dyn Extension>>, Vec<String>) {
+    async fn load_from_dir(
+        dir: &Path,
+        limits: &WasmLimits,
+    ) -> (Vec<Arc<dyn Extension>>, Vec<String>) {
         let mut extensions = Vec::new();
         let mut errors = Vec::new();
 
@@ -119,7 +122,10 @@ impl ExtensionLoader {
     }
 
     /// 加载单个扩展：读取并验证清单，加载 WASM 模块。
-    async fn load_extension(ext_dir: &Path, limits: &WasmLimits) -> Result<Arc<dyn Extension>, String> {
+    async fn load_extension(
+        ext_dir: &Path,
+        limits: &WasmLimits,
+    ) -> Result<Arc<dyn Extension>, String> {
         let manifest_path = ext_dir.join("extension.json");
         let manifest_bytes = tokio::fs::read(&manifest_path)
             .await
@@ -129,9 +135,14 @@ impl ExtensionLoader {
         Self::validate_manifest(&manifest)?;
 
         let lib_path = ext_dir.join(&manifest.library);
-        crate::wasm_ext::WasmExtension::load(&lib_path, manifest.id.clone(), limits.fuel, limits.memory_bytes)
-            .map(|ext| ext as Arc<dyn Extension>)
-            .map_err(|e| format!("load wasm {}: {e}", lib_path.display()))
+        crate::wasm_ext::WasmExtension::load(
+            &lib_path,
+            manifest.id.clone(),
+            limits.fuel,
+            limits.memory_bytes,
+        )
+        .map(|ext| ext as Arc<dyn Extension>)
+        .map_err(|e| format!("load wasm {}: {e}", lib_path.display()))
     }
 
     /// 验证扩展清单的必填字段。

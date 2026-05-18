@@ -82,13 +82,15 @@ fn call_guest_blocking(
     let (ptr, len) = wasm_api::write_to_guest(&mut guard.store, &memory, &alloc_fn, request_bytes)
         .map_err(ExtensionError::Internal)?;
 
-    let status = func.call(&mut guard.store, (ptr as i32, len as i32)).map_err(|e| {
-        if guard.store.get_fuel().is_ok_and(|remaining| remaining == 0) {
-            ExtensionError::Timeout((fuel_budget / 1_000_000).max(1) * 1000)
-        } else {
-            ExtensionError::Internal(format!("wasm trap: {e}"))
-        }
-    })?;
+    let status = func
+        .call(&mut guard.store, (ptr as i32, len as i32))
+        .map_err(|e| {
+            if guard.store.get_fuel().is_ok_and(|remaining| remaining == 0) {
+                ExtensionError::Timeout((fuel_budget / 1_000_000).max(1) * 1000)
+            } else {
+                ExtensionError::Internal(format!("wasm trap: {e}"))
+            }
+        })?;
 
     let response = wasm_api::take_response(&guard.store, &memory);
     guard.store.data_mut().response_ptr = 0;
@@ -140,8 +142,8 @@ impl WasmExtension {
     ) -> Result<Arc<Self>, String> {
         let mut config = wasmtime::Config::new();
         config.consume_fuel(true);
-        let engine = wasmtime::Engine::new(&config)
-            .map_err(|e| format!("create wasm engine: {e}"))?;
+        let engine =
+            wasmtime::Engine::new(&config).map_err(|e| format!("create wasm engine: {e}"))?;
         let module = wasmtime::Module::from_file(&engine, path)
             .map_err(|e| format!("compile wasm module: {e}"))?;
 
@@ -175,7 +177,9 @@ impl WasmExtension {
 
         if let Ok(init_fn) = instance.get_typed_func::<(), ()>(&mut store, "extension_init") {
             let fuel_budget = store.data().fuel_budget;
-            store.set_fuel(fuel_budget).map_err(|e| format!("set_fuel: {e}"))?;
+            store
+                .set_fuel(fuel_budget)
+                .map_err(|e| format!("set_fuel: {e}"))?;
             init_fn
                 .call(&mut store, ())
                 .map_err(|e| format!("extension_init trap: {e}"))?;
