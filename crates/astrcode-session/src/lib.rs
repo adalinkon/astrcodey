@@ -10,7 +10,7 @@ pub mod payload;
 pub mod post_compact;
 pub mod session;
 pub mod session_runtime;
-pub mod session_runtime_capabilities;
+pub mod session_runtime_services;
 pub mod session_setup;
 pub(crate) mod tool_exec;
 pub(crate) mod tool_json_repair;
@@ -28,7 +28,7 @@ pub use payload::{
 };
 pub use session::{Session, SessionError};
 pub use session_runtime::SessionRuntimeState;
-pub use session_runtime_capabilities::SessionRuntimeServices;
+pub use session_runtime_services::SessionRuntimeServices;
 pub use turn_context::{AgentSignal, EventSink, TurnError};
 pub use turn_handle::TurnHandle;
 pub use turn_runner::{RunTurnResult, TurnOutput, TurnRunner, drive_agent, run_turn};

@@ -22,7 +22,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::{
     payload::{compact_boundary_payload, session_continued_from_compaction_payload},
     session_runtime::SessionRuntimeState,
-    session_runtime_capabilities::SessionRuntimeServices,
+    session_runtime_services::SessionRuntimeServices,
 };
 
 /// 会话句柄 — 带存储能力的会话操作入口。
