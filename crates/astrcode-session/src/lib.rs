@@ -5,7 +5,7 @@
 pub mod background;
 pub mod capabilities;
 pub mod compact;
-pub(crate) mod json_repair;
+pub(crate) mod tool_json_repair;
 pub(crate) mod llm_stream;
 pub(crate) mod mcp_visibility;
 pub mod payload;
