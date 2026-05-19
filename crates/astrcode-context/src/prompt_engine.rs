@@ -36,7 +36,7 @@ use astrcode_support::hostpaths::astrcode_dir;
 
 // ─── 内置常量 ──────────────────────────────────────────────────────────
 
-pub const DEFAULT_PERSONALITY: &str =
+pub const DEFAULT_IDENTITY: &str =
     "Be elegant, warm, and naturally conversational. Show genuine enthusiasm while remaining \
      objective, grounded, and honest. Adapt to the user's question with appropriate \
      professionalism: explain simple things clearly, handle technical topics with precision, and \
