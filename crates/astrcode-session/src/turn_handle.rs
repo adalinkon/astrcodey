@@ -4,7 +4,10 @@
 //! 维护 `active_turn` HashMap：handle 的所有权由调用方持有，析构即放弃。
 
 use astrcode_core::types::TurnId;
-use tokio::{sync::oneshot, task::JoinHandle};
+use tokio::{
+    sync::oneshot,
+    task::{AbortHandle, JoinHandle},
+};
 
 use crate::turn_runner::RunTurnResult;
 
@@ -34,6 +37,10 @@ impl TurnHandle {
 
     pub fn is_running(&self) -> bool {
         !self.join.is_finished()
+    }
+
+    pub fn abort_handle(&self) -> AbortHandle {
+        self.join.abort_handle()
     }
 
     /// 中止后台 task。已完成的 handle 上调用是 no-op。

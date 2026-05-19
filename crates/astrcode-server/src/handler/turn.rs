@@ -16,7 +16,7 @@ use astrcode_session::{
 };
 use tokio::{
     sync::{mpsc, oneshot},
-    task::JoinHandle,
+    task::{AbortHandle, JoinHandle},
 };
 
 use super::{CommandHandler, CommandMessage, HandlerError};
@@ -29,6 +29,7 @@ pub(in crate::handler) struct AgentTurnInput {
     pub text: String,
     pub actor_tx: mpsc::UnboundedSender<CommandMessage>,
     pub event_bus: Arc<ServerEventBus>,
+    pub inner_abort_handle: Arc<parking_lot::Mutex<Option<AbortHandle>>>,
 }
 
 /// 待处理的工具调用请求。
@@ -51,6 +52,7 @@ pub(in crate::handler) struct ActiveTurn {
     pub turn_id: TurnId,
     pub handle: JoinHandle<()>,
     pub session: Arc<Session>,
+    pub inner_abort_handle: Arc<parking_lot::Mutex<Option<AbortHandle>>>,
     /// Turn 完成时通知等待者的通道
     pub completion_tx: Option<oneshot::Sender<TurnCompletion>>,
 }
@@ -125,12 +127,14 @@ impl CommandHandler {
             .await;
 
         // 启动 Agent 后台任务（Session::submit 内部刷新 tool registry / system prompt）
+        let inner_abort_handle = Arc::new(parking_lot::Mutex::new(None));
         let handle = self.spawn_agent_turn(AgentTurnInput {
             turn_id: turn_id.clone(),
             session: Arc::clone(&session_arc),
             text: user_text,
             actor_tx: self.actor_tx.clone(),
             event_bus: Arc::clone(&self.event_bus),
+            inner_abort_handle: Arc::clone(&inner_abort_handle),
         });
         self.active_turns.insert(
             sid.clone(),
@@ -139,6 +143,7 @@ impl CommandHandler {
                 turn_id: turn_id.clone(),
                 handle,
                 session: session_arc,
+                inner_abort_handle,
                 completion_tx,
             },
         );
@@ -212,6 +217,9 @@ impl CommandHandler {
         // 中止后台任务并清理：从 active_turn 的 session runtime 上找到 bg_tasks，
         // cleanup_session 会 abort 该 session 内所有挂着的工具/子 agent task。
         if !active_turn.handle.is_finished() {
+            if let Some(handle) = active_turn.inner_abort_handle.lock().take() {
+                handle.abort();
+            }
             active_turn.handle.abort();
         }
         active_turn
@@ -398,6 +406,7 @@ async fn run_agent_turn_task(input: AgentTurnInput) {
         text,
         actor_tx,
         event_bus,
+        inner_abort_handle,
     } = input;
     let sid = session.id().clone();
 
@@ -438,6 +447,7 @@ async fn run_agent_turn_task(input: AgentTurnInput) {
             return;
         },
     };
+    *inner_abort_handle.lock() = Some(handle.abort_handle());
 
     let Some(result) = handle.wait().await else {
         // task panicked or was aborted before completion

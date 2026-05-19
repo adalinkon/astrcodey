@@ -84,6 +84,9 @@ impl LlmProvider for MockLlm {
 }
 
 struct PendingLlm;
+struct DelayedLlm {
+    started: Arc<tokio::sync::Notify>,
+}
 struct StreamErrorLlm;
 struct ReadThenEditAcrossTurnsLlm {
     call_count: AtomicUsize,
@@ -217,6 +220,35 @@ impl LlmProvider for PendingLlm {
         _tools: Vec<ToolDefinition>,
     ) -> Result<mpsc::UnboundedReceiver<LlmEvent>, LlmError> {
         future::pending().await
+    }
+
+    fn model_limits(&self) -> ModelLimits {
+        ModelLimits {
+            max_input_tokens: 1024,
+            max_output_tokens: 1024,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for DelayedLlm {
+    async fn generate(
+        &self,
+        _messages: Vec<LlmMessage>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<mpsc::UnboundedReceiver<LlmEvent>, LlmError> {
+        self.started.notify_waiters();
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = tx.send(LlmEvent::ContentDelta {
+                delta: "late output".into(),
+            });
+            let _ = tx.send(LlmEvent::Done {
+                finish_reason: "stop".into(),
+            });
+        });
+        Ok(rx)
     }
 
     fn model_limits(&self) -> ModelLimits {
@@ -942,6 +974,38 @@ async fn abort_stops_active_turn_and_records_completion() {
     handler.abort_session(sid).await.unwrap();
 
     assert_eq!(wait_for_turn_completed(&mut event_rx).await, "aborted");
+}
+
+#[tokio::test]
+async fn abort_stops_inner_turn_before_late_provider_events_are_persisted() {
+    let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(64);
+    let started = Arc::new(tokio::sync::Notify::new());
+    let runtime = test_runtime_with_llm(Arc::new(DelayedLlm {
+        started: Arc::clone(&started),
+    }));
+    let handler =
+        CommandHandler::spawn_actor(Arc::clone(&runtime), test_event_bus(&runtime, event_tx));
+
+    let sid = handler.create_session(".".into()).await.unwrap();
+    handler
+        .submit_input_for_session(sid.clone(), "start then abort".into())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), started.notified())
+        .await
+        .unwrap();
+
+    handler.abort_session(sid.clone()).await.unwrap();
+    assert_eq!(wait_for_turn_completed(&mut event_rx).await, "aborted");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let events = runtime.event_store.replay_events(&sid).await.unwrap();
+    assert!(!events.iter().any(|event| {
+        matches!(
+            &event.payload,
+            EventPayload::AssistantMessageCompleted { text, .. } if text.contains("late output")
+        )
+    }));
 }
 
 #[tokio::test]

@@ -363,7 +363,7 @@ impl SessionReadModel {
     ///
     /// 包含防御性归一化：
     /// 1. 将连续的 assistant+tool_calls 消息合并为一条
-    /// 2. 截断尾部未回应的 tool_calls，避免 DeepSeek 等严格 provider 拒绝请求
+    /// 2. 截断不完整的 tool 协议轮，避免 DeepSeek 等严格 provider 拒绝请求
     pub fn provider_messages(&self) -> Vec<LlmMessage> {
         let mut messages = Vec::with_capacity(
             self.context_messages
@@ -378,7 +378,7 @@ impl SessionReadModel {
             .filter(LlmMessage::has_provider_visible_content)
             .collect();
         normalize_tool_call_messages(&mut messages);
-        truncate_unanswered_tool_calls(&mut messages);
+        truncate_incomplete_tool_protocol(&mut messages);
         messages
     }
 
@@ -498,49 +498,74 @@ fn normalize_tool_call_messages(messages: &mut Vec<LlmMessage>) {
     }
 }
 
-/// 截断尾部未回应的 tool_calls。
+/// 截断不完整的 tool 协议轮。
 ///
-/// 如果消息序列以 `assistant(tool_calls)` 结尾，但后续没有对应的 `tool` 结果消息，
-/// 则回溯截断到这个不完整 tool-call 轮的起始位置（包括部分已到达的 tool 结果）。
-/// 这防止 DeepSeek 等严格校验 tool_calls 配对的 provider 拒绝请求。
-fn truncate_unanswered_tool_calls(messages: &mut Vec<LlmMessage>) {
+/// provider 侧要求每个 `tool` 消息都回应前一个 assistant 消息中的 `tool_calls`，
+/// 且这些 tool results 必须构成完整连续的一轮。遇到孤儿 tool result、部分结果或
+/// 中间插入其它消息时，裁到上一个协议完整边界。
+fn truncate_incomplete_tool_protocol(messages: &mut Vec<LlmMessage>) {
     use crate::llm::{LlmContent, LlmRole};
-    if messages.is_empty() {
-        return;
-    }
-    // 从尾部向前找第一个 assistant 带 tool_calls 的消息
-    let last_assistant_with_calls = messages.iter().rposition(|m| {
-        m.role == LlmRole::Assistant
-            && m.content
+    let mut pending: Option<(
+        usize,
+        std::collections::HashSet<String>,
+        std::collections::HashSet<String>,
+    )> = None;
+
+    for index in 0..messages.len() {
+        let message = &messages[index];
+        if message.role == LlmRole::Tool {
+            let tool_result_ids: Vec<String> = message
+                .content
                 .iter()
-                .any(|c| matches!(c, LlmContent::ToolCall { .. }))
-    });
-    let Some(cut_from) = last_assistant_with_calls else {
-        return;
-    };
-    // 收集这个 assistant 消息里的所有 tool_call_id
-    let call_ids: std::collections::HashSet<String> = messages[cut_from]
-        .content
-        .iter()
-        .filter_map(|c| match c {
-            LlmContent::ToolCall { call_id, .. } => Some(call_id.clone()),
-            _ => None,
-        })
-        .collect();
-    // 从 assistant 之后的 tool 消息中收集已回应的 tool_call_id
-    let answered: std::collections::HashSet<String> = messages[cut_from + 1..]
-        .iter()
-        .filter_map(|m| match m.content.first() {
-            Some(LlmContent::ToolResult { tool_call_id, .. }) => Some(tool_call_id.clone()),
-            _ => None,
-        })
-        .collect();
-    // 所有 tool_call 都有结果，无需截断
-    if call_ids.iter().all(|id| answered.contains(id)) {
-        return;
+                .filter_map(|content| match content {
+                    LlmContent::ToolResult { tool_call_id, .. } => Some(tool_call_id.clone()),
+                    _ => None,
+                })
+                .collect();
+            if tool_result_ids.is_empty() {
+                messages.truncate(index);
+                return;
+            }
+            let Some((_, call_ids, answered)) = pending.as_mut() else {
+                messages.truncate(index);
+                return;
+            };
+            for tool_call_id in tool_result_ids {
+                if !call_ids.contains(&tool_call_id) || answered.contains(&tool_call_id) {
+                    messages.truncate(index);
+                    return;
+                }
+                answered.insert(tool_call_id);
+            }
+            if call_ids.iter().all(|id| answered.contains(id)) {
+                pending = None;
+            }
+            continue;
+        }
+
+        if let Some((start, _, _)) = pending {
+            messages.truncate(start);
+            return;
+        }
+
+        if message.role == LlmRole::Assistant {
+            let call_ids: std::collections::HashSet<String> = message
+                .content
+                .iter()
+                .filter_map(|content| match content {
+                    LlmContent::ToolCall { call_id, .. } => Some(call_id.clone()),
+                    _ => None,
+                })
+                .collect();
+            if !call_ids.is_empty() {
+                pending = Some((index, call_ids, std::collections::HashSet::new()));
+            }
+        }
     }
-    // 截断：去掉这个不完整的 tool-call 轮及之后的所有消息
-    messages.truncate(cut_from);
+
+    if let Some((start, _, _)) = pending {
+        messages.truncate(start);
+    }
 }
 
 #[cfg(test)]
@@ -769,6 +794,55 @@ mod tests {
         let messages = model.provider_messages();
 
         // The partially answered round is truncated entirely
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, LlmRole::User);
+    }
+
+    #[test]
+    fn provider_messages_truncates_orphan_tool_result() {
+        let mut model = SessionReadModel::empty("session-test".into());
+        model.messages.push(LlmMessage::user("look"));
+        model
+            .messages
+            .push(LlmMessage::assistant("previous complete answer"));
+        model.messages.push(LlmMessage {
+            role: LlmRole::Tool,
+            content: vec![LlmContent::ToolResult {
+                tool_call_id: "call_orphan".into(),
+                content: "orphan result".into(),
+                is_error: false,
+            }],
+            name: Some("read".into()),
+            reasoning_content: None,
+        });
+
+        let messages = model.provider_messages();
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, LlmRole::User);
+        assert_eq!(messages[1].role, LlmRole::Assistant);
+    }
+
+    #[test]
+    fn provider_messages_truncates_non_tool_after_pending_tool_calls() {
+        let mut model = SessionReadModel::empty("session-test".into());
+        model.messages.push(LlmMessage::user("look"));
+        model.messages.push(LlmMessage {
+            role: LlmRole::Assistant,
+            content: vec![LlmContent::ToolCall {
+                call_id: "call_1".into(),
+                name: "read".into(),
+                arguments: serde_json::json!({"path": "a.rs"}),
+            }],
+            name: None,
+            reasoning_content: None,
+        });
+        model
+            .messages
+            .push(LlmMessage::assistant("late text after aborted tool call"));
+
+        let messages = model.provider_messages();
+
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, LlmRole::User);
     }
