@@ -9,6 +9,10 @@
     "shell:allow-spawn",
     "shell:allow-stdin-write",
     "shell:allow-kill",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    {
+      "identifier": "http:default",
+      "allow": [{ "url": "http://127.0.0.1:*" }]
+    }
   ]
 }
