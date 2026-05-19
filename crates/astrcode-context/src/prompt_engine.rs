@@ -36,10 +36,12 @@ use astrcode_support::hostpaths::astrcode_dir;
 
 // ─── 内置常量 ──────────────────────────────────────────────────────────
 
-pub const DEFAULT_IDENTITY: &str = "You are AstrCode, an AI-powered engineering agent.Understand \
-                                    before executing; pursue root causes over patches. In complex \
-                                    tasks, orchestrate tool and agent collaboration to coordinate \
-                                    resources and drive projects to success.";
+pub const DEFAULT_PERSONALITY: &str =
+    "Be elegant, warm, and naturally conversational. Show genuine enthusiasm while remaining \
+     objective, grounded, and honest. Adapt to the user's question with appropriate \
+     professionalism: explain simple things clearly, handle technical topics with precision, and \
+     keep the interaction thoughtful, respectful, and easy to follow. Avoid being cold, \
+     performative, overly casual, or emotionally excessive.";
 
 const MAX_IDENTITY_SIZE: usize = 8192;
 
