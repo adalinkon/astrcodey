@@ -104,9 +104,11 @@ impl CommandHandler {
         // attach 是幂等的；此处保证 session 已经接入 event_bus 的 broadcast 桥。
         // 测试或外部直连 event_store 创建的 session 在此首次接入。
         self.event_bus.attach(&session);
-        self.repair_stale_pending_tool_calls(&sid)
-            .await
-            .map_err(HandlerError::Other)?;
+        if let Err(e) = self.repair_stale_phase(&sid).await {
+            if !matches!(e, HandlerError::NoActiveTurn) {
+                return Err(e);
+            }
+        }
 
         let turn_id = new_turn_id();
         let session_arc = Arc::new(session);
@@ -165,33 +167,46 @@ impl CommandHandler {
     }
 
     /// 中止指定会话的活跃 Turn。
+    ///
+    /// 优先中止内存中的 `ActiveTurn`；若不存在（如进程重启后 phase 残留），
+    /// 则检测并修复过期的非 Idle phase。
     pub(in crate::handler) async fn abort_session(
         &mut self,
         session_id: &SessionId,
     ) -> Result<(), HandlerError> {
-        let Some(mut active_turn) = self.active_turns.remove(session_id) else {
-            self.send_error(40400, "No active turn");
-            return Err(HandlerError::NoActiveTurn);
-        };
+        // 快路径：内存中有活跃 Turn
+        if let Some(active_turn) = self.active_turns.remove(session_id) {
+            self.abort_active_turn_inner(active_turn).await;
+            return Ok(());
+        }
 
+        // 慢路径：无 ActiveTurn，尝试修复过期 phase
+        let result = self.repair_stale_phase(session_id).await;
+        if let Err(HandlerError::NoActiveTurn) = &result {
+            self.send_error(40400, "No active turn");
+        }
+        result
+    }
+
+    /// 执行活跃 Turn 的中止逻辑：扩展通知、任务清理、事件写入。
+    async fn abort_active_turn_inner(&self, mut active_turn: ActiveTurn) {
         // 从 session 读取 working_dir 和 model_id 构建 lifecycle context
-        let session_state = active_turn
-            .session
-            .read_model()
-            .await
-            .map_err(|e| HandlerError::Other(format!("read session for abort: {e}")))?;
-        let lifecycle_ctx = LifecycleContext {
-            session_id: active_turn.session_id.to_string(),
-            working_dir: session_state.working_dir,
-            model: astrcode_core::config::ModelSelection::simple(session_state.model_id),
-        };
-        if let Err(e) = self
-            .runtime
-            .extension_runner
-            .emit_lifecycle(ExtensionEvent::TurnAborted, lifecycle_ctx)
-            .await
-        {
-            tracing::warn!(error = %e, "TurnAborted extension dispatch failed");
+        if let Ok(session_state) = active_turn.session.read_model().await {
+            let lifecycle_ctx = LifecycleContext {
+                session_id: active_turn.session_id.to_string(),
+                working_dir: session_state.working_dir,
+                model: astrcode_core::config::ModelSelection::simple(session_state.model_id),
+            };
+            if let Err(e) = self
+                .runtime
+                .extension_runner
+                .emit_lifecycle(ExtensionEvent::TurnAborted, lifecycle_ctx)
+                .await
+            {
+                tracing::warn!(error = %e, "TurnAborted extension dispatch failed");
+            }
+        } else {
+            tracing::warn!(session_id = %active_turn.session_id, "read session for abort failed, skipping extension notification");
         }
 
         // 中止后台任务并清理：从 active_turn 的 session runtime 上找到 bg_tasks，
@@ -226,7 +241,6 @@ impl CommandHandler {
             .await;
 
         active_turn.resolve_completion(TurnCompletion::Aborted);
-        Ok(())
     }
 
     /// 中止当前活跃会话的 Turn。
@@ -249,12 +263,23 @@ impl CommandHandler {
             .is_some_and(|active_turn| &active_turn.turn_id == turn_id)
     }
 
-    /// 修复遗留的待处理工具调用状态（如服务重启后）。
-    pub(in crate::handler) async fn repair_stale_pending_tool_calls(
+    /// 修复进程重启后残留的非 Idle phase。
+    ///
+    /// 覆盖所有非 Idle/Error phase（Thinking / Streaming / CallingTool / Compacting 等）。
+    /// 当应用在操作中途被关闭时，内存中的 `ActiveTurn` 等瞬态丢失，但
+    /// 持久化的 session phase 仍为非 Idle。本方法写入 `TurnCompleted(interrupted)`
+    /// 将 phase 恢复为 Idle。
+    ///
+    /// 对于 `CallingTool` 阶段，还会先补写未完成工具调用的中断结果。
+    ///
+    /// 返回值：
+    /// - `Ok(())`：有活跃 Turn 跳过，或成功修复了过期 phase
+    /// - `Err(NoActiveTurn)`：session 已经是 Idle/Error，无需修复
+    /// - `Err(SessionNotFound)` / `Err(Other)`：存储层错误
+    pub(in crate::handler) async fn repair_stale_phase(
         &self,
         session_id: &SessionId,
-    ) -> Result<(), String> {
-        // 如有活跃 Turn，不处理（正常流程中处理）
+    ) -> Result<(), HandlerError> {
         if self.active_turns.contains_key(session_id) {
             return Ok(());
         }
@@ -264,17 +289,26 @@ impl CommandHandler {
             .session_manager
             .open(session_id.clone())
             .await
-            .map_err(|e| format!("open session {session_id}: {e}"))?;
+            .map_err(|e| {
+                HandlerError::SessionNotFound(format!("Session {session_id} not found: {e}"))
+            })?;
+        self.event_bus.attach(&session);
         let state = session
             .read_model()
             .await
-            .map_err(|e| format!("read session {session_id}: {e}"))?;
-        // 仅处理 CallingTool 阶段且有待处理调用的会话
-        if state.phase != Phase::CallingTool || state.pending_tool_calls.is_empty() {
-            return Ok(());
+            .map_err(|e| HandlerError::Other(format!("read session {session_id}: {e}")))?;
+
+        if matches!(state.phase, Phase::Idle | Phase::Error) {
+            return Err(HandlerError::NoActiveTurn);
         }
 
-        // 标记所有待处理调用为中断
+        tracing::info!(
+            session_id = %session_id,
+            phase = ?state.phase,
+            "repairing stale turn phase after process restart"
+        );
+
+        // CallingTool 阶段可能有未完成的工具调用，需要先补写中断结果
         for pending in pending_requested_tool_calls(&state) {
             session
                 .emit_durable(
@@ -286,20 +320,28 @@ impl CommandHandler {
                     },
                 )
                 .await
-                .map_err(|e| format!("emit ToolCallCompleted during repair: {e}"))?;
+                .map_err(|e| {
+                    HandlerError::Other(format!("emit ToolCallCompleted during stale repair: {e}"))
+                })?;
         }
-        // 标记 Turn 为中断完成
+
         session
             .emit_durable(
                 None,
                 agent_turn_completed_durable_payload("interrupted".into()),
             )
             .await
-            .map_err(|e| format!("emit TurnCompleted during repair: {e}"))?;
+            .map_err(|e| {
+                HandlerError::Other(format!("emit TurnCompleted during stale repair: {e}"))
+            })?;
         session
-            .emit_live(None, agent_turn_completed_live_payload("interrupted".into()))
+            .emit_live(
+                None,
+                agent_turn_completed_live_payload("interrupted".into()),
+            )
             .await;
         self.event_bus.sync_durable_events(session_id).await;
+
         Ok(())
     }
 }

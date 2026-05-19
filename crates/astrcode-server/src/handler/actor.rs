@@ -115,6 +115,19 @@ impl CommandHandle {
         rx.await
             .map_err(|_| HandlerError::Other("command actor dropped response".into()))?
     }
+
+    /// 修复进程重启后残留的过期 turn phase。
+    ///
+    /// 如果 session phase 为非 Idle 且无活跃 Turn，写入 `TurnCompleted(interrupted)`
+    /// 将 session 恢复为 Idle。session 已经是 Idle/Error 时静默返回 Ok。
+    pub async fn repair_stale_turn(&self, session_id: SessionId) -> Result<(), HandlerError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(CommandMessage::RepairStaleTurn { session_id, reply })
+            .map_err(|_| HandlerError::Other("command actor is unavailable".into()))?;
+        rx.await
+            .map_err(|_| HandlerError::Other("command actor dropped response".into()))?
+    }
 }
 
 /// Actor 内部消息类型，涵盖所有需要异步处理的操作。
@@ -163,6 +176,11 @@ pub(in crate::handler) enum CommandMessage {
         session_id: SessionId,
         text: String,
         reply: oneshot::Sender<Result<(TurnId, oneshot::Receiver<TurnCompletion>), HandlerError>>,
+    },
+    /// 修复进程重启后残留的过期 turn phase
+    RepairStaleTurn {
+        session_id: SessionId,
+        reply: oneshot::Sender<Result<(), HandlerError>>,
     },
 }
 
@@ -247,6 +265,9 @@ impl CommandHandler {
                 reply,
             } => {
                 let _ = reply.send(self.submit_input_with_completion(session_id, text).await);
+            },
+            CommandMessage::RepairStaleTurn { session_id, reply } => {
+                let _ = reply.send(self.repair_stale_phase(&session_id).await);
             },
         }
     }

@@ -97,8 +97,10 @@ fn tool_result_file_name_with_suffix(tool_name: &str, call_id: &str, suffix: usi
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use super::*;
 

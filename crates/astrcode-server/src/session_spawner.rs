@@ -15,8 +15,7 @@ use astrcode_core::{
 };
 use astrcode_extensions::runtime::{SpawnRequest, SpawnResult};
 use astrcode_session::{
-    EventSink, Session,
-    agent_turn_completed_durable_payload, agent_turn_completed_live_payload,
+    EventSink, Session, agent_turn_completed_durable_payload, agent_turn_completed_live_payload,
     agent_turn_started_durable_payloads, agent_turn_started_live_payload,
     background::complete_background_task,
 };

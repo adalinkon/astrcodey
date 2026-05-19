@@ -769,7 +769,7 @@ async fn stale_pending_tool_calls_are_repaired_on_explicit_repair() {
         actor_tx,
     );
 
-    handler.repair_stale_pending_tool_calls(&sid).await.unwrap();
+    handler.repair_stale_phase(&sid).await.unwrap();
 
     let state = runtime.event_store.session_read_model(&sid).await.unwrap();
     assert_eq!(state.phase, Phase::Idle);

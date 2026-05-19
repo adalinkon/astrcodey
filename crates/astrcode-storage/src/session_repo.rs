@@ -464,10 +464,7 @@ impl EventStore for FileSystemSessionRepository {
         let meta = self.get_or_open_meta(session_id).await?;
 
         let dir = meta.dir.join("tool-results");
-        Ok(write_tool_result_file(
-            &dir,
-            &artifact,
-        )?)
+        Ok(write_tool_result_file(&dir, &artifact)?)
     }
 
     async fn read_tool_result_artifact_by_path(

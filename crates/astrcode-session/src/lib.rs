@@ -25,8 +25,8 @@ pub(crate) mod turn_stages;
 pub use background::{BackgroundTaskManager, spawn_background_forwarder};
 pub use payload::{
     agent_turn_completed_durable_payload, agent_turn_completed_live_payload,
-    agent_turn_started_durable_payloads, agent_turn_started_live_payload,
-    compact_boundary_payload, session_continued_from_compaction_payload,
+    agent_turn_started_durable_payloads, agent_turn_started_live_payload, compact_boundary_payload,
+    session_continued_from_compaction_payload,
 };
 pub use session::{Session, SessionError};
 pub use session_runtime::SessionRuntimeState;

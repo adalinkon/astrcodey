@@ -490,7 +490,9 @@ fn truncate_unanswered_tool_calls(messages: &mut Vec<LlmMessage>) {
     // 从尾部向前找第一个 assistant 带 tool_calls 的消息
     let last_assistant_with_calls = messages.iter().rposition(|m| {
         m.role == LlmRole::Assistant
-            && m.content.iter().any(|c| matches!(c, LlmContent::ToolCall { .. }))
+            && m.content
+                .iter()
+                .any(|c| matches!(c, LlmContent::ToolCall { .. }))
     });
     let Some(cut_from) = last_assistant_with_calls else {
         return;

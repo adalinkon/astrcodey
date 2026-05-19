@@ -229,6 +229,13 @@ async fn conversation_snapshot(
     Path(session_id): Path<String>,
 ) -> Response {
     let session_id = SessionId::from(session_id);
+    // 主动修复进程重启后残留的过期 turn phase（如 CallingTool / Thinking），
+    // 使前端打开 session 时就能看到正确的 Idle 状态。
+    if let Err(e) = state.handler.repair_stale_turn(session_id.clone()).await {
+        if !matches!(e, HandlerError::NoActiveTurn) {
+            tracing::warn!(session_id = %session_id, error = %e, "stale turn repair failed in snapshot");
+        }
+    }
     match state.runtime.session_manager.read_model(&session_id).await {
         Ok(snapshot) => Json(conversation_to_dto(snapshot)).into_response(),
         Err(error) => error_response(StatusCode::NOT_FOUND, "session_not_found", error),
