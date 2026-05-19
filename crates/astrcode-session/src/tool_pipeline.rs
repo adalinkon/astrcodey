@@ -11,10 +11,6 @@ use astrcode_core::{
     tool::{ExecutionMode, ToolDefinition, ToolResult},
 };
 use astrcode_extensions::runner::ExtensionRunner;
-use astrcode_support::tool_results::{
-    MAX_TOOL_RESULTS_PER_MESSAGE_CHARS, TOOL_RESULT_PREVIEW_CHARS, persisted_tool_result_summary,
-    should_persist_tool_result, tool_result_inline_limit, tool_result_preview,
-};
 use astrcode_tools::registry::ToolRegistry;
 use tokio::{sync::mpsc, task::JoinSet};
 
@@ -28,7 +24,14 @@ use super::{
     },
     turn_context::{AgentSignal, SharedTurnContext, TurnError, send_event},
 };
-use crate::session::Session;
+use crate::{
+    session::Session,
+    tool_results::{
+        MAX_TOOL_RESULTS_PER_MESSAGE_CHARS, TOOL_RESULT_PREVIEW_CHARS,
+        persisted_tool_result_summary, should_persist_tool_result, tool_result_inline_limit,
+        tool_result_preview,
+    },
+};
 
 pub struct ToolPipeline {
     shared: SharedTurnContext,

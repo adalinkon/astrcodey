@@ -12,10 +12,12 @@ use astrcode_core::{
     },
     types::{Cursor, SessionId},
 };
-use astrcode_support::tool_results::{slice_tool_result, tool_result_file_name};
 use tokio::sync::Mutex;
 
-use crate::projection;
+use crate::{
+    projection,
+    tool_artifacts::{slice_tool_result, tool_result_file_name},
+};
 
 /// 纯内存 EventStore 实现。
 ///

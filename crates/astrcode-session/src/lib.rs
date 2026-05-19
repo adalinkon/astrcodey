@@ -15,6 +15,7 @@ pub mod session_setup;
 pub(crate) mod tool_exec;
 pub(crate) mod tool_json_repair;
 pub(crate) mod tool_pipeline;
+pub(crate) mod tool_results;
 pub(crate) mod tool_types;
 pub mod turn_context;
 pub mod turn_handle;

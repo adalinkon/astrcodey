@@ -17,15 +17,17 @@ use astrcode_core::{
     },
     types::{Cursor, SessionId, project_key_from_path, validate_session_id},
 };
-use astrcode_support::{
-    hostpaths,
-    tool_results::{slice_tool_result, write_tool_result_file},
-};
+use astrcode_support::hostpaths;
 use chrono::Utc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::{event_log::EventLog, projection, snapshot::SnapshotManager};
+use crate::{
+    event_log::EventLog,
+    projection,
+    snapshot::SnapshotManager,
+    tool_artifacts::{slice_tool_result, write_tool_result_file},
+};
 
 /// 基于文件系统的会话仓库。
 ///
@@ -465,7 +467,6 @@ impl EventStore for FileSystemSessionRepository {
         Ok(write_tool_result_file(
             &dir,
             &artifact,
-            session_id.as_str(),
         )?)
     }
 

@@ -10,3 +10,4 @@ pub mod lock;
 mod projection;
 pub mod session_repo;
 pub mod snapshot;
+mod tool_artifacts;
