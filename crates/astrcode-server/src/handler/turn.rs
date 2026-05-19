@@ -11,7 +11,8 @@ use astrcode_core::{
     types::*,
 };
 use astrcode_session::{
-    Session, agent_turn_completed_payloads, agent_turn_failed_payloads, agent_turn_started_payloads,
+    Session, agent_turn_completed_durable_payload, agent_turn_completed_live_payload,
+    agent_turn_started_durable_payloads, agent_turn_started_live_payload,
 };
 use tokio::{
     sync::{mpsc, oneshot},
@@ -110,10 +111,16 @@ impl CommandHandler {
         let turn_id = new_turn_id();
         let session_arc = Arc::new(session);
 
-        // 记录 Turn 开始事件
-        for payload in agent_turn_started_payloads(new_message_id(), visible_text) {
-            session_arc.emit(Some(&turn_id), payload).await;
+        // 记录 Turn 开始事件（durable）
+        for payload in agent_turn_started_durable_payloads(new_message_id(), visible_text) {
+            session_arc
+                .emit_durable(Some(&turn_id), payload)
+                .await
+                .map_err(|e| HandlerError::Other(format!("persist turn start event: {e}")))?;
         }
+        session_arc
+            .emit_live(Some(&turn_id), agent_turn_started_live_payload())
+            .await;
 
         // 启动 Agent 后台任务（Session::submit 内部刷新 tool registry / system prompt）
         let handle = self.spawn_agent_turn(AgentTurnInput {
@@ -200,12 +207,20 @@ impl CommandHandler {
             .cleanup_session(&active_turn.session_id);
 
         // 记录中止完成事件
-        for payload in agent_turn_completed_payloads("aborted".into()) {
-            active_turn
-                .session
-                .emit(Some(&active_turn.turn_id), payload)
-                .await;
-        }
+        let _ = active_turn
+            .session
+            .emit_durable(
+                Some(&active_turn.turn_id),
+                agent_turn_completed_durable_payload("aborted".into()),
+            )
+            .await;
+        active_turn
+            .session
+            .emit_live(
+                Some(&active_turn.turn_id),
+                agent_turn_completed_live_payload("aborted".into()),
+            )
+            .await;
         self.event_bus
             .sync_durable_events(&active_turn.session_id)
             .await;
@@ -262,7 +277,7 @@ impl CommandHandler {
         // 标记所有待处理调用为中断
         for pending in pending_requested_tool_calls(&state) {
             session
-                .emit(
+                .emit_durable(
                     None,
                     EventPayload::ToolCallCompleted {
                         call_id: pending.call_id.clone().into(),
@@ -270,12 +285,20 @@ impl CommandHandler {
                         result: interrupted_tool_result(&pending.call_id),
                     },
                 )
-                .await;
+                .await
+                .map_err(|e| format!("emit ToolCallCompleted during repair: {e}"))?;
         }
         // 标记 Turn 为中断完成
-        for payload in agent_turn_completed_payloads("interrupted".into()) {
-            session.emit(None, payload).await;
-        }
+        session
+            .emit_durable(
+                None,
+                agent_turn_completed_durable_payload("interrupted".into()),
+            )
+            .await
+            .map_err(|e| format!("emit TurnCompleted during repair: {e}"))?;
+        session
+            .emit_live(None, agent_turn_completed_live_payload("interrupted".into()))
+            .await;
         self.event_bus.sync_durable_events(session_id).await;
         Ok(())
     }
@@ -340,9 +363,29 @@ async fn run_agent_turn_task(input: AgentTurnInput) {
     let handle = match session.submit(text, turn_id.clone(), event_bus_dyn).await {
         Ok(handle) => handle,
         Err(e) => {
-            for payload in agent_turn_failed_payloads(Some(e.to_string()), "error".into()) {
-                session.emit(Some(&turn_id), payload).await;
-            }
+            session
+                .emit_durable(
+                    Some(&turn_id),
+                    EventPayload::ErrorOccurred {
+                        code: -32603,
+                        message: e.to_string(),
+                        recoverable: false,
+                    },
+                )
+                .await
+                .ok();
+            let _ = session
+                .emit_durable(
+                    Some(&turn_id),
+                    agent_turn_completed_durable_payload("error".into()),
+                )
+                .await;
+            session
+                .emit_live(
+                    Some(&turn_id),
+                    agent_turn_completed_live_payload("error".into()),
+                )
+                .await;
             let _ = actor_tx.send(CommandMessage::AgentTurnCleanup {
                 session_id: sid,
                 turn_id,
@@ -366,9 +409,18 @@ async fn run_agent_turn_task(input: AgentTurnInput) {
 
     match result.output {
         Ok(output) => {
-            for payload in agent_turn_completed_payloads(output.finish_reason.clone()) {
-                session.emit(Some(&turn_id), payload).await;
-            }
+            let _ = session
+                .emit_durable(
+                    Some(&turn_id),
+                    agent_turn_completed_durable_payload(output.finish_reason.clone()),
+                )
+                .await;
+            session
+                .emit_live(
+                    Some(&turn_id),
+                    agent_turn_completed_live_payload(output.finish_reason.clone()),
+                )
+                .await;
             event_bus.sync_durable_events(&sid).await;
             let _ = actor_tx.send(CommandMessage::AgentTurnCleanup {
                 session_id: sid,
@@ -379,12 +431,31 @@ async fn run_agent_turn_task(input: AgentTurnInput) {
             });
         },
         Err(error) => {
-            for payload in agent_turn_failed_payloads(
-                (!result.emitted_error).then(|| error.to_string()),
-                "error".into(),
-            ) {
-                session.emit(Some(&turn_id), payload).await;
+            if !result.emitted_error {
+                session
+                    .emit_durable(
+                        Some(&turn_id),
+                        EventPayload::ErrorOccurred {
+                            code: -32603,
+                            message: error.to_string(),
+                            recoverable: false,
+                        },
+                    )
+                    .await
+                    .ok();
             }
+            let _ = session
+                .emit_durable(
+                    Some(&turn_id),
+                    agent_turn_completed_durable_payload("error".into()),
+                )
+                .await;
+            session
+                .emit_live(
+                    Some(&turn_id),
+                    agent_turn_completed_live_payload("error".into()),
+                )
+                .await;
             event_bus.sync_durable_events(&sid).await;
             let _ = actor_tx.send(CommandMessage::AgentTurnCleanup {
                 session_id: sid,

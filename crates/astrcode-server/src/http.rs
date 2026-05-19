@@ -1032,7 +1032,7 @@ fn completed_block_from_payload(event: &Event) -> Option<ConversationBlockDto> {
         } => {
             let metadata: serde_json::Value = serde_json::to_value(&result.metadata)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
-            let metadata = if metadata.as_object().map_or(false, |m| !m.is_empty()) {
+            let metadata = if metadata.as_object().is_some_and(|m| !m.is_empty()) {
                 Some(metadata)
             } else {
                 None

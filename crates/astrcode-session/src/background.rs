@@ -199,8 +199,10 @@ pub fn spawn_background_forwarder(
                 sink.on_event(&preview_a).await;
                 sink.on_event(&preview_b).await;
             }
-            session.emit(None, tool_call_event).await;
-            session.emit(None, bg_event).await;
+            if let Err(e) = session.emit_durable(None, tool_call_event).await {
+                tracing::error!(session_id = %session.id(), error = %e, "background forwarder: persist tool_call_completed failed");
+            }
+            session.emit_live(None, bg_event).await;
         }
     })
 }

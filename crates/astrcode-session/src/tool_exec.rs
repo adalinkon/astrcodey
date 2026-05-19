@@ -215,7 +215,9 @@ async fn execute_tool_call_blocking(
     drop(tool_ctx);
     if let Some((tool_tx, bridge)) = tool_event_bridge {
         drop(tool_tx);
-        let _ = bridge.await;
+        if let Err(e) = bridge.await {
+            tracing::error!(tool_name, call_id, panic = %e, "event bridge task panicked");
+        }
     }
 
     if result.is_error {
@@ -332,8 +334,15 @@ async fn execute_tool_call_with_background(
             }
         },
         Ok(Err(_)) => {
-            // done_tx dropped（task panicked before completion）
-            exec_handle.abort();
+            // done_tx dropped — task panicked or was cancelled
+            if let Err(join_err) = exec_handle.await {
+                tracing::error!(
+                    tool_name,
+                    call_id,
+                    panic = %join_err,
+                    "tool execution task panicked"
+                );
+            }
             (
                 call_index,
                 error_tool_result(

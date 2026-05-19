@@ -91,7 +91,11 @@ async fn dispatch_agent_event(
         let preview = Event::new(session.id().clone(), Some(turn_id.clone()), payload.clone());
         sink.on_event(&preview).await;
     }
-    session.emit(Some(turn_id), payload).await;
+    if payload.is_durable() {
+        session.emit_durable(Some(turn_id), payload).await.ok();
+    } else {
+        session.emit_live(Some(turn_id), payload).await;
+    }
 }
 
 /// AgentTurn — 一个临时的回合处理器。

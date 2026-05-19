@@ -134,21 +134,22 @@ impl Session {
         Ok(stored)
     }
 
-    /// 发射事件：durable 事件持久化后 fanout，live 事件直接 fanout。
-    pub async fn emit(&self, turn_id: Option<&TurnId>, payload: EventPayload) {
+    /// 发射只 fanout、不持久化的 live 事件。Infallible。
+    pub async fn emit_live(&self, turn_id: Option<&TurnId>, payload: EventPayload) {
         let event = Event::new(self.id.clone(), turn_id.cloned(), payload);
-        let event = if event.payload.is_durable() {
-            match self.store.append_event(event).await {
-                Ok(stored) => stored,
-                Err(e) => {
-                    tracing::error!(session_id = %self.id, error = %e, "failed to persist event via emit");
-                    return;
-                },
-            }
-        } else {
-            event
-        };
         self.runtime.fanout(event);
+    }
+
+    /// 持久化 durable 事件后 fanout。持久化失败返回 Err，调用方决定是否中止。
+    pub async fn emit_durable(
+        &self,
+        turn_id: Option<&TurnId>,
+        payload: EventPayload,
+    ) -> Result<Event, SessionError> {
+        let event = Event::new(self.id.clone(), turn_id.cloned(), payload);
+        let stored = self.store.append_event(event).await?;
+        self.runtime.fanout(stored.clone());
+        Ok(stored)
     }
 
     /// 发射 session 生命周期事件。
@@ -383,7 +384,7 @@ impl Session {
         }
 
         runtime.set_extra_system_prompt(resolved_extra.clone());
-        self.emit(
+        self.emit_durable(
             None,
             EventPayload::SystemPromptConfigured {
                 text,
@@ -391,7 +392,7 @@ impl Session {
                 extra_system_prompt: resolved_extra,
             },
         )
-        .await;
+        .await?;
         Ok(true)
     }
 

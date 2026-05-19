@@ -15,8 +15,10 @@ use astrcode_core::{
 };
 use astrcode_extensions::runtime::{SpawnRequest, SpawnResult};
 use astrcode_session::{
-    EventSink, Session, agent_turn_completed_payloads, agent_turn_failed_payloads,
-    agent_turn_started_payloads, background::complete_background_task,
+    EventSink, Session,
+    agent_turn_completed_durable_payload, agent_turn_completed_live_payload,
+    agent_turn_started_durable_payloads, agent_turn_started_live_payload,
+    background::complete_background_task,
 };
 use tokio::sync::mpsc;
 
@@ -173,15 +175,21 @@ impl ServerSessionSpawner {
         let child_turn_id = new_turn_id();
         let child_arc = Arc::new(child_session);
 
-        // 追加 TurnStarted + UserMessage 到子 session（通过 child.emit 写 store + fanout，
+        // 追加 TurnStarted + UserMessage 到子 session（通过 child.emit_durable 写 store + fanout，
         // ChildProgressSink 在后续 submit 路径里负责转发到父 progress）。
         let user_prompt_for_submit = request.user_prompt.clone();
-        for payload in agent_turn_started_payloads(new_message_id(), user_prompt) {
+        for payload in agent_turn_started_durable_payloads(new_message_id(), user_prompt) {
             // 这两条事件先于 submit 写入；progress 转发由 spawn_sync/async 内的 sink 接管。
             // 这里手动转发一次，避免 prepare 阶段的事件被父 progress 漏掉。
             progress.forward(&payload);
-            child_arc.emit(Some(&child_turn_id), payload).await;
+            child_arc
+                .emit_durable(Some(&child_turn_id), payload)
+                .await
+                .map_err(|e| format!("persist child turn start event: {e}"))?;
         }
+        child_arc
+            .emit_live(Some(&child_turn_id), agent_turn_started_live_payload())
+            .await;
         progress.emit(
             ToolOutputStream::Stdout,
             format!("child agent '{child_name}' started: {child_sid} using {model_id}\n"),
@@ -382,22 +390,18 @@ async fn finalize_child_turn(
     let parent_sid = parent_session.id().clone();
     match output {
         Ok(out) => {
-            for payload in agent_turn_completed_payloads(out.finish_reason.clone()) {
-                if let Err(e) = child_session
-                    .append_event(Event::new(
-                        child_sid.clone(),
-                        Some(child_turn_id.clone()),
-                        payload,
-                    ))
-                    .await
-                {
-                    tracing::error!(
-                        session_id = %child_sid,
-                        error = %e,
-                        "append child completion event failed",
-                    );
-                }
-            }
+            let _ = child_session
+                .emit_durable(
+                    Some(child_turn_id),
+                    agent_turn_completed_durable_payload(out.finish_reason.clone()),
+                )
+                .await;
+            child_session
+                .emit_live(
+                    Some(child_turn_id),
+                    agent_turn_completed_live_payload(out.finish_reason.clone()),
+                )
+                .await;
             progress.emit(
                 ToolOutputStream::Stdout,
                 format!("child turn completed: {}\n", out.finish_reason),
@@ -417,24 +421,31 @@ async fn finalize_child_turn(
             Ok(out.text.clone())
         },
         Err(e) => {
-            for payload in
-                agent_turn_failed_payloads((!emitted_error).then(|| e.to_string()), "error".into())
-            {
-                if let Err(append_err) = child_session
-                    .append_event(Event::new(
-                        child_sid.clone(),
-                        Some(child_turn_id.clone()),
-                        payload,
-                    ))
+            if !emitted_error {
+                child_session
+                    .emit_durable(
+                        Some(child_turn_id),
+                        EventPayload::ErrorOccurred {
+                            code: -32603,
+                            message: e.to_string(),
+                            recoverable: false,
+                        },
+                    )
                     .await
-                {
-                    tracing::error!(
-                        session_id = %child_sid,
-                        error = %append_err,
-                        "append child failure event failed",
-                    );
-                }
+                    .ok();
             }
+            let _ = child_session
+                .emit_durable(
+                    Some(child_turn_id),
+                    agent_turn_completed_durable_payload("error".into()),
+                )
+                .await;
+            child_session
+                .emit_live(
+                    Some(child_turn_id),
+                    agent_turn_completed_live_payload("error".into()),
+                )
+                .await;
             progress.emit(
                 ToolOutputStream::Stderr,
                 format!("child agent error: {e}\n"),

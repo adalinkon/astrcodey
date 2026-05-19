@@ -152,7 +152,7 @@ impl CommandHandler {
         })?;
 
         // Manual compact has no agent loop, so emit CompactionStarted here.
-        session.emit(None, EventPayload::CompactionStarted).await;
+        session.emit_live(None, EventPayload::CompactionStarted).await;
 
         let fp = hex_fingerprint(system_prompt.as_bytes());
         let trigger = compact_trigger_name(CompactTrigger::ManualCommand).into();
