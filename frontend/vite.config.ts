@@ -36,7 +36,12 @@ export default defineConfig({
     hmr: devHost ? { protocol: 'ws', host: devHost, port: 5174 } : undefined,
     watch: { ignored: ['**/src-tauri/**'] },
     proxy: runInfo
-      ? { '/api': { target: `http://127.0.0.1:${runInfo.port}`, changeOrigin: true } }
+      ? {
+          '/api': {
+            target: `http://127.0.0.1:${runInfo.port}`,
+            changeOrigin: true,
+          },
+        }
       : undefined,
   },
 })
