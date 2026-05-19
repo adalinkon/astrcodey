@@ -1,4 +1,4 @@
-//! Compact continuation 事件载荷构造。
+//! Turn 生命周期与 compact continuation 事件载荷构造。
 
 use astrcode_context::compaction::CompactResult;
 use astrcode_core::{
