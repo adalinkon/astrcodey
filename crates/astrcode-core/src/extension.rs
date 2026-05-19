@@ -563,10 +563,7 @@ pub trait CommandHandler: Send + Sync {
 /// 动态工具发现处理器。
 #[async_trait::async_trait]
 pub trait ToolDiscoveryHandler: Send + Sync {
-    async fn discover(
-        &self,
-        working_dir: &str,
-    ) -> Vec<(ToolDefinition, std::sync::Arc<dyn ToolHandler>)>;
+    async fn discover(&self, working_dir: &str) -> Vec<DiscoveredTool>;
 }
 
 /// 动态命令发现处理器。
@@ -576,6 +573,14 @@ pub trait CommandDiscoveryHandler: Send + Sync {
         &self,
         working_dir: &str,
     ) -> Vec<(SlashCommand, std::sync::Arc<dyn CommandHandler>)>;
+}
+
+/// Tool contributed by dynamic discovery.
+#[derive(Clone)]
+pub struct DiscoveredTool {
+    pub definition: ToolDefinition,
+    pub handler: std::sync::Arc<dyn ToolHandler>,
+    pub prompt_metadata: Option<ToolPromptMetadata>,
 }
 
 // ─── Registrar ───────────────────────────────────────────────────

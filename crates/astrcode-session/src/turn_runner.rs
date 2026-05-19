@@ -19,11 +19,11 @@ use tokio::sync::mpsc;
 
 use crate::{
     compact::{CompactHookContext, collect_compact_instructions, dispatch_post_compact},
+    deferred_tools::append_deferred_tools_reminder,
     llm_stream::{
         StreamOutcome, assistant_message_with_thinking, consume_llm_stream,
         non_empty_reasoning_content, provider_visible_messages,
     },
-    mcp_visibility::append_deferred_mcp_tools_reminder,
     session::Session,
     tool_pipeline::ToolPipeline,
     tool_types::ExecuteToolCalls,
@@ -167,7 +167,7 @@ impl TurnRunner {
         user_text: &str,
         event_tx: Option<mpsc::UnboundedSender<AgentSignal>>,
     ) -> Result<TurnOutput, TurnError> {
-        let all_tools = self.tools.list_definitions();
+        let all_tools = self.tools.list_definitions_with_prompt_metadata();
         let extension_runner = Arc::clone(self.session.caps().extension_runner());
 
         let lifecycle_ctx = self.shared.lifecycle_ctx();
@@ -192,13 +192,9 @@ impl TurnRunner {
             let prepared = self
                 .prepare_stage(&extension_runner, &mut state, &event_tx)
                 .await?;
+            let visible_tools = state.visible_tools();
             let outcome = self
-                .llm_stage(
-                    &extension_runner,
-                    prepared,
-                    state.visible_tools(),
-                    &event_tx,
-                )
+                .llm_stage(&extension_runner, prepared, &visible_tools, &event_tx)
                 .await?;
 
             match outcome {
@@ -326,10 +322,10 @@ impl TurnRunner {
         }
 
         let mut context_messages = prepared.messages;
-        append_deferred_mcp_tools_reminder(
+        append_deferred_tools_reminder(
             &mut context_messages,
-            state.all_tools(),
-            state.active_mcp_tools(),
+            state.all_tool_snapshots(),
+            state.active_deferred_tools(),
         );
 
         let messages = self
@@ -347,13 +343,14 @@ impl TurnRunner {
         event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
     ) {
         send_event(event_tx.as_ref(), EventPayload::CompactionStarted);
+        let visible_tools = state.visible_tools();
         crate::post_compact::enrich_post_compact_context(
             compaction,
             self.shared.session_id.as_str(),
             &state.messages,
             &self.shared.working_dir,
             Some(&self.system_prompt),
-            state.visible_tools(),
+            &visible_tools,
             settings,
         )
         .await;
@@ -431,9 +428,10 @@ impl TurnRunner {
         self.dispatch_after_provider_response(extension_runner)
             .await?;
 
+        let visible_tools = state.visible_tools();
         let prepared_tool_calls = match self
             .tools
-            .prepare_tool_calls(tool_calls, state.visible_tools(), event_tx)
+            .prepare_tool_calls(tool_calls, &visible_tools, event_tx)
             .await
         {
             Ok(prepared_tool_calls) => prepared_tool_calls,
@@ -447,7 +445,6 @@ impl TurnRunner {
             reasoning_content,
         ));
 
-        let visible_tools = state.visible_tools().to_vec();
         let discovered_tools = match self
             .tools
             .execute_and_commit(ExecuteToolCalls {
@@ -464,7 +461,7 @@ impl TurnRunner {
                 return end_turn_with_error_typed(extension_runner, &self.shared, error).await;
             },
         };
-        state.activate_mcp_tools(discovered_tools);
+        state.activate_deferred_tools(discovered_tools);
         Ok(())
     }
 

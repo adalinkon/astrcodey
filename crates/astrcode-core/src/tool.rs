@@ -84,6 +84,13 @@ pub struct ToolPromptMetadata {
     /// 是否始终出现在 prompt 中。
     #[serde(default)]
     pub always_include: bool,
+    /// Deferred discovery group. Tools in the same group are hidden from the
+    /// provider until a matching discovery gate returns them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_discovery_group: Option<String>,
+    /// Discovery group unlocked by this tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_discovery_gate: Option<String>,
 }
 
 impl ToolPromptMetadata {
@@ -113,7 +120,19 @@ impl ToolPromptMetadata {
         self.always_include = val;
         self
     }
+
+    pub fn deferred_discovery_group(mut self, group: impl Into<String>) -> Self {
+        self.deferred_discovery_group = Some(group.into());
+        self
+    }
+
+    pub fn deferred_discovery_gate(mut self, group: impl Into<String>) -> Self {
+        self.deferred_discovery_gate = Some(group.into());
+        self
+    }
 }
+
+pub const DEFERRED_TOOLS_METADATA_KEY: &str = "deferredTools";
 
 /// 工具执行结果。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

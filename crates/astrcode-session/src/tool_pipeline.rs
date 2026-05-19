@@ -19,9 +19,9 @@ use astrcode_tools::registry::ToolRegistry;
 use tokio::{sync::mpsc, task::JoinSet};
 
 use super::{
-    tool_json_repair::parse_and_repair_json,
-    mcp_visibility::{TOOL_SEARCH_TOOL_NAME, discovered_mcp_tool_names, tool_is_visible},
+    deferred_tools::{discovered_deferred_tool_names, tool_is_visible},
     tool_exec::{ToolCallRuntimeContext, ToolRuntimeCapabilities, execute_tool_call},
+    tool_json_repair::parse_and_repair_json,
     tool_types::{
         CommitToolResults, ExecutableToolCall, ExecuteToolCalls, PendingCommittedToolResult,
         PendingToolCall, PreparedToolCall, PreparedToolOutcome, ToolExecutionStep,
@@ -55,8 +55,13 @@ impl ToolPipeline {
         }
     }
 
-    pub fn list_definitions(&self) -> Vec<ToolDefinition> {
-        self.tool_registry.list_definitions()
+    pub fn list_definitions_with_prompt_metadata(
+        &self,
+    ) -> Vec<(
+        ToolDefinition,
+        Option<astrcode_core::tool::ToolPromptMetadata>,
+    )> {
+        self.tool_registry.list_definitions_with_prompt_metadata()
     }
 
     /// 构建工具调用的运行时上下文。
@@ -462,9 +467,7 @@ impl ToolPipeline {
 
         let mut discovered_tools = Vec::new();
         for pending in pending_results {
-            if pending.tool_name == TOOL_SEARCH_TOOL_NAME {
-                discovered_tools.extend(discovered_mcp_tool_names(&pending.result));
-            }
+            discovered_tools.extend(discovered_deferred_tool_names(&pending.result));
             if input.event_tx.is_some() {
                 send_event(
                     input.event_tx.as_ref(),

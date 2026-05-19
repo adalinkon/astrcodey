@@ -11,11 +11,12 @@ use std::{
 
 use astrcode_core::{
     extension::{
-        Extension, ExtensionError, PromptBuildContext, PromptBuildHandler, PromptContributions,
-        Registrar, ToolDiscoveryHandler, ToolHandler,
+        DiscoveredTool, Extension, ExtensionError, PromptBuildContext, PromptBuildHandler,
+        PromptContributions, Registrar, ToolDiscoveryHandler, ToolHandler,
     },
     tool::{
-        ExecutionMode, ToolDefinition, ToolExecutionContext, ToolOrigin, ToolResult, tool_metadata,
+        DEFERRED_TOOLS_METADATA_KEY, ExecutionMode, ToolDefinition, ToolExecutionContext,
+        ToolOrigin, ToolPromptMetadata, ToolResult, tool_metadata,
     },
 };
 use serde_json::{Value, json};
@@ -36,6 +37,7 @@ mod search;
 
 const EXTENSION_ID: &str = "astrcode-mcp";
 const TOOL_SEARCH_TOOL_NAME: &str = "tool_search_tool";
+const MCP_DEFERRED_GROUP: &str = "mcp";
 
 pub fn extension() -> Arc<dyn Extension> {
     Arc::new(McpExtension)
@@ -108,7 +110,7 @@ struct McpToolDiscovery {
 
 #[async_trait::async_trait]
 impl ToolDiscoveryHandler for McpToolDiscovery {
-    async fn discover(&self, working_dir: &str) -> Vec<(ToolDefinition, Arc<dyn ToolHandler>)> {
+    async fn discover(&self, working_dir: &str) -> Vec<DiscoveredTool> {
         let discovered = discover_mcp_tools(working_dir).await;
         warn_diagnostics(&discovered.diagnostics);
         if discovered.tools.is_empty() {
@@ -143,15 +145,17 @@ impl ToolDiscoveryHandler for McpToolDiscovery {
         let handler = Arc::new(McpToolHandler {
             shared: self.shared.clone(),
         });
-        let mut result = vec![(
-            tool_search_tool_definition(),
-            handler.clone() as Arc<dyn ToolHandler>,
-        )];
+        let mut result = vec![DiscoveredTool {
+            definition: tool_search_tool_definition(),
+            handler: handler.clone() as Arc<dyn ToolHandler>,
+            prompt_metadata: Some(tool_search_metadata()),
+        }];
         for candidate in discovered.tools {
-            result.push((
-                candidate.definition,
-                handler.clone() as Arc<dyn ToolHandler>,
-            ));
+            result.push(DiscoveredTool {
+                definition: candidate.definition,
+                handler: handler.clone() as Arc<dyn ToolHandler>,
+                prompt_metadata: Some(mcp_concrete_tool_metadata()),
+            });
         }
         result
     }
@@ -237,7 +241,17 @@ impl McpToolHandler {
         warn_diagnostics(&diagnostics);
         let output = search_mcp_tools(&candidates, args);
         let mut metadata = BTreeMap::new();
-        metadata.insert("toolSearch".into(), search::output_metadata(&output));
+        metadata.insert(
+            DEFERRED_TOOLS_METADATA_KEY.into(),
+            json!({
+                "group": MCP_DEFERRED_GROUP,
+                "matches": output
+                    .matches
+                    .iter()
+                    .map(|candidate| candidate.definition.name.clone())
+                    .collect::<Vec<_>>(),
+            }),
+        );
         if !diagnostics.is_empty() {
             metadata.insert("diagnostics".into(), json!(diagnostics));
         }
@@ -267,19 +281,25 @@ impl PromptBuildHandler for McpPromptBuildHandler {
 fn mcp_tool_metadata() -> std::collections::HashMap<String, astrcode_core::tool::ToolPromptMetadata>
 {
     let mut map = std::collections::HashMap::new();
-    map.insert(
-        TOOL_SEARCH_TOOL_NAME.to_string(),
-        astrcode_core::tool::ToolPromptMetadata::new(
-            "Builtin tools do not need discovery. Use `tool_search_tool` only when builtin tools \
-             are not enough and you need the schema of an external MCP tool.",
-        )
-        .caveat(
-            "After `tool_search_tool` returns candidate tools and schemas, call the matching \
-             concrete `mcp__...` tool directly.",
-        )
-        .prompt_tag("discovery"),
-    );
+    map.insert(TOOL_SEARCH_TOOL_NAME.to_string(), tool_search_metadata());
     map
+}
+
+fn tool_search_metadata() -> ToolPromptMetadata {
+    ToolPromptMetadata::new(
+        "Builtin tools do not need discovery. Use `tool_search_tool` only when builtin tools are \
+         not enough and you need the schema of an external MCP tool.",
+    )
+    .caveat(
+        "After `tool_search_tool` returns candidate tools and schemas, call the matching concrete \
+         `mcp__...` tool directly.",
+    )
+    .prompt_tag("discovery")
+    .deferred_discovery_gate(MCP_DEFERRED_GROUP)
+}
+
+fn mcp_concrete_tool_metadata() -> ToolPromptMetadata {
+    ToolPromptMetadata::default().deferred_discovery_group(MCP_DEFERRED_GROUP)
 }
 
 // ─── Discovery helpers ──────────────────────────────────────────────────

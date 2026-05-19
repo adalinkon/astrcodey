@@ -1,5 +1,5 @@
 use astrcode_core::tool::ToolDefinition;
-use serde_json::{Value, json};
+use serde_json::json;
 
 const DEFAULT_MAX_RESULTS: usize = 5;
 const MAX_RESULTS_LIMIT: usize = 50;
@@ -67,14 +67,6 @@ pub(crate) fn render_search_output(output: &ToolSearchOutput) -> String {
     }
     rendered.push_str("\n</functions>");
     rendered
-}
-
-pub(crate) fn output_metadata(output: &ToolSearchOutput) -> Value {
-    json!({
-        "query": output.query,
-        "totalMcpTools": output.total_mcp_tools,
-        "matches": output.matches.iter().map(candidate_json).collect::<Vec<_>>(),
-    })
 }
 
 fn select_tools(
@@ -230,16 +222,6 @@ fn function_json(candidate: &SearchCandidate) -> String {
         "parameters": candidate.definition.parameters,
     })
     .to_string()
-}
-
-fn candidate_json(candidate: &SearchCandidate) -> Value {
-    json!({
-        "name": candidate.definition.name,
-        "server": candidate.server,
-        "tool": candidate.tool,
-        "description": candidate.definition.description,
-        "parameters": candidate.definition.parameters,
-    })
 }
 
 fn default_max_results() -> usize {

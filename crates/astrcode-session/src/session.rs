@@ -20,9 +20,9 @@ use astrcode_core::{
 use tokio::sync::{broadcast, mpsc};
 
 use crate::{
-    session_runtime_capabilities::SessionRuntimeServices,
     payload::{compact_boundary_payload, session_continued_from_compaction_payload},
     session_runtime::SessionRuntimeState,
+    session_runtime_capabilities::SessionRuntimeServices,
 };
 
 /// 会话句柄 — 带存储能力的会话操作入口。

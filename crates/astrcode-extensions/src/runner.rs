@@ -613,9 +613,11 @@ impl ExtensionRunner {
         let index = self.load_index();
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         for (def, handler) in &index.static_tools {
+            let prompt_metadata = index.tool_metadata.get(&def.name).cloned();
             tools.push(Arc::new(HandlerTool {
                 definition: def.clone(),
                 handler: Arc::clone(handler),
+                prompt_metadata,
                 working_dir: working_dir.to_string(),
                 spawner: Arc::clone(&self.spawner),
             }));
@@ -623,10 +625,11 @@ impl ExtensionRunner {
         for discovery in &index.tool_discoveries {
             match tokio::time::timeout(self.timeout, discovery.discover(working_dir)).await {
                 Ok(discovered) => {
-                    for (def, handler) in discovered {
+                    for discovered_tool in discovered {
                         tools.push(Arc::new(HandlerTool {
-                            definition: def,
-                            handler,
+                            definition: discovered_tool.definition,
+                            handler: discovered_tool.handler,
+                            prompt_metadata: discovered_tool.prompt_metadata,
                             working_dir: working_dir.to_string(),
                             spawner: Arc::clone(&self.spawner),
                         }));
@@ -729,6 +732,7 @@ where
 struct HandlerTool {
     definition: ToolDefinition,
     handler: Arc<dyn ToolHandler>,
+    prompt_metadata: Option<astrcode_core::tool::ToolPromptMetadata>,
     working_dir: String,
     spawner: Arc<StdRwLock<Option<Arc<dyn SessionSpawner>>>>,
 }
@@ -758,6 +762,10 @@ impl Tool for HandlerTool {
 
     fn execution_mode(&self) -> ExecutionMode {
         self.definition.execution_mode
+    }
+
+    fn prompt_metadata(&self) -> Option<astrcode_core::tool::ToolPromptMetadata> {
+        self.prompt_metadata.clone()
     }
 
     async fn execute(
