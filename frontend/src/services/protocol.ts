@@ -67,7 +67,7 @@ function requiredBoolean(source: JsonObject, name: string): boolean {
 
 function optionalObject(
   source: JsonObject,
-  name: string,
+  name: string
 ): Record<string, unknown> | undefined {
   const value = source[name]
   if (value == null || typeof value !== 'object' || Array.isArray(value))
