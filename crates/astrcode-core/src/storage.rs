@@ -91,6 +91,18 @@ pub trait EventStore: Send + Sync {
     /// 删除会话及其所有数据。
     async fn delete_session(&self, session_id: &SessionId) -> Result<(), StorageError>;
 
+    /// 回收子 session：从活跃列表移除。
+    ///
+    /// 默认行为会退化为删除。持久化实现应覆盖为保留数据的回收语义，例如移动到
+    /// `.recycled/` 目录。
+    async fn recycle_session(&self, session_id: &SessionId) -> Result<(), StorageError> {
+        tracing::warn!(
+            session_id = %session_id,
+            "EventStore::recycle_session fell back to delete_session; this storage implementation does not preserve recycled session data"
+        );
+        self.delete_session(session_id).await
+    }
+
     /// 写入 compact 前的 provider transcript snapshot。
     ///
     /// 返回值是可供用户或后续工具读取的快照路径；不支持快照的存储实现可以返回

@@ -39,6 +39,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
         request: SpawnRequest,
     ) -> Result<SpawnResult, String> {
         let wait_for_result = request.wait_for_result;
+        let ephemeral = request.ephemeral;
         let (child_session, parent_session, child_turn_id, user_prompt, progress) =
             self.prepare(parent_session_id, request).await?;
         if wait_for_result {
@@ -48,6 +49,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                 child_turn_id,
                 user_prompt,
                 progress,
+                ephemeral,
             )
             .await
         } else {
@@ -57,6 +59,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                 child_turn_id,
                 user_prompt,
                 progress,
+                ephemeral,
             )
             .await
         }
@@ -78,6 +81,15 @@ fn validate_tool_policy(
             Err("ChildToolPolicy::Allow 不能为空：子 agent 至少需要一个工具".into())
         },
         Some(other) => Ok(Some(other)),
+    }
+}
+
+async fn recycle_ephemeral_child(
+    session_manager: &crate::session_manager::SessionManager,
+    child_sid: &SessionId,
+) {
+    if let Err(e) = session_manager.recycle_session(child_sid).await {
+        tracing::warn!(session_id = %child_sid, "failed to recycle ephemeral child session: {e}");
     }
 }
 
@@ -213,16 +225,25 @@ impl ServerSessionSpawner {
         child_turn_id: astrcode_core::types::TurnId,
         user_prompt: String,
         progress: ProgressTx,
+        ephemeral: bool,
     ) -> Result<SpawnResult, String> {
         let child_sid = child_session.id().clone();
         let sink: Arc<dyn EventSink> = Arc::new(ChildProgressSink {
             progress: progress.clone(),
         });
 
-        let handle = child_session
+        let handle = match child_session
             .submit(user_prompt, child_turn_id.clone(), Some(sink))
             .await
-            .map_err(|e| format!("child submit: {e}"))?;
+        {
+            Ok(handle) => handle,
+            Err(e) => {
+                if ephemeral {
+                    recycle_ephemeral_child(&self.session_manager, &child_sid).await;
+                }
+                return Err(format!("child submit: {e}"));
+            },
+        };
 
         let result = handle.wait().await;
         let (output, emitted_error) = match result {
@@ -235,7 +256,7 @@ impl ServerSessionSpawner {
             ),
         };
 
-        let content = finalize_child_turn(
+        let content_result = finalize_child_turn(
             &child_session,
             &parent_session,
             &child_turn_id,
@@ -243,7 +264,14 @@ impl ServerSessionSpawner {
             emitted_error,
             &progress,
         )
-        .await?;
+        .await;
+
+        if ephemeral {
+            recycle_ephemeral_child(&self.session_manager, &child_sid).await;
+        }
+
+        let content = content_result?;
+
         Ok(SpawnResult {
             content,
             child_session_id: child_sid.into_string(),
@@ -260,6 +288,7 @@ impl ServerSessionSpawner {
         child_turn_id: astrcode_core::types::TurnId,
         user_prompt: String,
         progress: ProgressTx,
+        ephemeral: bool,
     ) -> Result<SpawnResult, String> {
         let child_sid = child_session.id().clone();
         let return_child_sid = child_sid.clone();
@@ -273,6 +302,8 @@ impl ServerSessionSpawner {
         let watcher_bg_tasks = Arc::clone(&parent_bg_tasks);
         let watcher_task_id = task_id.clone();
         let parent_sid = register_sid.clone();
+        let recycle_session_manager = Arc::clone(&self.session_manager);
+        let recycle_child_sid = child_sid.clone();
 
         let agent_handle = tokio::spawn(async move {
             let sink: Arc<dyn EventSink> = Arc::new(ChildProgressSink {
@@ -301,6 +332,9 @@ impl ServerSessionSpawner {
                         ))
                         .await;
                     complete_background_task(&watcher_bg_tasks, &watcher_task_id);
+                    if ephemeral {
+                        recycle_ephemeral_child(&recycle_session_manager, &recycle_child_sid).await;
+                    }
                     return;
                 },
             };
@@ -354,6 +388,10 @@ impl ServerSessionSpawner {
             }
 
             complete_background_task(&watcher_bg_tasks, &watcher_task_id);
+
+            if ephemeral {
+                recycle_ephemeral_child(&recycle_session_manager, &recycle_child_sid).await;
+            }
         });
 
         let dummy_watcher = tokio::spawn(async {});

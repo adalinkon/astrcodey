@@ -310,6 +310,9 @@ pub enum ExtensionToolOutcome {
         /// 用于让插件声明子 agent 应当能用哪些工具。详见 [`ChildToolPolicy`]。
         #[serde(default)]
         tool_policy: Option<ChildToolPolicy>,
+        /// 一次性子 session，完成后自动回收。
+        #[serde(default)]
+        ephemeral: bool,
     },
 }
 

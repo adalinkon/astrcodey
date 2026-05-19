@@ -169,6 +169,10 @@ impl FileSystemSessionRepository {
                     continue;
                 };
                 while let Ok(Some(plugin_entry)) = plugin_entries.next_entry().await {
+                    let plugin_name = plugin_entry.file_name();
+                    if plugin_name.to_string_lossy() == ".recycled" {
+                        continue;
+                    }
                     let plugin_dir = plugin_entry.path();
                     let candidate = plugin_dir.join(id.as_str());
                     if tokio::fs::metadata(&candidate)
@@ -474,6 +478,40 @@ impl EventStore for FileSystemSessionRepository {
         Ok(())
     }
 
+    async fn recycle_session(&self, session_id: &SessionId) -> Result<(), StorageError> {
+        validate_session_id(session_id.as_str())
+            .map_err(|e| StorageError::InvalidId(e.to_string()))?;
+
+        let dir = self
+            .find_session_dir(session_id)
+            .await
+            .ok_or_else(|| StorageError::NotFound(session_id.clone()))?;
+
+        // 从内存缓存移除
+        self.sessions
+            .write()
+            .await
+            .retain(|_, meta| !meta.dir.starts_with(&dir));
+
+        // 向上找 subagents/ 目录：子 session 结构为 subagents/{plugin}/{child_id}/
+        let subagents_dir = dir
+            .parent()
+            .and_then(|p| p.parent())
+            .filter(|p| p.file_name().is_some_and(|n| n == "subagents"));
+
+        if let Some(subagents) = subagents_dir {
+            let recycled = subagents.join(".recycled");
+            tokio::fs::create_dir_all(&recycled).await?;
+            let dest = recycled.join(dir.file_name().unwrap_or_default());
+            tokio::fs::rename(&dir, &dest).await?;
+        } else {
+            // 非子 session 或非标准目录结构，回退到删除
+            tokio::fs::remove_dir_all(&dir).await?;
+        }
+
+        Ok(())
+    }
+
     async fn write_compact_snapshot(
         &self,
         session_id: &SessionId,
@@ -604,6 +642,7 @@ impl FileSystemSessionRepository {
                     || name_str == "snapshots"
                     || name_str == "compact-snapshots"
                     || name_str == "tool-results"
+                    || name_str == ".recycled"
                 {
                     continue;
                 }
@@ -620,6 +659,10 @@ impl FileSystemSessionRepository {
                         continue;
                     };
                     while let Ok(Some(plugin_entry)) = plugin_entries.next_entry().await {
+                        let plugin_name = plugin_entry.file_name();
+                        if plugin_name.to_string_lossy() == ".recycled" {
+                            continue;
+                        }
                         if plugin_entry.file_type().await.is_ok_and(|t| t.is_dir()) {
                             self.collect_session_ids_recursive(&plugin_entry.path(), ids)
                                 .await;

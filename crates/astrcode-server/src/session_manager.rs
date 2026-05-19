@@ -180,6 +180,16 @@ impl SessionManager {
             .await
             .map_err(SessionManagerError::from)
     }
+
+    pub(crate) async fn recycle_session(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<(), SessionManagerError> {
+        self.event_store
+            .recycle_session(session_id)
+            .await
+            .map_err(SessionManagerError::from)
+    }
 }
 
 #[cfg(test)]
