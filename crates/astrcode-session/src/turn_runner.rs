@@ -23,16 +23,14 @@ use crate::{
         StreamOutcome, assistant_message_with_thinking, consume_llm_stream,
         non_empty_reasoning_content, provider_visible_messages,
     },
-    mcp_visibility::{
-        activate_discovered_mcp_tools, append_deferred_mcp_tools_reminder, clone_tools_by_index,
-        provider_visible_tool_indexes,
-    },
+    mcp_visibility::append_deferred_mcp_tools_reminder,
     session::Session,
     tool_pipeline::ToolPipeline,
     tool_types::ExecuteToolCalls,
     turn_context::{
         AgentSignal, EventSink, SharedTurnContext, TurnError, end_turn_with_error_typed, send_event,
     },
+    turn_stages::{PreparedProviderRequest, TurnState},
 };
 
 /// 运行 agent 的一次 process_prompt，通过 select! + drain 实时处理事件。
@@ -170,12 +168,7 @@ impl TurnRunner {
         event_tx: Option<mpsc::UnboundedSender<AgentSignal>>,
     ) -> Result<TurnOutput, TurnError> {
         let all_tools = self.tools.list_definitions();
-        let mut active_mcp_tools = std::collections::HashSet::new();
-        let mut tool_indexes = provider_visible_tool_indexes(&all_tools, &active_mcp_tools);
-        let mut tools = clone_tools_by_index(&all_tools, &tool_indexes);
-
         let extension_runner = Arc::clone(self.session.caps().extension_runner());
-        let context_assembler = Arc::clone(self.session.caps().context_assembler());
 
         let lifecycle_ctx = self.shared.lifecycle_ctx();
         let (turn_start_res, prompt_submit_res) = tokio::join!(
@@ -188,126 +181,25 @@ impl TurnRunner {
             return end_turn_with_error_typed(&extension_runner, &self.shared, e).await;
         }
 
-        // 用启动时缓存的初始历史构建 messages，避免在 process_prompt 入口又读一次 session。
-        let initial_history = std::mem::take(&mut self.initial_history);
-        let mut messages = Vec::with_capacity(initial_history.len() + 2);
-        if !self.system_prompt.trim().is_empty() {
-            messages.push(LlmMessage::system(&self.system_prompt));
-        }
-        messages.extend(
-            initial_history
-                .into_iter()
-                .filter(|message| message.role != LlmRole::System),
+        let mut state = TurnState::new(
+            std::mem::take(&mut self.initial_history),
+            &self.system_prompt,
+            user_text,
+            all_tools,
         );
-        messages.push(LlmMessage::user(user_text));
-
-        let mut final_text = String::new();
-        let mut all_tool_results: Vec<astrcode_core::tool::ToolResult> = Vec::new();
 
         loop {
-            // 动态刷新 system_prompt（扩展可能注册新 skill/tool）
-            if let Some(prompt) = self
-                .session
-                .current_system_prompt()
-                .await
-                .map_err(|e| TurnError::Internal(e.to_string()))?
-            {
-                if prompt != self.system_prompt {
-                    tracing::info!(session_id = %self.shared.session_id, "system_prompt changed mid-turn, refreshing");
-                    self.system_prompt = prompt;
-                    if let Some(msg) = messages.iter_mut().find(|m| m.role == LlmRole::System) {
-                        msg.content = vec![LlmContent::Text {
-                            text: self.system_prompt.clone(),
-                        }];
-                    }
-                }
-            }
-
-            // 每轮重新拉 llm 快照，跟随 ConfigManager 热更新
-            let llm = self.session.caps().llm();
-
-            // 收集插件 compact 指令
-            let custom_instructions = collect_compact_instructions(
-                &extension_runner,
-                CompactHookContext {
-                    session_id: self.shared.session_id.as_str(),
-                    working_dir: &self.shared.working_dir,
-                    model_id: &self.shared.model_id,
-                    trigger: CompactTrigger::AutoThreshold,
-                    message_count: messages.len(),
-                },
-            )
-            .await
-            .unwrap_or_default();
-
-            // 上下文准备：context assembler 内部处理阈值检查、LLM compact 和 deterministic
-            // fallback。
-            let (system_messages, visible_messages): (Vec<_>, Vec<_>) = messages
-                .iter()
-                .cloned()
-                .partition(|message| message.role == LlmRole::System);
-            let input = ContextPrepareInput {
-                messages: visible_messages,
-                system_prompt: Some(&self.system_prompt),
-                model_limits: llm.model_limits(),
-                custom_instructions,
-            };
-            let request_fn = crate::compact::make_compact_request_fn(Arc::clone(&llm));
-            let mut prepared = context_assembler
-                .prepare_messages_with_llm(input, request_fn)
-                .await;
-
-            if let Some(ref mut compaction) = prepared.compaction {
-                send_event(event_tx.as_ref(), EventPayload::CompactionStarted);
-                crate::post_compact::enrich_post_compact_context(
-                    compaction,
-                    self.shared.session_id.as_str(),
-                    &messages,
-                    &self.shared.working_dir,
-                    Some(&self.system_prompt),
-                    &tools,
-                    context_assembler.settings(),
-                )
-                .await;
-                let hook_ctx = CompactHookContext {
-                    session_id: self.shared.session_id.as_str(),
-                    working_dir: &self.shared.working_dir,
-                    model_id: &self.shared.model_id,
-                    trigger: CompactTrigger::AutoThreshold,
-                    message_count: messages.len(),
-                };
-                if let Err(e) = dispatch_post_compact(&extension_runner, hook_ctx, compaction).await
-                {
-                    tracing::warn!(error = %e, "PostCompact extension dispatch failed");
-                }
-            }
-
-            let mut context_messages = prepared.messages;
-            append_deferred_mcp_tools_reminder(
-                &mut context_messages,
-                &all_tools,
-                &active_mcp_tools,
-            );
-
-            let send_messages = self
-                .apply_before_provider_request_hook(
+            let prepared = self
+                .prepare_stage(&extension_runner, &mut state, &event_tx)
+                .await?;
+            let outcome = self
+                .llm_stage(
                     &extension_runner,
-                    system_messages,
-                    context_messages,
+                    prepared,
+                    state.visible_tools(),
+                    &event_tx,
                 )
                 .await?;
-
-            let rx = self
-                .start_provider_stream(&llm, &extension_runner, send_messages, &tools, &event_tx)
-                .await?;
-            let message_id = new_message_id();
-
-            let outcome = match consume_llm_stream(rx, &event_tx, message_id).await {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    return end_turn_with_error_typed(&extension_runner, &self.shared, error).await;
-                },
-            };
 
             match outcome {
                 StreamOutcome::Complete {
@@ -319,11 +211,11 @@ impl TurnRunner {
                 } => {
                     let reasoning_content = non_empty_reasoning_content(reasoning_content);
                     if !text.is_empty() || reasoning_content.is_some() {
-                        messages.push(assistant_message_with_thinking(
+                        state.messages.push(assistant_message_with_thinking(
                             &text,
                             reasoning_content.clone(),
                         ));
-                        final_text.push_str(&text);
+                        state.final_text.push_str(&text);
                         if message_started {
                             send_event(
                                 event_tx.as_ref(),
@@ -335,16 +227,14 @@ impl TurnRunner {
                             );
                         }
                     }
-                    self.dispatch_after_provider_response(&extension_runner)
-                        .await?;
-                    extension_runner
-                        .emit_lifecycle(ExtensionEvent::TurnEnd, lifecycle_ctx.clone())
-                        .await?;
-                    return Ok(TurnOutput {
-                        text: final_text,
-                        finish_reason,
-                        tool_results: all_tool_results,
-                    });
+                    return self
+                        .postprocess_complete_stage(
+                            &extension_runner,
+                            lifecycle_ctx.clone(),
+                            state,
+                            finish_reason,
+                        )
+                        .await;
                 },
                 StreamOutcome::ToolCalls {
                     text,
@@ -356,7 +246,7 @@ impl TurnRunner {
                     let reasoning_content = non_empty_reasoning_content(reasoning_content);
                     let visible_text = text.as_deref().unwrap_or_default();
                     if !visible_text.is_empty() {
-                        final_text.push_str(visible_text);
+                        state.final_text.push_str(visible_text);
                     }
                     if message_started {
                         send_event(
@@ -369,61 +259,214 @@ impl TurnRunner {
                         );
                     }
 
-                    self.dispatch_after_provider_response(&extension_runner)
-                        .await?;
-
-                    let prepared_tool_calls = match self
-                        .tools
-                        .prepare_tool_calls(&tool_calls, &tools, &event_tx)
-                        .await
-                    {
-                        Ok(prepared_tool_calls) => prepared_tool_calls,
-                        Err(error) => {
-                            return end_turn_with_error_typed(
-                                &extension_runner,
-                                &self.shared,
-                                error,
-                            )
-                            .await;
-                        },
-                    };
-                    messages.push(assistant_tool_call_message(
-                        &prepared_tool_calls,
+                    self.tools_stage(
+                        &extension_runner,
+                        &mut state,
+                        &tool_calls,
                         visible_text,
                         reasoning_content,
-                    ));
-                    let discovered_tools = match self
-                        .tools
-                        .execute_and_commit(ExecuteToolCalls {
-                            prepared: &prepared_tool_calls,
-                            tools: &tools,
-                            messages: &mut messages,
-                            all_tool_results: &mut all_tool_results,
-                            event_tx: &event_tx,
-                        })
-                        .await
-                    {
-                        Ok(discovered_tools) => discovered_tools,
-                        Err(error) => {
-                            return end_turn_with_error_typed(
-                                &extension_runner,
-                                &self.shared,
-                                error,
-                            )
-                            .await;
-                        },
-                    };
-                    if activate_discovered_mcp_tools(
-                        &mut active_mcp_tools,
-                        &all_tools,
-                        discovered_tools,
-                    ) {
-                        tool_indexes = provider_visible_tool_indexes(&all_tools, &active_mcp_tools);
-                        tools = clone_tools_by_index(&all_tools, &tool_indexes);
-                    }
+                        &event_tx,
+                    )
+                    .await?;
                 },
             }
         }
+    }
+
+    async fn prepare_stage(
+        &mut self,
+        extension_runner: &astrcode_extensions::runner::ExtensionRunner,
+        state: &mut TurnState,
+        event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
+    ) -> Result<PreparedProviderRequest, TurnError> {
+        self.refresh_system_prompt(state).await?;
+
+        // 每轮重新拉 llm 快照，跟随 ConfigManager 热更新。
+        let llm = self.session.caps().llm();
+        let context_assembler = Arc::clone(self.session.caps().context_assembler());
+
+        let custom_instructions = collect_compact_instructions(
+            extension_runner,
+            CompactHookContext {
+                session_id: self.shared.session_id.as_str(),
+                working_dir: &self.shared.working_dir,
+                model_id: &self.shared.model_id,
+                trigger: CompactTrigger::AutoThreshold,
+                message_count: state.messages.len(),
+            },
+        )
+        .await
+        .unwrap_or_default();
+
+        let (system_messages, visible_messages): (Vec<_>, Vec<_>) = state
+            .messages
+            .iter()
+            .cloned()
+            .partition(|message| message.role == LlmRole::System);
+        let input = ContextPrepareInput {
+            messages: visible_messages,
+            system_prompt: Some(&self.system_prompt),
+            model_limits: llm.model_limits(),
+            custom_instructions,
+        };
+        let request_fn = crate::compact::make_compact_request_fn(Arc::clone(&llm));
+        let mut prepared = context_assembler
+            .prepare_messages_with_llm(input, request_fn)
+            .await;
+
+        if let Some(ref mut compaction) = prepared.compaction {
+            send_event(event_tx.as_ref(), EventPayload::CompactionStarted);
+            crate::post_compact::enrich_post_compact_context(
+                compaction,
+                self.shared.session_id.as_str(),
+                &state.messages,
+                &self.shared.working_dir,
+                Some(&self.system_prompt),
+                state.visible_tools(),
+                context_assembler.settings(),
+            )
+            .await;
+            let hook_ctx = CompactHookContext {
+                session_id: self.shared.session_id.as_str(),
+                working_dir: &self.shared.working_dir,
+                model_id: &self.shared.model_id,
+                trigger: CompactTrigger::AutoThreshold,
+                message_count: state.messages.len(),
+            };
+            if let Err(e) = dispatch_post_compact(extension_runner, hook_ctx, compaction).await {
+                tracing::warn!(error = %e, "PostCompact extension dispatch failed");
+            }
+        }
+
+        let mut context_messages = prepared.messages;
+        append_deferred_mcp_tools_reminder(
+            &mut context_messages,
+            state.all_tools(),
+            state.active_mcp_tools(),
+        );
+
+        let messages = self
+            .apply_before_provider_request_hook(extension_runner, system_messages, context_messages)
+            .await?;
+        Ok(PreparedProviderRequest { llm, messages })
+    }
+
+    async fn refresh_system_prompt(&mut self, state: &mut TurnState) -> Result<(), TurnError> {
+        let Some(prompt) = self
+            .session
+            .current_system_prompt()
+            .await
+            .map_err(|e| TurnError::Internal(e.to_string()))?
+        else {
+            return Ok(());
+        };
+        if prompt == self.system_prompt {
+            return Ok(());
+        }
+
+        tracing::info!(session_id = %self.shared.session_id, "system_prompt changed mid-turn, refreshing");
+        self.system_prompt = prompt;
+        if let Some(msg) = state
+            .messages
+            .iter_mut()
+            .find(|message| message.role == LlmRole::System)
+        {
+            msg.content = vec![LlmContent::Text {
+                text: self.system_prompt.clone(),
+            }];
+        }
+        Ok(())
+    }
+
+    async fn llm_stage(
+        &self,
+        extension_runner: &astrcode_extensions::runner::ExtensionRunner,
+        prepared: PreparedProviderRequest,
+        tools: &[ToolDefinition],
+        event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
+    ) -> Result<StreamOutcome, TurnError> {
+        let rx = self
+            .start_provider_stream(
+                &prepared.llm,
+                extension_runner,
+                prepared.messages,
+                tools,
+                event_tx,
+            )
+            .await?;
+        let message_id = new_message_id();
+        match consume_llm_stream(rx, event_tx, message_id).await {
+            Ok(outcome) => Ok(outcome),
+            Err(error) => end_turn_with_error_typed(extension_runner, &self.shared, error).await,
+        }
+    }
+
+    async fn tools_stage(
+        &self,
+        extension_runner: &astrcode_extensions::runner::ExtensionRunner,
+        state: &mut TurnState,
+        tool_calls: &[crate::tool_types::PendingToolCall],
+        visible_text: &str,
+        reasoning_content: Option<String>,
+        event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
+    ) -> Result<(), TurnError> {
+        self.dispatch_after_provider_response(extension_runner)
+            .await?;
+
+        let prepared_tool_calls = match self
+            .tools
+            .prepare_tool_calls(tool_calls, state.visible_tools(), event_tx)
+            .await
+        {
+            Ok(prepared_tool_calls) => prepared_tool_calls,
+            Err(error) => {
+                return end_turn_with_error_typed(extension_runner, &self.shared, error).await;
+            },
+        };
+        state.messages.push(assistant_tool_call_message(
+            &prepared_tool_calls,
+            visible_text,
+            reasoning_content,
+        ));
+
+        let visible_tools = state.visible_tools().to_vec();
+        let discovered_tools = match self
+            .tools
+            .execute_and_commit(ExecuteToolCalls {
+                prepared: &prepared_tool_calls,
+                tools: &visible_tools,
+                messages: &mut state.messages,
+                all_tool_results: &mut state.tool_results,
+                event_tx,
+            })
+            .await
+        {
+            Ok(discovered_tools) => discovered_tools,
+            Err(error) => {
+                return end_turn_with_error_typed(extension_runner, &self.shared, error).await;
+            },
+        };
+        state.activate_mcp_tools(discovered_tools);
+        Ok(())
+    }
+
+    async fn postprocess_complete_stage(
+        &self,
+        extension_runner: &astrcode_extensions::runner::ExtensionRunner,
+        lifecycle_ctx: astrcode_core::extension::LifecycleContext,
+        state: TurnState,
+        finish_reason: String,
+    ) -> Result<TurnOutput, TurnError> {
+        self.dispatch_after_provider_response(extension_runner)
+            .await?;
+        extension_runner
+            .emit_lifecycle(ExtensionEvent::TurnEnd, lifecycle_ctx)
+            .await?;
+        Ok(TurnOutput {
+            text: state.final_text,
+            finish_reason,
+            tool_results: state.tool_results,
+        })
     }
 
     async fn apply_before_provider_request_hook(

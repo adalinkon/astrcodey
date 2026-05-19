@@ -184,6 +184,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrcode-bundled-extensions"
+version = "0.1.0"
+dependencies = [
+ "astrcode-extension-agent-tools",
+ "astrcode-extension-mcp",
+ "astrcode-extension-mode",
+ "astrcode-extension-skill",
+ "astrcode-extension-todo-tool",
+ "astrcode-extensions",
+]
+
+[[package]]
 name = "astrcode-cli"
 version = "0.1.0"
 dependencies = [
@@ -342,11 +354,6 @@ name = "astrcode-extensions"
 version = "0.1.0"
 dependencies = [
  "astrcode-core",
- "astrcode-extension-agent-tools",
- "astrcode-extension-mcp",
- "astrcode-extension-mode",
- "astrcode-extension-skill",
- "astrcode-extension-todo-tool",
  "astrcode-support",
  "async-trait",
  "dirs",
@@ -387,13 +394,10 @@ version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
  "astrcode-ai",
+ "astrcode-bundled-extensions",
  "astrcode-context",
  "astrcode-core",
- "astrcode-extension-agent-tools",
- "astrcode-extension-mcp",
- "astrcode-extension-mode",
  "astrcode-extension-skill",
- "astrcode-extension-todo-tool",
  "astrcode-extensions",
  "astrcode-log",
  "astrcode-protocol",

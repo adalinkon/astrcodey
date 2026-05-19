@@ -149,7 +149,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     )
     .await;
     let extension_runner = Arc::new(ExtensionRunner::new(Duration::from_secs(30)));
-    extension_runner.register_builtins().await;
+    astrcode_bundled_extensions::register_bundled_extensions(&extension_runner).await;
     for ext in load_result.extensions {
         extension_runner.register(ext).await;
     }

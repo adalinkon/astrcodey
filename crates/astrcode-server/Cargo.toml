@@ -27,11 +27,7 @@ astrcode-storage = { path = "../astrcode-storage" }
 astrcode-context = { path = "../astrcode-context" }
 astrcode-session = { path = "../astrcode-session" }
 astrcode-extensions = { path = "../astrcode-extensions" }
-astrcode-extension-agent-tools = { path = "../astrcode-extension-agent-tools", default-features = false }
-astrcode-extension-mcp = { path = "../astrcode-extension-mcp", default-features = false }
-astrcode-extension-skill = { path = "../astrcode-extension-skill", default-features = false }
-astrcode-extension-todo-tool = { path = "../astrcode-extension-todo-tool", default-features = false }
-astrcode-extension-mode = { path = "../astrcode-extension-mode", default-features = false }
+astrcode-bundled-extensions = { path = "../astrcode-bundled-extensions" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -53,6 +49,7 @@ agent-client-protocol = "0.11"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 tokio-util = { workspace = true }
+astrcode-extension-skill = { path = "../astrcode-extension-skill", default-features = false }
 # 测试时启用内存存储；Cargo 会把 testing feature 合并到正常依赖里，
 # 使 #[cfg(test)] 块和 tests/ 里的集成测试都能访问 in_memory 模块。
 astrcode-storage = { path = "../astrcode-storage", features = ["testing"] }
