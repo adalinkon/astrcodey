@@ -56,6 +56,7 @@ async fn main() {
         &auth_token[..4],
         &auth_token[auth_token.len() - 4..]
     );
+    astrcode_server::http::write_run_info(addr.port(), &auth_token);
     if let Err(error) = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_token.cancelled().await;

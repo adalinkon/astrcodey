@@ -1502,7 +1502,7 @@ pub(crate) fn compact_inline(text: &str, max_chars: usize) -> String {
 }
 
 /// 将运行时端口写入 `~/.astrcode/run.json`，供前端 dev server 发现后端地址。
-fn write_run_info(port: u16, auth_token: &str) {
+pub fn write_run_info(port: u16, auth_token: &str) {
     let dir = astrcode_support::hostpaths::astrcode_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
         tracing::warn!(path = %dir.display(), error = %e, "failed to create astrcode dir for run.json");
@@ -1520,7 +1520,7 @@ fn write_run_info(port: u16, auth_token: &str) {
 }
 
 /// 退出时清理 `run.json`。
-fn remove_run_info() {
+pub fn remove_run_info() {
     let path = astrcode_support::hostpaths::astrcode_dir().join("run.json");
     let _ = std::fs::remove_file(path);
 }
