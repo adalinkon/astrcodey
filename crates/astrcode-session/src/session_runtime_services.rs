@@ -1,7 +1,7 @@
 //! 跨 session 共享的运行时能力。
 //!
-//! `Capabilities` 聚合所有 session 都需要的基础设施引用：LLM、扩展、上下文组装器
-//! 以及当前生效的配置。Session 创建时持有 `Arc<Capabilities>`，运行 turn 时按需读取。
+//! `SessionRuntimeServices` 聚合所有 session 都需要的基础设施引用：LLM、扩展、上下文组装器
+//! 以及当前生效的配置。Session 创建时持有 `Arc<SessionRuntimeServices>`，运行 turn 时按需读取。
 //!
 //! `llm` 与 `effective_config` 支持热替换：server 端配置变更时通过 `swap_llm` /
 //! `update_effective` 原子更新，正在运行的 turn 在下一轮 LLM 调用前看到新值。
