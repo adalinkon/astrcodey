@@ -46,7 +46,8 @@ enum Commands {
     },
     /// 启动 ACP (Agent Client Protocol) stdio 服务器
     Acp,
-    /// 执行自动化评测
+    /// 执行自动化评测（仅 dev-mode feature 启用时可用）
+    #[cfg(feature = "dev-mode")]
     Eval {
         /// eval case 目录路径
         #[arg(long, default_value = "eval-tasks")]
@@ -140,6 +141,7 @@ async fn main() {
             println!("astrcode v{}", env!("CARGO_PKG_VERSION"));
             println!("protocol version: 1");
         },
+        #[cfg(feature = "dev-mode")]
         Some(Commands::Eval {
             cases,
             output,

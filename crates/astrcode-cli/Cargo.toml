@@ -9,13 +9,16 @@ default-run = "astrcode"
 name = "astrcode"
 path = "src/main.rs"
 
+[features]
+dev-mode = ["dep:astrcode-eval"]
+
 [dependencies]
 astrcode-server = { path = "../astrcode-server" }
 astrcode-client = { path = "../astrcode-client" }
 astrcode-core = { path = "../astrcode-core" }
 astrcode-protocol = { path = "../astrcode-protocol" }
 astrcode-support = { path = "../astrcode-support" }
-astrcode-eval = { path = "../astrcode-eval" }
+astrcode-eval = { path = "../astrcode-eval", optional = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
