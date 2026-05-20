@@ -197,15 +197,58 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME}
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          PREVIOUS=$(git tag --sort=-creatordate | grep -v "^${VERSION}$" | head -1)
+          PREVIOUS=$(git tag --sort=-creatordate | grep -v "^${VERSION}$" | grep '^v' | head -1)
           {
-            echo "## What's Changed"
+            echo "## ${VERSION}"
             echo ""
+            echo "Released: $(date -u +%Y-%m-%d)"
+            echo ""
+
             if [ -n "$PREVIOUS" ]; then
-              git log "${PREVIOUS}..HEAD" --pretty=format:"- %s (%h)" --no-merges
+              RANGE="${PREVIOUS}..HEAD"
             else
-              git log --pretty=format:"- %s (%h)" --no-merges -20
+              RANGE="HEAD"
             fi
+
+            # Features
+            FEATURES=$(git log "$RANGE" --pretty=format:"%s (%h)" --no-merges 2>/dev/null | grep -iE '^feat' || true)
+            if [ -n "$FEATURES" ]; then
+              echo "### ✨ Features"
+              echo ""
+              echo "$FEATURES" | sed 's/^/- /'
+              echo ""
+            fi
+
+            # Fixes
+            FIXES=$(git log "$RANGE" --pretty=format:"%s (%h)" --no-merges 2>/dev/null | grep -iE '^fix' || true)
+            if [ -n "$FIXES" ]; then
+              echo "### 🐛 Bug Fixes"
+              echo ""
+              echo "$FIXES" | sed 's/^/- /'
+              echo ""
+            fi
+
+            # Refactors
+            REFACTORS=$(git log "$RANGE" --pretty=format:"%s (%h)" --no-merges 2>/dev/null | grep -iE '^refactor' || true)
+            if [ -n "$REFACTORS" ]; then
+              echo "### 🔧 Refactors"
+              echo ""
+              echo "$REFACTORS" | sed 's/^/- /'
+              echo ""
+            fi
+
+            # Other changes
+            OTHER=$(git log "$RANGE" --pretty=format:"%s (%h)" --no-merges 2>/dev/null | grep -viE '^(feat|fix|refactor|chore|docs|ci|test|style|build)' || true)
+            if [ -n "$OTHER" ]; then
+              echo "### 📝 Other Changes"
+              echo ""
+              echo "$OTHER" | sed 's/^/- /'
+              echo ""
+            fi
+
+            echo "---"
+            echo ""
+            echo "**Install:** \`npm install -g astrcode@${VERSION#v}\`"
           } > release-notes.md
           cat release-notes.md
       - name: Create GitHub Release
