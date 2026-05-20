@@ -212,7 +212,15 @@ impl SessionManager {
         self.event_store
             .recycle_session(session_id)
             .await
-            .map_err(SessionManagerError::from)
+            .map_err(SessionManagerError::from)?;
+        // ephemeral 子会话回收后清理 runtime 占位，避免 HashMap 无限膨胀。
+        if let Some(runtime) = self.runtime_states.lock().remove(session_id) {
+            runtime
+                .background_tasks()
+                .lock()
+                .cleanup_session(session_id);
+        }
+        Ok(())
     }
 }
 
