@@ -2,12 +2,14 @@
 
 ## 当前进行中
 
+- [ ] BackgroundTaskOutput 只有 task_id 没有原始 call_id，当前以 agent message chunk 展示，协议上可见但不如 tool-call 原生关联完美。
+  ToolOutputDelta 在 ACP 里用 tool update 承载 delta，客户端如何累积展示取决于 ACP client 实现。
 
 ## 高优先级
 
-
-## 高优先级
-
+- [ ] 引入 fd、rg、sed、cat 等外部依赖
+  - [ ] 添加可选配置让 agent 系统优先使用终端指令而非内置工具，并抽离内置工具为插件并隐藏
+  - [ ] 工具执行策略配置（builtin / external / auto）
 
 ## 中优先级
 
@@ -21,18 +23,14 @@
 - [ ] Eval 框架
 - [ ] ACP 协议完善
 
-- [ ] 前端状态栏实时更新（StatusItemUpdate 通过 SSE 推送）
-
 ## 较低优先级
 
-- [ ] 引入 fd、rg、sed、cat 等外部依赖
-  - [ ] 添加可选配置让 agent 系统优先使用终端指令而非内置工具，并抽离内置工具为插件并隐藏
-  - [ ] 工具执行策略配置（builtin / external / auto）
-  
 - [ ] 通过 hook 实现审批插件安全流程，权限系统
   - [ ] 危险操作确认机制
   - [ ] 策略引擎集成点
   - [ ] 审计日志增强
+
+- [ ] AgentTeam插件
 
 ## 技术债务
 
@@ -45,7 +43,6 @@
   - [ ] API 文档自动生成
   - [ ] 扩展开发指南
 
-- [ ] AgentTeam
 
 ## 已完成功能
 
@@ -75,3 +72,5 @@
   - [x] 启动时间优化
   - [x] 大文件处理优化
   - [x] 内存占用优化
+- [x] recap功能
+- [x] 前端状态栏实时更新（StatusItemUpdate 通过 SSE 推送）
