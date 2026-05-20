@@ -90,7 +90,7 @@ impl TerminalSession {
     }
 
     /// Draw the bottom inline viewport. Handles resize + reflow.
-    pub fn draw_frame<F>(&mut self, render_fn: F) -> io::Result<()>
+    pub fn draw_frame_with_height<F>(&mut self, height: u16, render_fn: F) -> io::Result<()>
     where
         F: FnOnce(&mut crate::tui::custom_terminal::Frame<'_>),
     {
@@ -98,11 +98,9 @@ impl TerminalSession {
         let width_changed = screen_size.width != self.last_width;
 
         if width_changed {
-            // Width changed → need to reflow. Clear everything and rebuild.
             self.last_width = screen_size.width;
             self.reflow_history(screen_size)?;
         } else {
-            // Normal path: just handle viewport position adjustments.
             let pending = self.pending_viewport_area()?;
             if let Some(new_area) = pending {
                 self.terminal.set_viewport_area(new_area);
@@ -111,15 +109,21 @@ impl TerminalSession {
         }
 
         let _ = io::stdout().sync_update(|_| {
-            let needs_full_repaint = self
-                .terminal
-                .update_inline_viewport(INLINE_VIEWPORT_HEIGHT)?;
+            let needs_full_repaint = self.terminal.update_inline_viewport(height)?;
             if needs_full_repaint {
                 self.terminal.invalidate_viewport();
             }
             self.terminal.draw(render_fn)
         })?;
         Ok(())
+    }
+
+    /// Draw the bottom inline viewport. Handles resize + reflow.
+    pub fn draw_frame<F>(&mut self, render_fn: F) -> io::Result<()>
+    where
+        F: FnOnce(&mut crate::tui::custom_terminal::Frame<'_>),
+    {
+        self.draw_frame_with_height(INLINE_VIEWPORT_HEIGHT, render_fn)
     }
 
     /// Clear all visible history and re-insert from history_source at the new width.

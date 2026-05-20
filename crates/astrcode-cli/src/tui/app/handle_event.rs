@@ -33,8 +33,12 @@ pub fn apply(app: &mut App, notification: &ClientNotification) {
         ClientNotification::Error { message, .. } => {
             app.show_error(message);
         },
-        ClientNotification::ExtensionCommandList { commands } => {
-            apply_extension_command_list(app, commands);
+        ClientNotification::ExtensionCommandList {
+            commands,
+            keybindings,
+            status_items,
+        } => {
+            apply_extension_command_list(app, commands, keybindings, status_items);
         },
         ClientNotification::ExtensionCommandResult {
             command_name,
@@ -52,6 +56,13 @@ pub fn apply(app: &mut App, notification: &ClientNotification) {
                 command_name.as_str()
             };
             app.push_message(role, label.into(), content.clone(), false, None);
+        },
+        ClientNotification::StatusItemUpdate { id, text } => {
+            if text.is_empty() {
+                app.status_items.remove(id);
+            } else {
+                app.status_items.insert(id.clone(), text.clone());
+            }
         },
     }
 }
@@ -396,7 +407,12 @@ fn apply_session_list(app: &mut App, sessions: &[SessionListItem]) {
     app.push_message(MessageRole::System, "Sessions".into(), body, false, None);
 }
 
-fn apply_extension_command_list(app: &mut App, commands: &[ExtensionCommandInfo]) {
+fn apply_extension_command_list(
+    app: &mut App,
+    commands: &[ExtensionCommandInfo],
+    keybindings: &[astrcode_protocol::events::KeybindingInfoDto],
+    status_items: &[astrcode_protocol::events::StatusItemInfoDto],
+) {
     app.extension_commands = commands
         .iter()
         .map(|info| SlashCommandSpec {
@@ -406,6 +422,19 @@ fn apply_extension_command_list(app: &mut App, commands: &[ExtensionCommandInfo]
             needs_argument: info.needs_argument,
         })
         .collect();
+    // 注册插件快捷键
+    app.keybindings = keybindings
+        .iter()
+        .map(|kb| crate::tui::keybinding::RegisteredKeybinding {
+            key: kb.key.clone(),
+            command: kb.command.clone(),
+            arguments: kb.arguments.clone(),
+        })
+        .collect();
+    // 初始化状态栏项
+    for item in status_items {
+        app.status_items.insert(item.id.clone(), item.text.clone());
+    }
     app.status_text = format!("{} extension command(s) loaded", commands.len());
 }
 

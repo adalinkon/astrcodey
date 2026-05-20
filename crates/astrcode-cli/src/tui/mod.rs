@@ -18,6 +18,7 @@ pub(crate) mod custom_terminal;
 pub(crate) mod ext;
 pub(crate) mod frame;
 pub(crate) mod insert_history;
+pub(crate) mod keybinding;
 pub(crate) mod render;
 pub(crate) mod store;
 pub(crate) mod streaming;
@@ -135,7 +136,8 @@ pub async fn run() -> io::Result<()> {
             terminal.flush_scrollback(entries, &theme)?;
             // Redraw the bottom panel (inline viewport).
             let panel = build_panel(&app, &theme);
-            terminal.draw_frame(|frame| {
+            let panel_height = panel_total_height(&panel);
+            terminal.draw_frame_with_height(panel_height, |frame| {
                 render_panel(frame, &panel);
             })?;
         }
@@ -183,6 +185,10 @@ async fn handle_key(
         },
         KeyCode::Tab if app.show_slash_palette => {
             complete_slash_selection(app);
+        },
+        // Shift+Tab: 查询插件注册的快捷键绑定
+        KeyCode::BackTab => {
+            dispatch_keybinding("shift+tab", app, client).await?;
         },
         KeyCode::Backspace if key.modifiers.contains(KeyModifiers::ALT) => {
             app.composer.delete_previous_word();
@@ -430,11 +436,30 @@ async fn execute_slash_command(
     Ok(())
 }
 
+/// 通过插件注册的 keybinding 表分发快捷键 → 执行对应的扩展命令。
+async fn dispatch_keybinding(
+    key_id: &str,
+    app: &mut App,
+    client: &Arc<Client>,
+) -> io::Result<()> {
+    if let Some((command, arguments)) = keybinding::find_command_for_key(&app.keybindings, key_id) {
+        client
+            .send_command(&ClientCommand::ExecuteExtensionCommand {
+                command_name: command.to_string(),
+                arguments: arguments.to_string(),
+            })
+            .await
+            .map_err(io_error)?;
+    }
+    Ok(())
+}
+
 // ─── Rendering ────────────────────────────────────────────────────────────────
 
 /// Panel state built from App, then rendered into the Frame.
 struct Panel {
     composer_lines: Vec<ratatui::text::Line<'static>>,
+    slash_lines: Vec<ratatui::text::Line<'static>>,
     status_line: ratatui::text::Line<'static>,
     footer_line: ratatui::text::Line<'static>,
     cursor_col: u16,
@@ -478,6 +503,74 @@ fn build_panel(app: &App, theme: &Theme) -> Panel {
 
     let status_line = Line::from(Span::styled(format!("  {}", app.status_text), theme.dim));
 
+    // Slash palette: 输入 / 时显示匹配的命令列表（滑动窗口）
+    let slash_lines: Vec<Line<'static>> = if app.show_slash_palette {
+        let commands = slash::filtered(&app.slash_filter, &app.extension_commands);
+        let max_visible = 8usize;
+        let total = commands.len();
+        let selected = app.slash_selected.min(total.saturating_sub(1));
+
+        // 滑动窗口：保证选中项始终可见
+        let window_start = if total <= max_visible {
+            0
+        } else if selected < max_visible / 2 {
+            0
+        } else if selected >= total - max_visible / 2 {
+            total - max_visible
+        } else {
+            selected - max_visible / 2
+        };
+        let window_end = (window_start + max_visible).min(total);
+
+        let mut lines: Vec<Line<'static>> = Vec::new();
+
+        // 顶部溢出指示
+        if window_start > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("    ↑ {} more", window_start),
+                theme.dim,
+            )));
+        }
+
+        for i in window_start..window_end {
+            let cmd = &commands[i];
+            let marker = if i == selected { "▸" } else { " " };
+            let desc = if cmd.description.chars().count() > 40 {
+                let truncated: String = cmd.description.chars().take(39).collect();
+                format!("{truncated}…")
+            } else {
+                cmd.description.clone()
+            };
+            if i == selected {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {marker} /{:<16} ", cmd.name),
+                        theme.popup_selected,
+                    ),
+                    Span::styled(desc, theme.popup_selected),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {marker} /"), theme.dim),
+                    Span::styled(format!("{:<16} ", cmd.name), theme.body),
+                    Span::styled(desc, theme.dim),
+                ]));
+            }
+        }
+
+        // 底部溢出指示
+        if window_end < total {
+            lines.push(Line::from(Span::styled(
+                format!("    ↓ {} more", total - window_end),
+                theme.dim,
+            )));
+        }
+
+        lines
+    } else {
+        Vec::new()
+    };
+
     let session = app
         .active_session_id
         .as_deref()
@@ -498,18 +591,38 @@ fn build_panel(app: &App, theme: &Theme) -> Panel {
     } else {
         "Enter send · /help"
     };
-    let footer_line = Line::from(Span::styled(
-        format!("  {model} · {cwd} · {session}   {hints}"),
-        theme.footer,
-    ));
+    // 拼接插件注册的状态栏项（按 key 字母序，排除空值）
+    let plugin_status: String = app
+        .status_items
+        .iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(_, v)| v.as_str())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let footer_text = if plugin_status.is_empty() {
+        format!("  {model} · {cwd} · {session}   {hints}")
+    } else {
+        format!("  [{plugin_status}] {model} · {cwd} · {session}   {hints}")
+    };
+    let footer_line = Line::from(Span::styled(footer_text, theme.footer));
 
     Panel {
         composer_lines,
+        slash_lines,
         status_line,
         footer_line,
         cursor_col,
         cursor_row,
     }
+}
+
+/// 计算 panel 需要的总行数（composer + slash palette + status + footer）。
+fn panel_total_height(panel: &Panel) -> u16 {
+    let composer = panel.composer_lines.len().max(1) as u16;
+    let slash = panel.slash_lines.len() as u16;
+    let status = 1u16;
+    let footer = 1u16;
+    composer + slash + status + footer
 }
 
 fn render_panel(frame: &mut custom_terminal::Frame<'_>, panel: &Panel) {
@@ -524,19 +637,17 @@ fn render_panel(frame: &mut custom_terminal::Frame<'_>, panel: &Panel) {
         return;
     }
 
-    // Layout: [buffer(1), composer(N-2), status(1), footer(1)]
+    // Layout: [composer(N), slash_palette(?), status(1), footer(1)]
     let footer_height = 1u16;
     let status_height = 1u16;
-    let buffer_height = 1u16;
-    let composer_height = area
-        .height
-        .saturating_sub(footer_height + status_height + buffer_height);
+    let slash_height = panel.slash_lines.len() as u16;
+    let composer_height = panel.composer_lines.len().max(1) as u16;
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(buffer_height),
             Constraint::Length(composer_height),
+            Constraint::Length(slash_height),
             Constraint::Length(status_height),
             Constraint::Length(footer_height),
         ])
@@ -544,12 +655,18 @@ fn render_panel(frame: &mut custom_terminal::Frame<'_>, panel: &Panel) {
 
     // Composer
     let text = Text::from(panel.composer_lines.clone());
-    frame.render_widget(Paragraph::new(text), layout[1]);
+    frame.render_widget(Paragraph::new(text), layout[0]);
 
     // Cursor position within the composer area.
-    let cx = layout[1].x + panel.cursor_col.min(layout[1].width.saturating_sub(1));
-    let cy = layout[1].y + panel.cursor_row.min(layout[1].height.saturating_sub(1));
+    let cx = layout[0].x + panel.cursor_col.min(layout[0].width.saturating_sub(1));
+    let cy = layout[0].y + panel.cursor_row.min(layout[0].height.saturating_sub(1));
     frame.set_cursor_position((cx, cy));
+
+    // Slash palette
+    if !panel.slash_lines.is_empty() {
+        let slash_text = Text::from(panel.slash_lines.clone());
+        frame.render_widget(Paragraph::new(slash_text), layout[1]);
+    }
 
     // Status
     frame.render_widget(Paragraph::new(panel.status_line.clone()), layout[2]);

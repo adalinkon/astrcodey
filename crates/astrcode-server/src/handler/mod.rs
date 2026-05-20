@@ -161,10 +161,36 @@ impl CommandHandler {
                     },
                 };
                 let infos = self.command_infos_for_working_dir(&working_dir).await;
-                let _ = self
-                    .event_bus
-                    .broadcast_sender()
-                    .send(ClientNotification::ExtensionCommandList { commands: infos });
+                let keybindings: Vec<astrcode_protocol::events::KeybindingInfoDto> = self
+                    .runtime
+                    .extension_runner
+                    .collect_keybindings()
+                    .into_iter()
+                    .map(|kb| astrcode_protocol::events::KeybindingInfoDto {
+                        key: kb.key,
+                        command: kb.command,
+                        arguments: kb.arguments,
+                        description: kb.description,
+                    })
+                    .collect();
+                let status_items: Vec<astrcode_protocol::events::StatusItemInfoDto> = self
+                    .runtime
+                    .extension_runner
+                    .collect_status_items()
+                    .into_iter()
+                    .map(|item| astrcode_protocol::events::StatusItemInfoDto {
+                        id: item.id,
+                        text: item.text,
+                        priority: item.priority,
+                    })
+                    .collect();
+                let _ = self.event_bus.broadcast_sender().send(
+                    ClientNotification::ExtensionCommandList {
+                        commands: infos,
+                        keybindings,
+                        status_items,
+                    },
+                );
             },
 
             ClientCommand::ExecuteExtensionCommand {
