@@ -1,119 +1,201 @@
-//! TerminalSession: raw mode, CSI 2026, inline viewport, resize heuristic.
+//! Pi-style terminal: history goes straight to stdout (terminal owns scrollback + reflow),
+//! bottom panel is a fixed-height region redrawn each frame using ANSI escape sequences.
 //!
-//! Thin wrapper around the existing custom_terminal + insert_history infrastructure.
+//! Resize is handled entirely by the terminal emulator — we never touch scroll regions
+//! (DECSTBM) or insert_history_lines. On resize we just redraw the bottom panel.
 
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write};
 
 use crossterm::{
-    SynchronizedUpdate,
+    cursor::{Hide, MoveToColumn, MoveToRow, RestorePosition, SavePosition, Show},
     event::{DisableBracketedPaste, EnableBracketedPaste},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode},
+    execute, queue,
+    style::{Print, SetAttribute, SetForegroundColor},
+    terminal::{
+        self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+        enable_raw_mode,
+    },
 };
-use ratatui::{backend::CrosstermBackend, layout::Position};
+use ratatui::{
+    style::{Color, Style},
+    text::{Line, Span},
+};
 
 use crate::tui::{
-    custom_terminal::Terminal as CustomTerminal, insert_history::insert_history_lines,
     render::scrollback_entry_to_lines, store::transcript::ScrollbackEntry, theme::Theme,
 };
 
-const INLINE_VIEWPORT_HEIGHT: u16 = 4;
+/// Fixed height of the bottom panel (composer + footer).
+const BOTTOM_PANEL_HEIGHT: u16 = 4;
 
 pub struct TerminalSession {
-    pub terminal: CustomTerminal<CrosstermBackend<Stdout>>,
+    stdout: Stdout,
+    /// Current terminal size (columns, rows).
+    size: (u16, u16),
 }
 
 impl TerminalSession {
     pub fn enter() -> io::Result<Self> {
-        enable_raw_mode()?;
         let mut stdout = io::stdout();
+        enable_raw_mode()?;
         execute!(stdout, EnableBracketedPaste)?;
-
-        #[cfg(unix)]
-        let backend = CrosstermBackend::new(stdout);
-        #[cfg(not(unix))]
-        let mut backend = CrosstermBackend::new(stdout);
-
-        #[cfg(unix)]
-        let cursor_pos = match crate::tui::terminal_probe::cursor_position(
-            crate::tui::terminal_probe::DEFAULT_TIMEOUT,
-        ) {
-            Ok(Some(pos)) => pos,
-            _ => Position { x: 0, y: 0 },
-        };
-
-        #[cfg(not(unix))]
-        let cursor_pos = backend
-            .get_cursor_position()
-            .unwrap_or(Position { x: 0, y: 0 });
-
-        let terminal = CustomTerminal::with_options_and_cursor_position(backend, cursor_pos)?;
-        Ok(Self { terminal })
+        // Reserve space for the bottom panel by scrolling down.
+        let size = terminal::size()?;
+        // Move cursor to bottom of screen and print newlines to create
+        // the reserved area for our bottom panel.
+        execute!(stdout, MoveToRow(size.1.saturating_sub(1)))?;
+        for _ in 0..BOTTOM_PANEL_HEIGHT {
+            execute!(stdout, Print("\n"))?;
+        }
+        Ok(Self { stdout, size })
     }
 
     pub fn composer_width(&self) -> usize {
-        self.terminal.composer_width()
+        self.size.0.saturating_sub(4).max(1) as usize
     }
 
-    /// Flush scrollback entries into terminal native scrollback.
+    /// Write scrollback entries directly to stdout (terminal native scrollback).
+    /// The terminal emulator owns these lines and handles resize reflow.
     pub fn flush_scrollback(
         &mut self,
         entries: Vec<ScrollbackEntry>,
         theme: &Theme,
     ) -> io::Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let width = self.size.0;
+        // Save cursor, move to the line above the bottom panel, write history.
+        let history_row = self.size.1.saturating_sub(BOTTOM_PANEL_HEIGHT);
+        queue!(self.stdout, SavePosition)?;
+        queue!(self.stdout, MoveToRow(history_row), MoveToColumn(0))?;
+
         for entry in entries {
-            let width = self.terminal.viewport_area.width;
             let lines = scrollback_entry_to_lines(&entry, width, theme);
-            insert_history_lines(&mut self.terminal, lines)?;
+            for line in lines {
+                self.write_styled_line(&line)?;
+                queue!(self.stdout, Print("\n"))?;
+            }
         }
+        queue!(self.stdout, RestorePosition)?;
+        self.stdout.flush()?;
         Ok(())
     }
 
-    /// Draw the bottom inline viewport.
-    pub fn draw_frame<F>(&mut self, render_fn: F) -> io::Result<()>
-    where
-        F: FnOnce(&mut crate::tui::custom_terminal::Frame<'_>),
-    {
-        let pending_viewport_area = self.pending_viewport_area()?;
-        let _ = io::stdout().sync_update(|_| {
-            if let Some(new_area) = pending_viewport_area {
-                self.terminal.set_viewport_area(new_area);
-                self.terminal.clear()?;
-            }
-            let needs_full_repaint = self
-                .terminal
-                .update_inline_viewport(INLINE_VIEWPORT_HEIGHT)?;
-            if needs_full_repaint {
-                self.terminal.invalidate_viewport();
-            }
-            self.terminal.draw(render_fn)
-        })?;
+    /// Draw the bottom panel (composer + footer). Clears and redraws completely.
+    pub fn draw_bottom_panel(&mut self, lines: Vec<Line<'static>>) -> io::Result<()> {
+        self.size = terminal::size()?;
+        let panel_top = self.size.1.saturating_sub(BOTTOM_PANEL_HEIGHT);
+
+        queue!(self.stdout, Hide)?;
+        queue!(self.stdout, MoveToRow(panel_top), MoveToColumn(0))?;
+        queue!(self.stdout, Clear(ClearType::FromCursorDown))?;
+
+        for (i, line) in lines.iter().take(BOTTOM_PANEL_HEIGHT as usize).enumerate() {
+            queue!(
+                self.stdout,
+                MoveToRow(panel_top + i as u16),
+                MoveToColumn(0)
+            )?;
+            self.write_styled_line(line)?;
+        }
+
+        // Show cursor at composer position (first line of panel, after "> ")
+        let cursor_row = panel_top;
+        let cursor_col = 2u16; // After "> "
+        queue!(self.stdout, Show)?;
+        execute!(
+            self.stdout,
+            crossterm::cursor::MoveTo(cursor_col, cursor_row)
+        )?;
         Ok(())
     }
 
-    fn pending_viewport_area(&mut self) -> io::Result<Option<ratatui::layout::Rect>> {
-        let screen_size = self.terminal.size()?;
-        let last_known = self.terminal.last_known_screen_size;
-        if screen_size != last_known {
-            if let Ok(cursor_pos) = self.terminal.get_cursor_position() {
-                let last_cursor = self.terminal.last_known_cursor_pos;
-                if cursor_pos.y != last_cursor.y {
-                    let offset = ratatui::layout::Offset {
-                        x: 0,
-                        y: cursor_pos.y as i32 - last_cursor.y as i32,
-                    };
-                    return Ok(Some(self.terminal.viewport_area.offset(offset)));
-                }
-            }
+    /// Draw bottom panel with explicit cursor position.
+    pub fn draw_bottom_panel_with_cursor(
+        &mut self,
+        lines: Vec<Line<'static>>,
+        cursor_col: u16,
+        cursor_row_offset: u16,
+    ) -> io::Result<()> {
+        self.size = terminal::size()?;
+        let panel_top = self.size.1.saturating_sub(BOTTOM_PANEL_HEIGHT);
+
+        queue!(self.stdout, Hide)?;
+        queue!(self.stdout, MoveToRow(panel_top), MoveToColumn(0))?;
+        queue!(self.stdout, Clear(ClearType::FromCursorDown))?;
+
+        for (i, line) in lines.iter().take(BOTTOM_PANEL_HEIGHT as usize).enumerate() {
+            queue!(
+                self.stdout,
+                MoveToRow(panel_top + i as u16),
+                MoveToColumn(0)
+            )?;
+            self.write_styled_line(line)?;
         }
-        Ok(None)
+
+        let cursor_y = panel_top + cursor_row_offset;
+        queue!(self.stdout, Show)?;
+        execute!(self.stdout, crossterm::cursor::MoveTo(cursor_col, cursor_y))?;
+        Ok(())
+    }
+
+    fn write_styled_line(&mut self, line: &Line<'_>) -> io::Result<()> {
+        for span in &line.spans {
+            // Apply foreground color if set.
+            if let Some(fg) = span.style.fg {
+                let ct_color = ratatui_color_to_crossterm(fg);
+                queue!(self.stdout, SetForegroundColor(ct_color))?;
+            }
+            // Apply bold if set.
+            if span
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+            {
+                queue!(self.stdout, SetAttribute(crossterm::style::Attribute::Bold))?;
+            }
+            queue!(self.stdout, Print(&*span.content))?;
+            // Reset after each span.
+            queue!(
+                self.stdout,
+                SetAttribute(crossterm::style::Attribute::Reset)
+            )?;
+        }
+        Ok(())
     }
 }
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        let _ = self.terminal.show_cursor();
-        let _ = execute!(io::stdout(), DisableBracketedPaste);
+        let _ = execute!(self.stdout, Show);
+        let _ = execute!(self.stdout, DisableBracketedPaste);
         let _ = disable_raw_mode();
+        // Print a newline so the shell prompt appears below our panel.
+        let _ = execute!(self.stdout, Print("\n"));
+    }
+}
+
+fn ratatui_color_to_crossterm(c: Color) -> crossterm::style::Color {
+    match c {
+        Color::Reset => crossterm::style::Color::Reset,
+        Color::Black => crossterm::style::Color::Black,
+        Color::Red => crossterm::style::Color::Red,
+        Color::Green => crossterm::style::Color::Green,
+        Color::Yellow => crossterm::style::Color::Yellow,
+        Color::Blue => crossterm::style::Color::Blue,
+        Color::Magenta => crossterm::style::Color::Magenta,
+        Color::Cyan => crossterm::style::Color::Cyan,
+        Color::Gray => crossterm::style::Color::Grey,
+        Color::DarkGray => crossterm::style::Color::DarkGrey,
+        Color::LightRed => crossterm::style::Color::DarkRed,
+        Color::LightGreen => crossterm::style::Color::DarkGreen,
+        Color::LightYellow => crossterm::style::Color::DarkYellow,
+        Color::LightBlue => crossterm::style::Color::DarkBlue,
+        Color::LightMagenta => crossterm::style::Color::DarkMagenta,
+        Color::LightCyan => crossterm::style::Color::DarkCyan,
+        Color::White => crossterm::style::Color::White,
+        Color::Rgb(r, g, b) => crossterm::style::Color::Rgb { r, g, b },
+        Color::Indexed(i) => crossterm::style::Color::AnsiValue(i),
     }
 }

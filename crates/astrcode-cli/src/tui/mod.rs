@@ -1,11 +1,11 @@
 //! TUI — interactive terminal mode.
 //!
-//! Architecture:
-//! - Component trait (codex Renderable signature: render(Rect, &mut Buffer) + desired_height)
-//! - Container + OverlayStack (pi-mono design)
-//! - FrameRequester actor (codex design, 120 FPS cap)
-//! - AdaptiveChunkingPolicy for streaming (codex design)
+//! Pi-style architecture:
+//! - History messages written directly to stdout (terminal owns scrollback + reflow)
+//! - Bottom panel (composer + footer) redrawn each frame using ANSI escapes
+//! - Resize handled entirely by terminal emulator — no DECSTBM / scroll regions
 //! - ToolRenderer / MessageRenderer registries (pi-mono design)
+//! - AdaptiveChunkingPolicy for streaming (codex design)
 
 // The Component/Container/OverlayStack infrastructure is intentionally built
 // ahead of the main loop wiring. Suppress dead_code for these public APIs.
@@ -14,15 +14,12 @@
 pub(crate) mod app;
 pub(crate) mod command;
 pub(crate) mod component;
-pub(crate) mod custom_terminal;
 pub(crate) mod ext;
 pub(crate) mod frame;
-pub(crate) mod insert_history;
 pub(crate) mod render;
 pub(crate) mod store;
 pub(crate) mod streaming;
 pub(crate) mod terminal;
-pub(crate) mod terminal_probe;
 pub(crate) mod theme;
 
 use std::{io, sync::Arc};
@@ -419,178 +416,78 @@ async fn execute_slash_command(
 // ─── Rendering ────────────────────────────────────────────────────────────────
 
 fn draw_frame(terminal: &mut TerminalSession, app: &App, theme: &Theme) -> io::Result<()> {
-    let params = RenderParams {
-        show_slash: app.show_slash_palette,
-        input_text: app.composer.text().to_string(),
-        input_cursor: app.composer.cursor(),
-        model_name: app.model_name.clone(),
-        working_dir: app.working_dir.clone(),
-        active_session_id: app.active_session_id.clone(),
-        is_streaming: app.is_streaming,
-        slash_filter: app.slash_filter.clone(),
-        slash_selected: app.slash_selected,
-        extension_commands: app.extension_commands.clone(),
-        theme: theme.clone(),
-    };
-    terminal.draw_frame(move |frame| render_bottom_panel(frame, &params))
-}
-
-struct RenderParams {
-    show_slash: bool,
-    input_text: String,
-    input_cursor: usize,
-    model_name: String,
-    working_dir: String,
-    active_session_id: Option<String>,
-    is_streaming: bool,
-    slash_filter: String,
-    slash_selected: usize,
-    extension_commands: Vec<command::slash::SlashCommandSpec>,
-    theme: Theme,
-}
-
-fn render_bottom_panel(frame: &mut crate::tui::custom_terminal::Frame<'_>, p: &RenderParams) {
-    use ratatui::{
-        layout::{Constraint, Direction, Layout, Margin, Rect},
-        text::{Line, Span, Text},
-        widgets::{Block, Borders, Clear, Paragraph},
-    };
+    use ratatui::text::{Line, Span};
     use render::layout_visual_text;
 
-    let area = frame.area();
-    let footer_height = 1u16;
-    let buffer_height = area.height.saturating_sub(footer_height + 1).min(1);
-    let composer_height = area.height.saturating_sub(footer_height + buffer_height);
+    let width = terminal.composer_width();
 
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(buffer_height),
-            Constraint::Length(composer_height),
-            Constraint::Length(footer_height),
-        ])
-        .split(area);
+    // Build composer lines
+    let vl = layout_visual_text(app.composer.text(), width, Some(app.composer.cursor()));
+    let cursor_col = 2 + vl.cursor_column.unwrap_or(0) as u16;
+    let cursor_row_offset = vl.cursor_row.unwrap_or(0) as u16;
 
-    // Composer
-    let content_width = layout[1].width.max(1);
-    let vl = layout_visual_text(
-        &p.input_text,
-        content_width.saturating_sub(2) as usize,
-        Some(p.input_cursor),
-    );
-    let cursor = (
-        2 + vl.cursor_column.unwrap_or(0) as u16,
-        vl.cursor_row.unwrap_or(0) as u16,
-    );
-    let styled_lines: Vec<Line> = if p.input_text.is_empty() {
-        vec![Line::from(vec![
-            Span::styled("> ", p.theme.assistant_label),
+    let mut panel_lines: Vec<Line<'static>> = Vec::new();
+
+    // Composer line(s) — only show first line in the fixed panel
+    if app.composer.text().is_empty() {
+        panel_lines.push(Line::from(vec![
+            Span::styled("> ", theme.assistant_label),
             Span::styled(
                 "Ask astrcode to inspect, edit, or explain...",
-                p.theme.composer_placeholder,
+                theme.composer_placeholder,
             ),
-        ])]
+        ]));
     } else {
-        vl.lines
-            .into_iter()
-            .enumerate()
-            .map(|(idx, line)| {
-                let prefix = if idx == 0 { "> " } else { "  " };
-                Line::from(vec![
-                    Span::styled(prefix, p.theme.assistant_label),
-                    Span::styled(line, p.theme.composer),
-                ])
-            })
-            .collect()
+        for (idx, line) in vl.lines.into_iter().enumerate() {
+            let prefix = if idx == 0 { "> " } else { "  " };
+            panel_lines.push(Line::from(vec![
+                Span::styled(prefix, theme.assistant_label),
+                Span::styled(line, theme.composer),
+            ]));
+            if panel_lines.len() >= 2 {
+                break; // Cap at 2 lines for the composer area
+            }
+        }
+    }
+
+    // Status/activity line
+    let status_text = if let Some(ref _activity) = None::<()> {
+        app.status_text.clone()
+    } else {
+        app.status_text.clone()
     };
-    frame.render_widget(Paragraph::new(Text::from(styled_lines)), layout[1]);
-    let cx = layout[1].x + cursor.0.min(layout[1].width.saturating_sub(1));
-    let cy = layout[1].y + cursor.1.min(layout[1].height.saturating_sub(1));
-    frame.set_cursor_position((cx, cy));
+    panel_lines.push(Line::from(Span::styled(
+        format!("  {status_text}"),
+        theme.dim,
+    )));
 
     // Footer
-    let session = p
+    let session = app
         .active_session_id
         .as_deref()
         .map(|id| id.get(..8).unwrap_or(id))
         .unwrap_or("none");
-    let model = if p.model_name.is_empty() {
+    let model = if app.model_name.is_empty() {
         "model: pending".to_string()
     } else {
-        p.model_name.clone()
+        app.model_name.clone()
     };
-    let cwd = if p.working_dir.is_empty() {
+    let cwd = if app.working_dir.is_empty() {
         "cwd pending".into()
     } else {
-        compact_path(&p.working_dir)
+        compact_path(&app.working_dir)
     };
-    let hints = if p.is_streaming {
+    let hints = if app.is_streaming {
         "Esc stop"
     } else {
         "Enter send · Shift+Enter newline · /help"
     };
-    let footer_text = format!("  {model} · {cwd} · session {session}   {hints}");
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(footer_text, p.theme.footer))),
-        layout[2],
-    );
+    panel_lines.push(Line::from(Span::styled(
+        format!("  {model} · {cwd} · session {session}   {hints}"),
+        theme.footer,
+    )));
 
-    // Slash palette overlay
-    if p.show_slash {
-        let commands = command::slash::filtered(&p.slash_filter, &p.extension_commands);
-        if !commands.is_empty() {
-            let max_height = area.height.saturating_sub(1).max(1);
-            let visible = commands
-                .len()
-                .min(max_height.saturating_sub(2).max(1) as usize);
-            let selected = p.slash_selected.min(commands.len().saturating_sub(1));
-            let start = selected.saturating_add(1).saturating_sub(visible);
-            let height = (visible as u16 + 2).min(max_height);
-            let popup_width = ((area.width as u32 * 70 / 100) as u16)
-                .max(24)
-                .min(area.width);
-            let popup_height = height.min(area.height);
-            let bottom_gap = 3u16.min(area.height.saturating_sub(popup_height));
-            let popup = Rect {
-                x: area.x + (area.width.saturating_sub(popup_width)) / 2,
-                y: area.y + area.height.saturating_sub(popup_height + bottom_gap),
-                width: popup_width,
-                height: popup_height,
-            };
-            let inner = popup.inner(Margin {
-                vertical: 1,
-                horizontal: 1,
-            });
-            let lines: Vec<Line> = commands
-                .iter()
-                .skip(start)
-                .take(visible)
-                .enumerate()
-                .map(|(idx, cmd)| {
-                    let is_sel = start + idx == selected;
-                    let label_style = if is_sel {
-                        p.theme.popup_selected
-                    } else {
-                        p.theme.assistant_label
-                    };
-                    let desc_style = if is_sel { p.theme.body } else { p.theme.dim };
-                    Line::from(vec![
-                        Span::styled(format!("{:<16}", cmd.usage), label_style),
-                        Span::styled(cmd.description.clone(), desc_style),
-                    ])
-                })
-                .collect();
-            frame.render_widget(Clear, popup);
-            frame.render_widget(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(p.theme.popup_border)
-                    .title(" Slash Commands "),
-                popup,
-            );
-            frame.render_widget(Paragraph::new(Text::from(lines)), inner);
-        }
-    }
+    terminal.draw_bottom_panel_with_cursor(panel_lines, cursor_col, cursor_row_offset)
 }
 
 fn compact_path(path: &str) -> String {
