@@ -9,10 +9,11 @@ use tokio::sync::mpsc;
 
 use super::{CommandHandler, HandlerError};
 
-const RECAP_PROMPT: &str = "The user stepped away and is coming back. \
-    Recap concisely some plain sentences, no markdown. Be brief but include all essential info. \
-    Lead with the overall goal and current task, then the next action. \
-    Skip root-cause narrative, fix internals, secondary to-dos, and em-dash tangents.";
+const RECAP_PROMPT: &str = "The user stepped away and is coming back. Recap concisely some plain \
+                            sentences, no markdown. Be brief but include all essential info. Lead \
+                            with the overall goal and current task, then the next action. Skip \
+                            root-cause narrative, fix internals, secondary to-dos, and em-dash \
+                            tangents.";
 
 impl CommandHandler {
     /// 生成当前 session 对话摘要。

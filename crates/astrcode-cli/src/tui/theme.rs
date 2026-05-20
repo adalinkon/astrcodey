@@ -69,9 +69,9 @@ impl Theme {
         Self {
             user_label: Style::default().fg(user).add_modifier(Modifier::BOLD),
             user_bg: Style::default().bg(if dark {
-                Color::Rgb(38, 38, 42)
+                Color::Rgb(45, 45, 52)
             } else {
-                Color::Rgb(235, 235, 230)
+                Color::Rgb(240, 240, 235)
             }),
             assistant_label: Style::default().fg(accent).add_modifier(Modifier::BOLD),
             tool_label: Style::default().fg(tool).add_modifier(Modifier::BOLD),

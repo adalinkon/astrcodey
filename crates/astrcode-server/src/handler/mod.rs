@@ -22,10 +22,10 @@ use crate::{
 
 mod actor;
 mod compact;
+mod recap;
 pub(crate) mod slash;
 pub(crate) mod snapshot;
 pub(in crate::handler) mod turn;
-mod recap;
 
 pub use actor::CommandHandle;
 use actor::CommandMessage;

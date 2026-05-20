@@ -169,13 +169,18 @@ fn apply_event(app: &mut App, event: &Event) {
             } else {
                 Vec::new()
             };
+            let has_visible_content = !lines.is_empty() || !text.trim().is_empty();
             for line in lines {
                 app.scrollback_queue.push(ScrollbackEntry::StreamText {
                     role: MessageRole::Assistant,
                     text: line.spans.iter().map(|s| s.content.as_ref()).collect(),
                 });
             }
-            app.scrollback_queue.push(ScrollbackEntry::BlankLine);
+            // Only add blank separator when there's visible content (avoid gaps between tool
+            // calls when LLM returns empty text before issuing more tool calls).
+            if has_visible_content {
+                app.scrollback_queue.push(ScrollbackEntry::BlankLine);
+            }
             if let Some(msg) = app.find_message_mut(message_id.as_str()) {
                 msg.body.set_text(text.clone());
                 msg.is_streaming = false;
@@ -202,6 +207,18 @@ fn apply_event(app: &mut App, event: &Event) {
             app.scrollback_queue.retain(|e| {
                 !matches!(e, ScrollbackEntry::Message(m) if m.key.as_deref() == Some(call_id.as_str()))
             });
+            // TODO：A BETTER WAY MAYBE LATER
+            // For agent tool: create tracker and show a header in scrollback.
+            if tool_name == "agent" {
+                app.child_agents.insert(
+                    call_id.to_string(),
+                    crate::tui::store::child_agent::ChildAgentTracker::default(),
+                );
+                app.scrollback_queue.push(ScrollbackEntry::StreamHeader {
+                    role: MessageRole::Tool,
+                    label: "Task".into(),
+                });
+            }
             tracing::debug!(call_id = %call_id, tool = %tool_name, "tool_open");
         },
         EventPayload::ToolCallRequested {
@@ -213,21 +230,14 @@ fn apply_event(app: &mut App, event: &Event) {
             app.status_text = format!("● {}", tool_call_summary(tool_name, Some(arguments)));
         },
         EventPayload::ToolOutputDelta { call_id, delta, .. } => {
-            // Child agent: update status with progress. Don't write to scrollback.
-            let is_agent = app
-                .messages
-                .iter()
-                .rev()
-                .find(|m| m.key.as_deref() == Some(call_id.as_str()))
-                .is_some_and(|m| m.label == "Task" || m.label.starts_with("Task("));
-            if is_agent {
-                // Parse child progress for status display only.
+            // Child agent: feed to tracker for structured display.
+            if let Some(tracker) = app.child_agents.get_mut(call_id.as_str()) {
+                tracker.handle_delta(delta, &mut app.scrollback_queue);
+                // Also update status bar with current tool progress.
                 for line in delta.lines() {
                     let clean = line.strip_prefix("child ").unwrap_or(line).trim();
                     if let Some(tool) = clean.strip_prefix("tool started: ") {
-                        app.status_text = format!("● Task → {tool}");
-                    } else if clean.starts_with("tool completed: ") {
-                        // Keep current status.
+                        app.status_text = format!("●Task →{tool}");
                     }
                 }
             } else {
@@ -252,8 +262,10 @@ fn apply_event(app: &mut App, event: &Event) {
             }
 
             if tool_name == "agent" {
-                // Sub-agent: just show a one-line summary.
-                app.child_agents.remove(call_id.as_str());
+                // Sub-agent: flush tracker output and show summary.
+                if let Some(mut tracker) = app.child_agents.remove(call_id.as_str()) {
+                    tracker.flush_on_completion(&mut app.scrollback_queue);
+                }
                 let summary = if result.is_error {
                     format!("✗ Task failed: {}", truncate_line(&result.content, 80))
                 } else if result.content.trim().is_empty() {
@@ -332,18 +344,30 @@ fn apply_event(app: &mut App, event: &Event) {
             task,
             ..
         } => {
-            // Show only a short one-liner, not the full prompt.
-            let short_task = truncate_line(task, 50);
-            app.status_text = format!("● Agent: {} — {}", agent_name, short_task);
-            // Don't push to scrollback — too noisy. Just update status.
+            let short_task = truncate_line(task, 60);
+            app.push_message(
+                MessageRole::System,
+                format!("Agent({agent_name})"),
+                short_task,
+                false,
+                None,
+            );
+            app.status_text = format!("● Agent: {agent_name}");
         },
         EventPayload::AgentSessionCompleted {
             child_session_id: _,
             summary,
             ..
         } => {
-            // Short completion notice — don't dump full summary.
-            app.status_text = format!("● Agent done — {}", truncate_line(summary, 50));
+            let short_summary = truncate_line(summary, 60);
+            app.push_message(
+                MessageRole::Tool,
+                "Agent".into(),
+                format!("● Done — {short_summary}"),
+                false,
+                None,
+            );
+            app.status_text = "Ready".into();
         },
         EventPayload::AgentSessionFailed {
             child_session_id: _,

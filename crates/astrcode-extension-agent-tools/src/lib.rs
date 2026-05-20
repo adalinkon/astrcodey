@@ -104,7 +104,7 @@ const AGENT_TOOL_DESCRIPTION: &str =
      independent tasks concurrently.\n\nSee the [Agents] section in the system prompt for \
      available agent types.";
 
-const AGENT_TOOL_PARAMETERS: &str = r#"{"type":"object","properties":{"description":{"type":"string","description":"Short 3-5 word description of the task"},"prompt":{"type":"string","description":"Task for the subagent"},"subagentType":{"type":"string","description":"Agent name from agents/ directory"},"waitForResult":{"type":"boolean","default":false,"description":"If true, block until the agent completes. If false (default), run in the background and return immediately."}},"required":["prompt","description"]}"#;
+const AGENT_TOOL_PARAMETERS: &str = r#"{"type":"object","properties":{"description":{"type":"string","description":"Short 3-5 word description of the task"},"prompt":{"type":"string","description":"Task for the subagent"},"subagentType":{"type":"string","description":"Agent name from agents/ directory"},"waitForResult":{"type":"boolean","default":true,"description":"If true (default), block until the agent completes and return the result. If false, run in the background and return immediately."}},"required":["prompt","description"]}"#;
 
 fn agent_tool_definition() -> ToolDefinition {
     ToolDefinition {
@@ -131,7 +131,7 @@ struct AgentArgs {
 }
 
 const fn default_wait_for_result() -> bool {
-    false
+    true
 }
 
 #[derive(Debug)]
@@ -363,7 +363,7 @@ mod tests {
         assert!(properties.contains_key("waitForResult"));
         assert_eq!(
             properties["waitForResult"]["default"],
-            serde_json::json!(false)
+            serde_json::json!(true)
         );
         assert!(!properties.contains_key("mode"));
     }
@@ -379,7 +379,7 @@ mod tests {
         assert_eq!(args.prompt, "find the bug");
         assert_eq!(args.description, "bug hunt");
         assert_eq!(args.subagent_type.as_deref(), Some("explore"));
-        assert!(!args.wait_for_result);
+        assert!(args.wait_for_result);
     }
 
     #[test]
