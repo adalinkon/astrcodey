@@ -215,16 +215,7 @@ fn prefixed_lines(label: &str, text: &str, max_lines: usize) -> String {
     output.join("\n")
 }
 
-pub(super) fn compact_inline(text: &str, max_chars: usize) -> String {
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if compact.chars().count() <= max_chars {
-        return compact;
-    }
-
-    let mut preview = compact.chars().take(max_chars).collect::<String>();
-    preview.push('…');
-    preview
-}
+pub(super) use astrcode_support::text::compact_inline;
 
 fn agent_done_render_spec(spec: RenderSpec, result: &ToolResult) -> RenderSpec {
     let mut children = match spec {

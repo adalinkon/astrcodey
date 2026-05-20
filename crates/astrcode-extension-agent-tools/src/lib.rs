@@ -19,6 +19,7 @@ use astrcode_core::{
     render::{RenderKeyValue, RenderSpec, RenderTone, UI_RENDER_METADATA_KEY},
     tool::{ExecutionMode, ToolDefinition, ToolOrigin, ToolResult, tool_metadata},
 };
+use astrcode_support::text::compact_inline;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -321,18 +322,6 @@ fn format_agents_for_model(agents: &[agent::AgentConfig]) -> String {
         lines.push(format!("- {}: {}", agent.name, agent.description));
     }
     lines.join("\n")
-}
-
-/// 截断文本用于内联显示。
-fn compact_inline(text: &str, max_chars: usize) -> String {
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if compact.chars().count() <= max_chars {
-        return compact;
-    }
-
-    let mut preview = compact.chars().take(max_chars).collect::<String>();
-    preview.push('…');
-    preview
 }
 
 // ─── 测试 ──────────────────────────────────────────────────────────────

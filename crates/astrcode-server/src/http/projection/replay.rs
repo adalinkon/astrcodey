@@ -1,0 +1,129 @@
+//! 重放历史事件 → ConversationDeltaDto。
+
+use astrcode_core::event::{Event, EventPayload, Phase};
+use astrcode_protocol::http::{
+    ConversationBlockDto, ConversationBlockStatusDto, ConversationCursorDto, ConversationDeltaDto,
+};
+
+use super::{
+    args::format_args_inline, blocks::completed_block_from_payload, live::control_from_phase,
+};
+
+pub(in crate::http) fn event_to_replay_deltas(event: &Event) -> Vec<ConversationDeltaDto> {
+    if let EventPayload::CompactBoundaryCreated {
+        continued_session_id,
+        ..
+    } = &event.payload
+    {
+        let mut deltas: Vec<ConversationDeltaDto> = completed_block_from_payload(event)
+            .map(|block| ConversationDeltaDto::AppendBlock { block })
+            .into_iter()
+            .collect();
+        deltas.push(ConversationDeltaDto::SessionContinued {
+            parent_session_id: event.session_id.to_string(),
+            new_session_id: continued_session_id.to_string(),
+            parent_cursor: ConversationCursorDto {
+                value: event.seq.unwrap_or_default().to_string(),
+            },
+        });
+        return deltas;
+    }
+
+    if matches!(
+        &event.payload,
+        EventPayload::SessionContinuedFromCompaction { .. }
+    ) {
+        return vec![ConversationDeltaDto::RehydrateRequired];
+    }
+
+    if let Some(block) = completed_block_from_payload(event) {
+        return vec![ConversationDeltaDto::AppendBlock { block }];
+    }
+    if let EventPayload::ToolCallRequested {
+        call_id,
+        tool_name,
+        arguments,
+    } = &event.payload
+    {
+        return vec![ConversationDeltaDto::AppendBlock {
+            block: ConversationBlockDto::ToolCall {
+                id: call_id.to_string(),
+                name: tool_name.clone(),
+                arguments: format_args_inline(tool_name, arguments),
+                text: String::new(),
+                status: ConversationBlockStatusDto::Streaming,
+                task_id: None,
+                metadata: None,
+            },
+        }];
+    }
+    if matches!(&event.payload, EventPayload::TurnCompleted { .. }) {
+        return vec![ConversationDeltaDto::UpdateControlState {
+            control: control_from_phase(Phase::Idle),
+        }];
+    }
+    Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use astrcode_core::llm::LlmMessage;
+
+    use super::*;
+
+    #[test]
+    fn compact_replay_preserves_rehydrate_signal() {
+        let mut boundary = Event::new(
+            "session-1".into(),
+            None,
+            EventPayload::CompactBoundaryCreated {
+                trigger: "manual_command".into(),
+                pre_tokens: 100,
+                post_tokens: 20,
+                summary: "summary".into(),
+                transcript_path: Some("compact.jsonl".into()),
+                continued_session_id: "session-1".into(),
+            },
+        );
+        boundary.seq = Some(7);
+
+        let deltas = event_to_replay_deltas(&boundary);
+        assert_eq!(deltas.len(), 2);
+        assert!(matches!(
+            &deltas[0],
+            ConversationDeltaDto::AppendBlock {
+                block: ConversationBlockDto::CompactSummary { .. }
+            }
+        ));
+        match &deltas[1] {
+            ConversationDeltaDto::SessionContinued {
+                parent_session_id,
+                new_session_id,
+                parent_cursor,
+            } => {
+                assert_eq!(parent_session_id, "session-1");
+                assert_eq!(new_session_id, "session-1");
+                assert_eq!(parent_cursor.value, "7");
+            },
+            other => panic!("unexpected replay delta: {other:?}"),
+        }
+
+        let continued = Event::new(
+            "session-1".into(),
+            None,
+            EventPayload::SessionContinuedFromCompaction {
+                parent_session_id: "session-1".into(),
+                parent_cursor: "7".into(),
+                summary: "summary".into(),
+                transcript_path: Some("compact.jsonl".into()),
+                context_messages: vec![LlmMessage::system("summary")],
+                retained_messages: vec![LlmMessage::user("recent")],
+            },
+        );
+
+        assert!(matches!(
+            event_to_replay_deltas(&continued).as_slice(),
+            [ConversationDeltaDto::RehydrateRequired]
+        ));
+    }
+}

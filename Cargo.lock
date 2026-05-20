@@ -206,6 +206,7 @@ dependencies = [
  "astrcode-log",
  "astrcode-protocol",
  "astrcode-server",
+ "astrcode-support",
  "async-trait",
  "clap",
  "crossterm",
