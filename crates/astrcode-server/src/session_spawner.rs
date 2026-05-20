@@ -620,7 +620,7 @@ fn child_progress_delta(payload: &EventPayload) -> Option<(ToolOutputStream, Str
 }
 
 fn one_line_summary(text: &str) -> String {
-    crate::http::compact_inline(text, 159)
+    astrcode_support::text::compact_inline(text, 159)
 }
 
 // ─── 测试 ──────────────────────────────────────────────────────────────

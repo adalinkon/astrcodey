@@ -1238,10 +1238,6 @@ impl TuiState {
     }
 }
 
-fn compact_inline(text: &str, max_chars: usize) -> String {
-    tool_display::compact_inline(text, max_chars)
-}
-
 fn session_list_body(
     sessions: &[astrcode_protocol::events::SessionListItem],
     active_session_id: Option<&str>,
@@ -1261,7 +1257,7 @@ fn session_list_body(
             let dir = if session.working_dir.is_empty() {
                 "unknown".into()
             } else {
-                compact_inline(&session.working_dir, 72)
+                astrcode_support::text::compact_inline(&session.working_dir, 72)
             };
             format!("{marker} {} · {dir}", super::short_id(&session.session_id))
         })
