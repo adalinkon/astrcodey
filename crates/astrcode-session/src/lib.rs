@@ -22,7 +22,7 @@ pub mod turn_handle;
 pub(crate) mod turn_runner;
 pub(crate) mod turn_stages;
 
-pub use background::{BackgroundTaskManager, spawn_background_forwarder};
+pub use background::{BackgroundTaskManager, OnBackgroundComplete, spawn_background_forwarder};
 pub use payload::{
     agent_turn_completed_durable_payload, agent_turn_completed_live_payload,
     agent_turn_started_durable_payloads, agent_turn_started_live_payload, compact_boundary_payload,

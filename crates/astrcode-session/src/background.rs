@@ -174,19 +174,28 @@ pub fn complete_background_task(
     manager.lock().remove(task_id);
 }
 
+/// 后台任务完成时的回调类型。
+pub type OnBackgroundComplete =
+    Arc<dyn Fn(&SessionId, &str, &str) + Send + Sync>;
+
 /// 后台任务完成事件的统一转发器。
 ///
 /// 监听 `rx`，把每个 `BackgroundTaskCompletion` 翻译成
 /// `(ToolCallCompleted, BackgroundTaskCompleted)` 两个事件，先经可选 `sink`，
 /// 再通过 `Session::emit` 写入（store + runtime 广播）。
-/// 这个函数替代了 `handler/turn.rs` 与 `session_spawner.rs` 各写一份的转发循环。
+///
+/// 完成后调用 `on_complete` 回调（如果提供），让调用方可以唤醒 agent 处理结果。
 pub fn spawn_background_forwarder(
     mut rx: mpsc::UnboundedReceiver<BackgroundTaskCompletion>,
     session: Arc<crate::session::Session>,
     sink: Option<Arc<dyn crate::turn_context::EventSink>>,
+    on_complete: Option<OnBackgroundComplete>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(completion) = rx.recv().await {
+            let session_id = completion.session_id.clone();
+            let task_id_str = completion.task_id.to_string();
+            let tool_name = completion.tool_name.clone();
             let (tool_call_event, bg_event) = completion.into_events();
             if let Some(sink) = sink.as_deref() {
                 let preview_a = astrcode_core::event::Event::new(
@@ -203,6 +212,11 @@ pub fn spawn_background_forwarder(
                 tracing::error!(session_id = %session.id(), error = %e, "background forwarder: persist tool_call_completed failed");
             }
             session.emit_live(None, bg_event).await;
+
+            // 通知调用方后台任务完成——用于唤醒 agent
+            if let Some(cb) = &on_complete {
+                cb(&session_id, &task_id_str, &tool_name);
+            }
         }
     })
 }
