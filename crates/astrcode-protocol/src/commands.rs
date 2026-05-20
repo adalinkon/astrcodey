@@ -85,6 +85,11 @@ pub enum ClientCommand {
     /// - `text`: 要注入的消息文本
     InjectMessage { text: String },
 
+    /// 请求生成当前对话的摘要。
+    ///
+    /// 仅在无 active turn 时可调用。结果通过 `RecapGenerated` 事件推送。
+    Recap,
+
     /// 中止当前正在进行的 AI 处理操作。
     Abort,
 

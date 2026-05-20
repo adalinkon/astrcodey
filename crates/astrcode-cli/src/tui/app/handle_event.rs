@@ -313,6 +313,16 @@ fn apply_event(app: &mut App, event: &Event) {
         EventPayload::ErrorOccurred { message, .. } => {
             app.show_error(message);
         },
+        EventPayload::RecapGenerated { text, .. } => {
+            app.push_message(
+                MessageRole::System,
+                "Recap".into(),
+                text.clone(),
+                false,
+                None,
+            );
+            app.status_text = "Ready".into();
+        },
         EventPayload::ModelIdChanged { model_id } => {
             app.model_name = model_id.clone();
         },

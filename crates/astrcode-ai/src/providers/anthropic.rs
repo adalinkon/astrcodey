@@ -106,6 +106,14 @@ impl AnthropicProvider {
             }
         }
 
+        // 在历史末尾（最后一条非当前 user 输入的消息）加第二个 cache marker，
+        // 使 "system + tools + 历史" 整段成为可缓存前缀。
+        // Anthropic 允许最多 4 个 cache breakpoint，当前用 2 个：
+        //   1. system block 末尾（已有，见上面循环）
+        //   2. 历史末尾（这里）
+        // 当前轮的 user input 在 marker 之后，每次变化但前缀仍命中。
+        mark_history_cache_breakpoint(&mut api_messages);
+
         let system = if system_blocks.is_empty() {
             None
         } else {
@@ -365,18 +373,45 @@ fn has_only_tool_results(msg: &serde_json::Value) -> bool {
 }
 
 fn convert_tools(tools: &[ToolDefinition]) -> serde_json::Value {
-    serde_json::Value::Array(
-        tools
-            .iter()
-            .map(|t| {
-                serde_json::json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "input_schema": t.parameters,
-                })
+    let mut converted: Vec<serde_json::Value> = tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "name": t.name,
+                "description": t.description,
+                "input_schema": t.parameters,
             })
-            .collect(),
-    )
+        })
+        .collect();
+    // 在最后一个 tool 上加 cache_control，让 tool schema 整体进入缓存前缀。
+    // tools 数组在请求中位于 system 之后、messages 之前，标记最后一个等于
+    // 标记整段 tool schema 的末尾。
+    if let Some(last) = converted.last_mut() {
+        last["cache_control"] = serde_json::json!({"type": "ephemeral"});
+    }
+    serde_json::Value::Array(converted)
+}
+
+/// 在最后一条非空 message 的最后一个 content block 上加 cache_control，
+/// 把"历史末尾"标为缓存边界。当前轮的 user input 通常作为最后一条 user message
+/// 出现，调用方决定是否把它包含在 messages 中——这里只标记最后一项，缓存命中
+/// 由前缀稳定性保证。
+fn mark_history_cache_breakpoint(api_messages: &mut [serde_json::Value]) {
+    let Some(last_msg) = api_messages.last_mut() else {
+        return;
+    };
+    let Some(content) = last_msg.get_mut("content").and_then(|c| c.as_array_mut()) else {
+        return;
+    };
+    let Some(last_block) = content.last_mut() else {
+        return;
+    };
+    if let Some(obj) = last_block.as_object_mut() {
+        obj.insert(
+            "cache_control".into(),
+            serde_json::json!({"type": "ephemeral"}),
+        );
+    }
 }
 
 #[cfg(test)]

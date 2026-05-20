@@ -88,6 +88,10 @@ pub enum ExtensionEvent {
     PreCompact,
     /// 上下文压缩完成后通知扩展。
     PostCompact,
+
+    // ── Recap ──
+    /// Recap 生成完成后通知扩展（非阻塞）。
+    PostRecap,
 }
 
 // ─── Extension Manifest ──────────────────────────────────────────────────
