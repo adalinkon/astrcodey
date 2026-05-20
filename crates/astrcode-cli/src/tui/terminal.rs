@@ -128,16 +128,14 @@ impl TerminalSession {
         let new_area = ratatui::layout::Rect::new(0, 0, screen_size.width, 0);
         self.terminal.set_viewport_area(new_area);
 
-        // Clear the entire visible screen.
+        // Clear BOTH visible screen AND scrollback buffer.
+        // CSI 2J = clear visible screen, CSI 3J = purge scrollback, CSI H = home cursor.
         let writer = self.terminal.backend_mut();
-        crossterm::queue!(writer, crossterm::cursor::MoveTo(0, 0))?;
-        crossterm::queue!(
-            writer,
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
-        )?;
-        writer.flush()?;
+        std::io::Write::write_all(writer, b"\x1b[2J\x1b[3J\x1b[H")?;
+        std::io::Write::flush(writer)?;
         self.terminal.last_known_screen_size = screen_size;
         self.terminal.last_known_cursor_pos = Position { x: 0, y: 0 };
+        self.terminal.invalidate_viewport();
 
         // Re-insert the tail of history that fits on screen.
         let available_rows = screen_size.height.saturating_sub(INLINE_VIEWPORT_HEIGHT) as usize;
