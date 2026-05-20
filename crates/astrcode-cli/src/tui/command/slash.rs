@@ -27,6 +27,8 @@ pub enum SlashCommand {
     Sessions,
     /// 压缩当前会话上下文
     Compact,
+    /// 生成当前对话摘要
+    Recap,
     /// 退出 astrcode
     Quit,
     /// 显示帮助信息
@@ -60,6 +62,12 @@ pub fn builtin_commands() -> Vec<SlashCommandSpec> {
             name: "compact".into(),
             usage: "/compact".into(),
             description: "Compact the current session context".into(),
+            needs_argument: false,
+        },
+        SlashCommandSpec {
+            name: "recap".into(),
+            usage: "/recap".into(),
+            description: "Show a brief recap of the conversation".into(),
             needs_argument: false,
         },
         SlashCommandSpec {
@@ -120,6 +128,7 @@ pub fn parse(input: &str, extension_command_names: &[String]) -> Option<SlashCom
         "resume" | "r" => Some(SlashCommand::Resume(arg.to_string())),
         "sessions" | "ls" => Some(SlashCommand::Sessions),
         "compact" => Some(SlashCommand::Compact),
+        "recap" => Some(SlashCommand::Recap),
         "quit" | "q" | "exit" => Some(SlashCommand::Quit),
         "help" | "?" => Some(SlashCommand::Help),
         _ => {

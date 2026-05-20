@@ -25,6 +25,7 @@ mod compact;
 pub(crate) mod slash;
 pub(crate) mod snapshot;
 pub(in crate::handler) mod turn;
+mod recap;
 
 pub use actor::CommandHandle;
 use actor::CommandMessage;
@@ -97,6 +98,10 @@ impl CommandHandler {
 
             ClientCommand::InjectMessage { text } => {
                 self.inject_mid_turn_message(text).await?;
+            },
+
+            ClientCommand::Recap => {
+                self.recap_session().await?;
             },
 
             ClientCommand::ListSessions => {

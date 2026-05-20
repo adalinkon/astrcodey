@@ -162,6 +162,16 @@ pub enum EventPayload {
         text: String,
     },
 
+    /// Recap 摘要已生成。
+    ///
+    /// 持久化事件，用于展示和事件溯源。不进入下一轮 LLM 对话历史。
+    RecapGenerated {
+        /// 摘要文本。
+        text: String,
+        /// 触发来源：`"manual"`（/recap 命令）或 `"auto"`（future away summary）。
+        source: String,
+    },
+
     /// 助手消息开始（流式输出的起始标记）。
     AssistantMessageStarted {
         /// 消息唯一标识。

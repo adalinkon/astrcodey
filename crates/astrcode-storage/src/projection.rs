@@ -247,5 +247,6 @@ pub fn reduce(event: &Event, model: &mut SessionReadModel) {
         | EventPayload::BackgroundTaskOutput { .. }
         | EventPayload::BackgroundTaskCompleted { .. } => {},
         EventPayload::Custom { .. } => {},
+        EventPayload::RecapGenerated { .. } => {},
     }
 }

@@ -440,6 +440,13 @@ async fn execute_slash_command(
                 .map_err(io_error)?;
             app.status_text = "Compacting session".into();
         },
+        SlashCommand::Recap => {
+            client
+                .send_command(&ClientCommand::Recap)
+                .await
+                .map_err(io_error)?;
+            app.status_text = "Generating recap...".into();
+        },
         SlashCommand::Quit => {
             app.should_quit = true;
         },
