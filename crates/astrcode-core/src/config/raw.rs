@@ -142,6 +142,8 @@ pub struct RuntimeSection {
     pub agent_max_depth: Option<usize>,
     /// 单轮中允许同时执行的并行工具调用数上限。
     pub agent_tool_max_parallel_calls: Option<usize>,
+    /// Shell 工具默认超时时间（秒）。
+    pub shell_timeout_secs: Option<u64>,
     // ── WASM 扩展 ─────────────────────────────────────────────────────
     /// WASM 扩展单次调用的 fuel 上限（指令数）。
     pub wasm_fuel: Option<u64>,

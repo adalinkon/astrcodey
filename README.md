@@ -10,7 +10,7 @@ web：
 
 A Rust-built AI coding agent platform.
 
-AstrCode is a full-stack AI coding assistant built from scratch in ~50k lines of Rust across 19 crates, plus a React + TypeScript web frontend (~4.7k lines). It features an agent loop with tool execution, a streaming SSE-based LLM provider layer, a plugin/hook extension system (with native extension loading via FFI and WASM extension support), context window management with auto-compaction, and multiple interfaces: a terminal UI, a web frontend, a Tauri desktop app, an HTTP/SSE API, and an ACP (Agent Client Protocol) adapter.
+AstrCode is a full-stack AI coding assistant built from scratch in ~54k lines of Rust across 19 crates, plus a React + TypeScript web frontend (~4.8k lines). It features an agent loop with tool execution, a streaming SSE-based LLM provider layer, a plugin/hook extension system (with native extension loading via FFI and WASM extension support), context window management with auto-compaction, and multiple interfaces: a terminal UI, a web frontend, a Tauri desktop app, an HTTP/SSE API, and an ACP (Agent Client Protocol) adapter.
 
 > **Why?** I wanted to understand how an AI coding agent works at every layer — from SSE stream parsing to context window compaction — so I built one. The architecture draws on engineering practices from several coding agents, but all code is original.
 
@@ -85,33 +85,33 @@ cd frontend && npm install && npm run tauri:dev
 
 | Crate | Lines | Description |
 |---|---|---|
-| `astrcode-server` | 8.7k | Agent loop, session management, JSON-RPC/HTTP/ACP handlers, transport, concurrency control |
-| `astrcode-cli` | 6.7k | Terminal UI (ratatui), headless exec, server launcher |
+| `astrcode-server` | 9.3k | Agent loop, session management, JSON-RPC/HTTP/ACP handlers, transport, concurrency control |
+| `astrcode-cli` | 8.2k | Terminal UI (ratatui), headless exec, server launcher |
 | `astrcode-session` | 5.2k | Session runtime: session handle, turn execution, tool pipeline, event bus |
-| `astrcode-tools` | 4.5k | Built-in tools: read, write, edit, patch, find, grep, shell, task |
-| `astrcode-core` | 4.4k | Shared types, traits, config system, error types, prompt composition |
-| `astrcode-ai` | 3.5k | OpenAI-compatible provider (Chat Completions + Responses API), SSE streaming, retry |
-| `astrcode-context` | 3.3k | Token estimation, context window budgeting, auto-compact, prompt engine |
-| `astrcode-storage` | 3.3k | JSONL event log, session snapshots, config persistence, file locking |
-| `astrcode-extensions` | 2.8k | Extension lifecycle, hook dispatch, native extension loading (FFI), WASM extension runtime |
+| `astrcode-tools` | 4.6k | Built-in tools: read, write, edit, patch, find, grep, shell, task |
+| `astrcode-core` | 4.7k | Shared types, traits, config system, error types, prompt composition, extension contracts |
+| `astrcode-ai` | 3.6k | OpenAI-compatible provider (Chat Completions + Responses API), SSE streaming, retry |
+| `astrcode-context` | 3.5k | Token estimation, context window budgeting, auto-compact, prompt engine |
+| `astrcode-storage` | 3.5k | JSONL event log, session snapshots, config persistence, file locking |
+| `astrcode-extensions` | 2.9k | Extension lifecycle, hook dispatch, native extension loading (FFI), WASM extension runtime |
 | `astrcode-extension-mcp` | 1.9k | MCP protocol client via stdio, tool discovery |
-| `astrcode-protocol` | 1.1k | JSON-RPC 2.0 wire types, commands, events, HTTP DTOs |
-| `astrcode-extension-mode` | 1.1k | Agent running mode switching (Code / Plan), plan artifact, exit gate |
+| `astrcode-protocol` | 1.2k | JSON-RPC 2.0 wire types, commands, events, HTTP DTOs |
+| `astrcode-extension-mode` | 1.2k | Agent running mode switching (Code / Plan), plan artifact, exit gate, keybinding & status item registration |
 | `astrcode-extension-skill` | 949 | Slash-command skill discovery and dispatch |
-| `astrcode-extension-todo-tool` | 734 | Progress tracking todo list tool |
-| `astrcode-extension-agent-tools` | 730 | Sub-agent delegation (Agent tool) |
-| `astrcode-support` | 613 | Path resolution, shell detection |
+| `astrcode-extension-todo-tool` | 733 | Progress tracking todo list tool |
+| `astrcode-extension-agent-tools` | 720 | Sub-agent delegation (Agent tool) |
+| `astrcode-support` | 635 | Path resolution, shell detection, text processing |
 | `astrcode-client` | 521 | Typed JSON-RPC client, transport, stream subscription |
 | `astrcode-log` | 353 | File rotation, stderr output, env-filter logging |
 | `astrcode-bundled-extensions` | 39 | Composition root for optional extension crates |
 
-**Total: ~50k lines across 19 Rust crates, 158 source files.**
+**Total: ~54k lines across 19 Rust crates, 192 source files.**
 
 ### Frontend & Desktop App
 
 | Component | Lines | Description |
 |---|---|---|
-| `frontend/` (React + TS) | ~4.7k | Web frontend — chat view, sidebar, session management, SSE streaming |
+| `frontend/` (React + TS) | ~4.8k | Web frontend — chat view, sidebar, session management, SSE streaming |
 | `src-tauri/` (Tauri v2) | ~670 | Desktop app shell — sidecar management, native dialogs, HTTP plugin |
 
 The web frontend (`frontend/`) is a React 19 + TypeScript + Tailwind CSS v4 + Vite 8 single-page application. It connects to the `astrcode-server` backend via SSE for real-time streaming and JSON-RPC for commands. The frontend supports running standalone in the browser (`npm run dev`) or packaged as a Tauri desktop app (`npm run tauri dev`).
@@ -168,6 +168,8 @@ The extension system (`astrcode-extensions`) is a core architectural pillar, not
 
 - **Extension trait** — each extension declares hook subscriptions, contributes tools and slash commands, handles lifecycle events
 - **Hook modes** — `Blocking` (can modify input/output), `NonBlocking` (fire-and-forget), `Advisory` (observe-only)
+- **Keybinding registration** — extensions register keyboard shortcuts (e.g. `Shift+Tab` for mode toggle) via `Registrar::keybinding()`
+- **Status bar items** — extensions contribute status bar entries (e.g. current mode indicator) with runtime updates via `StatusItemUpdate` notifications
 - **Native extension loading** — disk-loaded `.dll`/`.so` extensions via `libloading` + FFI, supporting global (`~/.astrcode/extensions/`) and project-level (`.astrcode/extensions/`) directories
 - **WASM extension runtime** — wasmtime-based sandboxed extension execution with a host-guest protocol for tool registration and event handling
 - **Extension runtime** — session spawning with depth limits, tool registration queue, priority-based dispatch
@@ -187,9 +189,45 @@ The ACP adapter (`astrcode-server::acp`) bridges the standard Agent Client Proto
 |---|---|---|
 | **TUI** | `cargo run -- tui` | Interactive terminal UI with message history, tool display, slash commands |
 | **Exec** | `cargo run -- exec "prompt"` | Headless single-shot execution, supports `--jsonl` streaming output |
-| **Server** | `cargo run -- server` | HTTP/SSE server with JSON-RPC, session management, real-time event streaming |
+| **Server** | `cargo run -- server [--addr 0.0.0.0:3847]` | HTTP/SSE server with JSON-RPC, session management, real-time event streaming |
+| **ACP** | `cargo run -- acp` | ACP stdio adapter for IDE/editor integration |
 | **Web** | `cd frontend && npm run dev` | Browser-based chat interface connected to the server via SSE |
 | **Desktop** | `cd frontend && npm run tauri:dev` | Tauri desktop app (auto-launches server as sidecar) |
+
+### TUI Reference
+
+**Keyboard Shortcuts:**
+
+| Key | Action |
+|---|---|
+| `Enter` | Submit prompt / accept slash command selection |
+| `Shift+Enter` / `Alt+Enter` | Insert newline |
+| `Esc` | Close slash palette / stop streaming turn |
+| `Tab` | Complete slash command selection |
+| `Shift+Tab` | Trigger plugin-registered keybinding |
+| `Ctrl+A` / `Ctrl+E` | Move to start / end of line |
+| `Ctrl+U` / `Ctrl+K` | Delete before / after cursor |
+| `Ctrl+W` | Delete previous word |
+| `Ctrl+C` | Quit (with confirmation) |
+
+**Slash Commands:**
+
+| Command | Description |
+|---|---|
+| `/new` | Create a fresh session |
+| `/resume <id>` or `/r <id>` | Resume a previous session |
+| `/sessions` or `/ls` | Open session picker |
+| `/compact` | Compact the current session context |
+| `/help` or `/?` | Show command help |
+| `/quit` or `/q` | Exit astrcode |
+
+Plugin extensions can register additional slash commands and keybindings at runtime.
+
+## Distribution
+
+Pre-built binaries are available for Linux, macOS, and Windows (x86_64 + aarch64) via GitHub Releases on every version tag. A weekly automated release pipeline publishes patch bumps every Monday.
+
+NPM packages (`@anthropics/astrcode`) are also published for all platforms.
 
 ## Acknowledgments
 

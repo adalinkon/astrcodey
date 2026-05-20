@@ -45,6 +45,8 @@ pub const DEFAULT_POST_COMPACT_MAX_TOKENS_PER_FILE: usize = 5_000;
 pub const DEFAULT_AGENT_MAX_DEPTH: usize = 2;
 /// 单轮中允许同时执行的并行工具调用数上限。
 pub const DEFAULT_AGENT_TOOL_MAX_PARALLEL_CALLS: usize = 5;
+/// Shell 工具默认超时时间（秒）。足以覆盖多数构建/安装命令。
+pub const DEFAULT_SHELL_TIMEOUT_SECS: u64 = 120;
 
 // ── WASM 扩展资源限制默认值 ──────────────────────────────────────────────
 

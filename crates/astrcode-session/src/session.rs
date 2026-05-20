@@ -262,7 +262,7 @@ impl Session {
     ) -> Arc<astrcode_tools::registry::ToolRegistry> {
         let caps = &self.caps;
         let runtime = &self.runtime;
-        let timeout = caps.read_effective().llm.read_timeout_secs;
+        let timeout = caps.read_effective().agent.shell_timeout_secs;
         let tool_policy = runtime.tool_policy();
         let registry = crate::session_setup::build_tool_registry_snapshot(
             caps.extension_runner(),

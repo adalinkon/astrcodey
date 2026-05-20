@@ -9,6 +9,8 @@ astrcode/
 ├── src-tauri/           # Tauri 配置和 Rust 桥接代码
 ├── docs/                # 项目文档
 ├── scripts/             # 开发工具脚本
+├── npm/                 # NPM 分发包配置
+├── .github/workflows/   # CI/CD 工作流
 └── target/              # 构建输出
 ```
 
@@ -16,49 +18,73 @@ astrcode/
 
 ### Layer 0: Foundation (基础层)
 
-| Crate | 描述 |
-|-------|------|
-| `astrcode-core` | 共享领域类型与核心 trait，包括 tool、LLM provider、config 抽象、extension contract、prompt 组装 trait |
-| `astrcode-support` | 宿主环境集成辅助能力，包括路径解析、shell 检测 |
-| `astrcode-log` | 文件旋转、stderr 输出、env-filter 日志 |
+| Crate | 行数 | 描述 |
+|-------|------|------|
+| `astrcode-core` | 4.7k | 共享领域类型与核心 trait，包括 tool、LLM provider、config 抽象、extension contract、prompt 组装 trait、StatusItem/Keybinding 类型 |
+| `astrcode-support` | 635 | 宿主环境集成辅助能力，包括路径解析、shell 检测、文本处理 |
+| `astrcode-log` | 353 | 文件旋转、stderr 输出、env-filter 日志 |
 
 ### Layer 1: Services (服务层)
 
-| Crate | 描述 |
-|-------|------|
-| `astrcode-ai` | OpenAI 兼容 provider、SSE 流解析、重试、缓存追踪 |
-| `astrcode-tools` | 内置工具、工具注册表、执行包装、agent 协作工具 |
-| `astrcode-storage` | JSONL event log、snapshot、config 持久化、锁 |
-| `astrcode-context` | token 估算、tool result 预算、裁剪、压缩、文件恢复、prompt engine |
-| `astrcode-session` | 会话运行时：session handle、turn 执行、工具管线、事件 fanout、SessionRuntimeServices 共享 |
-| `astrcode-extensions` | 扩展加载、生命周期分发、hook 执行策略、超时处理、能力注册、WASM 扩展运行时 |
+| Crate | 行数 | 描述 |
+|-------|------|------|
+| `astrcode-ai` | 3.6k | OpenAI 兼容 provider、SSE 流解析、重试、缓存追踪 |
+| `astrcode-tools` | 4.6k | 内置工具（read/write/edit/patch/find/grep/shell/task）、工具注册表、执行包装、agent 协作工具 |
+| `astrcode-storage` | 3.5k | JSONL event log、snapshot、config 持久化、锁 |
+| `astrcode-context` | 3.5k | token 估算、tool result 预算、裁剪、压缩、文件恢复、prompt engine |
+| `astrcode-session` | 5.2k | 会话运行时：session handle、turn 执行、工具管线、事件 fanout、SessionRuntimeServices 共享 |
+| `astrcode-extensions` | 2.9k | 扩展加载、生命周期分发、hook 执行策略、超时处理、能力注册、WASM 扩展运行时、keybinding/status item 收集 |
 
 ### Layer 2: Extensions (扩展层)
 
-| Crate | 描述 |
-|-------|------|
-| `astrcode-extension-mode` | Agent 运行模式切换（Code / Plan），包含 Exit Gate、计划 Artifact 持久化 |
-| `astrcode-extension-skill` | 斜杠命令技能发现与分发 |
-| `astrcode-extension-todo-tool` | 进度追踪 Todo 工具 |
-| `astrcode-extension-agent-tools` | 子 Agent 委派（Agent 工具） |
-| `astrcode-extension-mcp` | MCP 协议客户端（stdio）、工具发现 |
-| `astrcode-bundled-extensions` | 可选扩展 crate 的组合根，通过 feature flag 控制启用 |
+| Crate | 行数 | 描述 |
+|-------|------|------|
+| `astrcode-extension-mode` | 1.2k | Agent 运行模式切换（Code / Plan），包含 Exit Gate、计划 Artifact 持久化、快捷键与状态栏注册 |
+| `astrcode-extension-skill` | 949 | 斜杠命令技能发现与分发 |
+| `astrcode-extension-todo-tool` | 733 | 进度追踪 Todo 工具 |
+| `astrcode-extension-agent-tools` | 720 | 子 Agent 委派（Agent 工具） |
+| `astrcode-extension-mcp` | 1.9k | MCP 协议客户端（stdio）、工具发现 |
+| `astrcode-bundled-extensions` | 39 | 可选扩展 crate 的组合根，通过 feature flag 控制启用 |
 
 ### Layer 3: Server (服务层)
 
-| Crate | 描述 |
-|-------|------|
-| `astrcode-protocol` | 类型化 JSON-RPC 命令、事件、UI 子协议、版本协商 |
-| `astrcode-server` | session 生命周期、agent 编排、config service、transport handling |
+| Crate | 行数 | 描述 |
+|-------|------|------|
+| `astrcode-protocol` | 1.2k | 类型化 JSON-RPC 命令、事件、UI 子协议、HTTP DTO、Keybinding/StatusItem DTO |
+| `astrcode-server` | 9.3k | session 生命周期、agent 编排、config service、transport handling、HTTP 子模块（routes/projection/stream/auth） |
 
-### Layer 4: Frontend (前端层)
+### Layer 4: Client (客户端层)
 
-| Crate | 描述 |
-|-------|------|
-| `astrcode-client` | 面向 transport 的类型化 client 抽象 |
-| `astrcode-cli` | Terminal UI (ratatui)、headless exec、server launcher |
+| Crate | 行数 | 描述 |
+|-------|------|------|
+| `astrcode-client` | 521 | 面向 transport 的类型化 client 抽象 |
+| `astrcode-cli` | 8.2k | Terminal UI (ratatui)、headless exec、server launcher、keybinding 运行时 |
 
-## Frontend 结构
+## HTTP 模块结构
+
+`astrcode-server` 的 HTTP 层已拆分为 `http/` 子模块：
+
+```
+crates/astrcode-server/src/http/
+├── mod.rs              # HTTP 模块入口
+├── server.rs           # Axum 路由注册、CORS、静态文件
+├── auth.rs             # API Key 认证中间件
+├── stream.rs           # SSE 事件流（cursor 断连恢复）
+├── projection/         # 事件投影（EventStore → HTTP DTO）
+│   ├── mod.rs
+│   ├── args.rs         # 参数解析
+│   ├── blocks.rs       # 消息块投影
+│   ├── live.rs         # 实时 SSE delta 投影
+│   └── replay.rs       # 历史回放投影
+└── routes/             # REST 路由
+    ├── mod.rs
+    ├── config.rs       # /api/config*
+    ├── lifecycle.rs    # /api/shutdown
+    ├── models.rs       # /api/models*
+    └── sessions.rs     # /api/sessions*
+```
+
+## 前端结构
 
 ### 技术栈
 
@@ -82,10 +108,11 @@ frontend/
 │   │   └── ErrorBoundary.tsx
 │   ├── services/
 │   │   ├── api.ts          # HTTP API 调用
-│   │   ├── protocol.ts     # 协议类型定义
-│   │   └── sse-stream.ts   # SSE 流处理（Tauri 环境使用 plugin-http）
+│   │   ├── protocol.ts     # 协议类型定义与解码器
+│   │   ├── sse-stream.ts   # SSE 流处理（Tauri 环境使用 plugin-http）
+│   │   └── types.ts        # TypeScript 类型（含 KeybindingInfo、StatusItemInfo）
 │   ├── store/
-│   │   └── conversation.ts # 会话状态管理
+│   │   └── conversation.ts # 会话状态管理（Zustand）
 │   ├── hooks/
 │   ├── lib/
 │   │   ├── hostBridge.ts   # 与 Tauri/Host 通信
@@ -118,6 +145,29 @@ src-tauri/
 - **通信方式**: HTTP API + SSE（本地动态端口）
 - **HTTP Plugin**: 通过 `tauri-plugin-http` 绕过 webkit2gtk 网络栈，解决 Linux SSE 缓冲问题
 - **安全策略**: CSP 配置限制外部连接
+
+## CI/CD 工作流
+
+```
+.github/workflows/
+├── ci.yml               # 持续集成：Rust fmt/clippy/test + 前端检查，跨平台
+├── release.yml          # 版本发布：标签触发，构建 CLI 二进制 + 桌面包 + NPM 发布
+└── weekly-release.yml   # 每周自动发布：周一 08:00 UTC 自动计算版本号并推送标签
+```
+
+## 辅助目录
+
+```
+scripts/
+├── check-deps.py            # 依赖方向检查
+└── prepare-npm-packages.sh  # NPM 包准备脚本
+
+npm/
+└── astrcode/                # NPM 分发包
+    ├── package.json
+    ├── install.js
+    └── bin/astrcode
+```
 
 ## 构建命令
 
@@ -156,6 +206,6 @@ npm run check
 
 ## 总计代码统计
 
-- **Rust**: ~50k 行，19 crates，158 源文件
-- **TypeScript/TSX**: ~4.7k 行，34 源文件
+- **Rust**: ~54k 行，19 crates，192 源文件
+- **TypeScript/TSX**: ~4.8k 行，34 源文件
 - **Tauri (Rust)**: ~670 行

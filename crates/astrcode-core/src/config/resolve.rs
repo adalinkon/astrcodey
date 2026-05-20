@@ -136,6 +136,10 @@ impl Config {
                     .runtime
                     .agent_tool_max_parallel_calls
                     .unwrap_or(super::defaults::DEFAULT_AGENT_TOOL_MAX_PARALLEL_CALLS),
+                shell_timeout_secs: self
+                    .runtime
+                    .shell_timeout_secs
+                    .unwrap_or(super::defaults::DEFAULT_SHELL_TIMEOUT_SECS),
             },
             wasm: WasmSettings {
                 fuel: self
