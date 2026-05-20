@@ -12,7 +12,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, layout::Position};
 
-use crate::tui_v2::{
+use crate::tui::{
     custom_terminal::Terminal as CustomTerminal, insert_history::insert_history_lines,
     render::scrollback_entry_to_lines, store::transcript::ScrollbackEntry, theme::Theme,
 };
@@ -35,8 +35,8 @@ impl TerminalSession {
         let mut backend = CrosstermBackend::new(stdout);
 
         #[cfg(unix)]
-        let cursor_pos = match crate::tui_v2::terminal_probe::cursor_position(
-            crate::tui_v2::terminal_probe::DEFAULT_TIMEOUT,
+        let cursor_pos = match crate::tui::terminal_probe::cursor_position(
+            crate::tui::terminal_probe::DEFAULT_TIMEOUT,
         ) {
             Ok(Some(pos)) => pos,
             _ => Position { x: 0, y: 0 },
@@ -72,7 +72,7 @@ impl TerminalSession {
     /// Draw the bottom inline viewport.
     pub fn draw_frame<F>(&mut self, render_fn: F) -> io::Result<()>
     where
-        F: FnOnce(&mut crate::tui_v2::custom_terminal::Frame<'_>),
+        F: FnOnce(&mut crate::tui::custom_terminal::Frame<'_>),
     {
         let pending_viewport_area = self.pending_viewport_area()?;
         let _ = io::stdout().sync_update(|_| {

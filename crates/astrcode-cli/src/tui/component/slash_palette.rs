@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use super::{Component, KeyOutcome};
-use crate::tui_v2::{
+use crate::tui::{
     command::slash::{SlashCommandSpec, filtered},
     theme::Theme,
 };

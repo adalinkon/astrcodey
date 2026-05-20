@@ -9,7 +9,6 @@
 mod exec;
 mod transport;
 mod tui;
-mod tui_v2; // Phase 6: will replace tui once complete
 
 use std::{net::SocketAddr, sync::Arc};
 

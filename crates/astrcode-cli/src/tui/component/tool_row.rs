@@ -6,7 +6,7 @@ use astrcode_core::{render::RenderSpec, tool::ToolResult};
 use ratatui::{buffer::Buffer, layout::Rect, prelude::Widget, text::Line, widgets::Paragraph};
 
 use super::Component;
-use crate::tui_v2::{
+use crate::tui::{
     ext::tool::{ToolRenderCtx, ToolRenderer},
     render::render_spec_to_lines,
     theme::Theme,

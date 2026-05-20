@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use ratatui::{buffer::Buffer, layout::Rect};
 
 use super::{Component, KeyOutcome, tool_row::ToolRow};
-use crate::tui_v2::store::transcript::ScrollbackEntry;
+use crate::tui::store::transcript::ScrollbackEntry;
 
 pub struct Transcript {
     pub active_tool_rows: HashMap<String, ToolRow>,

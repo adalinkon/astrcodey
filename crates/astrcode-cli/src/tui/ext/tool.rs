@@ -94,7 +94,7 @@ impl ToolRendererRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui_v2::ext::fallback::DefaultToolRenderer;
+    use crate::tui::ext::fallback::DefaultToolRenderer;
 
     struct NamedRenderer(String);
     impl ToolRenderer for NamedRenderer {

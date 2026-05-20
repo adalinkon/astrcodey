@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use super::{Component, KeyOutcome};
-use crate::tui_v2::theme::Theme;
+use crate::tui::theme::Theme;
 
 pub struct Footer {
     pub status: String,

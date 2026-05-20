@@ -3,7 +3,7 @@
 //! Parses "child " prefixed structured events from ToolOutputDelta,
 //! accumulates assistant text, and emits compact scrollback entries.
 
-use crate::tui_v2::store::transcript::{MessageRole, ScrollbackEntry};
+use crate::tui::store::transcript::{MessageRole, ScrollbackEntry};
 
 #[derive(Debug, Clone, Default)]
 pub struct ChildAgentTracker {

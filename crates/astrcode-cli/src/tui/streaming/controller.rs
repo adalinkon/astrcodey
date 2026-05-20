@@ -3,7 +3,7 @@
 use ratatui::text::Line;
 
 use super::StreamState;
-use crate::tui_v2::{
+use crate::tui::{
     render::{render_spec_to_lines, visual_lines},
     theme::Theme,
 };

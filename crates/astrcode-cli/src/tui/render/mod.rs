@@ -10,7 +10,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthChar;
 
-use crate::tui_v2::theme::Theme;
+use crate::tui::theme::Theme;
 
 /// Convert a `RenderSpec` tree into a flat list of styled `Line`s.
 ///
@@ -532,7 +532,7 @@ pub fn layout_visual_text(text: &str, width: usize, cursor: Option<usize>) -> Vi
 
 // ─── Scrollback entry rendering ───────────────────────────────────────────────
 
-use crate::tui_v2::store::transcript::{Message, MessageRole, ScrollbackEntry};
+use crate::tui::store::transcript::{Message, MessageRole, ScrollbackEntry};
 
 pub fn scrollback_entry_to_lines(
     entry: &ScrollbackEntry,
