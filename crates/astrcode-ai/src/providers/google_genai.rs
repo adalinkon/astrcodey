@@ -55,7 +55,7 @@ impl GeminiProvider {
         messages: &[LlmMessage],
         tools: &[ToolDefinition],
     ) -> serde_json::Value {
-        let mut system_instruction: Option<serde_json::Value> = None;
+        let mut system_texts: Vec<String> = Vec::new();
         let mut contents: Vec<serde_json::Value> = Vec::new();
         let mut pending_tool_results: Vec<serde_json::Value> = Vec::new();
 
@@ -71,10 +71,8 @@ impl GeminiProvider {
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
-                    if !text.is_empty() {
-                        system_instruction = Some(serde_json::json!({
-                            "parts": [{"text": text}]
-                        }));
+                    if !text.trim().is_empty() {
+                        system_texts.push(text);
                     }
                 },
                 LlmRole::Assistant => {
@@ -99,8 +97,10 @@ impl GeminiProvider {
             }
         });
 
-        if let Some(sys) = system_instruction {
-            body["systemInstruction"] = sys;
+        if !system_texts.is_empty() {
+            body["systemInstruction"] = serde_json::json!({
+                "parts": [{"text": system_texts.join("\n\n")}]
+            });
         }
         if let Some(t) = self.config.temperature {
             body["generationConfig"]["temperature"] = serde_json::json!(t);
@@ -352,6 +352,29 @@ mod tests {
         assert_eq!(contents[1]["role"], "user");
         let parts = contents[1]["parts"].as_array().unwrap();
         assert_eq!(parts.len(), 2);
+    }
+
+    #[test]
+    fn request_body_preserves_multiple_system_messages() {
+        let provider = GeminiProvider::new(
+            LlmClientConfig::default(),
+            "gemini-test".into(),
+            Some(1024),
+            Some(8192),
+        );
+        let body = provider.build_request_body(
+            &[
+                LlmMessage::system("static instructions"),
+                LlmMessage::system("project instructions"),
+                LlmMessage::user("hi"),
+            ],
+            &[],
+        );
+
+        assert_eq!(
+            body["systemInstruction"]["parts"][0]["text"],
+            "static instructions\n\nproject instructions"
+        );
     }
 
     #[test]

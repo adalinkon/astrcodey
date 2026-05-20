@@ -73,11 +73,10 @@ impl ToolHandler for TodoWriteToolHandler {
             ProgressListStore::new(progress_store_root(ctx.session_id.as_str(), working_dir));
         Ok(match handle_todo_write(arguments, &store) {
             Ok(result) => result,
-            Err(error) => ToolResult::text(
-                error.clone(),
-                true,
-                tool_metadata([("error", json!(error))]),
-            ),
+            Err(error) => {
+                let meta = tool_metadata([("error", json!(&error))]);
+                ToolResult::text(error, true, meta)
+            },
         })
     }
 }

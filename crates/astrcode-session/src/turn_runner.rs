@@ -7,7 +7,10 @@
 
 use std::sync::Arc;
 
-use astrcode_context::{compaction::CompactResult, context_assembler::ContextPrepareInput};
+use astrcode_context::{
+    compaction::CompactResult, context_assembler::ContextPrepareInput,
+    prompt_engine::system_messages_from_prompt,
+};
 use astrcode_core::{
     event::{Event, EventPayload},
     extension::{CompactTrigger, ExtensionEvent, ProviderEvent, ProviderResult},
@@ -385,15 +388,21 @@ impl TurnRunner {
 
         tracing::info!(session_id = %self.shared.session_id, "system_prompt changed mid-turn, refreshing");
         self.system_prompt = prompt;
-        if let Some(msg) = state
+
+        // 替换所有 system message：移除旧的，插入 KV 缓存分组后的新消息
+        let new_system_messages = system_messages_from_prompt(&self.system_prompt);
+        let non_system: Vec<LlmMessage> = state
             .messages
-            .iter_mut()
-            .find(|message| message.role == LlmRole::System)
-        {
-            msg.content = vec![LlmContent::Text {
-                text: self.system_prompt.clone(),
-            }];
-        }
+            .iter()
+            .filter(|message| message.role != LlmRole::System)
+            .cloned()
+            .collect();
+
+        let mut messages = Vec::with_capacity(new_system_messages.len() + non_system.len());
+        messages.extend(new_system_messages);
+        messages.extend(non_system);
+        state.messages = messages;
+
         Ok(())
     }
 

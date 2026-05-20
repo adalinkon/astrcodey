@@ -3,6 +3,20 @@
 //! prompt 组装走 pipeline：结构化输入 → `build_system_prompt()` 纯函数 → 完整字符串。
 //! 扩展通过 `PromptBuild` 事件追加结构化内容，不写固定 section。
 
+/// 系统提示词 section 的 KV 缓存分组。
+///
+/// 静态前缀跨 session 复用（Identity → Communication），半静态随项目变化，
+/// 动态部分每次可能不同（工具摘要、扩展块等）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptSectionGroup {
+    /// Identity、System、TaskGuidelines、Communication — 跨 session 稳定。
+    Static,
+    /// Environment、UserRules、ProjectRules — 同项目内稳定。
+    SemiStatic,
+    /// ToolSummary、ExtensionPrompt、ExtraInstructions — 每次可能不同。
+    Dynamic,
+}
+
 /// 最终组装的提示词计划。
 #[derive(Debug, Clone)]
 pub struct PromptPlan {

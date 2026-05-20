@@ -109,21 +109,19 @@ impl ToolHandler for ModeToolHandler {
             SWITCH_MODE_TOOL_NAME => Ok(
                 match handle_switch_mode(arguments, &mode_root, &plan_dir, &self.catalog) {
                     Ok(result) => result,
-                    Err(error) => ToolResult::text(
-                        error.clone(),
-                        true,
-                        tool_metadata([("error", json!(error))]),
-                    ),
+                    Err(error) => {
+                        let meta = tool_metadata([("error", json!(&error))]);
+                        ToolResult::text(error, true, meta)
+                    },
                 },
             ),
             UPSERT_PLAN_TOOL_NAME => {
                 Ok(match handle_upsert_plan(arguments, &mode_root, &plan_dir) {
                     Ok(result) => result,
-                    Err(error) => ToolResult::text(
-                        error.clone(),
-                        true,
-                        tool_metadata([("error", json!(error))]),
-                    ),
+                    Err(error) => {
+                        let meta = tool_metadata([("error", json!(&error))]);
+                        ToolResult::text(error, true, meta)
+                    },
                 })
             },
             _ => Err(ExtensionError::NotFound(tool_name.into())),

@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 
+use astrcode_context::prompt_engine::system_messages_from_prompt;
 use astrcode_core::{
     llm::{LlmMessage, LlmRole},
     tool::{ToolDefinition, ToolPromptMetadata, ToolResult},
@@ -28,10 +29,10 @@ impl TurnState {
         user_text: &str,
         all_tools: Vec<(ToolDefinition, Option<ToolPromptMetadata>)>,
     ) -> Self {
-        let mut messages = Vec::with_capacity(initial_history.len() + 2);
-        if !system_prompt.trim().is_empty() {
-            messages.push(LlmMessage::system(system_prompt));
-        }
+        let mut messages = Vec::with_capacity(initial_history.len() + 4);
+        // KV 缓存分组：将系统提示词按 Static/SemiStatic/Dynamic 拆成多条 system message，
+        // 让 Anthropic 和 OpenAI 的前缀缓存机制自然生效。
+        messages.extend(system_messages_from_prompt(system_prompt));
         messages.extend(
             initial_history
                 .into_iter()

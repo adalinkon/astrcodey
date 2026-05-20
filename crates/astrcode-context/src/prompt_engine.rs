@@ -27,8 +27,10 @@ use std::{
 };
 
 use astrcode_core::{
+    llm::LlmMessage,
     prompt::{
-        ExtensionPromptBlock, ExtensionSection, PromptPlan, PromptProvider, SystemPromptInput,
+        ExtensionPromptBlock, ExtensionSection, PromptPlan, PromptProvider, PromptSectionGroup,
+        SystemPromptInput,
     },
     tool::{ToolDefinition, ToolOrigin, ToolPromptMetadata},
 };
@@ -730,6 +732,123 @@ fn non_empty_string(text: String) -> Option<String> {
     } else {
         Some(text)
     }
+}
+
+// ─── KV 缓存分组解析 ─────────────────────────────────────────────────────
+
+/// 已知的 section 标题及其 KV 缓存分组。
+///
+/// 只列出内置的固定 section。插件贡献的 section（Skills、Agents 等）
+/// 不在此列——未知标题统一按 Dynamic 处理。
+const SECTION_GROUP_MAP: &[(&str, PromptSectionGroup)] = &[
+    ("Identity", PromptSectionGroup::Static),
+    ("System", PromptSectionGroup::Static),
+    ("Task Guidelines", PromptSectionGroup::Static),
+    ("Communication", PromptSectionGroup::Static),
+    ("Environment", PromptSectionGroup::SemiStatic),
+    ("User Rules", PromptSectionGroup::SemiStatic),
+    ("Project Rules", PromptSectionGroup::SemiStatic),
+    ("Tool Summary", PromptSectionGroup::Dynamic),
+    ("Additional Instructions", PromptSectionGroup::Dynamic),
+];
+
+/// 将 section 标题映射到 KV 缓存分组。未知标题默认为 Dynamic。
+fn section_title_to_group(title: &str) -> PromptSectionGroup {
+    SECTION_GROUP_MAP
+        .iter()
+        .find(|(t, _)| *t == title)
+        .map(|(_, g)| *g)
+        .unwrap_or(PromptSectionGroup::Dynamic)
+}
+
+/// 从已渲染的系统提示词文本中解析出各个 section。
+///
+/// 渲染格式为 `[Title]\n  body\n\n[Title]\n  body`，section 之间用 `\n\n` 分隔。
+/// section 标题总是出现在行首（无缩进），正文始终缩进两格，因此 `\n\n[` 只出现在
+/// section 边界，不会与正文内容混淆。
+fn parse_rendered_sections(text: &str) -> Vec<(String, String)> {
+    let text = text.trim();
+    if text.is_empty() || !text.starts_with('[') {
+        return Vec::new();
+    }
+
+    let mut sections = Vec::new();
+    let mut current_start = 0;
+
+    // 从偏移 1 开始查找 `\n\n[` 模式，跳过第一个 `[`
+    let bytes = text.as_bytes();
+    let mut i = 1;
+    while i < bytes.len() - 2 {
+        if bytes[i] == b'\n' && bytes[i + 1] == b'\n' && bytes[i + 2] == b'[' {
+            let section_text = text[current_start..i].trim();
+            if let Some((title, body)) = parse_single_section(section_text) {
+                sections.push((title, body));
+            }
+            current_start = i + 2; // 指向下一个 `[`
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+
+    // 处理最后一个 section
+    let section_text = text[current_start..].trim();
+    if let Some((title, body)) = parse_single_section(section_text) {
+        sections.push((title, body));
+    }
+
+    sections
+}
+
+/// 解析单个 section：`[Title]\n  body` → (title, body)
+fn parse_single_section(text: &str) -> Option<(String, String)> {
+    let text = text.trim();
+    if !text.starts_with('[') {
+        return None;
+    }
+    let close = text.find(']')?;
+    let title = text[1..close].to_string();
+    let body = text[close + 1..].trim().to_string();
+    Some((title, body))
+}
+
+/// 将已渲染的系统提示词按 KV 缓存分组拆成多个 `LlmMessage::system()`。
+///
+/// 返回值按 Static → SemiStatic → Dynamic 顺序排列，每组一个 `LlmMessage`。
+/// 未知 section 标题（插件贡献的）默认归入 Dynamic 分组。
+/// 若无法解析 section 标记（如旧格式 prompt），回退为单条 system message。
+pub fn system_messages_from_prompt(text: &str) -> Vec<LlmMessage> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let parsed = parse_rendered_sections(trimmed);
+    if parsed.is_empty() {
+        return vec![LlmMessage::system(text)];
+    }
+
+    // 将连续相同分组的 section 合并为一条消息
+    let mut groups: Vec<(PromptSectionGroup, String)> = Vec::new();
+    for (title, body) in &parsed {
+        let group = section_title_to_group(title);
+        let section_text = format!("[{}]\n{}", title, body);
+
+        if let Some(last) = groups.last_mut() {
+            if last.0 == group {
+                last.1.push_str("\n\n");
+                last.1.push_str(&section_text);
+                continue;
+            }
+        }
+        groups.push((group, section_text));
+    }
+
+    groups
+        .into_iter()
+        .filter(|(_, text)| !text.trim().is_empty())
+        .map(|(_, text)| LlmMessage::system(text))
+        .collect()
 }
 
 // ─── Prompt file loading ───────────────────────────────────────────────

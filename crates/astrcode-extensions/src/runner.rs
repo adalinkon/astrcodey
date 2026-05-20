@@ -387,15 +387,12 @@ impl ExtensionRunner {
                         },
                         PostToolUseResult::ModifyResult { content } => {
                             let is_error = ctx.tool_result.is_error;
-                            ctx.tool_result = ToolResult {
-                                content: content.clone(),
-                                error: if is_error {
-                                    Some(content)
-                                } else {
-                                    ctx.tool_result.error.clone()
-                                },
-                                ..ctx.tool_result.clone()
-                            };
+                            if is_error {
+                                ctx.tool_result.error = Some(content.clone());
+                                ctx.tool_result.content = content;
+                            } else {
+                                ctx.tool_result.content = content;
+                            }
                             modified = true;
                         },
                         PostToolUseResult::Allow => {},

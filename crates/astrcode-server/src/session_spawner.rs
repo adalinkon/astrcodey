@@ -132,8 +132,8 @@ impl ServerSessionSpawner {
     > {
         let parent_session_id = SessionId::from(parent_session_id);
         let progress = ProgressTx::new(request.tool_call_id, request.event_tx);
-        let child_name = request.name.clone();
-        let user_prompt = request.user_prompt.clone();
+        let child_name = request.name;
+        let user_prompt = request.user_prompt;
 
         let parent_session = Arc::new(
             self.session_manager
@@ -189,7 +189,7 @@ impl ServerSessionSpawner {
 
         // 追加 TurnStarted + UserMessage 到子 session（通过 child.emit_durable 写 store + fanout，
         // ChildProgressSink 在后续 submit 路径里负责转发到父 progress）。
-        let user_prompt_for_submit = request.user_prompt.clone();
+        let user_prompt_for_submit = user_prompt.clone();
         for payload in agent_turn_started_durable_payloads(new_message_id(), user_prompt) {
             // 这两条事件先于 submit 写入；progress 转发由 spawn_sync/async 内的 sink 接管。
             // 这里手动转发一次，避免 prepare 阶段的事件被父 progress 漏掉。

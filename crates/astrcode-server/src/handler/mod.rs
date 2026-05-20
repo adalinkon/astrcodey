@@ -203,21 +203,21 @@ impl CommandHandler {
 
     /// 发送当前会话快照，用于客户端初次同步或恢复。
     async fn send_current_state(&mut self) {
-        let Some(session_id) = self.active_session_id.clone() else {
+        let Some(session_id) = self.active_session_id.as_ref() else {
             self.send_error(40400, "No active session");
             return;
         };
         match self
             .runtime
             .event_store
-            .session_read_model(&session_id)
+            .session_read_model(session_id)
             .await
         {
             Ok(state) => {
                 let snapshot = session_snapshot(&state);
                 self.event_bus
                     .send_notification(ClientNotification::SessionResumed {
-                        session_id: session_id.into_string(),
+                        session_id: session_id.to_string(),
                         snapshot,
                     });
             },
@@ -297,7 +297,7 @@ impl CommandHandler {
 
     /// 获取当前会话的工作目录，无活跃会话则返回当前目录。
     async fn active_session_working_dir(&self) -> Result<String, String> {
-        let Some(sid) = self.active_session_id.clone() else {
+        let Some(sid) = self.active_session_id.as_ref() else {
             return Ok(std::env::current_dir()
                 .unwrap_or_default()
                 .to_string_lossy()
@@ -305,7 +305,7 @@ impl CommandHandler {
         };
         self.runtime
             .session_manager
-            .read_model(&sid)
+            .read_model(sid)
             .await
             .map(|state| state.working_dir)
             .map_err(|e| format!("read session {sid}: {e}"))
