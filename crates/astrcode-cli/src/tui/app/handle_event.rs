@@ -14,7 +14,7 @@ use astrcode_support::text::truncate_first_line;
 use super::App;
 use crate::tui::{
     command::slash::SlashCommandSpec,
-    store::transcript::{MessageRole, ScrollbackEntry},
+    store::transcript::{Message, MessageBody, MessageRole, ScrollbackEntry},
     streaming::controller::StreamController,
 };
 
@@ -405,6 +405,23 @@ fn apply_event(app: &mut App, event: &Event) {
             task_id, tool_name, ..
         } => {
             app.status_text = format!("{} background done ({})", tool_name, task_id);
+        },
+        EventPayload::Custom { name, data } => {
+            // 将自定义事件作为带 custom_type 的消息推入 scrollback。
+            // 如果 MessageRendererRegistry 中有匹配的渲染器，渲染时会分发给它；
+            // 否则降级为纯文本（名称 + JSON 预览）。
+            let fallback = format!("[{name}] {}", astrcode_support::text::compact_inline(&data.to_string(), 80));
+            let body = MessageBody::with_custom(name.clone(), data.clone(), fallback);
+            let msg = Message {
+                role: MessageRole::System,
+                label: name.clone(),
+                body,
+                is_streaming: false,
+                key: None,
+            };
+            app.scrollback_queue
+                .push(ScrollbackEntry::Message(msg.clone()));
+            app.messages.push(msg);
         },
         _ => {},
     }
