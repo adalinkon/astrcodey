@@ -297,54 +297,33 @@ fn apply_event(app: &mut App, event: &Event) {
             app.model_name = model_id.clone();
         },
         EventPayload::AgentSessionSpawned {
-            child_session_id,
+            child_session_id: _,
             agent_name,
             task,
             ..
         } => {
-            app.push_message(
-                MessageRole::System,
-                "Agent".into(),
-                format!(
-                    "spawned {} — {} ({})",
-                    agent_name,
-                    task,
-                    short_id(child_session_id.as_str())
-                ),
-                false,
-                None,
-            );
+            // Show only a short one-liner, not the full prompt.
+            let short_task = truncate_line(task, 50);
+            app.status_text = format!("● Agent: {} — {}", agent_name, short_task);
+            // Don't push to scrollback — too noisy. Just update status.
         },
         EventPayload::AgentSessionCompleted {
-            child_session_id,
+            child_session_id: _,
             summary,
             ..
         } => {
-            app.push_message(
-                MessageRole::System,
-                "Agent".into(),
-                format!(
-                    "completed ({}) — {}",
-                    short_id(child_session_id.as_str()),
-                    summary
-                ),
-                false,
-                None,
-            );
+            // Short completion notice — don't dump full summary.
+            app.status_text = format!("● Agent done — {}", truncate_line(summary, 50));
         },
         EventPayload::AgentSessionFailed {
-            child_session_id,
+            child_session_id: _,
             error,
             ..
         } => {
             app.push_message(
-                MessageRole::System,
+                MessageRole::Error,
                 "Agent".into(),
-                format!(
-                    "failed ({}) — {}",
-                    short_id(child_session_id.as_str()),
-                    error
-                ),
+                format!("✗ {}", truncate_line(error, 80)),
                 false,
                 None,
             );

@@ -646,7 +646,13 @@ pub fn message_to_lines(msg: &Message, width: u16, theme: &Theme) -> Vec<Line<'s
     if msg.is_streaming {
         lines.push(Line::from(vec![Span::styled("  ⋯", theme.dim)]));
     }
-    lines.push(Line::from(""));
+    // Only add blank line separator for User and Assistant messages (not Tool — too compact).
+    if matches!(
+        msg.role,
+        MessageRole::User | MessageRole::Assistant | MessageRole::System
+    ) {
+        lines.push(Line::from(""));
+    }
     lines
 }
 
