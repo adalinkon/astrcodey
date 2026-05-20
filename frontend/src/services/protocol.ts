@@ -407,8 +407,12 @@ export function decodeSlashCommandListResponse(
   const object = decodeObject(value, 'slash command list response')
   return {
     commands: arrayField(object, 'commands').map(decodeSlashCommandInfo),
-    keybindings: (object.keybindings as unknown[] ?? []).map(decodeKeybindingInfo),
-    statusItems: (object.statusItems as unknown[] ?? []).map(decodeStatusItemInfo),
+    keybindings: ((object.keybindings as unknown[]) ?? []).map(
+      decodeKeybindingInfo
+    ),
+    statusItems: ((object.statusItems as unknown[]) ?? []).map(
+      decodeStatusItemInfo
+    ),
   }
 }
 

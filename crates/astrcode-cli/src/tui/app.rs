@@ -30,6 +30,8 @@ pub struct App {
     pub error: Option<String>,
     pub is_streaming: bool,
     pub should_quit: bool,
+    /// Ctrl+C 二次确认：首次按下后等待第二次确认退出。
+    pub quit_pending: bool,
     pub extension_commands: Vec<SlashCommandSpec>,
     /// 插件注册的状态栏项（由 StatusItemUpdate 通知驱动）。
     pub status_items: BTreeMap<String, String>,
@@ -87,6 +89,7 @@ impl App {
             error: None,
             is_streaming: false,
             should_quit: false,
+            quit_pending: false,
             extension_commands: Vec::new(),
             status_items: BTreeMap::new(),
             keybindings: Vec::new(),
@@ -239,6 +242,24 @@ impl App {
         self.status_text = "Error".into();
     }
 
+    /// Ctrl+C 二次确认退出。首次按下显示提示，第二次确认退出。
+    pub fn handle_quit_request(&mut self) {
+        if self.quit_pending {
+            self.should_quit = true;
+        } else {
+            self.quit_pending = true;
+            self.status_text = "Press Ctrl+C again to quit".into();
+        }
+    }
+
+    /// 重置退出等待状态（任何非 Ctrl+C 的按键都应调用）。
+    pub fn reset_quit_pending(&mut self) {
+        if self.quit_pending {
+            self.quit_pending = false;
+            self.status_text = "Ready".into();
+        }
+    }
+
     pub fn resolve_session_id(&self, input: &str) -> String {
         let needle = input.trim();
         self.available_sessions
@@ -256,9 +277,7 @@ impl App {
             .available_sessions
             .iter()
             .filter(|s| {
-                !s.is_child
-                    && s.working_dir == *cwd
-                    && active.is_none_or(|a| s.session_id != a)
+                !s.is_child && s.working_dir == *cwd && active.is_none_or(|a| s.session_id != a)
             })
             .cloned()
             .collect();
@@ -287,6 +306,9 @@ impl App {
 
     pub fn session_picker_accept(&mut self) -> Option<String> {
         let picker = self.session_picker.take()?;
-        picker.items.get(picker.selected).map(|s| s.session_id.clone())
+        picker
+            .items
+            .get(picker.selected)
+            .map(|s| s.session_id.clone())
     }
 }

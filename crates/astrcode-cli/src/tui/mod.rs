@@ -186,6 +186,11 @@ async fn handle_key(
         return Ok(());
     }
 
+    // 任何非 Ctrl+C 的按键重置退出等待
+    if !(key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)) {
+        app.reset_quit_pending();
+    }
+
     match key.code {
         KeyCode::Esc => {
             if app.show_slash_palette {
@@ -270,7 +275,7 @@ async fn handle_key(
                     app.composer.delete_previous_word();
                 },
                 'c' => {
-                    app.should_quit = true;
+                    app.handle_quit_request();
                 },
                 _ => {},
             }
@@ -463,11 +468,7 @@ async fn execute_slash_command(
 }
 
 /// 通过插件注册的 keybinding 表分发快捷键 → 执行对应的扩展命令。
-async fn dispatch_keybinding(
-    key_id: &str,
-    app: &mut App,
-    client: &Arc<Client>,
-) -> io::Result<()> {
+async fn dispatch_keybinding(key_id: &str, app: &mut App, client: &Arc<Client>) -> io::Result<()> {
     if let Some((command, arguments)) = keybinding::find_command_for_key(&app.keybindings, key_id) {
         client
             .send_command(&ClientCommand::ExecuteExtensionCommand {
@@ -606,9 +607,15 @@ fn build_panel(app: &App, theme: &Theme) -> Panel {
         let window_end = (window_start + max_visible).min(total);
 
         let mut lines: Vec<Line<'static>> = Vec::new();
-        lines.push(Line::from(Span::styled("  Select session (↑↓ Enter Esc):", theme.dim)));
+        lines.push(Line::from(Span::styled(
+            "  Select session (↑↓ Enter Esc):",
+            theme.dim,
+        )));
         if window_start > 0 {
-            lines.push(Line::from(Span::styled(format!("    ↑ {} more", window_start), theme.dim)));
+            lines.push(Line::from(Span::styled(
+                format!("    ↑ {} more", window_start),
+                theme.dim,
+            )));
         }
         for i in window_start..window_end {
             let entry = &picker.items[i];
@@ -622,10 +629,16 @@ fn build_panel(app: &App, theme: &Theme) -> Panel {
             }
         }
         if window_end < total {
-            lines.push(Line::from(Span::styled(format!("    ↓ {} more", total - window_end), theme.dim)));
+            lines.push(Line::from(Span::styled(
+                format!("    ↓ {} more", total - window_end),
+                theme.dim,
+            )));
         }
         if total == 0 {
-            lines.push(Line::from(Span::styled("    No other sessions in this project", theme.dim)));
+            lines.push(Line::from(Span::styled(
+                "    No other sessions in this project",
+                theme.dim,
+            )));
         }
         lines
     } else {
