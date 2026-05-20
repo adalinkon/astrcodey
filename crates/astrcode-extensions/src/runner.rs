@@ -825,6 +825,7 @@ impl Tool for HandlerTool {
                     wait_for_result,
                     tool_policy,
                     ephemeral,
+                    notify_parent_on_complete,
                 }) => {
                     let request = SpawnRequest {
                         name,
@@ -839,6 +840,7 @@ impl Tool for HandlerTool {
                         source_plugin: (!self.extension_id.is_empty())
                             .then(|| self.extension_id.clone()),
                         ephemeral,
+                        notify_parent_on_complete,
                     };
 
                     match self.spawn(_ctx.session_id.as_str(), request).await {

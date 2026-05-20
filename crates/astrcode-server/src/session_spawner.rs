@@ -40,6 +40,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
     ) -> Result<SpawnResult, String> {
         let wait_for_result = request.wait_for_result;
         let ephemeral = request.ephemeral;
+        let notify_parent_on_complete = request.notify_parent_on_complete.clone();
         let (child_session, parent_session, child_turn_id, user_prompt, progress) =
             self.prepare(parent_session_id, request).await?;
         if wait_for_result {
@@ -60,6 +61,7 @@ impl astrcode_extensions::runtime::SessionSpawner for ServerSessionSpawner {
                 user_prompt,
                 progress,
                 ephemeral,
+                notify_parent_on_complete,
             )
             .await
         }
@@ -285,6 +287,7 @@ impl ServerSessionSpawner {
 
     // ─── 异步路径 ────────────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_async(
         &self,
         child_session: Arc<Session>,
@@ -293,6 +296,7 @@ impl ServerSessionSpawner {
         user_prompt: String,
         progress: ProgressTx,
         ephemeral: bool,
+        notify_parent_on_complete: Option<String>,
     ) -> Result<SpawnResult, String> {
         let child_sid = child_session.id().clone();
         let return_child_sid = child_sid.clone();
@@ -395,6 +399,27 @@ impl ServerSessionSpawner {
 
             if ephemeral {
                 recycle_ephemeral_child(&recycle_session_manager, &recycle_child_sid).await;
+            }
+
+            // 插件声明的完成通知：向父 session inject UserMessage。
+            if let Some(notify_text) = notify_parent_on_complete {
+                let message_id = new_message_id();
+                if let Err(e) = parent_session
+                    .emit_durable(
+                        None,
+                        EventPayload::UserMessage {
+                            message_id,
+                            text: notify_text,
+                        },
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        parent_session_id = %parent_sid,
+                        error = %e,
+                        "failed to inject notify_parent_on_complete message"
+                    );
+                }
             }
         });
 

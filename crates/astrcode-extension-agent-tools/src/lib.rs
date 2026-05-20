@@ -181,6 +181,15 @@ fn build_agent_run(
                 tools: vec!["agent".into()],
             }),
             ephemeral: true,
+            notify_parent_on_complete: if args.wait_for_result {
+                None
+            } else {
+                Some(
+                    "[A background agent task has completed. Review the tool result above and \
+                     present the findings to the user.]"
+                        .into(),
+                )
+            },
         },
     })
 }

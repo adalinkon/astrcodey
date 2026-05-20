@@ -43,6 +43,15 @@ pub struct SpawnRequest {
     pub source_plugin: Option<String>,
     /// 一次性子 session，完成后自动回收。
     pub ephemeral: bool,
+    /// 异步模式完成后向父 session 注入的消息文本。
+    ///
+    /// 仅 `wait_for_result = false` 时生效。设为 `Some(text)` 时，spawner 在子 agent
+    /// 完成后将 text 作为 `UserMessage` 写入父 session：
+    /// - 父有 active turn → TurnRunner 的 `drain_mid_turn_messages` 自动读到
+    /// - 父没有 active turn → 消息留在 event log，下次 turn 时进入 history
+    ///
+    /// 设为 `None` 则不通知（fire-and-forget）。
+    pub notify_parent_on_complete: Option<String>,
 }
 
 /// 子会话执行结果。

@@ -212,7 +212,7 @@ fn apply_event(app: &mut App, event: &Event) {
             if tool_name == "agent" {
                 app.child_agents.insert(
                     call_id.to_string(),
-                    crate::tui::store::child_agent::ChildAgentTracker::default(),
+                    crate::tui::store::child_agent::ChildAgentTracker,
                 );
                 app.scrollback_queue.push(ScrollbackEntry::StreamHeader {
                     role: MessageRole::Tool,

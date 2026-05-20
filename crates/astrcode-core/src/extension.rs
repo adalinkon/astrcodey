@@ -330,6 +330,14 @@ pub enum ExtensionToolOutcome {
         /// 一次性子 session，完成后自动回收。
         #[serde(default)]
         ephemeral: bool,
+        /// 异步模式完成后向父 session 注入的消息。
+        ///
+        /// 仅 `wait_for_result = false` 时生效。`Some(text)` 时 spawner 在子 agent
+        /// 完成后将 text 作为 `UserMessage` 写入父 session，父 agent 在下一个
+        /// step boundary（mid-turn inject）或下一轮 turn 中可见。
+        /// `None` 则不通知（fire-and-forget）。
+        #[serde(default)]
+        notify_parent_on_complete: Option<String>,
     },
 }
 
