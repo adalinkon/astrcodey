@@ -1,5 +1,10 @@
 # AstrCode
 
+cli：
+<img width="1210" height="924" alt="image" src="https://github.com/user-attachments/assets/55259723-9bd7-4a1a-a74e-1e799ece2eed" />
+
+app：
+web：
 <img width="1401" height="995" alt="image" src="https://github.com/user-attachments/assets/4e59f8fe-2344-4e78-ab36-c1fb19c549fc" />
 
 
