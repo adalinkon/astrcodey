@@ -96,6 +96,14 @@ impl CommandHandler {
             };
         }
 
+        // 内置 /model 命令
+        if command.name == "model" {
+            self.start_model_selection().await?;
+            return Ok(PromptSubmission::Handled {
+                message: "model selection started".into(),
+            });
+        }
+
         // 扩展命令分发
         let state = self.runtime.session_manager.read_model(&sid).await?;
         let cmd_ctx = astrcode_core::extension::CommandContext {
@@ -191,6 +199,16 @@ impl CommandHandler {
             &mut seen,
             "compact",
             "Compact the current session context",
+            false,
+            "builtin",
+        );
+
+        // 内置 model 命令
+        push_command_info(
+            &mut infos,
+            &mut seen,
+            "model",
+            "Select the active AI model",
             false,
             "builtin",
         );

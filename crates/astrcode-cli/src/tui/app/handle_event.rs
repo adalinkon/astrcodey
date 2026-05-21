@@ -7,7 +7,7 @@ use astrcode_core::{
     render::UI_RENDER_METADATA_KEY,
 };
 use astrcode_protocol::events::{
-    ClientNotification, ExtensionCommandInfo, SessionListItem, SessionSnapshot,
+    ClientNotification, ExtensionCommandInfo, SessionListItem, SessionSnapshot, UiRequestKind,
 };
 use astrcode_support::text::truncate_first_line;
 
@@ -29,9 +29,13 @@ pub fn apply(app: &mut App, notification: &ClientNotification) {
             apply_session_resumed(app, session_id, snapshot);
         },
         ClientNotification::SessionList { sessions } => apply_session_list(app, sessions),
-        ClientNotification::UiRequest { message, .. } => {
-            app.status_text = message.clone();
-        },
+        ClientNotification::UiRequest {
+            request_id,
+            kind,
+            message,
+            options,
+            ..
+        } => apply_ui_request(app, request_id, kind, message, options.as_deref()),
         ClientNotification::Error { message, .. } => {
             app.show_error(message);
         },
@@ -597,6 +601,27 @@ fn apply_session_list(app: &mut App, sessions: &[SessionListItem]) {
     // 如果 session_picker 处于打开状态，刷新 picker 内容（仅当前项目的 session）
     if app.session_picker.is_some() {
         app.open_session_picker();
+    }
+}
+
+fn apply_ui_request(
+    app: &mut App,
+    request_id: &str,
+    kind: &UiRequestKind,
+    message: &str,
+    options: Option<&[String]>,
+) {
+    match (kind, options) {
+        (UiRequestKind::Select, Some(options)) if !options.is_empty() => {
+            app.open_ui_picker(
+                request_id.to_string(),
+                message.to_string(),
+                options.to_vec(),
+            );
+        },
+        _ => {
+            app.status_text = message.to_string();
+        },
     }
 }
 
