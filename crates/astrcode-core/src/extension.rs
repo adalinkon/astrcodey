@@ -706,6 +706,7 @@ pub struct Registrar {
         std::sync::Arc<dyn LifecycleHandler>,
     )>,
     plugin_event_decls: Vec<PluginEventDecl>,
+    needs_plugin_data_dir: bool,
 }
 
 impl Registrar {
@@ -726,6 +727,7 @@ impl Registrar {
             post_tool_use_failure: Vec::new(),
             lifecycle: Vec::new(),
             plugin_event_decls: Vec::new(),
+            needs_plugin_data_dir: false,
         }
     }
 
@@ -836,6 +838,14 @@ impl Registrar {
             && self.post_tool_use_failure.is_empty()
             && self.lifecycle.is_empty()
             && self.plugin_event_decls.is_empty()
+            && !self.needs_plugin_data_dir
+    }
+
+    /// 声明插件需要专属数据目录（`~/.astrcode/plugin_data/<plugin_id>/`）。
+    ///
+    /// 注册后由 runtime 自动创建目录。插件通过 `hostpaths::plugin_data_dir()` 获取路径。
+    pub fn plugin_data_dir(&mut self) {
+        self.needs_plugin_data_dir = true;
     }
 
     /// 声明插件可发出的事件类型，返回构建器。
@@ -921,6 +931,10 @@ impl Registrar {
 
     pub fn plugin_event_decls(&self) -> &[PluginEventDecl] {
         &self.plugin_event_decls
+    }
+
+    pub fn needs_plugin_data_dir(&self) -> bool {
+        self.needs_plugin_data_dir
     }
 }
 

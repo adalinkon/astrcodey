@@ -129,6 +129,7 @@ struct HandlerIndex {
     keybindings: Vec<astrcode_core::extension::Keybinding>,
     status_items: Vec<astrcode_core::extension::StatusItem>,
     plugin_event_decls: HashMap<String, Vec<PluginEventDecl>>,
+    plugin_data_dir_plugins: std::collections::HashSet<String>,
 }
 
 fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
@@ -147,6 +148,7 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
     let mut keybindings: Vec<astrcode_core::extension::Keybinding> = Vec::new();
     let mut status_items: Vec<astrcode_core::extension::StatusItem> = Vec::new();
     let mut plugin_event_decls: HashMap<String, Vec<PluginEventDecl>> = HashMap::new();
+    let mut plugin_data_dir_plugins: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for record in records {
         for (mode, pri, h) in record.reg.pre_tool_use() {
@@ -193,6 +195,9 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
         if !record.reg.plugin_event_decls().is_empty() {
             plugin_event_decls.insert(record.id.clone(), record.reg.plugin_event_decls().to_vec());
         }
+        if record.reg.needs_plugin_data_dir() {
+            plugin_data_dir_plugins.insert(record.id.clone());
+        }
     }
 
     pre.sort_by_key(|b| std::cmp::Reverse(b.0));
@@ -219,6 +224,7 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
         keybindings,
         status_items,
         plugin_event_decls,
+        plugin_data_dir_plugins,
     }
 }
 
@@ -338,6 +344,7 @@ impl ExtensionRunner {
                 keybindings: Vec::new(),
                 status_items: Vec::new(),
                 plugin_event_decls: HashMap::new(),
+                plugin_data_dir_plugins: std::collections::HashSet::new(),
             })),
             session_ops: Arc::new(StdRwLock::new(None)),
             timeout,
@@ -369,10 +376,23 @@ impl ExtensionRunner {
         // register 是 startup 一次性路径，多持几毫秒锁不影响性能。
         if !reg.is_empty() {
             let mut records = self.records.write().await;
-            records.push(ExtensionRecord { id, reg });
+            records.push(ExtensionRecord {
+                id: id.clone(),
+                reg,
+            });
             log_handler_dispatch_order(&records);
             let new_index = Arc::new(build_handler_index(&records));
+            self.ensure_plugin_data_dirs(&new_index);
             *self.index.write() = new_index;
+        }
+    }
+
+    fn ensure_plugin_data_dirs(&self, index: &HandlerIndex) {
+        for plugin_id in &index.plugin_data_dir_plugins {
+            let dir = astrcode_support::hostpaths::plugin_data_dir(plugin_id);
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                tracing::warn!(plugin_id = %plugin_id, error = %e, "failed to create plugin data dir");
+            }
         }
     }
 
