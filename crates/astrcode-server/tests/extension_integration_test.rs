@@ -363,6 +363,7 @@ async fn extension_context_snapshot_works_for_nonblocking() {
         working_dir: "/tmp".into(),
         model: astrcode_core::config::ModelSelection::simple("test-model"),
         extension_event_sink: None,
+        last_exchange: None,
     };
 
     runner
@@ -383,6 +384,7 @@ async fn dispatch_with_no_registered_extensions_is_noop() {
         working_dir: "/tmp".into(),
         model: astrcode_core::config::ModelSelection::simple("noop"),
         extension_event_sink: None,
+        last_exchange: None,
     };
     runner
         .emit_lifecycle(astrcode_core::extension::ExtensionEvent::SessionStart, ctx)
@@ -404,6 +406,7 @@ async fn extension_subscribes_only_to_matching_events() {
         working_dir: "/tmp".into(),
         model: astrcode_core::config::ModelSelection::simple("test-model"),
         extension_event_sink: None,
+        last_exchange: None,
     };
     // SessionStart should pass through without blocking.
     runner

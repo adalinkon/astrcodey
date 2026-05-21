@@ -202,6 +202,7 @@ impl CommandHandler {
                 working_dir: session_state.working_dir,
                 model: astrcode_core::config::ModelSelection::simple(session_state.model_id),
                 extension_event_sink: None,
+                last_exchange: None,
             };
             if let Err(e) = self
                 .runtime

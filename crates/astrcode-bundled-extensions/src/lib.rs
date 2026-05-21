@@ -35,5 +35,7 @@ pub fn bundled_extensions() -> Vec<std::sync::Arc<dyn astrcode_core::extension::
         astrcode_extension_todo_tool::extension(),
         #[cfg(feature = "mode")]
         astrcode_extension_mode::extension(),
+        #[cfg(feature = "memory")]
+        astrcode_extension_memory::extension(None),
     ]
 }

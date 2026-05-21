@@ -199,11 +199,13 @@ dependencies = [
  "astrcode-core",
  "astrcode-extension-agent-tools",
  "astrcode-extension-mcp",
+ "astrcode-extension-memory",
  "astrcode-extension-mode",
  "astrcode-extension-skill",
  "astrcode-extension-todo-tool",
  "astrcode-extensions",
  "async-trait",
+ "tracing",
 ]
 
 [[package]]
@@ -340,6 +342,19 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "astrcode-extension-memory"
+version = "0.1.2"
+dependencies = [
+ "astrcode-core",
+ "astrcode-support",
+ "async-trait",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]

@@ -547,6 +547,13 @@ pub struct CompactContext {
     pub summary: Option<String>,
 }
 
+/// 当轮 user/assistant 消息摘要，仅 TurnEnd 事件填充。
+#[derive(Debug, Clone)]
+pub struct ExchangeSummary {
+    pub user_message: String,
+    pub assistant_message: String,
+}
+
 /// 通用生命周期钩子上下文。
 #[derive(Clone)]
 pub struct LifecycleContext {
@@ -555,6 +562,8 @@ pub struct LifecycleContext {
     pub model: ModelSelection,
     /// 插件事件发射器（仅插件钩子会有值）。
     pub extension_event_sink: Option<std::sync::Arc<dyn ExtensionEventSink>>,
+    /// 仅 TurnEnd 事件填充：当轮最后一条 user 和 assistant 消息文本。
+    pub last_exchange: Option<ExchangeSummary>,
 }
 
 impl std::fmt::Debug for LifecycleContext {
@@ -565,6 +574,7 @@ impl std::fmt::Debug for LifecycleContext {
                 "extension_event_sink",
                 &self.extension_event_sink.as_ref().map(|_| "<sink>"),
             )
+            .field("last_exchange", &self.last_exchange)
             .finish_non_exhaustive()
     }
 }

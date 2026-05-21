@@ -181,6 +181,7 @@ impl Session {
                     working_dir: model.working_dir.clone(),
                     model: ModelSelection::simple(model.model_id.clone()),
                     extension_event_sink: None,
+                    last_exchange: None,
                 },
             )
             .await?;
