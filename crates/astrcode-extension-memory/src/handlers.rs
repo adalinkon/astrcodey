@@ -132,7 +132,7 @@ impl ToolHandler for MemoryDeleteHandler {
         _tool_name: &str,
         arguments: serde_json::Value,
         _working_dir: &str,
-        _ctx: &astrcode_core::tool::ToolExecutionContext,
+        ctx: &astrcode_core::tool::ToolExecutionContext,
     ) -> Result<ToolResult, ExtensionError> {
         let args: DeleteArgs = serde_json::from_value(arguments)
             .map_err(|e| ExtensionError::Internal(e.to_string()))?;
@@ -141,10 +141,22 @@ impl ToolHandler for MemoryDeleteHandler {
         }
         let store = self.store.clone();
         let pattern = args.match_pattern;
+        let pattern_for_emit = pattern.clone();
         let removed = tokio::task::spawn_blocking(move || store.delete_by_content(&pattern))
             .await
             .map_err(|e| ExtensionError::Internal(e.to_string()))?
             .map_err(|e| ExtensionError::Internal(e.to_string()))?;
+
+        if !removed.is_empty() {
+            if let Some(ref sink) = ctx.capabilities.extension_event_sink {
+                let payload = json!({
+                    "match": pattern_for_emit,
+                    "deleted_count": removed.len(),
+                });
+                let _ = sink.emit("memory.deleted", 1, payload).await;
+            }
+        }
+
         if removed.is_empty() {
             Ok(ok_text("No matching memories found to delete.".to_string()))
         } else {
