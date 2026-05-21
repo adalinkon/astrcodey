@@ -1173,24 +1173,22 @@ async fn slash_compact_uses_backend_command_without_user_message() {
 }
 
 #[tokio::test]
-async fn unknown_slash_command_does_not_enter_llm_or_transcript() {
+async fn unknown_slash_command_falls_through_as_regular_prompt() {
     let runtime = test_runtime();
     let (event_tx, _) = tokio::sync::broadcast::channel(64);
     let handler =
         CommandHandler::spawn_actor(Arc::clone(&runtime), test_event_bus(&runtime, event_tx));
     let sid = handler.create_session(".".into()).await.unwrap();
 
-    let error = handler
+    // /missing-command 不是已知斜杠命令，应作为普通 prompt 提交并启动 turn
+    let result = handler
         .submit_input_for_session(sid.clone(), "/missing-command".into())
-        .await
-        .unwrap_err();
+        .await;
 
     assert!(
-        matches!(&error, HandlerError::UnknownCommand(cmd) if cmd == "missing-command"),
-        "expected UnknownCommand(missing-command), got {error:?}"
+        matches!(&result, Ok(PromptSubmission::Accepted { .. })),
+        "expected Accepted, got {result:?}"
     );
-    let state = runtime.event_store.session_read_model(&sid).await.unwrap();
-    assert!(state.messages.is_empty());
 }
 
 #[tokio::test]

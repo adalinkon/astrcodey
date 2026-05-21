@@ -351,15 +351,24 @@ impl CommandHandler {
     }
 
     /// 向指定会话提交输入。斜杠命令在此被拦截并派发，普通输入启动新 Turn。
+    ///
+    /// 以 `/` 开头的输入会尝试解析为斜杠命令。如果命令不存在（`UnknownCommand`），
+    /// 则 fallback 为普通 prompt 提交——因为 `/` 开头不一定是命令（如路径 `/usr/bin`）。
     pub async fn submit_input_for_session(
         &mut self,
         sid: SessionId,
         text: String,
     ) -> Result<PromptSubmission, HandlerError> {
         if let Some(command) = slash::parse_slash_command(&text) {
-            return self
-                .execute_slash_command_for_session(sid, command, text)
-                .await;
+            match self
+                .execute_slash_command_for_session(sid.clone(), command, text.clone())
+                .await
+            {
+                Err(HandlerError::UnknownCommand(_)) => {
+                    // 不是已知命令，当作普通 prompt 处理
+                },
+                other => return other,
+            }
         }
 
         self.start_turn_for_session(sid, text.clone(), text, None)

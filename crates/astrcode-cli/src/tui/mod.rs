@@ -345,7 +345,6 @@ async fn submit_current_input(app: &mut App, client: &Arc<Client>) -> io::Result
     if input.trim().is_empty() {
         return Ok(());
     }
-    let is_slash_input = input.trim_start().starts_with('/');
 
     if let Some(command) = slash::parse(
         &input,
@@ -377,9 +376,7 @@ async fn submit_current_input(app: &mut App, client: &Arc<Client>) -> io::Result
 
     let input = app.take_input();
     app.remember_input(&input);
-    if !is_slash_input {
-        app.push_user(&input);
-    }
+    app.push_user(&input);
 
     client
         .send_command(&ClientCommand::SubmitPrompt {
