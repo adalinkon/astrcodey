@@ -148,7 +148,8 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
     let mut keybindings: Vec<astrcode_core::extension::Keybinding> = Vec::new();
     let mut status_items: Vec<astrcode_core::extension::StatusItem> = Vec::new();
     let mut plugin_event_decls: HashMap<String, Vec<PluginEventDecl>> = HashMap::new();
-    let mut plugin_data_dir_plugins: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut plugin_data_dir_plugins: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     for record in records {
         for (mode, pri, h) in record.reg.pre_tool_use() {

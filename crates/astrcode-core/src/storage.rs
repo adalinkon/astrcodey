@@ -314,13 +314,7 @@ pub struct PluginEventIndex {
 
 impl PluginEventIndex {
     /// 追加一条索引。
-    pub fn push(
-        &mut self,
-        seq: u64,
-        plugin_id: String,
-        event_type: String,
-        schema_version: u32,
-    ) {
+    pub fn push(&mut self, seq: u64, plugin_id: String, event_type: String, schema_version: u32) {
         let idx = self.entries.len();
         self.by_plugin
             .entry(plugin_id.clone())
@@ -355,11 +349,7 @@ impl PluginEventIndex {
     }
 
     /// 某个插件的最后一条匹配事件。
-    pub fn last_event(
-        &self,
-        plugin_id: &str,
-        event_type: &str,
-    ) -> Option<&PluginEventEntry> {
+    pub fn last_event(&self, plugin_id: &str, event_type: &str) -> Option<&PluginEventEntry> {
         self.events_for(plugin_id)
             .into_iter()
             .rev()
