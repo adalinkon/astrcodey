@@ -439,10 +439,9 @@ export function decodeConfigView(value: unknown): ConfigView {
     const raw = object['extensionStates']
     if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return {}
     return Object.fromEntries(
-      Object.entries(raw as Record<string, unknown>).map(([k, v]) => [
-        k,
-        typeof v === 'boolean' && v,
-      ])
+      Object.entries(raw as Record<string, unknown>)
+        .filter(([, v]) => typeof v === 'boolean')
+        .map(([k, v]) => [k, v as boolean])
     )
   })()
   return {

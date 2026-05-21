@@ -164,7 +164,7 @@ src-tauri/
 - **Sidecar 模式**: 嵌入 `astrcode-http-server` 作为 sidecar 进程
 - **通信方式**: HTTP API + SSE（本地动态端口）
 - **单实例协调**: 文件锁 + TCP 激活（后启动的实例通知已有实例聚焦窗口）
-- **HTTP extension**: 通过 `tauri-extension-http` 绕过 webkit2gtk 网络栈，解决 Linux SSE 缓冲问题
+- **HTTP extension**: 通过 `tauri-plugin-http` 绕过 webkit2gtk 网络栈，解决 Linux SSE 缓冲问题
 - **安全策略**: CSP 配置限制外部连接
 
 ## CI/CD 工作流

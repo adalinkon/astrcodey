@@ -581,9 +581,9 @@ fn tool_summary_section(input: &SystemPromptInput) -> Option<String> {
         .collect();
     if !extension_tools.is_empty() {
         lines.push(String::new());
-        lines.push("extension Tools".into());
+        lines.push("Extension Tools".into());
         lines.push(
-            "- extension tools are already present in the provider-visible tool list. Call them \
+            "- Extension tools are already present in the provider-visible tool list. Call them \
              directly with their exposed schema; `tool_search_tool` is for MCP discovery, not \
              extension-tool discovery."
                 .into(),

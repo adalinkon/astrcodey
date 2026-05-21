@@ -191,7 +191,7 @@ Mode 扩展已从内置逻辑迁移为完整插件：通过 `Registrar` 注册 `
 ### Desktop GUI (Tauri)
 
 - **Sidecar 模式**：嵌入 `astrcode-http-server` 作为 sidecar 进程
-- **通信方式**：HTTP API + SSE（本地动态端口），通过 `tauri-extension-http` 绕过 webkit2gtk 网络栈
+- **通信方式**：HTTP API + SSE（本地动态端口），通过 `tauri-plugin-http` 绕过 webkit2gtk 网络栈
 - **技术栈**：Tauri v2 + React 19 + TypeScript + Tailwind CSS v4
 - **状态管理**：Zustand
 - **安全**：CSP 配置限制外部连接
