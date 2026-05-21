@@ -185,7 +185,7 @@ impl astrcode_core::extension::CommandHandler for StaticCommandHandler {
         _ctx: &CommandContext,
     ) -> Result<ExtensionCommandResult, ExtensionError> {
         if command_name == self.command_name {
-            return Ok(ExtensionCommandResult::display("plugin command", false));
+            return Ok(ExtensionCommandResult::display("extension command", false));
         }
         Err(ExtensionError::NotFound(command_name.into()))
     }
@@ -1377,7 +1377,7 @@ async fn skill_slash_command_uses_skill_content_as_user_message() {
 }
 
 #[tokio::test]
-async fn command_list_keeps_reserved_and_plugin_priority_over_skills() {
+async fn command_list_keeps_reserved_and_extension_priority_over_skills() {
     let workspace = unique_workspace("slash-command-priority");
     write_project_skill(
         &workspace,
@@ -1387,7 +1387,7 @@ async fn command_list_keeps_reserved_and_plugin_priority_over_skills() {
     write_project_skill(
         &workspace,
         "reviewnow",
-        "---\ndescription: Skill named reviewnow.\n---\nShould not override plugin.",
+        "---\ndescription: Skill named reviewnow.\n---\nShould not override extension.",
     );
     let runtime = test_runtime();
     runtime
@@ -1397,7 +1397,7 @@ async fn command_list_keeps_reserved_and_plugin_priority_over_skills() {
     runtime
         .extension_runner
         .register(Arc::new(StaticCommandExtension {
-            id: "test-plugin",
+            id: "test-extension",
             command_name: "reviewnow",
         }))
         .await;
@@ -1421,7 +1421,7 @@ async fn command_list_keeps_reserved_and_plugin_priority_over_skills() {
         .iter()
         .find(|command| command.name == "reviewnow")
         .expect("reviewnow command");
-    assert_eq!(reviewnow.source, "plugin");
+    assert_eq!(reviewnow.source, "extension");
     let _ = fs::remove_dir_all(workspace);
 }
 

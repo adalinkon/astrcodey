@@ -51,23 +51,23 @@ pub struct RegisteredSlashCommand {
     pub command: astrcode_core::extension::SlashCommand,
 }
 
-// ─── BoundPluginEventSink ──────────────────────────────────────────────
+// ─── BoundextensionEventSink ──────────────────────────────────────────────
 
-/// 绑定了 plugin_id 和声明校验的事件发射器。
+/// 绑定了 extension_id 和声明校验的事件发射器。
 ///
-/// 由 `ExtensionRunner::make_plugin_event_sink` 构造，传给扩展钩子上下文。
-/// `plugin_id` 在构造时注入，调用方无法伪造身份。
+/// 由 `ExtensionRunner::make_extension_event_sink` 构造，传给扩展钩子上下文。
+/// `extension_id` 在构造时注入，调用方无法伪造身份。
 ///
 /// TODO: 补单元测试覆盖校验逻辑——未声明的 event_type、schema_version 超限、
 /// payload 超过 max_payload_bytes、正常发射路径。
-struct BoundPluginEventSink {
-    plugin_id: String,
-    declarations: HashMap<String, PluginEventDecl>,
+struct BoundextensionEventSink {
+    extension_id: String,
+    declarations: HashMap<String, extensionEventDecl>,
     event_tx: mpsc::UnboundedSender<EventPayload>,
 }
 
 #[async_trait::async_trait]
-impl PluginEventSink for BoundPluginEventSink {
+impl extensionEventSink for BoundextensionEventSink {
     async fn emit(
         &self,
         event_type: &str,
@@ -75,7 +75,7 @@ impl PluginEventSink for BoundPluginEventSink {
         payload: serde_json::Value,
     ) -> Result<(), ExtensionError> {
         let decl = self.declarations.get(event_type).ok_or_else(|| {
-            ExtensionError::Internal(format!("undeclared plugin event type: {event_type}"))
+            ExtensionError::Internal(format!("undeclared extension event type: {event_type}"))
         })?;
 
         if schema_version > decl.schema_version {
@@ -95,8 +95,8 @@ impl PluginEventSink for BoundPluginEventSink {
         }
 
         self.event_tx
-            .send(EventPayload::PluginEvent {
-                plugin_id: self.plugin_id.clone(),
+            .send(EventPayload::extensionEvent {
+                extension_id: self.extension_id.clone(),
                 event_type: event_type.to_owned(),
                 schema_version,
                 payload,
@@ -128,8 +128,8 @@ struct HandlerIndex {
     command_discoveries: Vec<Arc<dyn CommandDiscoveryHandler>>,
     keybindings: Vec<astrcode_core::extension::Keybinding>,
     status_items: Vec<astrcode_core::extension::StatusItem>,
-    plugin_event_decls: HashMap<String, Vec<PluginEventDecl>>,
-    plugin_data_dir_plugins: std::collections::HashSet<String>,
+    extension_event_decls: HashMap<String, Vec<extensionEventDecl>>,
+    extension_data_dir_extensions: std::collections::HashSet<String>,
 }
 
 fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
@@ -147,8 +147,8 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
     let mut command_discoveries: Vec<Arc<dyn CommandDiscoveryHandler>> = Vec::new();
     let mut keybindings: Vec<astrcode_core::extension::Keybinding> = Vec::new();
     let mut status_items: Vec<astrcode_core::extension::StatusItem> = Vec::new();
-    let mut plugin_event_decls: HashMap<String, Vec<PluginEventDecl>> = HashMap::new();
-    let mut plugin_data_dir_plugins: std::collections::HashSet<String> =
+    let mut extension_event_decls: HashMap<String, Vec<extensionEventDecl>> = HashMap::new();
+    let mut extension_data_dir_extensions: std::collections::HashSet<String> =
         std::collections::HashSet::new();
 
     for record in records {
@@ -193,11 +193,11 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
         for item in record.reg.status_items() {
             status_items.push(item.clone());
         }
-        if !record.reg.plugin_event_decls().is_empty() {
-            plugin_event_decls.insert(record.id.clone(), record.reg.plugin_event_decls().to_vec());
+        if !record.reg.extension_event_decls().is_empty() {
+            extension_event_decls.insert(record.id.clone(), record.reg.extension_event_decls().to_vec());
         }
-        if record.reg.needs_plugin_data_dir() {
-            plugin_data_dir_plugins.insert(record.id.clone());
+        if record.reg.needs_extension_data_dir() {
+            extension_data_dir_extensions.insert(record.id.clone());
         }
     }
 
@@ -224,8 +224,8 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
         command_discoveries,
         keybindings,
         status_items,
-        plugin_event_decls,
-        plugin_data_dir_plugins,
+        extension_event_decls,
+        extension_data_dir_extensions,
     }
 }
 
@@ -344,8 +344,8 @@ impl ExtensionRunner {
                 command_discoveries: Vec::new(),
                 keybindings: Vec::new(),
                 status_items: Vec::new(),
-                plugin_event_decls: HashMap::new(),
-                plugin_data_dir_plugins: std::collections::HashSet::new(),
+                extension_event_decls: HashMap::new(),
+                extension_data_dir_extensions: std::collections::HashSet::new(),
             })),
             session_ops: Arc::new(StdRwLock::new(None)),
             timeout,
@@ -383,16 +383,16 @@ impl ExtensionRunner {
             });
             log_handler_dispatch_order(&records);
             let new_index = Arc::new(build_handler_index(&records));
-            self.ensure_plugin_data_dirs(&new_index);
+            self.ensure_extensions_data_dir_dirs(&new_index);
             *self.index.write() = new_index;
         }
     }
 
-    fn ensure_plugin_data_dirs(&self, index: &HandlerIndex) {
-        for plugin_id in &index.plugin_data_dir_plugins {
-            let dir = astrcode_support::hostpaths::plugin_data_dir(plugin_id);
+    fn ensure_extensions_data_dir_dirs(&self, index: &HandlerIndex) {
+        for extension_id in &index.extension_data_dir_extensions {
+            let dir = astrcode_support::hostpaths::extensions_data_dir(extension_id);
             if let Err(e) = std::fs::create_dir_all(&dir) {
-                tracing::warn!(plugin_id = %plugin_id, error = %e, "failed to create plugin data dir");
+                tracing::warn!(extension_id = %extension_id, error = %e, "failed to create extension data dir");
             }
         }
     }
@@ -759,20 +759,20 @@ impl ExtensionRunner {
 
     /// 为指定插件构造绑定身份的事件发射器。
     ///
-    /// 返回 `None` 表示该插件未声明任何 plugin event type。
-    pub fn make_plugin_event_sink(
+    /// 返回 `None` 表示该插件未声明任何 extension event type。
+    pub fn make_extension_event_sink(
         &self,
-        plugin_id: &str,
+        extension_id: &str,
         event_tx: mpsc::UnboundedSender<EventPayload>,
-    ) -> Option<Arc<dyn PluginEventSink>> {
+    ) -> Option<Arc<dyn extensionEventSink>> {
         let index = self.load_index();
-        let decls = index.plugin_event_decls.get(plugin_id)?;
-        let decl_map: HashMap<String, PluginEventDecl> = decls
+        let decls = index.extension_event_decls.get(extension_id)?;
+        let decl_map: HashMap<String, extensionEventDecl> = decls
             .iter()
             .map(|d| (d.event_type.clone(), d.clone()))
             .collect();
-        Some(Arc::new(BoundPluginEventSink {
-            plugin_id: plugin_id.to_owned(),
+        Some(Arc::new(BoundextensionEventSink {
+            extension_id: extension_id.to_owned(),
             declarations: decl_map,
             event_tx,
         }))

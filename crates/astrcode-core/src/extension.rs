@@ -123,22 +123,22 @@ pub struct ExtensionManifest {
     pub library: String,
 }
 
-// ─── Plugin Event System ────────────────────────────────────────────────
+// ─── extension Event System ────────────────────────────────────────────────
 
 /// 插件在 [`Registrar`] 中声明的事件类型。
 ///
 /// 声明是 emit 时校验的依据：未声明的事件类型会被拒绝，payload 超限也会被拒绝。
-/// `plugin_id` 不在声明中——它由 runtime 在构造 [`PluginEventSink`] 时注入。
+/// `extension_id` 不在声明中——它由 runtime 在构造 [`extensionEventSink`] 时注入。
 #[derive(Debug, Clone)]
-pub struct PluginEventDecl {
+pub struct extensionEventDecl {
     pub event_type: String,
     pub schema_version: u32,
     pub durable: bool,
     pub max_payload_bytes: usize,
 }
 
-/// [`Registrar::plugin_event`] 返回的构建器。
-pub struct PluginEventDeclBuilder<'a> {
+/// [`Registrar::extension_event`] 返回的构建器。
+pub struct extensionEventDeclBuilder<'a> {
     registrar: &'a mut Registrar,
     event_type: String,
     schema_version: u32,
@@ -146,7 +146,7 @@ pub struct PluginEventDeclBuilder<'a> {
     max_payload_bytes: usize,
 }
 
-impl<'a> PluginEventDeclBuilder<'a> {
+impl<'a> extensionEventDeclBuilder<'a> {
     pub fn schema_version(mut self, v: u32) -> Self {
         self.schema_version = v;
         self
@@ -160,7 +160,7 @@ impl<'a> PluginEventDeclBuilder<'a> {
         self
     }
     pub fn register(self) {
-        self.registrar.plugin_event_decls.push(PluginEventDecl {
+        self.registrar.extension_event_decls.push(extensionEventDecl {
             event_type: self.event_type,
             schema_version: self.schema_version,
             durable: self.durable,
@@ -169,9 +169,9 @@ impl<'a> PluginEventDeclBuilder<'a> {
     }
 }
 
-/// 插件事件发射器。`plugin_id` 在构造时由 runtime 绑定，调用方无法伪造身份。
+/// 插件事件发射器。`extension_id` 在构造时由 runtime 绑定，调用方无法伪造身份。
 #[async_trait::async_trait]
-pub trait PluginEventSink: Send + Sync {
+pub trait extensionEventSink: Send + Sync {
     async fn emit(
         &self,
         event_type: &str,
@@ -472,7 +472,7 @@ pub struct PreToolUseContext {
     pub tool_input: serde_json::Value,
     pub available_tools: Vec<ToolDefinition>,
     /// 插件事件发射器（仅插件钩子会有值）。
-    pub plugin_event_sink: Option<std::sync::Arc<dyn PluginEventSink>>,
+    pub extension_event_sink: Option<std::sync::Arc<dyn extensionEventSink>>,
 }
 
 impl std::fmt::Debug for PreToolUseContext {
@@ -481,8 +481,8 @@ impl std::fmt::Debug for PreToolUseContext {
             .field("session_id", &self.session_id)
             .field("tool_name", &self.tool_name)
             .field(
-                "plugin_event_sink",
-                &self.plugin_event_sink.as_ref().map(|_| "<sink>"),
+                "extension_event_sink",
+                &self.extension_event_sink.as_ref().map(|_| "<sink>"),
             )
             .finish_non_exhaustive()
     }
@@ -499,7 +499,7 @@ pub struct PostToolUseContext {
     pub tool_result: ToolResult,
     pub is_error: bool,
     /// 插件事件发射器（仅插件钩子会有值）。
-    pub plugin_event_sink: Option<std::sync::Arc<dyn PluginEventSink>>,
+    pub extension_event_sink: Option<std::sync::Arc<dyn extensionEventSink>>,
 }
 
 impl std::fmt::Debug for PostToolUseContext {
@@ -509,8 +509,8 @@ impl std::fmt::Debug for PostToolUseContext {
             .field("tool_name", &self.tool_name)
             .field("is_error", &self.is_error)
             .field(
-                "plugin_event_sink",
-                &self.plugin_event_sink.as_ref().map(|_| "<sink>"),
+                "extension_event_sink",
+                &self.extension_event_sink.as_ref().map(|_| "<sink>"),
             )
             .finish_non_exhaustive()
     }
@@ -554,7 +554,7 @@ pub struct LifecycleContext {
     pub working_dir: String,
     pub model: ModelSelection,
     /// 插件事件发射器（仅插件钩子会有值）。
-    pub plugin_event_sink: Option<std::sync::Arc<dyn PluginEventSink>>,
+    pub extension_event_sink: Option<std::sync::Arc<dyn extensionEventSink>>,
 }
 
 impl std::fmt::Debug for LifecycleContext {
@@ -562,8 +562,8 @@ impl std::fmt::Debug for LifecycleContext {
         f.debug_struct("LifecycleContext")
             .field("session_id", &self.session_id)
             .field(
-                "plugin_event_sink",
-                &self.plugin_event_sink.as_ref().map(|_| "<sink>"),
+                "extension_event_sink",
+                &self.extension_event_sink.as_ref().map(|_| "<sink>"),
             )
             .finish_non_exhaustive()
     }
@@ -705,8 +705,8 @@ pub struct Registrar {
         i32,
         std::sync::Arc<dyn LifecycleHandler>,
     )>,
-    plugin_event_decls: Vec<PluginEventDecl>,
-    needs_plugin_data_dir: bool,
+    extension_event_decls: Vec<extensionEventDecl>,
+    needs_extension_data_dir: bool,
 }
 
 impl Registrar {
@@ -726,8 +726,8 @@ impl Registrar {
             compact: Vec::new(),
             post_tool_use_failure: Vec::new(),
             lifecycle: Vec::new(),
-            plugin_event_decls: Vec::new(),
-            needs_plugin_data_dir: false,
+            extension_event_decls: Vec::new(),
+            needs_extension_data_dir: false,
         }
     }
 
@@ -837,20 +837,20 @@ impl Registrar {
             && self.compact.is_empty()
             && self.post_tool_use_failure.is_empty()
             && self.lifecycle.is_empty()
-            && self.plugin_event_decls.is_empty()
-            && !self.needs_plugin_data_dir
+            && self.extension_event_decls.is_empty()
+            && !self.needs_extension_data_dir
     }
 
-    /// 声明插件需要专属数据目录（`~/.astrcode/plugin_data/<plugin_id>/`）。
+    /// 声明插件需要专属数据目录（`~/.astrcode/extension_data/<extension_id>/`）。
     ///
-    /// 注册后由 runtime 自动创建目录。插件通过 `hostpaths::plugin_data_dir()` 获取路径。
-    pub fn plugin_data_dir(&mut self) {
-        self.needs_plugin_data_dir = true;
+    /// 注册后由 runtime 自动创建目录。插件通过 `hostpaths::extension_data_dir()` 获取路径。
+    pub fn extension_data_dir(&mut self) {
+        self.needs_extension_data_dir = true;
     }
 
     /// 声明插件可发出的事件类型，返回构建器。
-    pub fn plugin_event(&mut self, event_type: &str) -> PluginEventDeclBuilder<'_> {
-        PluginEventDeclBuilder {
+    pub fn extension_event(&mut self, event_type: &str) -> extensionEventDeclBuilder<'_> {
+        extensionEventDeclBuilder {
             registrar: self,
             event_type: event_type.to_owned(),
             schema_version: 1,
@@ -929,12 +929,12 @@ impl Registrar {
         &self.status_items
     }
 
-    pub fn plugin_event_decls(&self) -> &[PluginEventDecl] {
-        &self.plugin_event_decls
+    pub fn extension_event_decls(&self) -> &[extensionEventDecl] {
+        &self.extension_event_decls
     }
 
-    pub fn needs_plugin_data_dir(&self) -> bool {
-        self.needs_plugin_data_dir
+    pub fn needs_extension_data_dir(&self) -> bool {
+        self.needs_extension_data_dir
     }
 }
 

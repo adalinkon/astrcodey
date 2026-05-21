@@ -689,17 +689,17 @@ fn build_panel(app: &App, theme: &Theme) -> Panel {
         "Enter send · /help"
     };
     // 拼接插件注册的状态栏项（按 key 字母序，排除空值）
-    let plugin_status: String = app
+    let extension_status: String = app
         .status_items
         .iter()
         .filter(|(_, v)| !v.is_empty())
         .map(|(_, v)| v.as_str())
         .collect::<Vec<_>>()
         .join(" · ");
-    let footer_text = if plugin_status.is_empty() {
+    let footer_text = if extension_status.is_empty() {
         format!("  {model} · {cwd} · {session}   {hints}")
     } else {
-        format!("  [{plugin_status}] {model} · {cwd} · {session}   {hints}")
+        format!("  [{extension_status}] {model} · {cwd} · {session}   {hints}")
     };
     let footer_line = Line::from(Span::styled(footer_text, theme.footer));
 

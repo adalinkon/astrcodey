@@ -191,7 +191,7 @@ Mode 扩展已从内置逻辑迁移为完整插件：通过 `Registrar` 注册 `
 ### Desktop GUI (Tauri)
 
 - **Sidecar 模式**：嵌入 `astrcode-http-server` 作为 sidecar 进程
-- **通信方式**：HTTP API + SSE（本地动态端口），通过 `tauri-plugin-http` 绕过 webkit2gtk 网络栈
+- **通信方式**：HTTP API + SSE（本地动态端口），通过 `tauri-extension-http` 绕过 webkit2gtk 网络栈
 - **技术栈**：Tauri v2 + React 19 + TypeScript + Tailwind CSS v4
 - **状态管理**：Zustand
 - **安全**：CSP 配置限制外部连接
@@ -254,7 +254,7 @@ Session 是唯一的持久事实来源。所有状态变化都以不可变事件
 
 核心只保留必须通用的能力（agent loop、hooks、context compaction、built-in tools）。其他能力（skills、MCP、自定义工具、模式切换）通过扩展接入。Mode 系统从内置逻辑迁移到插件即是这一架构的验证。
 
-### 工具-First 而非 Plugin-First
+### 工具-First 而非 extension-First
 
 工具是运行时基础能力，extension、SDK、MCP 都只是 tool source。所有工具走同一条执行路径，确保可观测性和统一调度。
 

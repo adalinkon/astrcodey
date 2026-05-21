@@ -13,7 +13,7 @@ web：
 
 A Rust-built AI coding agent platform.
 
-AstrCode is a full-stack AI coding assistant built from scratch in ~55k lines of Rust across 21 crates, plus a React + TypeScript web frontend (~4.8k lines). It features an agent loop with tool execution, a streaming SSE-based multi-provider LLM layer (Anthropic, OpenAI, Google GenAI), a plugin/hook extension system (with native extension loading via FFI and WASM extension support), context window management with auto-compaction, an eval framework for automated benchmarking, and multiple interfaces: a terminal UI, a web frontend, a Tauri desktop app, an HTTP/SSE API, and an ACP (Agent Client Protocol) adapter.
+AstrCode is a full-stack AI coding assistant built from scratch in ~55k lines of Rust across 21 crates, plus a React + TypeScript web frontend (~4.8k lines). It features an agent loop with tool execution, a streaming SSE-based multi-provider LLM layer (Anthropic, OpenAI, Google GenAI), a extension/hook extension system (with native extension loading via FFI and WASM extension support), context window management with auto-compaction, an eval framework for automated benchmarking, and multiple interfaces: a terminal UI, a web frontend, a Tauri desktop app, an HTTP/SSE API, and an ACP (Agent Client Protocol) adapter.
 
 ## Quick Start
 
@@ -125,7 +125,7 @@ cargo run --features dev-mode -- eval
 
 The web frontend (`frontend/`) is a React 19 + TypeScript + Tailwind CSS v4 + Vite single-page application. It connects to the `astrcode-server` backend via SSE for real-time streaming and JSON-RPC for commands. The frontend supports running standalone in the browser (`npm run dev`) or packaged as a Tauri desktop app (`npm run tauri:dev`).
 
-The Tauri desktop app (`src-tauri/`) wraps the web frontend in a native window and manages the `astrcode-server` as a sidecar process — automatically launching it on startup, discovering a free port, and bridging the connection. It also provides single-instance coordination (file-lock + TCP activation) and native file dialogs via `tauri-plugin-dialog`.
+The Tauri desktop app (`src-tauri/`) wraps the web frontend in a native window and manages the `astrcode-server` as a sidecar process — automatically launching it on startup, discovering a free port, and bridging the connection. It also provides single-instance coordination (file-lock + TCP activation) and native file dialogs via `tauri-extension-dialog`.
 
 ## Key Design Decisions
 
@@ -189,7 +189,7 @@ The ACP adapter (`astrcode-server::acp`) bridges the standard Agent Client Proto
 - Stdio JSON-RPC server implementing Initialize / NewSession / Prompt / Cancel
 - Real-time event streaming via broadcast channel to ACP `SessionNotification`
 - Deterministic event flushing with completion oneshot for turn lifecycle
-- Designed for IDE plugins and editor integrations
+- Designed for IDE extensions and editor integrations
 
 ## Running Modes
 
@@ -213,7 +213,7 @@ The ACP adapter (`astrcode-server::acp`) bridges the standard Agent Client Proto
 | `Shift+Enter` / `Alt+Enter` | Insert newline |
 | `Esc` | Close slash palette / stop streaming turn |
 | `Tab` | Complete slash command selection |
-| `Shift+Tab` | Trigger plugin-registered keybinding |
+| `Shift+Tab` | Trigger extension-registered keybinding |
 | `Ctrl+A` / `Ctrl+E` | Move to start / end of line |
 | `Ctrl+U` / `Ctrl+K` | Delete before / after cursor |
 | `Ctrl+W` | Delete previous word |
@@ -230,7 +230,7 @@ The ACP adapter (`astrcode-server::acp`) bridges the standard Agent Client Proto
 | `/help` or `/?` | Show command help |
 | `/quit` or `/q` | Exit astrcode |
 
-Plugin extensions can register additional slash commands and keybindings at runtime.
+extension extensions can register additional slash commands and keybindings at runtime.
 
 ## Distribution
 

@@ -143,7 +143,7 @@ pub struct ExtensionCommandInfo {
     pub name: String,
     pub description: String,
     pub needs_argument: bool,
-    /// 命令来源：`builtin`、`plugin` 或 `skill`。
+    /// 命令来源：`builtin`、`extension` 或 `skill`。
     pub source: String,
 }
 

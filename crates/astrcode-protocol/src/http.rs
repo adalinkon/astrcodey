@@ -119,7 +119,7 @@ pub struct SlashCommandInfoDto {
     pub name: String,
     pub description: String,
     pub needs_argument: bool,
-    /// 命令来源：`builtin`、`plugin` 或 `skill`。
+    /// 命令来源：`builtin`、`extension` 或 `skill`。
     pub source: String,
 }
 
@@ -166,7 +166,7 @@ pub struct SessionListItemDto {
     pub first_user_message: Option<String>,
     /// 创建该子 session 的扩展 ID。
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_plugin: Option<String>,
+    pub source_extension: Option<String>,
 }
 
 /// 会话列表响应。

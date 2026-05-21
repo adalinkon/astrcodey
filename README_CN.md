@@ -120,7 +120,7 @@ cargo run --features dev-mode -- eval
 
 Web 前端（`frontend/`）是 React 19 + TypeScript + Tailwind CSS v4 + Vite 单页应用，通过 SSE 实时接收流式事件，通过 JSON-RPC 发送命令。支持浏览器独立运行（`npm run dev`）或打包为 Tauri 桌面应用（`npm run tauri:dev`）。
 
-Tauri 桌面应用（`src-tauri/`）将 Web 前端包装在原生窗口中，自动管理 `astrcode-server` 作为 sidecar 进程——启动时自动拉起、发现空闲端口、桥接连接。还提供单实例协调（文件锁 + TCP 激活）和通过 `tauri-plugin-dialog` 的原生文件对话框。
+Tauri 桌面应用（`src-tauri/`）将 Web 前端包装在原生窗口中，自动管理 `astrcode-server` 作为 sidecar 进程——启动时自动拉起、发现空闲端口、桥接连接。还提供单实例协调（文件锁 + TCP 激活）和通过 `tauri-extension-dialog` 的原生文件对话框。
 
 ## 核心设计
 
