@@ -18,10 +18,48 @@ AstrCode is a full-stack AI coding assistant built from scratch in ~55k lines of
 ## Quick Start
 
 ```bash
-# Build backend
+# 1. Build backend
 cargo build
 
-# Interactive terminal UI
+# 2. Create config directory and config file
+mkdir -p ~/.astrcode
+cat > ~/.astrcode/config.json << 'EOF'
+{
+  "version": "1",
+  "activeProfile": "openai",
+  "activeModel": "gpt-4o",
+  "activeSmallProfile": "openai",
+  "activeSmallModel": "gpt-4o-mini",
+  "profiles": [
+    {
+      "name": "openai",
+      "providerKind": "openai",
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKey": "${OPENAI_API_KEY}",
+      "models": [
+        {
+          "id": "gpt-4o",
+          "maxTokens": 128000,
+          "contextLimit": 128000,
+          "reasoning": false
+        },
+        {
+          "id": "gpt-4o-mini",
+          "maxTokens": 128000,
+          "contextLimit": 128000,
+          "reasoning": false
+        }
+      ],
+      "apiMode": "chat_completions"
+    }
+  ]
+}
+EOF
+
+# 3. Set API key environment variable
+export OPENAI_API_KEY="your-api-key-here"
+
+# 4. Run interactive terminal UI
 cargo run -- tui
 
 # Headless single-shot execution
@@ -39,6 +77,19 @@ cd frontend && npm install && npm run tauri:dev
 # Eval framework (requires dev-mode feature)
 cargo run --features dev-mode -- eval
 ```
+
+## Configuration
+
+AstrCode uses a JSON-based configuration system stored in `~/.astrcode/config.json`. The configuration supports multiple LLM providers, model selection, runtime behavior tuning, and project-level overrides.
+
+**Key configuration features:**
+- Multi-provider support (Anthropic, OpenAI, Google GenAI)
+- Separate small LLM configuration for extensions (e.g., memory extraction)
+- Project-level config overrides via `.astrcode/config.json`
+- Environment variable substitution for API keys
+- Runtime behavior tuning (timeouts, retries, compaction, agent limits)
+
+For detailed configuration documentation, see [Configuration Guide](docs/configuration.md).
 
 ## Architecture
 
