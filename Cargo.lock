@@ -171,7 +171,7 @@ checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
 
 [[package]]
 name = "astrcode-ai"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-core",
  "async-trait",
@@ -185,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-bundled-extensions"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-core",
  "astrcode-extension-agent-tools",
@@ -199,7 +199,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-client",
  "astrcode-core",
@@ -227,7 +227,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-client"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-core",
  "astrcode-protocol",
@@ -241,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-context"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-core",
  "astrcode-support",
@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -267,7 +267,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-desktop"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-eval"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-core",
  "async-trait",
@@ -307,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-extension-agent-tools"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-core",
  "astrcode-support",
@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-extension-mcp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-core",
  "astrcode-protocol",
@@ -337,7 +337,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-extension-mode"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-core",
  "astrcode-support",
@@ -349,7 +349,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-extension-skill"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-core",
  "astrcode-support",
@@ -363,7 +363,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-extension-todo-tool"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-core",
  "astrcode-support",
@@ -375,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-extensions"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-core",
  "astrcode-support",
@@ -394,7 +394,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-log"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-support",
  "chrono",
@@ -405,7 +405,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-protocol"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-core",
  "serde",
@@ -415,7 +415,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-server"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "agent-client-protocol",
  "astrcode-ai",
@@ -450,7 +450,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-session"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-ai",
  "astrcode-context",
@@ -470,7 +470,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-storage"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-core",
  "astrcode-support",
@@ -488,7 +488,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-support"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-core",
  "dirs",
@@ -499,7 +499,7 @@ dependencies = [
 
 [[package]]
 name = "astrcode-tools"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "astrcode-core",
  "astrcode-support",
