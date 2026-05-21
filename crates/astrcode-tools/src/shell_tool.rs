@@ -325,7 +325,6 @@ fn hide_command_window(_: &mut Command) {}
 /// 以便超时时可以通过 `kill(-pgid, SIGTERM)` 杀掉整棵子进程树。
 #[cfg(unix)]
 fn setup_process_group(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
     // SAFETY: setsid() 是 async-signal-safe 的 POSIX 调用。
     // 在 fork 后 exec 前执行，让子进程成为新 session leader。
     unsafe {
@@ -373,9 +372,11 @@ async fn terminate_child_tree(child: &mut tokio::process::Child) {
     }
 
     // 等待 2 秒让进程优雅退出
-    match tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await {
-        Ok(_) => return,
-        Err(_) => {},
+    if tokio::time::timeout(std::time::Duration::from_secs(2), child.wait())
+        .await
+        .is_ok()
+    {
+        return;
     }
 
     // 仍未退出，SIGKILL 进程组
