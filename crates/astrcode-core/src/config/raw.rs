@@ -159,11 +159,7 @@ pub struct RuntimeSection {
     pub wasm_fuel: Option<u64>,
     /// WASM 扩展线性内存上限（MB）。
     pub wasm_memory_mb: Option<usize>,
-    // ── Bundled Extensions ───────────────────────────────────────────
-    /// 内置扩展启停覆盖。key 为扩展 id，value=false 表示禁用；未配置则保持默认启用。
-    ///
-    /// 例：`{ "astrcode.memory": false }`
-    pub builtin_extensions: Option<BTreeMap<String, bool>>,
+    // ── Extensions ───────────────────────────────────────────────────
     /// 通用扩展启停覆盖。适用于内置扩展和磁盘扩展。
     ///
     /// 例：`{ "astrcode.memory": false, "my.wasm.extension": false }`
