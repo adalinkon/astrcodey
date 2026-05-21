@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tauri::State;
-use tauri_extension_shell::{ShellExt, process::CommandChild};
+use tauri_plugin_shell::{ShellExt, process::CommandChild};
 
 const SIDECAR_NAME: &str = "astrcode-http-server";
 const SIDECAR_ADDR_ENV: &str = "ASTRCODE_HTTP_ADDR";
@@ -117,7 +117,7 @@ pub async fn start_server(
 
     let sidecar_state = Arc::clone(&state);
     tauri::async_runtime::spawn(async move {
-        use tauri_extension_shell::process::CommandEvent;
+        use tauri_plugin_shell::process::CommandEvent;
         while let Some(event) = rx.recv().await {
             match event {
                 CommandEvent::Stdout(line) => {
@@ -226,7 +226,7 @@ pub async fn stop_server(state: State<'_, Arc<SidecarState>>) -> Result<(), Stri
 
 #[tauri::command]
 pub async fn select_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    use tauri_extension_dialog::DialogExt;
+    use tauri_plugin_dialog::DialogExt;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog().file().pick_folder(move |path| {
         let _ = tx.send(path.map(|p| p.to_string()));

@@ -37,9 +37,9 @@ fn run() -> anyhow::Result<()> {
     let coord_run = Arc::clone(&coordinator);
 
     tauri::Builder::default()
-        .extension(tauri_extension_shell::init())
-        .extension(tauri_extension_dialog::init())
-        .extension(tauri_extension_http::init())
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_http::init())
         .manage(std::sync::Arc::new(commands::SidecarState::new()))
         .setup(move |app| {
             coord_setup.attach_app_handle(app.handle().clone());
