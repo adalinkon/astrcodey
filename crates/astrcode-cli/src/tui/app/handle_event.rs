@@ -547,6 +547,7 @@ fn apply_session_resumed(app: &mut App, session_id: &str, snapshot: &SessionSnap
     app.active_session_id = Some(session_id.to_string());
     app.working_dir = snapshot.working_dir.clone();
     app.messages.clear();
+    app.needs_terminal_reset = true;
     app.stream_states.clear();
     app.child_agents.clear();
     app.child_session_map.clear();

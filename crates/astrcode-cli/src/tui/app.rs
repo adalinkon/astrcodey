@@ -40,6 +40,8 @@ pub struct App {
     pub keybindings: Vec<crate::tui::keybinding::RegisteredKeybinding>,
     /// 服务端扩展注册表变化后，主循环应重新拉取扩展命令快照。
     pub needs_extension_refresh: bool,
+    /// Resume / 切换会话后需要清屏重置终端。
+    pub needs_terminal_reset: bool,
     // Session picker（/resume 触发的选择模式）
     pub session_picker: Option<SessionPicker>,
     // Composer
@@ -103,6 +105,7 @@ impl App {
             status_items: BTreeMap::new(),
             keybindings: Vec::new(),
             needs_extension_refresh: false,
+            needs_terminal_reset: false,
             session_picker: None,
             composer: ComposerState::default(),
             show_slash_palette: false,

@@ -141,6 +141,11 @@ pub async fn run() -> io::Result<()> {
             break;
         }
         if dirty {
+            // Session switch: clear old content before flushing new scrollback.
+            if app.needs_terminal_reset {
+                app.needs_terminal_reset = false;
+                terminal.reset_for_session_switch()?;
+            }
             // Flush scrollback entries into terminal native scrollback.
             let entries = std::mem::take(&mut app.scrollback_queue);
             terminal.flush_scrollback(entries, &theme, &app.message_renderers)?;
