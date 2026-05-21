@@ -60,11 +60,11 @@ pub(super) fn message_to_dto(message: &LlmMessage) -> MessageDto {
 ///
 /// 设计决策：
 /// - `Text` / `ToolResult`：原样输出，这些就是用户看到的内容。
-/// - `ToolCall`：大部分工具调用（shell、write 等）在 resume 时不需要回放参数，
-///   但 `upsertSessionPlan` 的 arguments.content 携带 plan 正文，需要提取并保留。
+/// - `ToolCall`：大部分工具调用（shell、write 等）在 resume 时不需要回放参数， 但
+///   `upsertSessionPlan` 的 arguments.content 携带 plan 正文，需要提取并保留。
 ///   其他工具调用只输出工具名。
-/// - 如果后续有更多工具需要在快照中展示参数内容，可以在这里扩展，
-///   或改为让 ToolRenderer 参与 snapshot 生成（目前没必要）。
+/// - 如果后续有更多工具需要在快照中展示参数内容，可以在这里扩展， 或改为让 ToolRenderer 参与
+///   snapshot 生成（目前没必要）。
 pub(crate) fn content_to_text(content: &LlmContent) -> String {
     match content {
         LlmContent::Text { text } => text.clone(),

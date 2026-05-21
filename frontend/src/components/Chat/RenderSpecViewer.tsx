@@ -1,10 +1,7 @@
 import { memo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type {
-  RenderSpec,
-  RenderTone,
-} from '../../types/render-spec'
+import type { RenderSpec, RenderTone } from '../../types/render-spec'
 import { codeBlockShell, codeBlockContent } from '../../lib/styles'
 import { cn } from '../../lib/utils'
 
@@ -38,25 +35,30 @@ function RenderSpecViewerInner({ spec, className }: RenderSpecViewerProps) {
   switch (spec.type) {
     case 'text':
       return (
-        <span className={cn(toneClass(spec.tone), className)}>
-          {spec.text}
-        </span>
+        <span className={cn(toneClass(spec.tone), className)}>{spec.text}</span>
       )
 
     case 'markdown':
       return (
         <div
-          className={cn('prose-chat min-w-0 max-w-full', toneClass(spec.tone), className)}
+          className={cn(
+            'prose-chat min-w-0 max-w-full',
+            toneClass(spec.tone),
+            className
+          )}
         >
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-            {spec.text}
-          </ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{spec.text}</ReactMarkdown>
         </div>
       )
 
     case 'box':
       return (
-        <div className={cn('rounded-xl border border-border bg-surface-soft p-3', className)}>
+        <div
+          className={cn(
+            'rounded-xl border border-border bg-surface-soft p-3',
+            className
+          )}
+        >
           {spec.title && (
             <div className="mb-2 text-[12px] font-semibold tracking-wide text-text-secondary uppercase">
               {spec.title}
@@ -73,7 +75,11 @@ function RenderSpecViewerInner({ spec, className }: RenderSpecViewerProps) {
       const Tag = spec.ordered ? 'ol' : 'ul'
       return (
         <Tag
-          className={cn('ml-4 space-y-1', spec.ordered ? 'list-decimal' : 'list-disc', className)}
+          className={cn(
+            'ml-4 space-y-1',
+            spec.ordered ? 'list-decimal' : 'list-disc',
+            className
+          )}
         >
           {items.map((item, i) => (
             <li key={i} className={toneClass(spec.tone)}>
@@ -105,9 +111,7 @@ function RenderSpecViewerInner({ spec, className }: RenderSpecViewerProps) {
             {spec.status && (
               <span className="text-text-muted">{spec.status}</span>
             )}
-            {pct != null && (
-              <span className="text-text-muted">{pct}%</span>
-            )}
+            {pct != null && <span className="text-text-muted">{pct}%</span>}
           </div>
           {spec.value != null && (
             <div className="h-1.5 overflow-hidden rounded-full bg-surface-muted">
@@ -153,7 +157,9 @@ function RenderSpecViewerInner({ spec, className }: RenderSpecViewerProps) {
 
     case 'raw_ansi_limited':
       return (
-        <pre className={cn('whitespace-pre-wrap font-mono text-[13px]', className)}>
+        <pre
+          className={cn('whitespace-pre-wrap font-mono text-[13px]', className)}
+        >
           {spec.text}
         </pre>
       )

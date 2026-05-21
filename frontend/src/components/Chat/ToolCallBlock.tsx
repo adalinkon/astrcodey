@@ -49,7 +49,9 @@ function compactLine(text: string): string {
 function ToolCallBlock({ block }: ToolCallBlockProps) {
   const [isOpen, setIsOpen] = useState(false)
 
-  const renderSpec = extractRenderSpec(block.metadata as Record<string, unknown> | undefined)
+  const renderSpec = extractRenderSpec(
+    block.metadata as Record<string, unknown> | undefined
+  )
 
   // 折叠摘要行：显示 LLM 调用的参数（如果有的话），否则回退到结果摘要
   const summaryLine = compactLine(

@@ -161,16 +161,15 @@ export function renderSpecToPlainText(spec: RenderSpec): string {
       const parts: string[] = []
       if (spec.title) parts.push(spec.title)
       if (spec.children) {
-        for (const child of spec.children) parts.push(renderSpecToPlainText(child))
+        for (const child of spec.children)
+          parts.push(renderSpecToPlainText(child))
       }
       return parts.join('\n')
     }
     case 'list':
       return (spec.items ?? []).map(renderSpecToPlainText).join('\n')
     case 'key_value':
-      return (spec.entries ?? [])
-        .map((e) => `${e.key}: ${e.value}`)
-        .join('\n')
+      return (spec.entries ?? []).map((e) => `${e.key}: ${e.value}`).join('\n')
     case 'progress': {
       let text = spec.label
       if (spec.status) text += ` · ${spec.status}`
