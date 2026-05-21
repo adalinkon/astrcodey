@@ -263,15 +263,15 @@ pub(crate) fn raw_default_profiles() -> Vec<Profile> {
             models: vec![
                 ModelConfig {
                     id: "claude-sonnet-4-6".into(),
-                    max_tokens: Some(16384),
-                    context_limit: Some(200_000),
+                    max_tokens: Some(64000),
+                    context_limit: Some(1000000),
                     reasoning: None,
                     reasoning_split: None,
                 },
                 ModelConfig {
                     id: "claude-opus-4-7".into(),
-                    max_tokens: Some(16384),
-                    context_limit: Some(200_000),
+                    max_tokens: Some(128000),
+                    context_limit: Some(1000000),
                     reasoning: None,
                     reasoning_split: None,
                 },
