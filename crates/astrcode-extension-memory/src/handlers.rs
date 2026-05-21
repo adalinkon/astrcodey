@@ -1,6 +1,6 @@
-//! Memory handlers — Recall, Save, Search, SessionStart, Command。
+//! Memory handlers — Save, Delete, Recall (PromptBuild), TurnEnd, SessionStart, Command。
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 use astrcode_core::{
     extension::{
@@ -20,10 +20,8 @@ use crate::store::MemoryStore;
 // ─── 常量 ────────────────────────────────────────────────────────────
 
 const MEMORY_SAVE_TOOL: &str = "memory_save";
-const MEMORY_SEARCH_TOOL: &str = "memory_search";
+const MEMORY_DELETE_TOOL: &str = "memory_delete";
 const MEMORY_CMD: &str = "memory";
-const MAX_RECALL_FALLBACK_CHARS: usize = 1_200;
-const MAX_SEARCH_RESULTS: usize = 20;
 const MAX_LIST_ENTRIES: usize = 50;
 
 // ─── Tool Definitions ────────────────────────────────────────────────
@@ -48,17 +46,16 @@ pub(crate) fn memory_save_definition() -> ToolDefinition {
     }
 }
 
-pub(crate) fn memory_search_definition() -> ToolDefinition {
+pub(crate) fn memory_delete_definition() -> ToolDefinition {
     ToolDefinition {
-        name: MEMORY_SEARCH_TOOL.to_string(),
-        description: "Search long-term memory for previously saved information.".to_string(),
+        name: MEMORY_DELETE_TOOL.to_string(),
+        description: "Delete entries from long-term memory by content match.".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
-                "query": { "type": "string", "description": "Search keywords" },
-                "limit": { "type": "integer", "description": "Max results. Default: 10" }
+                "match": { "type": "string", "description": "Substring to match (case-insensitive). All matching entries will be deleted." }
             },
-            "required": ["query"]
+            "required": ["match"]
         }),
         execution_mode: ExecutionMode::Sequential,
         origin: ToolOrigin::Extension,
@@ -68,7 +65,7 @@ pub(crate) fn memory_search_definition() -> ToolDefinition {
 pub(crate) fn memory_command_definition() -> SlashCommand {
     SlashCommand {
         name: MEMORY_CMD.to_string(),
-        description: "Manage long-term memory (list, search, consolidate)".to_string(),
+        description: "Manage long-term memory (list, search, delete)".to_string(),
         args_schema: None,
     }
 }
@@ -116,25 +113,20 @@ impl ToolHandler for MemorySaveHandler {
     }
 }
 
-// ─── Search Handler ──────────────────────────────────────────────────
+// ─── Delete Handler ──────────────────────────────────────────────────
 
-pub(crate) struct MemorySearchHandler {
+pub(crate) struct MemoryDeleteHandler {
     pub store: Arc<MemoryStore>,
 }
 
 #[derive(Deserialize)]
-struct SearchArgs {
-    query: String,
-    #[serde(default = "default_limit")]
-    limit: usize,
-}
-
-fn default_limit() -> usize {
-    10
+struct DeleteArgs {
+    #[serde(rename = "match")]
+    match_pattern: String,
 }
 
 #[async_trait::async_trait]
-impl ToolHandler for MemorySearchHandler {
+impl ToolHandler for MemoryDeleteHandler {
     async fn execute(
         &self,
         _tool_name: &str,
@@ -142,19 +134,25 @@ impl ToolHandler for MemorySearchHandler {
         _working_dir: &str,
         _ctx: &astrcode_core::tool::ToolExecutionContext,
     ) -> Result<ToolResult, ExtensionError> {
-        let args: SearchArgs = serde_json::from_value(arguments)
+        let args: DeleteArgs = serde_json::from_value(arguments)
             .map_err(|e| ExtensionError::Internal(e.to_string()))?;
+        if args.match_pattern.trim().is_empty() {
+            return Ok(ok_text("No pattern provided. Nothing deleted.".to_string()));
+        }
         let store = self.store.clone();
-        let query = args.query;
-        let limit = args.limit.min(MAX_SEARCH_RESULTS);
-        let results = tokio::task::spawn_blocking(move || store.search(&query, limit))
+        let pattern = args.match_pattern;
+        let removed = tokio::task::spawn_blocking(move || store.delete_by_content(&pattern))
             .await
             .map_err(|e| ExtensionError::Internal(e.to_string()))?
             .map_err(|e| ExtensionError::Internal(e.to_string()))?;
-        if results.is_empty() {
-            Ok(ok_text("No matching memories found.".to_string()))
+        if removed.is_empty() {
+            Ok(ok_text("No matching memories found to delete.".to_string()))
         } else {
-            Ok(ok_text(results.join("\n")))
+            Ok(ok_text(format!(
+                "Deleted {} entries:\n{}",
+                removed.len(),
+                removed.join("\n")
+            )))
         }
     }
 }
@@ -165,8 +163,6 @@ pub(crate) struct MemoryRecallHandler {
     pub store: Arc<MemoryStore>,
 }
 
-const HEADER: &str = "# Memory\n\n";
-
 #[async_trait::async_trait]
 impl PromptBuildHandler for MemoryRecallHandler {
     async fn handle(
@@ -174,17 +170,7 @@ impl PromptBuildHandler for MemoryRecallHandler {
         _ctx: PromptBuildContext,
     ) -> Result<PromptContributions, ExtensionError> {
         let store = self.store.clone();
-        let content = match tokio::task::spawn_blocking(move || {
-            let summary = store.read_summary()?;
-            if !summary.trim().is_empty() {
-                return Ok(summary);
-            }
-            store
-                .read_memory()
-                .map(|content| truncate_to_chars(&content, MAX_RECALL_FALLBACK_CHARS))
-        })
-        .await
-        {
+        let content = match tokio::task::spawn_blocking(move || store.read_memory()).await {
             Ok(Ok(c)) => c,
             Ok(Err(e)) => {
                 tracing::warn!(error = %e, "memory recall: failed to read");
@@ -196,18 +182,136 @@ impl PromptBuildHandler for MemoryRecallHandler {
             },
         };
 
-        if content.trim().len() <= HEADER.trim().len() {
+        // 空文件或只有 header → 不注入 (header + 4 section headers = 5 lines)
+        if content.trim().lines().count() <= 5 {
             return Ok(PromptContributions::default());
         }
+
+        // 截断防止 token 爆炸
+        const MAX_MEMORY_CHARS: usize = 4000;
+        let content = if content.len() > MAX_MEMORY_CHARS {
+            let truncated = crate::store::truncate_to_char_boundary(&content, MAX_MEMORY_CHARS);
+            format!(
+                "{truncated}…\n({} bytes truncated)",
+                content.len() - truncated.len()
+            )
+        } else {
+            content
+        };
 
         Ok(PromptContributions {
             additional_instructions: vec![format!(
                 "<memory>\nYou have a persistent memory system. Use `{MEMORY_SAVE_TOOL}` to store \
-                 important information and `{MEMORY_SEARCH_TOOL}` to recall past \
-                 memories.\n\n{content}\n</memory>"
+                 important information and `{MEMORY_DELETE_TOOL}` to remove \
+                 entries.\n\n{content}\n</memory>"
             )],
             ..Default::default()
         })
+    }
+}
+
+// ─── TurnEnd Handler — recall + incremental extraction ─────────────────
+//
+// TurnEnd 后召回历史上下文辅助提取记忆。
+// 1. 从 last_exchange 提取关键词，搜索 contexts/ 召回相关历史
+// 2. 将召回内容 + 当前 turn 发给小模型提取记忆
+// 3. 去重后写入 contexts/
+
+const RECALL_MAX_RESULTS: usize = 3;
+const RECALL_MAX_CHARS_PER_FILE: usize = 800;
+
+/// TurnEnd 提取最小间隔（秒），防止每轮都调小模型。
+const MIN_EXTRACT_INTERVAL_SECS: u64 = 180;
+
+#[derive(Default)]
+pub(crate) struct TurnExtractState {
+    last_extract: Option<Instant>,
+}
+
+pub(crate) struct MemoryTurnEndHandler {
+    pub store: Arc<MemoryStore>,
+    pub small_llm: Arc<dyn LlmProvider>,
+    pub tasks: Arc<Mutex<Option<ExtensionTasks>>>,
+    pub(crate) extract_state: Mutex<TurnExtractState>,
+}
+
+#[async_trait::async_trait]
+impl LifecycleHandler for MemoryTurnEndHandler {
+    async fn handle(&self, ctx: LifecycleContext) -> Result<HookResult, ExtensionError> {
+        let Some(tasks) = self.tasks.lock().clone() else {
+            return Ok(HookResult::Allow);
+        };
+        if tasks.shutdown().is_cancelled() {
+            return Ok(HookResult::Allow);
+        }
+
+        let Some(exchange) = &ctx.last_exchange else {
+            return Ok(HookResult::Allow);
+        };
+
+        // 跳过内容太短的 turn
+        let query = exchange.user_message.clone();
+        if query.len() < 20 {
+            return Ok(HookResult::Allow);
+        }
+
+        // 冷却：距离上次提取不足 180 秒则跳过
+        {
+            let mut state = self.extract_state.lock();
+            let now = Instant::now();
+            if let Some(last) = state.last_extract {
+                if now.duration_since(last).as_secs() < MIN_EXTRACT_INTERVAL_SECS {
+                    return Ok(HookResult::Allow);
+                }
+            }
+            state.last_extract = Some(now);
+        }
+
+        let store = self.store.clone();
+        let small_llm = self.small_llm.clone();
+        let session_id = ctx.session_id.clone();
+        let assistant_message = exchange.assistant_message.clone();
+
+        tasks.spawn("memory-turn-extract", async move {
+            // 1. 召回相关历史上下文
+            let store_for_recall = store.clone();
+            let query_for_recall = query.clone();
+            let recalled = match tokio::task::spawn_blocking(move || {
+                store_for_recall.search_contexts(
+                    &query_for_recall,
+                    RECALL_MAX_RESULTS,
+                    RECALL_MAX_CHARS_PER_FILE,
+                )
+            })
+            .await
+            {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "turn-end recall failed");
+                    Vec::new()
+                },
+                Err(e) => {
+                    tracing::warn!(error = %e, "turn-end recall spawn failed");
+                    Vec::new()
+                },
+            };
+
+            // 2. 小模型提取记忆
+            if let Err(e) = crate::pipeline::extract_turn(
+                store,
+                small_llm.as_ref(),
+                &session_id,
+                &query,
+                &assistant_message,
+                &recalled,
+            )
+            .await
+            {
+                tracing::warn!(error = %e, session_id = %session_id, "turn-end extraction failed");
+            }
+        });
+
+        Ok(HookResult::Allow)
     }
 }
 
@@ -257,7 +361,7 @@ impl MemoryPipelineCoordinator {
 pub(crate) struct MemorySessionStartHandler {
     pub store: Arc<MemoryStore>,
     pub session_read: Arc<dyn SessionReadSource>,
-    pub small_llm: Option<Arc<dyn LlmProvider>>,
+    pub small_llm: Arc<dyn LlmProvider>,
     pub pipeline: Arc<MemoryPipelineCoordinator>,
     pub tasks: Arc<Mutex<Option<ExtensionTasks>>>,
 }
@@ -290,7 +394,7 @@ impl LifecycleHandler for MemorySessionStartHandler {
                 let run = crate::pipeline::run(
                     &store,
                     session_read.as_ref(),
-                    small_llm.as_deref(),
+                    small_llm.as_ref(),
                     &current_session_id,
                 );
 
@@ -323,8 +427,6 @@ impl LifecycleHandler for MemorySessionStartHandler {
         Ok(HookResult::Allow)
     }
 }
-
-use crate::pipeline::truncate_to_chars;
 
 // ─── Command Handler (/memory) ───────────────────────────────────────
 
@@ -363,7 +465,23 @@ impl astrcode_core::extension::CommandHandler for MemoryCommandHandler {
                         Ok(results.join("\n"))
                     }
                 },
-                _ => Ok("Usage: /memory [list|search <query>]".to_string()),
+                rest if rest.starts_with("delete ") => {
+                    let pattern = rest[7..].trim();
+                    if pattern.is_empty() {
+                        return Ok("No pattern provided. Nothing deleted.".to_string());
+                    }
+                    let removed = store.delete_by_content(pattern)?;
+                    if removed.is_empty() {
+                        Ok("No matching memories found to delete.".to_string())
+                    } else {
+                        Ok(format!(
+                            "Deleted {} entries:\n{}",
+                            removed.len(),
+                            removed.join("\n")
+                        ))
+                    }
+                },
+                _ => Ok("Usage: /memory [list|search <query>|delete <pattern>]".to_string()),
             }
         })
         .await

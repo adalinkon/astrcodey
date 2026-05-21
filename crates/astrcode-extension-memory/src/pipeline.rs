@@ -1,18 +1,21 @@
-//! Memory pipeline — SessionStart 时后台运行的两阶段提取管线。
+//! Memory pipeline — 提取管线 + TurnEnd 增量提取。
 //!
-//! Phase 1: 从符合条件的历史会话中提取记忆（需要 small_llm）。
-//! Phase 2: 将提取结果整合到 MEMORY.md + memory_summary.md。
+//! SessionStart pipeline: 从符合条件的历史会话中提取记忆，写入 contexts/ 目录。
+//! TurnEnd 增量提取: 召回相关历史上下文辅助当前 turn 提取记忆。
+//! MEMORY.md 不由 pipeline 修改，仅由 LLM 通过工具操作。
+
+use std::sync::Arc;
 
 use astrcode_core::{
     extension::{ExtensionError, SessionReadSource},
-    llm::{LlmContent, LlmEvent, LlmMessage, LlmProvider},
+    llm::{LlmContent, LlmEvent, LlmMessage, LlmProvider, LlmRole},
     storage::{SessionReadModel, SessionSummary},
 };
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Local, Utc};
 
 use crate::{
     pipeline_prompts,
-    store::{MemoryStore, Phase1Output, Phase2Input, ProcessedSession},
+    store::{MemoryStore, Phase1Output, ProcessedSession},
 };
 
 // ─── Config ─────────────────────────────────────────────────────────────
@@ -20,6 +23,7 @@ use crate::{
 struct PipelineConfig {
     max_candidates: usize,
     min_idle_minutes: i64,
+    max_context_age_days: u64,
 }
 
 impl Default for PipelineConfig {
@@ -27,10 +31,12 @@ impl Default for PipelineConfig {
         Self {
             max_candidates: 5,
             min_idle_minutes: 30,
+            max_context_age_days: 90,
         }
     }
 }
 
+#[derive(Clone)]
 struct Candidate {
     summary: SessionSummary,
     updated_at: DateTime<Utc>,
@@ -41,43 +47,31 @@ struct Candidate {
 pub async fn run(
     store: &MemoryStore,
     session_read: &dyn SessionReadSource,
-    small_llm: Option<&dyn LlmProvider>,
+    small_llm: &dyn LlmProvider,
     current_session_id: &str,
 ) -> Result<(), ExtensionError> {
-    if store
-        .finalize_pending_commit_if_exists()
-        .map_err(|e| ExtensionError::Internal(e.to_string()))?
-    {
-        tracing::info!("memory pipeline finalized pending commit");
-    }
-
     let config = PipelineConfig::default();
 
-    // Phase 1: 有候选会话 + 有小模型 → 提取
-    let candidates = find_candidates(session_read, store, current_session_id, &config).await?;
-    if !candidates.is_empty() {
-        if let Some(llm) = small_llm {
-            extract(store, session_read, llm, &candidates).await?;
+    // 清理过期的 contexts/ 文件
+    if let Ok(n) = store.cleanup_old_contexts(config.max_context_age_days) {
+        if n > 0 {
+            tracing::debug!(deleted = n, "cleaned up old context files");
         }
-        // small_llm == None：跳过提取，但仍可继续 Phase2
     }
 
-    // Phase 2: 有未处理的 extractions → 整合
-    let processed = store
-        .list_processed()
-        .map_err(|e| ExtensionError::Internal(e.to_string()))?;
-    let extraction_files: Vec<Phase2Input> = store
-        .read_extractions()
-        .map_err(|e| ExtensionError::Internal(e.to_string()))?
-        .into_iter()
-        .filter(|e| processed.get(&e.session_id) != Some(&e.updated_at))
-        .collect();
-
-    if extraction_files.is_empty() {
+    let candidates = find_candidates(session_read, store, current_session_id, &config).await?;
+    if candidates.is_empty() {
         return Ok(());
     }
 
-    consolidate(store, small_llm, &extraction_files).await
+    let extractions = extract(session_read, small_llm, &candidates).await?;
+
+    if extractions.is_empty() {
+        return Ok(());
+    }
+
+    // 写入 contexts/ 目录，不动 MEMORY.md
+    write_contexts(store, &extractions)
 }
 
 // ─── Candidate Selection ────────────────────────────────────────────────
@@ -114,7 +108,6 @@ async fn find_candidates(
             }
             let updated = DateTime::parse_from_rfc3339(&s.updated_at).ok()?;
             let updated_utc = updated.with_timezone(&Utc);
-            // 空闲足够久 OR 有足够内容（兜底短会话）
             let idle_enough = updated_utc < cutoff;
             let has_enough_content = s.first_user_message.as_ref().is_some_and(|m| m.len() >= 50);
             if !idle_enough && !has_enough_content {
@@ -127,7 +120,6 @@ async fn find_candidates(
         })
         .collect();
 
-    // 最近更新的优先
     candidates.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
     candidates.truncate(config.max_candidates);
 
@@ -137,11 +129,11 @@ async fn find_candidates(
 // ─── Phase 1: Extraction ────────────────────────────────────────────────
 
 async fn extract(
-    store: &MemoryStore,
     session_read: &dyn SessionReadSource,
     small_llm: &dyn LlmProvider,
     candidates: &[Candidate],
-) -> Result<(), ExtensionError> {
+) -> Result<Vec<(Candidate, Phase1Output)>, ExtensionError> {
+    let mut results = Vec::new();
     for candidate in candidates {
         let session_id = &candidate.summary.session_id;
         let read_model = session_read
@@ -151,10 +143,17 @@ async fn extract(
 
         let conversation = extract_conversation(&read_model);
         if conversation.is_empty() {
+            results.push((
+                candidate.clone(),
+                Phase1Output {
+                    memories: Vec::new(),
+                },
+            ));
             continue;
         }
 
-        let prompt = pipeline_prompts::phase1_user_prompt(&conversation);
+        let current_date = Local::now().format("%Y-%m-%d").to_string();
+        let prompt = pipeline_prompts::phase1_user_prompt(&conversation, &current_date);
         let messages = vec![LlmMessage {
             role: astrcode_core::llm::LlmRole::User,
             content: vec![LlmContent::Text {
@@ -170,52 +169,98 @@ async fn extract(
             .map_err(|e| ExtensionError::Internal(e.to_string()))?;
 
         let text = collect_stream_text(rx).await;
-        let output = parse_phase1_output(&text)?;
-
-        let session_id_str = session_id.as_ref().to_string();
-        store
-            .write_extraction(&session_id_str, &candidate.summary.updated_at, &output)
-            .map_err(|e| ExtensionError::Internal(e.to_string()))?;
+        match parse_phase1_output(&text) {
+            Ok(output) if output.memories.is_empty() => {
+                results.push((candidate.clone(), output));
+            },
+            Ok(output) => {
+                results.push((candidate.clone(), output));
+            },
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    session_id = %session_id,
+                    "memory pipeline: failed to parse extraction"
+                );
+            },
+        }
     }
-    Ok(())
+    Ok(results)
 }
 
 fn extract_conversation(model: &SessionReadModel) -> String {
-    let mut parts = Vec::new();
-    let mut turn_count = 0u32;
-    const MAX_TURNS: u32 = 20;
-    const MAX_CHARS: usize = 4000;
-    let mut total_chars = 0;
+    // Collect all text turns first, then apply middle truncation.
+    const MAX_BYTES: usize = 4000; // ~1000 tokens at 4 bytes/token
+    const MAX_TURNS: usize = 30;
 
-    for msg in &model.messages {
-        if turn_count >= MAX_TURNS || total_chars >= MAX_CHARS {
+    let turns: Vec<String> = model
+        .messages
+        .iter()
+        .filter_map(|msg| {
+            let role = match msg.role {
+                astrcode_core::llm::LlmRole::User => "User",
+                astrcode_core::llm::LlmRole::Assistant => "Assistant",
+                _ => return None,
+            };
+            let text: String = msg
+                .content
+                .iter()
+                .filter_map(|c| match c {
+                    LlmContent::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.is_empty() {
+                None
+            } else {
+                Some(format!("{role}: {text}"))
+            }
+        })
+        .take(MAX_TURNS)
+        .collect();
+
+    if turns.is_empty() {
+        return String::new();
+    }
+
+    let total_bytes: usize = turns.iter().map(|t| t.len()).sum();
+    if total_bytes <= MAX_BYTES {
+        return turns.join("\n\n");
+    }
+
+    // Middle truncation: split budget 50/50 between head and tail.
+    let budget = MAX_BYTES / 2;
+    let mut head = Vec::new();
+    let mut head_bytes = 0;
+    let mut tail = Vec::new();
+    let mut tail_bytes = 0;
+
+    for turn in &turns {
+        if head_bytes + turn.len() <= budget {
+            head.push(turn.as_str());
+            head_bytes += turn.len();
+        } else {
             break;
-        }
-        let role = match msg.role {
-            astrcode_core::llm::LlmRole::User => "User",
-            astrcode_core::llm::LlmRole::Assistant => "Assistant",
-            _ => continue,
-        };
-        let text: String = msg
-            .content
-            .iter()
-            .filter_map(|c| match c {
-                LlmContent::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        if text.is_empty() {
-            continue;
-        }
-        parts.push(format!("{role}: {text}"));
-        total_chars += text.len();
-        if role == "Assistant" {
-            turn_count += 1;
         }
     }
 
-    parts.join("\n\n")
+    for turn in turns.iter().rev() {
+        if tail_bytes + turn.len() <= budget {
+            tail.push(turn.as_str());
+            tail_bytes += turn.len();
+        } else {
+            break;
+        }
+    }
+    tail.reverse();
+
+    let truncated_count = turns.len() - head.len() - tail.len();
+    let marker = format!("… {truncated_count} turns truncated …");
+    let mut result = head;
+    result.push(marker.as_str());
+    result.extend(tail);
+    result.join("\n\n")
 }
 
 fn parse_phase1_output(text: &str) -> Result<Phase1Output, ExtensionError> {
@@ -229,128 +274,45 @@ fn parse_phase1_output(text: &str) -> Result<Phase1Output, ExtensionError> {
         .map_err(|e| ExtensionError::Internal(format!("parse extraction: {e}")))
 }
 
-// ─── Phase 2: Consolidation ─────────────────────────────────────────────
+// ─── Write Contexts ────────────────────────────────────────────────────
 
-async fn consolidate(
+/// 将提取结果写入 contexts/ 目录，不动 MEMORY.md。
+fn write_contexts(
     store: &MemoryStore,
-    small_llm: Option<&dyn LlmProvider>,
-    extractions: &[Phase2Input],
+    extractions: &[(Candidate, Phase1Output)],
 ) -> Result<(), ExtensionError> {
-    let existing = store
-        .read_memory()
-        .map_err(|e| ExtensionError::Internal(e.to_string()))?;
-
-    let new_content = extractions
+    let processed: Vec<ProcessedSession> = extractions
         .iter()
-        .map(|e| {
-            let memories: String = e
+        .map(|(c, _)| ProcessedSession {
+            session_id: c.summary.session_id.as_ref().to_string(),
+            updated_at: c.summary.updated_at.clone(),
+        })
+        .collect();
+
+    let context_files: Vec<(String, String)> = extractions
+        .iter()
+        .filter(|(_, output)| !output.memories.is_empty())
+        .map(|(candidate, output)| {
+            let memories: String = output
                 .memories
                 .iter()
                 .map(|m| format!("- [{}] {}", m.category, m.content))
                 .collect::<Vec<_>>()
                 .join("\n");
-            format!(
-                "## Session {}\nSummary: {}\n{}",
-                e.session_id, e.summary, memories
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-
-    let new_memory = if let Some(llm) = small_llm {
-        consolidate_with_llm(llm, &existing, &new_content).await?
-    } else {
-        simple_merge(&existing, &new_content)
-    };
-
-    let summary = generate_summary(&new_memory, small_llm).await?;
-    let processed: Vec<ProcessedSession> = extractions
-        .iter()
-        .map(|e| ProcessedSession {
-            session_id: e.session_id.clone(),
-            updated_at: e.updated_at.clone(),
+            let filename = format!("{}.md", candidate.summary.session_id.as_ref());
+            let content = format!(
+                "# Session {}\n\n## Extracted Memories\n{}",
+                candidate.summary.session_id, memories
+            );
+            (filename, content)
         })
         .collect();
-    let cleanup_ids: Vec<String> = extractions.iter().map(|e| e.session_id.clone()).collect();
+
     store
-        .commit_consolidation(&new_memory, &summary, &processed, &cleanup_ids)
+        .commit_pipeline_result(&processed, &context_files)
         .map_err(|e| ExtensionError::Internal(e.to_string()))?;
 
     Ok(())
-}
-
-async fn consolidate_with_llm(
-    llm: &dyn LlmProvider,
-    existing: &str,
-    extractions: &str,
-) -> Result<String, ExtensionError> {
-    let prompt = pipeline_prompts::phase2_user_prompt(existing, extractions);
-    let messages = vec![LlmMessage {
-        role: astrcode_core::llm::LlmRole::User,
-        content: vec![LlmContent::Text {
-            text: format!("{}\n\n{}", pipeline_prompts::PHASE2_SYSTEM, prompt),
-        }],
-        name: None,
-        reasoning_content: None,
-    }];
-
-    let rx = llm
-        .generate(messages, vec![])
-        .await
-        .map_err(|e| ExtensionError::Internal(e.to_string()))?;
-
-    Ok(collect_stream_text(rx).await)
-}
-
-/// 无 small_llm 时的简单合并：按 category 分组追加。
-fn simple_merge(existing: &str, new_content: &str) -> String {
-    if existing.trim().is_empty() || existing.trim() == "# Memory" {
-        format!("# Memory\n\n{new_content}\n")
-    } else {
-        format!("{existing}\n\n## New Extractions\n\n{new_content}\n")
-    }
-}
-
-async fn generate_summary(
-    memory: &str,
-    small_llm: Option<&dyn LlmProvider>,
-) -> Result<String, ExtensionError> {
-    if let Some(llm) = small_llm {
-        let prompt = pipeline_prompts::summary_prompt(memory);
-        let messages = vec![LlmMessage {
-            role: astrcode_core::llm::LlmRole::User,
-            content: vec![LlmContent::Text { text: prompt }],
-            name: None,
-            reasoning_content: None,
-        }];
-        let rx = llm
-            .generate(messages, vec![])
-            .await
-            .map_err(|e| ExtensionError::Internal(e.to_string()))?;
-        let summary = collect_stream_text(rx).await;
-        // 硬截断到 800 字符
-        Ok(truncate_to_chars(&summary, 800))
-    } else {
-        // 无 LLM：取前 800 字符
-        Ok(truncate_to_chars(memory, 800))
-    }
-}
-
-pub(crate) fn truncate_to_chars(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    // 在字符边界处截断
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    // 尝试在行尾截断
-    if let Some(pos) = s[..end].rfind('\n') {
-        s[..pos].to_string()
-    } else {
-        s[..end].to_string()
-    }
 }
 
 // ─── Stream Helper ──────────────────────────────────────────────────────
@@ -365,4 +327,96 @@ async fn collect_stream_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<LlmEve
         }
     }
     text
+}
+
+// ─── TurnEnd Incremental Extraction ────────────────────────────────────
+
+/// TurnEnd 增量提取：读取已有记忆 → 召回历史上下文 → 小模型提取 → 写入 contexts/。
+pub async fn extract_turn(
+    store: Arc<MemoryStore>,
+    small_llm: &dyn LlmProvider,
+    session_id: &str,
+    user_message: &str,
+    assistant_message: &str,
+    recalled_contexts: &[String],
+) -> Result<(), ExtensionError> {
+    // 读取已有 MEMORY.md 用于 prompt 内去重
+    let existing_memory = tokio::task::spawn_blocking({
+        let store = store.clone();
+        move || store.read_memory()
+    })
+    .await
+    .map_err(|e| ExtensionError::Internal(e.to_string()))?
+    .unwrap_or_default();
+
+    let prompt = pipeline_prompts::turn_extract_prompt(
+        user_message,
+        assistant_message,
+        &existing_memory,
+        recalled_contexts,
+        &Local::now().format("%Y-%m-%d").to_string(),
+    );
+
+    let messages = vec![LlmMessage {
+        role: LlmRole::User,
+        content: vec![LlmContent::Text { text: prompt }],
+        name: None,
+        reasoning_content: None,
+    }];
+
+    let rx = small_llm
+        .generate(messages, vec![])
+        .await
+        .map_err(|e| ExtensionError::Internal(e.to_string()))?;
+
+    let text = collect_stream_text(rx).await;
+    let output = parse_phase1_output(&text)?;
+
+    if output.memories.is_empty() {
+        return Ok(());
+    }
+
+    // Hash 去重：精确匹配兜底
+    let existing_hashes = tokio::task::spawn_blocking({
+        let store = store.clone();
+        move || store.existing_entry_hashes()
+    })
+    .await
+    .map_err(|e| ExtensionError::Internal(e.to_string()))?
+    .map_err(|e| ExtensionError::Internal(e.to_string()))?;
+
+    let new_memories: Vec<_> = output
+        .memories
+        .into_iter()
+        .filter(|m| {
+            let normalized = m.content.to_lowercase();
+            let normalized = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
+            let hash = astrcode_support::hash::fnv1a_hash_bytes(normalized.as_bytes());
+            !existing_hashes.contains(&hash)
+        })
+        .collect();
+
+    if new_memories.is_empty() {
+        return Ok(());
+    }
+
+    // 写入 contexts/ 文件
+    let filename = format!(
+        "{session_id}-turn-{}.md",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    let memories_text: String = new_memories
+        .iter()
+        .map(|m| format!("- [{}] {}", m.category, m.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let content =
+        format!("# Session {session_id} (incremental)\n\n## Extracted Memories\n{memories_text}");
+
+    tokio::task::spawn_blocking(move || store.commit_pipeline_result(&[], &[(filename, content)]))
+        .await
+        .map_err(|e| ExtensionError::Internal(e.to_string()))?
+        .map_err(|e| ExtensionError::Internal(e.to_string()))?;
+
+    Ok(())
 }

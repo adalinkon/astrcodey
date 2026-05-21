@@ -1,10 +1,11 @@
-//! astrcode-extension-memory — Codex-style Markdown 记忆插件。
+//! astrcode-extension-memory — 持久化记忆扩展。
 //!
-//! 提供跨会话的持久化记忆，借鉴 Codex 的设计：
-//! - Markdown 文件存储，人类可读可编辑
-//! - PromptBuild 注入 memory_summary.md（精简摘要）
-//! - LLM 可主动 save/search
-//! - SessionStart 时后台运行两阶段管线： Phase1 从历史会话提取记忆，Phase2 整合去重到 MEMORY.md
+//! 提供跨会话的持久化记忆：
+//! - MEMORY.md 干净 markdown 存储，人类可读可编辑
+//! - PromptBuild 注入 MEMORY.md 内容到系统提示词
+//! - LLM 可主动 save / delete
+//! - SessionStart 时后台运行提取管线：从历史会话提取记忆到 contexts/
+//! - TurnEnd 时召回历史上下文辅助增量提取记忆
 
 mod handlers;
 mod pipeline;
@@ -21,20 +22,28 @@ use astrcode_core::{
     llm::LlmProvider,
 };
 use handlers::{
-    MemoryCommandHandler, MemoryRecallHandler, MemorySaveHandler, MemorySearchHandler,
-    MemorySessionStartHandler,
+    MemoryCommandHandler, MemoryDeleteHandler, MemoryRecallHandler, MemorySaveHandler,
+    MemorySessionStartHandler, MemoryTurnEndHandler,
 };
 use parking_lot::Mutex;
 use store::MemoryStore;
 
 /// 返回记忆扩展。
 ///
-/// `small_llm` 为 None 时 Phase1 自动提取跳过，Phase2 简单合并。
-/// `session_read` 用于查询历史会话。
+/// 需要 `small_llm` 用于记忆提取和增量召回。
+/// `small_llm` 为 None 时返回错误，提示用户配置小模型。
 pub fn extension(
     small_llm: Option<Arc<dyn LlmProvider>>,
     session_read: Arc<dyn SessionReadSource>,
 ) -> Result<Arc<dyn Extension>, ExtensionError> {
+    let small_llm = small_llm.ok_or_else(|| {
+        ExtensionError::Internal(
+            "Memory extension requires a small LLM provider. Please configure a small model (e.g. \
+             via runtime.small_llm) to enable memory."
+                .to_string(),
+        )
+    })?;
+
     let store = MemoryStore::new().map_err(|e| ExtensionError::Internal(e.to_string()))?;
     let store = Arc::new(store);
     Ok(Arc::new(MemoryExtension {
@@ -48,9 +57,8 @@ pub fn extension(
 
 struct MemoryExtension {
     store: Arc<MemoryStore>,
-    small_llm: Option<Arc<dyn LlmProvider>>,
+    small_llm: Arc<dyn LlmProvider>,
     session_read: Arc<dyn SessionReadSource>,
-    /// 进程级管线调度器：串行执行，忙时合并触发，避免丢 SessionStart。
     pipeline: Arc<handlers::MemoryPipelineCoordinator>,
     tasks: Arc<Mutex<Option<ExtensionTasks>>>,
 }
@@ -84,8 +92,8 @@ impl Extension for MemoryExtension {
             }),
         );
         reg.tool(
-            handlers::memory_search_definition(),
-            Arc::new(MemorySearchHandler {
+            handlers::memory_delete_definition(),
+            Arc::new(MemoryDeleteHandler {
                 store: self.store.clone(),
             }),
         );
@@ -105,6 +113,17 @@ impl Extension for MemoryExtension {
                 small_llm: self.small_llm.clone(),
                 pipeline: self.pipeline.clone(),
                 tasks: self.tasks.clone(),
+            }),
+        );
+        reg.on_event(
+            ExtensionEvent::TurnEnd,
+            HookMode::NonBlocking,
+            0,
+            Arc::new(MemoryTurnEndHandler {
+                store: self.store.clone(),
+                small_llm: self.small_llm.clone(),
+                tasks: self.tasks.clone(),
+                extract_state: Default::default(),
             }),
         );
         reg.command(
