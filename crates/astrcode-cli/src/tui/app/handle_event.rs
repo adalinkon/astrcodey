@@ -14,6 +14,7 @@ use astrcode_support::text::truncate_first_line;
 use super::App;
 use crate::tui::{
     command::slash::SlashCommandSpec,
+    ext::tool::ToolRenderCtx,
     store::transcript::{Message, MessageBody, MessageRole, ScrollbackEntry},
     streaming::controller::StreamController,
 };
@@ -313,7 +314,36 @@ fn apply_event(app: &mut App, event: &Event) {
                     None,
                 );
             } else {
-                // Normal tool: show compact one-line summary (codex style).
+                // Try custom tool renderer for rich display.
+                if let Some(renderer) = app.tool_renderers.get(tool_name) {
+                    let mut state: Box<dyn std::any::Any + Send> = Box::new(());
+                    let mut ctx = ToolRenderCtx {
+                        call_id: call_id.as_str(),
+                        tool_name,
+                        args: None,
+                        args_complete: true,
+                        execution_started: true,
+                        is_partial: false,
+                        is_error: false,
+                        expanded: false,
+                        state: &mut state,
+                    };
+                    if let Some(spec) = renderer.render_result(result, &mut ctx) {
+                        let fallback = tool_completion_summary(tool_name, result);
+                        app.push_rendered_message(
+                            MessageRole::Tool,
+                            human_action(tool_name).to_string(),
+                            spec,
+                            fallback,
+                            false,
+                            None,
+                        );
+                        app.status_text = "Ready".into();
+                        tracing::debug!(call_id = %call_id, tool = %tool_name, "tool_rendered");
+                        return;
+                    }
+                }
+                // Fallback: compact one-line summary (codex style).
                 let summary = tool_completion_summary(tool_name, result);
                 app.push_message(
                     MessageRole::Tool,

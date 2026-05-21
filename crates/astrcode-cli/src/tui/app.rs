@@ -6,6 +6,7 @@ pub mod handle_event;
 
 use std::collections::BTreeMap;
 
+use astrcode_core::render::RenderSpec;
 use astrcode_protocol::events::ClientNotification;
 
 use crate::tui::{
@@ -218,6 +219,31 @@ impl App {
             role,
             label,
             body: MessageBody::text(content),
+            is_streaming,
+            key,
+        };
+        if !is_streaming {
+            self.scrollback_queue
+                .push(ScrollbackEntry::Message(msg.clone()));
+        }
+        self.messages.push(msg);
+    }
+
+    pub fn push_rendered_message(
+        &mut self,
+        role: MessageRole,
+        label: String,
+        spec: RenderSpec,
+        fallback_text: String,
+        is_streaming: bool,
+        key: Option<String>,
+    ) {
+        let mut body = MessageBody::text(String::new());
+        body.set_render(spec, fallback_text);
+        let msg = Message {
+            role,
+            label,
+            body,
             is_streaming,
             key,
         };

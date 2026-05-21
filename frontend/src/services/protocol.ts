@@ -435,10 +435,22 @@ export function decodeDeleteProjectResponse(value: unknown): {
 
 export function decodeConfigView(value: unknown): ConfigView {
   const object = decodeObject(value, 'config view')
+  const extensionStates: Record<string, boolean> = (() => {
+    const raw = object['extensionStates']
+    if (raw == null || typeof raw !== 'object' || Array.isArray(raw))
+      return {}
+    return Object.fromEntries(
+      Object.entries(raw as Record<string, unknown>).map(([k, v]) => [
+        k,
+        typeof v === 'boolean' && v,
+      ])
+    )
+  })()
   return {
     configPath: requiredString(object, 'configPath'),
     activeProfile: requiredString(object, 'activeProfile'),
     activeModel: requiredString(object, 'activeModel'),
+    extensionStates,
     profiles: arrayField(object, 'profiles').map(decodeProfileView),
     warning: optionalString(object, 'warning'),
   }
