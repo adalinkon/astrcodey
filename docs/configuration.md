@@ -6,7 +6,7 @@ AstrCode uses a hierarchical configuration system with JSON files and environmen
 
 - **Global config**: `~/.astrcode/config.json`
 - **Project override**: `<project>/.astrcode/config.json`
-- **Extension data**: `~/.astrcode/extensions_data/astrcode.memory/`
+- **Extension data**: `~/.astrcode/projects/<project_key>/extension_data/<extension-id>/` (project-scoped)
 
 ## Configuration Structure
 
@@ -152,12 +152,14 @@ Project overrides are merged with the global config, with project values taking 
 
 ## Extension Configuration
 
-Extensions can store their own data in `~/.astrcode/extensions_data/<extension-id>/`.
+Extensions can store their own data on a **per-project basis** in `~/.astrcode/projects/<project_key>/extension_data/<extension-id>/`.
 
-For example, the memory extension stores:
-- `MEMORY.md` - Clean markdown file with persistent memories
-- `contexts/` - Historical context files extracted from past sessions
-- `processed_sessions.json` - Track which sessions have been processed
+For example, the memory extension stores for each project:
+- `MEMORY.md` - Clean markdown file with persistent memories (project-scoped)
+- `contexts/` - Historical context files extracted from past sessions (project-scoped)
+- `processed_sessions.json` - Track which sessions have been processed (project-scoped)
+
+**Note**: Memory and other extension data are now isolated per project. Each project has its own separate memory store.
 
 ## Default Values
 

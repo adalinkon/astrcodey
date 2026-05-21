@@ -102,7 +102,9 @@ impl ToolHandler for MemorySaveHandler {
     ) -> Result<ToolResult, ExtensionError> {
         let args: SaveArgs = serde_json::from_value(arguments)
             .map_err(|e| ExtensionError::Internal(e.to_string()))?;
-        let store = self.store_pool.get(working_dir)
+        let store = self
+            .store_pool
+            .get(working_dir)
             .map_err(|e| ExtensionError::Internal(e.to_string()))?;
         let content = args.content;
         let category = args.category;
@@ -140,7 +142,9 @@ impl ToolHandler for MemoryDeleteHandler {
         if args.match_pattern.trim().is_empty() {
             return Ok(ok_text("No pattern provided. Nothing deleted.".to_string()));
         }
-        let store = self.store_pool.get(working_dir)
+        let store = self
+            .store_pool
+            .get(working_dir)
             .map_err(|e| ExtensionError::Internal(e.to_string()))?;
         let pattern = args.match_pattern;
         let pattern_for_emit = pattern.clone();
@@ -179,11 +183,10 @@ pub(crate) struct MemoryRecallHandler {
 
 #[async_trait::async_trait]
 impl PromptBuildHandler for MemoryRecallHandler {
-    async fn handle(
-        &self,
-        ctx: PromptBuildContext,
-    ) -> Result<PromptContributions, ExtensionError> {
-        let store = self.store_pool.get(&ctx.working_dir)
+    async fn handle(&self, ctx: PromptBuildContext) -> Result<PromptContributions, ExtensionError> {
+        let store = self
+            .store_pool
+            .get(&ctx.working_dir)
             .map_err(|e| ExtensionError::Internal(e.to_string()))?;
         let content = match tokio::task::spawn_blocking(move || store.read_memory()).await {
             Ok(Ok(c)) => c,
@@ -282,7 +285,9 @@ impl LifecycleHandler for MemoryTurnEndHandler {
             state.last_extract = Some(now);
         }
 
-        let store = self.store_pool.get(&ctx.working_dir)
+        let store = self
+            .store_pool
+            .get(&ctx.working_dir)
             .map_err(|e| ExtensionError::Internal(e.to_string()))?;
         let small_llm = self.small_llm.clone();
         let session_id = ctx.session_id.clone();
@@ -395,7 +400,9 @@ impl LifecycleHandler for MemorySessionStartHandler {
             return Ok(HookResult::Allow);
         }
 
-        let store = self.store_pool.get(&ctx.working_dir)
+        let store = self
+            .store_pool
+            .get(&ctx.working_dir)
             .map_err(|e| ExtensionError::Internal(e.to_string()))?;
         let session_read = self.session_read.clone();
         let small_llm = self.small_llm.clone();
@@ -460,7 +467,9 @@ impl astrcode_core::extension::CommandHandler for MemoryCommandHandler {
         working_dir: &str,
         _ctx: &CommandContext,
     ) -> Result<ExtensionCommandResult, ExtensionError> {
-        let store = self.store_pool.get(working_dir)
+        let store = self
+            .store_pool
+            .get(working_dir)
             .map_err(|e| ExtensionError::Internal(e.to_string()))?;
         let args = args.trim().to_string();
 
