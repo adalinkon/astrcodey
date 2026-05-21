@@ -204,6 +204,9 @@ impl SessionManager {
                 .lock()
                 .cleanup_session(session_id);
         }
+        // 清理本 session 关联的持久化终端。
+        // TODO：更插件化的清理方式，避免直接依赖 tools 模块的实现细节。
+        astrcode_tools::terminal_tool::cleanup_terminals_for_session(session_id.as_str());
         Ok(())
     }
 

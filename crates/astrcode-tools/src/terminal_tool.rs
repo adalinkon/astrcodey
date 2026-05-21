@@ -38,6 +38,13 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(600); // 10 分钟
 /// 每个 session 允许的最大并发终端数。
 const MAX_TERMINALS_PER_SESSION: usize = 5;
 
+/// 清理指定 session 的所有终端。
+///
+/// 在 session 关闭/销毁时调用，确保不会泄漏 PTY 子进程。
+pub fn cleanup_terminals_for_session(session_id: &str) {
+    TerminalRegistry::cleanup_session(session_id);
+}
+
 // ─── Registry ────────────────────────────────────────────────────────────
 
 /// 单个终端的运行时状态（buffer + 写端 + 进程引用）。
@@ -137,13 +144,14 @@ impl TerminalRegistry {
             .map(|(id, _)| id.clone())
             .collect();
 
+        let count = ids.len();
         for id in ids {
             if let Some(entry) = registry.remove(&id) {
                 kill_entry(&entry);
             }
         }
-        if !ids.is_empty() {
-            tracing::info!(session_id, count = ids.len(), "cleaned up session terminals");
+        if count > 0 {
+            tracing::info!(session_id, count, "cleaned up session terminals");
         }
     }
 
@@ -252,11 +260,11 @@ impl Tool for TerminalTool {
             .map_err(|e| ToolError::InvalidArguments(format!("invalid terminal args: {e}")))?;
 
         let result = match args.action.as_str() {
-            "start" => action_start(self, args, &ctx.session_id).await,
+            "start" => action_start(self, args, ctx.session_id.as_str()).await,
             "send" => action_send(args).await,
             "read" => action_read(args).await,
             "close" => action_close(args).await,
-            "list" => action_list(&ctx.session_id),
+            "list" => action_list(ctx.session_id.as_str()),
             other => Err(ToolError::InvalidArguments(format!(
                 "unknown action '{other}', expected start / send / read / close / list"
             ))),
@@ -432,6 +440,9 @@ async fn action_read(
         .get(&id)
         .ok_or_else(|| ToolError::Execution(format!("terminal '{id}' not found")))?;
 
+    // 更新活跃时间
+    *entry.last_activity.lock() = std::time::Instant::now();
+
     // 等待新输出：先睡 wait_ms 让 reader 线程有机会写入。
     if wait_ms > 0 {
         tokio::time::sleep(Duration::from_millis(wait_ms)).await;
@@ -485,8 +496,10 @@ async fn action_close(
     Ok(("closed".into(), metadata, false))
 }
 
-fn action_list() -> Result<(String, BTreeMap<String, serde_json::Value>, bool), ToolError> {
-    let ids = TerminalRegistry::global().list();
+fn action_list(session_id: &str) -> Result<(String, BTreeMap<String, serde_json::Value>, bool), ToolError> {
+    let registry = TerminalRegistry::global();
+    registry.gc();
+    let ids = registry.list_for_session(session_id);
     let mut metadata = BTreeMap::new();
     metadata.insert("count".into(), serde_json::json!(ids.len()));
     metadata.insert("terminals".into(), serde_json::json!(ids.clone()));
