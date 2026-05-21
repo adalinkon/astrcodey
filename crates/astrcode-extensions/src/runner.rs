@@ -16,7 +16,7 @@ use astrcode_core::{
     extension::*,
     tool::{ExecutionMode, Tool, ToolDefinition, ToolError, ToolExecutionContext, ToolResult},
 };
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 use crate::runtime::SessionOperations;
 
@@ -57,6 +57,9 @@ pub struct RegisteredSlashCommand {
 ///
 /// 由 `ExtensionRunner::make_plugin_event_sink` 构造，传给扩展钩子上下文。
 /// `plugin_id` 在构造时注入，调用方无法伪造身份。
+///
+/// TODO: 补单元测试覆盖校验逻辑——未声明的 event_type、schema_version 超限、
+/// payload 超过 max_payload_bytes、正常发射路径。
 struct BoundPluginEventSink {
     plugin_id: String,
     declarations: HashMap<String, PluginEventDecl>,
@@ -82,8 +85,8 @@ impl PluginEventSink for BoundPluginEventSink {
             )));
         }
 
-        let serialized = serde_json::to_string(&payload)
-            .map_err(|e| ExtensionError::Internal(e.to_string()))?;
+        let serialized =
+            serde_json::to_string(&payload).map_err(|e| ExtensionError::Internal(e.to_string()))?;
         if serialized.len() > decl.max_payload_bytes {
             return Err(ExtensionError::Internal(format!(
                 "payload exceeds {} bytes for {event_type}",
@@ -126,7 +129,6 @@ struct HandlerIndex {
     keybindings: Vec<astrcode_core::extension::Keybinding>,
     status_items: Vec<astrcode_core::extension::StatusItem>,
     plugin_event_decls: HashMap<String, Vec<PluginEventDecl>>,
-    plugin_reducers: HashMap<String, Vec<Arc<dyn PluginReducer>>>,
 }
 
 fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
@@ -145,7 +147,6 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
     let mut keybindings: Vec<astrcode_core::extension::Keybinding> = Vec::new();
     let mut status_items: Vec<astrcode_core::extension::StatusItem> = Vec::new();
     let mut plugin_event_decls: HashMap<String, Vec<PluginEventDecl>> = HashMap::new();
-    let mut plugin_reducers: HashMap<String, Vec<Arc<dyn PluginReducer>>> = HashMap::new();
 
     for record in records {
         for (mode, pri, h) in record.reg.pre_tool_use() {
@@ -192,12 +193,6 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
         if !record.reg.plugin_event_decls().is_empty() {
             plugin_event_decls.insert(record.id.clone(), record.reg.plugin_event_decls().to_vec());
         }
-        for reducer in record.reg.plugin_reducers() {
-            plugin_reducers
-                .entry(record.id.clone())
-                .or_default()
-                .push(Arc::clone(reducer));
-        }
     }
 
     pre.sort_by_key(|b| std::cmp::Reverse(b.0));
@@ -224,7 +219,6 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
         keybindings,
         status_items,
         plugin_event_decls,
-        plugin_reducers,
     }
 }
 
@@ -344,7 +338,6 @@ impl ExtensionRunner {
                 keybindings: Vec::new(),
                 status_items: Vec::new(),
                 plugin_event_decls: HashMap::new(),
-                plugin_reducers: HashMap::new(),
             })),
             session_ops: Arc::new(StdRwLock::new(None)),
             timeout,
@@ -762,16 +755,6 @@ impl ExtensionRunner {
             declarations: decl_map,
             event_tx,
         }))
-    }
-
-    /// 获取指定插件注册的所有 reducer。
-    pub fn plugin_reducers_for(&self, plugin_id: &str) -> Vec<Arc<dyn PluginReducer>> {
-        let index = self.load_index();
-        index
-            .plugin_reducers
-            .get(plugin_id)
-            .cloned()
-            .unwrap_or_default()
     }
 
     /// 从 HandlerIndex 缓存收集斜杠命令。

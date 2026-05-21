@@ -180,17 +180,6 @@ pub trait PluginEventSink: Send + Sync {
     ) -> Result<(), ExtensionError>;
 }
 
-/// 插件投影 reducer。
-///
-/// 插件通过 [`Registrar::plugin_reducer`] 注册，replay 时由 extension runtime
-/// 按 `plugin_id` 路由分发。核心 [`SessionReadModel`] 不处理 PluginEvent。
-///
-/// [`SessionReadModel`]: crate::storage::SessionReadModel
-pub trait PluginReducer: Send + Sync {
-    fn plugin_id(&self) -> &str;
-    fn reduce(&self, event_type: &str, schema_version: u32, payload: &serde_json::Value);
-}
-
 // ─── Compact Trigger ─────────────────────────────────────────────────────
 
 /// 触发 compact 的来源。
@@ -491,7 +480,10 @@ impl std::fmt::Debug for PreToolUseContext {
         f.debug_struct("PreToolUseContext")
             .field("session_id", &self.session_id)
             .field("tool_name", &self.tool_name)
-            .field("plugin_event_sink", &self.plugin_event_sink.as_ref().map(|_| "<sink>"))
+            .field(
+                "plugin_event_sink",
+                &self.plugin_event_sink.as_ref().map(|_| "<sink>"),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -516,7 +508,10 @@ impl std::fmt::Debug for PostToolUseContext {
             .field("session_id", &self.session_id)
             .field("tool_name", &self.tool_name)
             .field("is_error", &self.is_error)
-            .field("plugin_event_sink", &self.plugin_event_sink.as_ref().map(|_| "<sink>"))
+            .field(
+                "plugin_event_sink",
+                &self.plugin_event_sink.as_ref().map(|_| "<sink>"),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -566,7 +561,10 @@ impl std::fmt::Debug for LifecycleContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LifecycleContext")
             .field("session_id", &self.session_id)
-            .field("plugin_event_sink", &self.plugin_event_sink.as_ref().map(|_| "<sink>"))
+            .field(
+                "plugin_event_sink",
+                &self.plugin_event_sink.as_ref().map(|_| "<sink>"),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -708,7 +706,6 @@ pub struct Registrar {
         std::sync::Arc<dyn LifecycleHandler>,
     )>,
     plugin_event_decls: Vec<PluginEventDecl>,
-    plugin_reducers: Vec<std::sync::Arc<dyn PluginReducer>>,
 }
 
 impl Registrar {
@@ -729,7 +726,6 @@ impl Registrar {
             post_tool_use_failure: Vec::new(),
             lifecycle: Vec::new(),
             plugin_event_decls: Vec::new(),
-            plugin_reducers: Vec::new(),
         }
     }
 
@@ -840,7 +836,6 @@ impl Registrar {
             && self.post_tool_use_failure.is_empty()
             && self.lifecycle.is_empty()
             && self.plugin_event_decls.is_empty()
-            && self.plugin_reducers.is_empty()
     }
 
     /// 声明插件可发出的事件类型，返回构建器。
@@ -852,11 +847,6 @@ impl Registrar {
             durable: true,
             max_payload_bytes: 64 * 1024,
         }
-    }
-
-    /// 注册插件投影 reducer，用于 replay 时重建插件状态。
-    pub fn plugin_reducer(&mut self, reducer: std::sync::Arc<dyn PluginReducer>) {
-        self.plugin_reducers.push(reducer);
     }
 
     pub fn tools(&self) -> &[(ToolDefinition, std::sync::Arc<dyn ToolHandler>)] {
@@ -931,10 +921,6 @@ impl Registrar {
 
     pub fn plugin_event_decls(&self) -> &[PluginEventDecl] {
         &self.plugin_event_decls
-    }
-
-    pub fn plugin_reducers(&self) -> &[std::sync::Arc<dyn PluginReducer>] {
-        &self.plugin_reducers
     }
 }
 
