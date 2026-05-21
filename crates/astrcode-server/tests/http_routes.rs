@@ -199,8 +199,14 @@ async fn concurrent_prompt_accepts_one_and_queues_one() {
         })
         .collect();
 
-    assert!(kinds.contains(&"accepted"), "expected one Accepted: {kinds:?}");
-    assert!(kinds.contains(&"handled"), "expected one Handled (queued): {kinds:?}");
+    assert!(
+        kinds.contains(&"accepted"),
+        "expected one Accepted: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"handled"),
+        "expected one Handled (queued): {kinds:?}"
+    );
 }
 
 #[tokio::test]
