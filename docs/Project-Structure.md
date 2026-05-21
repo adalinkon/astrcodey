@@ -30,7 +30,7 @@ astrcode/
 | Crate | 行数 | 描述 |
 |-------|------|------|
 | `astrcode-ai` | 3.6k | 多 Provider LLM 层（Anthropic、OpenAI 兼容、Google GenAI）、SSE 流解析、重试、缓存追踪 |
-| `astrcode-tools` | 4.6k | 内置工具（read/write/edit/patch/find/grep/shell/task）、工具注册表、执行包装、agent 协作工具 |
+| `astrcode-tools` | 4.6k | 内置工具（read/write/edit/patch/find/grep/shell/terminal/task）、工具注册表、执行包装、agent 协作工具 |
 | `astrcode-storage` | 3.7k | JSONL event log、snapshot、config 持久化、锁 |
 | `astrcode-context` | 3.5k | token 估算、tool result 预算、裁剪、压缩、文件恢复、prompt engine |
 | `astrcode-session` | 5.2k | Agent 循环核心：turn runner、tool pipeline、LLM 流消费、compact 编排、事件 fanout、SessionRuntimeServices 共享 |

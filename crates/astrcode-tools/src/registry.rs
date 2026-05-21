@@ -144,9 +144,10 @@ pub fn builtin_tools(working_dir: PathBuf, timeout_secs: u64) -> Vec<Arc<dyn Too
             working_dir: working_dir.clone(),
         }) as Arc<dyn Tool>,
         Arc::new(super::shell_tool::ShellTool {
-            working_dir,
+            working_dir: working_dir.clone(),
             timeout_secs,
         }) as Arc<dyn Tool>,
+        Arc::new(super::terminal_tool::TerminalTool { working_dir }) as Arc<dyn Tool>,
         Arc::new(super::task_tool::TaskTool) as Arc<dyn Tool>,
     ]
 }

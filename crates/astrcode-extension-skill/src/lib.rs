@@ -218,7 +218,7 @@ fn skill_tool_metadata()
              one of the listed skills.",
         )
         .caveat("Users may also refer to skills as slash commands, such as /commit.")
-        .prompt_tag("discovery"),
+        .prompt_tag(astrcode_core::tool::ToolPromptTag::Discovery),
     );
     map
 }

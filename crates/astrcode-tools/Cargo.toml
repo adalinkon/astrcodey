@@ -21,6 +21,8 @@ similar = { workspace = true }
 tracing = { workspace = true }
 grep-searcher = "0.1"
 grep-regex = "0.1"
+portable-pty = "0.9"
+parking_lot = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

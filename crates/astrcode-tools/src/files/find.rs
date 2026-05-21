@@ -135,7 +135,7 @@ impl Tool for FindFilesTool {
     }
 
     fn prompt_metadata(&self) -> Option<ToolPromptMetadata> {
-        Some(ToolPromptMetadata::new("").prompt_tag("filesystem"))
+        Some(ToolPromptMetadata::new("").prompt_tag(ToolPromptTag::Filesystem))
     }
 }
 
@@ -143,8 +143,7 @@ fn find_files_tool_definition() -> &'static ToolDefinition {
     static DEFINITION: OnceLock<ToolDefinition> = OnceLock::new();
     DEFINITION.get_or_init(|| ToolDefinition {
         name: "find".into(),
-        description: "Find file paths only by glob (`*.rs`, `**/*.ts`). For content, use \
-                      `grep`."
+        description: "Find file paths only by glob (`*.rs`, `**/*.ts`). For content, use `grep`."
             .into(),
         origin: ToolOrigin::Builtin,
         execution_mode: ExecutionMode::Parallel,

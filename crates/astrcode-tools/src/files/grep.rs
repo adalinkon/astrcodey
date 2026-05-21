@@ -221,7 +221,7 @@ impl Tool for GrepTool {
     }
 
     fn prompt_metadata(&self) -> Option<ToolPromptMetadata> {
-        Some(ToolPromptMetadata::new("").prompt_tag("filesystem"))
+        Some(ToolPromptMetadata::new("").prompt_tag(ToolPromptTag::Filesystem))
     }
 }
 

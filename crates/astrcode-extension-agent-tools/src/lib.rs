@@ -365,7 +365,7 @@ fn agent_tool_metadata()
              not needed. Avoid duplicating work that subagents are already doing — if you \
              delegate research to a subagent, do not also perform the same searches yourself.",
         )
-        .prompt_tag("collaboration"),
+        .prompt_tag(astrcode_core::tool::ToolPromptTag::Collaboration),
     );
     map
 }

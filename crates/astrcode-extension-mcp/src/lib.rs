@@ -16,7 +16,7 @@ use astrcode_core::{
     },
     tool::{
         DEFERRED_TOOLS_METADATA_KEY, ExecutionMode, ToolDefinition, ToolExecutionContext,
-        ToolOrigin, ToolPromptMetadata, ToolResult, tool_metadata,
+        ToolOrigin, ToolPromptMetadata, ToolPromptTag, ToolResult, tool_metadata,
     },
 };
 use serde_json::{Value, json};
@@ -294,7 +294,7 @@ fn tool_search_metadata() -> ToolPromptMetadata {
         "After `tool_search_tool` returns candidate tools and schemas, call the matching concrete \
          `mcp__...` tool directly.",
     )
-    .prompt_tag("discovery")
+    .prompt_tag(ToolPromptTag::Discovery)
     .deferred_discovery_gate(MCP_DEFERRED_GROUP)
 }
 

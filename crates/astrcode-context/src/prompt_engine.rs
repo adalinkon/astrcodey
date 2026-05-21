@@ -32,7 +32,7 @@ use astrcode_core::{
         ExtensionPromptBlock, ExtensionSection, PromptPlan, PromptProvider, PromptSectionGroup,
         SystemPromptInput,
     },
-    tool::{ToolDefinition, ToolOrigin, ToolPromptMetadata},
+    tool::{ToolDefinition, ToolOrigin, ToolPromptMetadata, ToolPromptTag},
 };
 use astrcode_support::hostpaths::astrcode_dir;
 
@@ -533,7 +533,7 @@ fn tool_summary_section(input: &SystemPromptInput) -> Option<String> {
         input
             .tool_prompt_metadata
             .get(&tool.name)
-            .map(|m| m.prompt_tags.iter().any(|t| t == "collaboration"))
+            .map(|m| m.has_tag(ToolPromptTag::Collaboration))
             .unwrap_or(false)
     };
     let (collab, regular): (Vec<_>, Vec<_>) = builtin.into_iter().partition(is_collab);
@@ -599,8 +599,8 @@ fn tool_summary_section(input: &SystemPromptInput) -> Option<String> {
         .iter()
         .filter_map(|tool| {
             let meta = input.tool_prompt_metadata.get(&tool.name)?;
-            if should_render_detailed_guide(meta) {
-                build_detailed_guide(tool, meta)
+            if meta.should_render_detailed_guide() {
+                build_detailed_guide(meta)
             } else {
                 None
             }
@@ -638,13 +638,7 @@ fn tool_summary_rank(name: &str) -> u8 {
     }
 }
 
-fn should_render_detailed_guide(meta: &ToolPromptMetadata) -> bool {
-    meta.prompt_tags
-        .iter()
-        .any(|tag| tag == "discovery" || tag == "collaboration")
-}
-
-fn build_detailed_guide(_tool: &ToolDefinition, meta: &ToolPromptMetadata) -> Option<String> {
+fn build_detailed_guide(meta: &ToolPromptMetadata) -> Option<String> {
     let mut parts = vec![meta.guide.clone()];
     if !meta.caveats.is_empty() {
         parts.push(format!(

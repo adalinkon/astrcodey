@@ -130,7 +130,7 @@ fn todo_write_metadata()
              activeForm: \"准备设计优化方案\" }, { content: \"验证优化效果\", status: \
              \"pending\", activeForm: \"准备验证优化效果\" }] }",
         )
-        .prompt_tag("planning"),
+        .prompt_tag(astrcode_core::tool::ToolPromptTag::Planning),
     );
     map
 }

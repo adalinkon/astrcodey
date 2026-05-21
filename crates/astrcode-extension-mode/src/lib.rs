@@ -264,14 +264,14 @@ fn mode_tool_metadata() -> std::collections::HashMap<String, astrcode_core::tool
             "Use `switchMode` to enter plan mode for read-only exploration, or return to code \
              mode for execution.",
         )
-        .prompt_tag("planning"),
+        .prompt_tag(astrcode_core::tool::ToolPromptTag::Planning),
     );
     map.insert(
         UPSERT_PLAN_TOOL_NAME.to_string(),
         ToolPromptMetadata::new(
             "Only available in plan mode. The plan must contain all required headings.",
         )
-        .prompt_tag("planning"),
+        .prompt_tag(astrcode_core::tool::ToolPromptTag::Planning),
     );
     map
 }

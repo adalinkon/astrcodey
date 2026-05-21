@@ -114,7 +114,7 @@ Identity → System → Task Guidelines → Communication → Environment
 
 ### 分层工具而非全 bash
 
-8 个内置工具（read / write / edit / patch / find / grep / shell / task）：
+9 个内置工具（read / write / edit / patch / find / grep / shell / terminal / task）：
 
 - **为什么不全用 bash**：Claude Code 可以全 bash 是因为模型足够强。对能力较弱的模型，结构化工具（edit 的 oldStr/newStr 精确替换、patch 的 unified diff）比让模型写 shell 命令更可靠
 - edit 支持 `edits` 数组做原子多编辑，先全部验证再一次性写回
@@ -239,7 +239,7 @@ Mode 扩展已从内置逻辑迁移为完整插件：通过 `Registrar` 注册 `
 | TypeScript/TSX 代码行数 | ~4.8k |
 | Crates 数量 | 21（含 Tauri shell） |
 | Rust 源文件数量 | 203 |
-| 内置工具数量 | 8 |
+| 内置工具数量 | 9 |
 | 扩展 crate 数量 | 7 |
 
 ---

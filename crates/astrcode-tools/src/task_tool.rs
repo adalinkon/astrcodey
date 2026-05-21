@@ -83,7 +83,7 @@ impl Tool for TaskTool {
     }
 
     fn prompt_metadata(&self) -> Option<ToolPromptMetadata> {
-        Some(ToolPromptMetadata::new("").prompt_tag("system"))
+        Some(ToolPromptMetadata::new("").prompt_tag(ToolPromptTag::System))
     }
 }
 

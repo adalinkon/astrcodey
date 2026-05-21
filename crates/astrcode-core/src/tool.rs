@@ -74,21 +74,20 @@ pub struct ToolDefinition {
 ///    - 这是工具用法的**主要载体**。约束、参数语义、与其它工具的关系都应写在这里。
 ///
 /// 2. **System prompt 详细指引**：本结构的 `guide` / `caveats` / `examples`。
-///    - 仅当 `prompt_tags` 包含 `"discovery"` 或 `"collaboration"` 时才会被渲染。
-///      具体见 `astrcode-context::prompt_engine::should_render_detailed_guide`。
+///    - 仅当 `prompt_tags` 含 [`ToolPromptTag::Discovery`] 或 [`ToolPromptTag::Collaboration`]
+///      时才会被渲染。 具体见 [`Self::should_render_detailed_guide`]。
 ///    - 用于解释**使用策略**（什么时候用、什么时候别用），而非工具自身的语义。
 ///    - 当前只服务于 `tool_search_tool`（MCP discovery）、`Skill`、`agent` 三类工具。
 ///
 /// # 不要
 ///
-/// - 不要往 builtin（filesystem/system/planning 标签）工具的 `caveats` 里写约束 ——
-///   它**不会**进 system prompt。把这类信息写到 `ToolDefinition.description` 或
-///   参数 schema 的 description 里。
+/// - 不要往 builtin（filesystem/system/planning 标签）工具的 `caveats` 里写约束 —— 它**不会**进
+///   system prompt。把这类信息写到 `ToolDefinition.description` 或 参数 schema 的 description 里。
 /// - 如果 builtin 工具确实需要 system prompt 级别的策略指引，扩展
-///   `should_render_detailed_guide`，而不是新增字段。
+///   [`Self::should_render_detailed_guide`]，而不是新增字段。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct ToolPromptMetadata {
-    /// 详细使用说明，仅当 `prompt_tags` 含 discovery/collaboration 时进 system prompt。
+    /// 详细使用说明，仅当 `prompt_tags` 含 Discovery/Collaboration 时进 system prompt。
     #[serde(default)]
     pub guide: String,
     /// 注意事项，渲染条件同 `guide`。
@@ -97,10 +96,10 @@ pub struct ToolPromptMetadata {
     /// 使用示例，渲染条件同 `guide`。
     #[serde(default)]
     pub examples: Vec<String>,
-    /// 分类标签。决定渲染行为：`discovery`/`collaboration` → 渲染详细指引；
-    /// `filesystem`/`system`/`planning` → 仅作为分类。
+    /// 分类标签。决定渲染行为：[`ToolPromptTag::Discovery`] /
+    /// [`ToolPromptTag::Collaboration`] 触发详细指引；其它标签仅作为分类。
     #[serde(default)]
-    pub prompt_tags: Vec<String>,
+    pub prompt_tags: Vec<ToolPromptTag>,
     /// Deferred discovery group. Tools in the same group are hidden from the
     /// provider until a matching discovery gate returns them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -108,6 +107,25 @@ pub struct ToolPromptMetadata {
     /// Discovery group unlocked by this tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deferred_discovery_gate: Option<String>,
+}
+
+/// 工具的渲染分类标签。
+///
+/// 序列化时使用 snake_case（例如 `Discovery` → `"discovery"`），
+/// 与历史的字符串标签保持 wire 兼容。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolPromptTag {
+    /// 文件系统类工具（read/write/edit/grep/find/patch）。
+    Filesystem,
+    /// 系统类工具（shell/task）。
+    System,
+    /// 计划类工具（todoWrite/switchMode/upsertSessionPlan）。
+    Planning,
+    /// 工具发现入口（tool_search_tool/Skill）。会触发 system prompt 详细指引。
+    Discovery,
+    /// 协作/委派类工具（agent）。会触发 system prompt 详细指引并归入独立列表。
+    Collaboration,
 }
 
 impl ToolPromptMetadata {
@@ -128,8 +146,8 @@ impl ToolPromptMetadata {
         self
     }
 
-    pub fn prompt_tag(mut self, tag: impl Into<String>) -> Self {
-        self.prompt_tags.push(tag.into());
+    pub fn prompt_tag(mut self, tag: ToolPromptTag) -> Self {
+        self.prompt_tags.push(tag);
         self
     }
 
@@ -141,6 +159,19 @@ impl ToolPromptMetadata {
     pub fn deferred_discovery_gate(mut self, group: impl Into<String>) -> Self {
         self.deferred_discovery_gate = Some(group.into());
         self
+    }
+
+    /// 是否含指定标签。
+    pub fn has_tag(&self, tag: ToolPromptTag) -> bool {
+        self.prompt_tags.contains(&tag)
+    }
+
+    /// 是否触发 system prompt 中的"详细工具指引"渲染。
+    ///
+    /// 仅 [`ToolPromptTag::Discovery`] 和 [`ToolPromptTag::Collaboration`] 触发，
+    /// 用于把 `guide` / `caveats` / `examples` 渲染到 system prompt。
+    pub fn should_render_detailed_guide(&self) -> bool {
+        self.has_tag(ToolPromptTag::Discovery) || self.has_tag(ToolPromptTag::Collaboration)
     }
 }
 
@@ -498,10 +529,9 @@ pub trait Tool: Send + Sync {
     ///
     /// **多数工具不需要实现此方法**——它的渲染规则非常窄，详见
     /// [`ToolPromptMetadata`] 的 doc。简单来说：
-    /// - 想让 LLM 看到工具用法、参数语义、约束 → 写在 `definition().description`
-    ///   或参数 schema 里；
-    /// - 仅当工具属于 discovery（如 `tool_search_tool`、`Skill`）或 collaboration
-    ///   （如 `agent`），需要在 system prompt 里给出**使用策略**指引时，才填本字段。
+    /// - 想让 LLM 看到工具用法、参数语义、约束 → 写在 `definition().description` 或参数 schema 里；
+    /// - 仅当工具属于 discovery（如 `tool_search_tool`、`Skill`）或 collaboration （如
+    ///   `agent`），需要在 system prompt 里给出**使用策略**指引时，才填本字段。
     ///
     /// 默认返回 `None`。
     fn prompt_metadata(&self) -> Option<ToolPromptMetadata> {

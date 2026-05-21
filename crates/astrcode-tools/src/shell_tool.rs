@@ -87,7 +87,7 @@ impl Tool for ShellTool {
     }
 
     fn prompt_metadata(&self) -> Option<ToolPromptMetadata> {
-        Some(ToolPromptMetadata::new("").prompt_tag("system"))
+        Some(ToolPromptMetadata::new("").prompt_tag(ToolPromptTag::System))
     }
 
     /// 执行 shell 命令：解析参数 → 构建子进程 → 并发读取 stdout/stderr → 等待完成或超时。
@@ -244,10 +244,9 @@ fn shell_tool_definition(timeout_secs: u64) -> ToolDefinition {
     let definition = ToolDefinition {
         name: "shell".into(),
         description: format!(
-            "Run a command via {} ({}s default timeout, max 600). Returns stdout, stderr, \
-             exit code. Set `runInBackground=true` for long-running tasks (dev servers, \
-             watchers); track or cancel them with `task`. Prefer `read`/`grep`/`find`/`edit` \
-             for file ops.",
+            "Run a command via {} ({}s default timeout, max 600). Returns stdout, stderr, exit \
+             code. Set `runInBackground=true` for long-running tasks (dev servers, watchers); \
+             track or cancel them with `task`. Prefer `read`/`grep`/`find`/`edit` for file ops.",
             shell.name, timeout_secs,
         ),
         origin: ToolOrigin::Builtin,

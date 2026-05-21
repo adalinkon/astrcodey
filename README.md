@@ -96,7 +96,7 @@ cargo run --features dev-mode -- eval
 | `astrcode-cli` | 8.0k | Terminal UI (ratatui), headless exec, server launcher |
 | `astrcode-session` | 5.2k | Agent loop core: turn runner, tool pipeline, LLM stream consumption, compact orchestration |
 | `astrcode-core` | 4.9k | Shared types, traits, config system, error types, prompt composition, extension contracts |
-| `astrcode-tools` | 4.6k | Built-in tools: read, write, edit, patch, find, grep, shell, task |
+| `astrcode-tools` | 4.6k | Built-in tools: read, write, edit, patch, find, grep, shell, terminal, task |
 | `astrcode-storage` | 3.7k | JSONL event log, session snapshots, config persistence, file locking |
 | `astrcode-ai` | 3.6k | Multi-provider LLM layer (Anthropic, OpenAI, Google GenAI), SSE streaming, retry |
 | `astrcode-context` | 3.5k | Token estimation, context window budgeting, auto-compact, prompt engine |

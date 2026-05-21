@@ -149,52 +149,52 @@ impl Tool for ReadFileTool {
     }
 
     fn prompt_metadata(&self) -> Option<ToolPromptMetadata> {
-        Some(ToolPromptMetadata::new("").prompt_tag("filesystem"))
+        Some(ToolPromptMetadata::new("").prompt_tag(ToolPromptTag::Filesystem))
     }
 }
 
 fn read_file_tool_definition() -> &'static ToolDefinition {
     static DEFINITION: OnceLock<ToolDefinition> = OnceLock::new();
     DEFINITION.get_or_init(|| ToolDefinition {
-            name: "read".into(),
-            description: "Read a known file. Use `offset`+`limit` for source files, \
-                          `charOffset`+`maxChars` for persisted tool results. \
-                          Not for directories — use `find`."
-                .into(),
-            origin: ToolOrigin::Builtin,
-            execution_mode: ExecutionMode::Parallel,
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "File path, or a persisted tool-result path from a prior result."
-                    },
-                    "maxChars": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Default 20000 (60000 for persisted results)."
-                    },
-                    "charOffset": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "description": "Continue a truncated read."
-                    },
-                    "offset": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "description": "Start line (0-based)."
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Max lines from offset."
-                    }
+        name: "read".into(),
+        description: "Read a known file. Use `offset`+`limit` for source files, \
+                      `charOffset`+`maxChars` for persisted tool results. Not for directories — \
+                      use `find`."
+            .into(),
+        origin: ToolOrigin::Builtin,
+        execution_mode: ExecutionMode::Parallel,
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path, or a persisted tool-result path from a prior result."
                 },
-                "required": ["path"],
-                "additionalProperties": false
-            }),
-        })
+                "maxChars": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Default 20000 (60000 for persisted results)."
+                },
+                "charOffset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Continue a truncated read."
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Start line (0-based)."
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Max lines from offset."
+                }
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        }),
+    })
 }
 
 async fn read_persisted_tool_result_path(

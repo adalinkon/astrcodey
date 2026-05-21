@@ -104,7 +104,7 @@ impl Tool for WriteFileTool {
     }
 
     fn prompt_metadata(&self) -> Option<ToolPromptMetadata> {
-        Some(ToolPromptMetadata::new("").prompt_tag("filesystem"))
+        Some(ToolPromptMetadata::new("").prompt_tag(ToolPromptTag::Filesystem))
     }
 }
 
@@ -112,8 +112,8 @@ fn write_file_tool_definition() -> &'static ToolDefinition {
     static DEFINITION: OnceLock<ToolDefinition> = OnceLock::new();
     DEFINITION.get_or_init(|| ToolDefinition {
         name: "write".into(),
-        description: "Create a UTF-8 file or fully replace one when the complete final content \
-                      is known. Use `edit` or `patch` for partial changes."
+        description: "Create a UTF-8 file or fully replace one when the complete final content is \
+                      known. Use `edit` or `patch` for partial changes."
             .into(),
         origin: ToolOrigin::Builtin,
         execution_mode: ExecutionMode::Sequential,

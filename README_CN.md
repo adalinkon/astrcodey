@@ -91,7 +91,7 @@ cargo run --features dev-mode -- eval
 | `astrcode-cli` | 8.0k | 终端 TUI（ratatui）、无头执行、服务器启动器 |
 | `astrcode-session` | 5.2k | Agent 循环核心：turn runner、工具管线、LLM 流消费、压缩编排 |
 | `astrcode-core` | 4.9k | 共享类型、trait、配置系统、错误类型、提示词组合、扩展契约 |
-| `astrcode-tools` | 4.6k | 内置工具：read、write、edit、patch、find、grep、shell、task |
+| `astrcode-tools` | 4.6k | 内置工具：read、write、edit、patch、find、grep、shell、terminal、task |
 | `astrcode-storage` | 3.7k | JSONL 事件日志、会话快照、配置持久化、文件锁 |
 | `astrcode-ai` | 3.6k | 多 Provider LLM 层（Anthropic、OpenAI、Google GenAI）、SSE 流式、重试 |
 | `astrcode-context` | 3.5k | Token 估算、上下文窗口预算、自动压缩、提示词引擎 |
