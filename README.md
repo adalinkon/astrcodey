@@ -33,20 +33,20 @@ See [Quick Start](#quick-start) below for building from source.
 
 ## Configuration (Recommended Before First Run)
 
-AstrCode 需要配置 LLM 提供商和 API Key 才能正常使用。首次运行前建议先完成以下配置。
+AstrCode requires LLM provider and API key configuration to function properly. It's recommended to complete the following configuration before the first run.
 
-### 配置文件位置
+### Configuration File Locations
 
-| 文件 | 路径 | 用途 |
+| File | Path | Purpose |
 |---|---|---|
-| 主配置 | `~/.astrcode/config.json` | LLM 提供商、模型、运行时参数 |
-| 项目配置 | `<workspace>/.astrcode/config.json` | 项目级覆盖（可选） |
-| 全局 MCP | `~/.astrcode/mcp.json` | MCP 服务器配置 |
-| 项目 MCP | `<workspace>/.astrcode/mcp.json` | 项目级 MCP 配置（可选） |
+| Main config | `~/.astrcode/config.json` | LLM providers, models, runtime parameters |
+| Project config | `<workspace>/.astrcode/config.json` | Project-level overrides (optional) |
+| Global MCP | `~/.astrcode/mcp.json` | MCP server configuration |
+| Project MCP | `<workspace>/.astrcode/mcp.json` | Project-level MCP configuration (optional) |
 
-### LLM 提供商配置
+### LLM Provider Configuration
 
-`~/.astrcode/config.json` 示例：
+Example `~/.astrcode/config.json`:
 
 ```json
 {
@@ -87,9 +87,9 @@ AstrCode 需要配置 LLM 提供商和 API Key 才能正常使用。首次运行
 }
 ```
 
-**API Key 说明**：推荐使用 `"apiKey": "env:VARIABLE_NAME"` 引用环境变量，避免在配置文件中直接写入密钥。
+**API Key Note**: We recommend using `"apiKey": "env:VARIABLE_NAME"` to reference environment variables instead of writing keys directly in the configuration file.
 
-对应的环境变量需提前设置：
+Set the corresponding environment variables beforehand:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
@@ -97,9 +97,9 @@ export OPENAI_API_KEY="sk-..."
 export DEEPSEEK_API_KEY="sk-..."
 ```
 
-### MCP 服务器配置
+### MCP Server Configuration
 
-`~/.astrcode/mcp.json` 用于注册外部 MCP 工具服务器：
+`~/.astrcode/mcp.json` is used to register external MCP tool servers:
 
 ```json
 {
@@ -118,20 +118,37 @@ export DEEPSEEK_API_KEY="sk-..."
 }
 ```
 
-字段说明：
+Field descriptions:
 
-| 字段 | 必填 | 说明 |
+| Field | Required | Description |
 |---|---|---|
-| `command` | 是 | 启动 MCP 服务器的命令 |
-| `args` | 否 | 命令行参数数组 |
-| `env` | 否 | 传递给进程的环境变量 |
-| `cwd` | 否 | 工作目录（项目级配置中会校验是否在工作区内） |
+| `command` | Yes | Command to start the MCP server |
+| `args` | No | Command line arguments array |
+| `env` | No | Environment variables to pass to the process |
+| `cwd` | No | Working directory (validated to be within workspace in project-level config) |
 
-项目级 MCP 配置（`<workspace>/.astrcode/mcp.json`）会覆盖全局配置，但需要设置环境变量启用：
+Project-level MCP configuration (`<workspace>/.astrcode/mcp.json`) overrides global configuration, but requires an environment variable to enable:
 
 ```bash
 export ASTRCODE_ENABLE_PROJECT_MCP=1
 ```
+
+### Extension Configuration
+
+Extensions can be enabled or disabled via `~/.astrcode/config.json`. By default, all extensions are enabled except `memory`, which is disabled by default.
+
+Example extension configuration:
+
+```json
+{
+  "version": "1",
+  "extensionStates": {
+    "astrcode.memory": true
+  }
+}
+```
+
+To enable the memory extension, add `"astrcode.memory": true` to `extensionStates`.
 
 ## Quick Start
 
