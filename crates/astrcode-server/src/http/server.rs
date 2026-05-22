@@ -177,7 +177,6 @@ pub fn write_run_info(port: u16, auth_token: &str) {
     .to_string();
     if let Err(e) = std::fs::write(&path, &content) {
         tracing::warn!(path = %path.display(), error = %e, "failed to write run.json");
-        return;
     }
     // 防止同机用户通过 `~/.astrcode/run.json` 读取到该进程的 auth token
     #[cfg(unix)]

@@ -33,8 +33,7 @@ use crate::{
 /// error occurs.
 pub async fn run_acp_server(runtime: Arc<ServerRuntime>) -> agent_client_protocol::Result<()> {
     let event_tx = Arc::new(EventFanout::new());
-    let server_system =
-        crate::bootstrap::spawn_server_system(&runtime, Arc::clone(&event_tx));
+    let server_system = crate::bootstrap::spawn_server_system(&runtime, Arc::clone(&event_tx));
     let command_handle = server_system.handler;
 
     let result = Agent

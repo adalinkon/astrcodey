@@ -6,10 +6,7 @@ use astrcode_protocol::events::ClientNotification;
 use astrcode_support::event_fanout::EventFanout;
 
 use super::ServerRuntime;
-use crate::{
-    handler::CommandHandle,
-    server_event_bus::ServerEventBus,
-};
+use crate::{handler::CommandHandle, server_event_bus::ServerEventBus};
 
 /// Server 核心系统句柄。
 ///

@@ -212,6 +212,7 @@ name = "astrcode-cli"
 version = "0.1.4"
 dependencies = [
  "astrcode-client",
+ "astrcode-context",
  "astrcode-core",
  "astrcode-eval",
  "astrcode-log",
