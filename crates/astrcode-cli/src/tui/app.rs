@@ -4,7 +4,7 @@
 
 pub mod handle_event;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use astrcode_core::render::RenderSpec;
 use astrcode_protocol::events::ClientNotification;
@@ -32,7 +32,7 @@ pub struct App {
     pub is_streaming: bool,
     pub is_compacting: bool,
     /// Compact 期间排队的用户输入。
-    pub queued_inputs: Vec<String>,
+    pub queued_inputs: VecDeque<String>,
     pub should_quit: bool,
     /// Ctrl+C 二次确认：首次按下后等待第二次确认退出。
     pub quit_pending: bool,
@@ -114,7 +114,7 @@ impl App {
             error: None,
             is_streaming: false,
             is_compacting: false,
-            queued_inputs: Vec::new(),
+            queued_inputs: VecDeque::new(),
             should_quit: false,
             quit_pending: false,
             extension_commands: Vec::new(),
@@ -300,11 +300,7 @@ impl App {
 
     /// 获取并移除第一个排队的输入（用于 compact 完成后自动处理）。
     pub fn take_queued_input(&mut self) -> Option<String> {
-        if self.queued_inputs.is_empty() {
-            None
-        } else {
-            Some(self.queued_inputs.remove(0))
-        }
+        self.queued_inputs.pop_front()
     }
 
     /// 检查是否有排队的输入。

@@ -441,7 +441,7 @@ async fn submit_current_input(app: &mut App, client: &Arc<Client>) -> io::Result
             return Ok(());
         }
         app.remember_input(&input);
-        app.queued_inputs.push(input.clone());
+        app.queued_inputs.push_back(input.clone());
         app.push_user(&input);
         let queue_status = if app.queued_inputs.len() == 1 {
             "1 message queued".to_string()
