@@ -15,6 +15,9 @@ use crate::config_manager::ConfigManager;
 /// 会话创建后的回调类型，用于在 session 注册到 manager 时自动执行副作用（如 attach 到 event_bus）。
 pub type SessionAttachHook = Arc<dyn Fn(&Session) + Send + Sync>;
 
+/// 会话销毁后的回调类型，用于在 session 从 manager 移除时释放占位（如从 event_bus detach）。
+pub type SessionDetachHook = Arc<dyn Fn(&SessionId) + Send + Sync>;
+
 /// 子 agent 完成后向父 session 提交 prompt 的回调类型。
 ///
 /// 由 actor 注入，调用方通过它把"通知文本"作为新 prompt 触发父 session 启动新 turn。
@@ -63,6 +66,8 @@ pub struct SessionManager {
     capabilities: Arc<SessionRuntimeServices>,
     /// 可选的 attach 回调：子会话注册 runtime 后自动把 session 接入 event_bus 广播。
     attach_hook: Mutex<Option<SessionAttachHook>>,
+    /// 可选的 detach 回调：session 销毁后释放 event_bus 占位，让同 sid 重建时能重新 attach。
+    detach_hook: Mutex<Option<SessionDetachHook>>,
     /// 可选的 prompt 提交回调：异步子 agent 完成后用来给父 session 启动 turn。
     prompt_submit_hook: Mutex<Option<PromptSubmitHook>>,
 }
@@ -81,6 +86,7 @@ impl SessionManager {
             runtime_states: Mutex::new(HashMap::new()),
             capabilities,
             attach_hook: Mutex::new(None),
+            detach_hook: Mutex::new(None),
             prompt_submit_hook: Mutex::new(None),
         }
     }
@@ -107,6 +113,11 @@ impl SessionManager {
     /// 设置 attach 回调。event_bus 创建后由调用方注入，子会话注册 runtime 时自动触发。
     pub fn set_attach_hook(&self, hook: SessionAttachHook) {
         *self.attach_hook.lock() = Some(hook);
+    }
+
+    /// 设置 detach 回调。session 销毁时触发，释放 event_bus 的 sid 占位。
+    pub fn set_detach_hook(&self, hook: SessionDetachHook) {
+        *self.detach_hook.lock() = Some(hook);
     }
 
     /// 设置 prompt 提交回调。actor 启动后注入，子 agent 完成后通过它给父 session 启动 turn。
@@ -212,6 +223,10 @@ impl SessionManager {
         )
         .await?;
         self.event_store.delete_session(session_id).await?;
+        // 释放 event_bus 的 sid 占位，让同 sid 重建时能重新 attach。
+        if let Some(hook) = self.detach_hook.lock().as_ref() {
+            hook(session_id);
+        }
         // 清理本 session 的 runtime（含 bg_tasks）后从 registry 移除。
         if let Some(runtime) = self.runtime_states.lock().remove(session_id) {
             runtime
@@ -274,11 +289,15 @@ impl SessionManager {
             .await
             .map_err(SessionManagerError::from)?;
         // ephemeral 子会话回收后清理 runtime 占位，避免 HashMap 无限膨胀。
+        // 同时释放 event_bus 的 sid 占位。
         if let Some(runtime) = self.runtime_states.lock().remove(session_id) {
             runtime
                 .background_tasks()
                 .lock()
                 .cleanup_session(session_id);
+        }
+        if let Some(hook) = self.detach_hook.lock().as_ref() {
+            hook(session_id);
         }
         Ok(())
     }

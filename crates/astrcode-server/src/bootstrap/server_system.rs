@@ -11,10 +11,12 @@ use crate::{handler::CommandHandle, server_event_bus::ServerEventBus};
 /// Server 核心系统句柄。
 ///
 /// 封装事件总线、handler actor 等共享组件的初始化，
-/// 保证各传输层入口（stdio / in-process / ACP）的组装顺序一致。
+/// 保证各传输层入口（stdio / in-process / ACP / HTTP）的组装顺序一致。
 pub struct ServerSystem {
     /// 事件广播发送端，传输层用它订阅事件。
     pub event_tx: Arc<EventFanout<ClientNotification>>,
+    /// 事件总线，传输层用它发送非 session 通知。
+    pub event_bus: Arc<ServerEventBus>,
     /// 命令处理句柄，传输层用它发送命令。
     pub handler: CommandHandle,
 }
@@ -38,7 +40,19 @@ pub fn spawn_server_system(
                 event_bus.attach(session);
             }));
     }
+    {
+        let event_bus = Arc::clone(&event_bus);
+        runtime
+            .session_manager
+            .set_detach_hook(Arc::new(move |session_id| {
+                event_bus.detach(session_id);
+            }));
+    }
     let handler = CommandHandle::spawn(Arc::clone(runtime), Arc::clone(&event_bus));
 
-    ServerSystem { event_tx, handler }
+    ServerSystem {
+        event_tx,
+        event_bus,
+        handler,
+    }
 }

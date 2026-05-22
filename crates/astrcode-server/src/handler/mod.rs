@@ -168,8 +168,7 @@ impl CommandHandler {
                         if self.active_session_id.as_ref() == Some(&session_id) {
                             self.active_session_id = None;
                         }
-                        // session 已被销毁，释放 forwarder 占位（同 sid 重建时能重新 attach）
-                        self.event_bus.detach(&session_id);
+                        // detach 已由 SessionManager 的 detach_hook 处理
                     },
                     Err(e) => self.send_error(40401, &format!("Session not found: {e}")),
                 }
@@ -576,6 +575,20 @@ impl CommandHandler {
 
     // ─── 模型选择 ───────────────────────────────────────────────────────
 
+    /// 全局配置已更新，同步活跃 session 的 provider 和 model_id。
+    async fn sync_active_session_provider(&self) -> Result<(), HandlerError> {
+        if let Some(ref sid) = self.active_session_id {
+            let session = self.runtime.session_manager.open(sid.clone()).await?;
+            let caps = session.caps();
+            session.runtime().set_llm(caps.llm());
+            session.runtime().set_small_llm(caps.small_llm());
+            session
+                .runtime()
+                .set_model_id(caps.read_effective().llm.model_id.clone());
+        }
+        Ok(())
+    }
+
     /// 设置当前会话使用的主模型，格式为 `profile/model`。
     async fn set_model(&mut self, model_id: String) -> Result<(), HandlerError> {
         let notification = match self.model_selection.set_main_model(&model_id).await {
@@ -592,16 +605,7 @@ impl CommandHandler {
             Err(error) => return Err(error),
         };
 
-        // 全局配置已更新，同步活跃 session 的 provider 和 model_id。
-        if let Some(ref sid) = self.active_session_id {
-            let session = self.runtime.session_manager.open(sid.clone()).await?;
-            let caps = session.caps();
-            session.runtime().set_llm(caps.llm());
-            session.runtime().set_small_llm(caps.small_llm());
-            session
-                .runtime()
-                .set_model_id(caps.read_effective().llm.model_id.clone());
-        }
+        self.sync_active_session_provider().await?;
 
         self.event_bus.send_notification(notification);
         Ok(())
@@ -627,15 +631,7 @@ impl CommandHandler {
 
         // 交互式选择完成时同步活跃 session 的 provider。
         if self.model_selection.is_idle() {
-            if let Some(ref sid) = self.active_session_id {
-                let session = self.runtime.session_manager.open(sid.clone()).await?;
-                let caps = session.caps();
-                session.runtime().set_llm(caps.llm());
-                session.runtime().set_small_llm(caps.small_llm());
-                session
-                    .runtime()
-                    .set_model_id(caps.read_effective().llm.model_id.clone());
-            }
+            self.sync_active_session_provider().await?;
         }
 
         self.event_bus.send_notification(notification);

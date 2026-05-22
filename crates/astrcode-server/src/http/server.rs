@@ -19,7 +19,7 @@ use super::{
     routes::{config, extensions, lifecycle, models, sessions},
     stream,
 };
-use crate::{bootstrap::ServerRuntime, handler::CommandHandler};
+use crate::bootstrap::ServerRuntime;
 
 /// HTTP server startup and runtime errors.
 #[derive(Debug, thiserror::Error)]
@@ -47,23 +47,11 @@ pub fn router(
     event_tx: Arc<EventFanout<ClientNotification>>,
 ) -> Result<(Router, String), HttpServerError> {
     let auth_token = configured_auth_token()?;
-    let event_bus = Arc::new(crate::server_event_bus::ServerEventBus::new(
-        runtime.event_store.clone(),
-        Arc::clone(&event_tx),
-    ));
-    {
-        let event_bus = Arc::clone(&event_bus);
-        runtime
-            .session_manager
-            .set_attach_hook(Arc::new(move |session| {
-                event_bus.attach(session);
-            }));
-    }
-    let handler = CommandHandler::spawn_actor(Arc::clone(&runtime), Arc::clone(&event_bus));
+    let server_system = crate::bootstrap::spawn_server_system(&runtime, Arc::clone(&event_tx));
     let state = HttpState {
         runtime,
-        handler,
-        event_bus,
+        handler: server_system.handler,
+        event_bus: server_system.event_bus,
     };
     let expected_bearer = format!("Bearer {auth_token}");
 
