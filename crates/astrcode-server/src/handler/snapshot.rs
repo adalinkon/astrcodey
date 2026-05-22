@@ -52,7 +52,7 @@ pub(super) fn message_to_dto(message: &LlmMessage) -> MessageDto {
         .collect::<String>();
 
     // Compact summary 消息是 synthetic user message，但在客户端应显示为系统消息
-    let role = if is_compact_summary_message(&content) {
+    let role = if astrcode_context::compaction::is_compact_summary_text(&content) {
         "system"
     } else {
         message.role.as_str()
@@ -62,11 +62,6 @@ pub(super) fn message_to_dto(message: &LlmMessage) -> MessageDto {
         role: role.to_string(),
         content,
     }
-}
-
-/// 检测消息是否是 compact summary synthetic message。
-fn is_compact_summary_message(content: &str) -> bool {
-    content.trim_start().starts_with("<compact_summary>")
 }
 
 /// 将 LLM 内容块转换为快照纯文本。
@@ -138,10 +133,11 @@ mod tests {
 
     #[test]
     fn is_compact_summary_message_detects_marker() {
-        assert!(is_compact_summary_message("<compact_summary>\nContent"));
-        assert!(is_compact_summary_message("  <compact_summary>\nContent"));
-        assert!(is_compact_summary_message("\n<compact_summary>\nContent"));
-        assert!(!is_compact_summary_message("Regular message"));
-        assert!(!is_compact_summary_message("</compact_summary>"));
+        use astrcode_context::compaction::is_compact_summary_text;
+        assert!(is_compact_summary_text("<compact_summary>\nContent"));
+        assert!(is_compact_summary_text("  <compact_summary>\nContent"));
+        assert!(is_compact_summary_text("\n<compact_summary>\nContent"));
+        assert!(!is_compact_summary_text("Regular message"));
+        assert!(!is_compact_summary_text("</compact_summary>"));
     }
 }
