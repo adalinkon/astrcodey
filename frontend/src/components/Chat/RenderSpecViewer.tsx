@@ -128,9 +128,10 @@ function RenderSpecViewerInner({ spec, className }: RenderSpecViewerProps) {
     case 'diff':
       return (
         <div className={cn(codeBlockShell, className)}>
-          <pre className={cn(codeBlockContent, 'whitespace-pre-wrap')}>
-            <code>{spec.text}</code>
-          </pre>
+          <pre
+            className={cn(codeBlockContent, 'whitespace-pre-wrap')}
+            children={<code>{spec.text}</code>}
+          />
         </div>
       )
 
@@ -142,9 +143,10 @@ function RenderSpecViewerInner({ spec, className }: RenderSpecViewerProps) {
               {spec.language}
             </div>
           )}
-          <pre className={codeBlockContent}>
-            <code>{spec.text}</code>
-          </pre>
+          <pre
+            className={codeBlockContent}
+            children={<code>{spec.text}</code>}
+          />
         </div>
       )
 
@@ -159,9 +161,8 @@ function RenderSpecViewerInner({ spec, className }: RenderSpecViewerProps) {
       return (
         <pre
           className={cn('whitespace-pre-wrap font-mono text-[13px]', className)}
-        >
-          {spec.text}
-        </pre>
+          children={spec.text}
+        />
       )
   }
 }

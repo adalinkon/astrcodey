@@ -164,9 +164,10 @@ function ToolCallBlock({ block }: ToolCallBlockProps) {
           ) : agentSpec ? (
             <RenderSpecViewer spec={agentSpec} />
           ) : (
-            <pre className="m-0 overflow-x-auto font-mono text-[13px] leading-relaxed text-code-text">
-              <code>{resultText}</code>
-            </pre>
+            <pre
+              className="m-0 overflow-x-auto font-mono text-[13px] leading-relaxed text-code-text"
+              children={<code>{resultText}</code>}
+            />
           )}
         </div>
       </div>

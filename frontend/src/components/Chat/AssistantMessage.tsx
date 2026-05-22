@@ -27,9 +27,10 @@ class MarkdownGuard extends Component<
   render() {
     if (this.state.hasError) {
       return (
-        <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere font-inherit text-inherit">
-          {this.props.fallback}
-        </pre>
+        <pre
+          className="m-0 whitespace-pre-wrap overflow-wrap-anywhere font-inherit text-inherit"
+          children={this.props.fallback}
+        />
       )
     }
     return this.props.children
@@ -125,9 +126,11 @@ function CodeBlockRenderer({
         <span className="text-xs lowercase">{language || 'text'}</span>
         <CopyButton code={codeText} />
       </div>
-      <pre className={codeBlockContent} {...props}>
-        <code className={className}>{codeText}</code>
-      </pre>
+      <pre
+        className={codeBlockContent}
+        {...props}
+        children={<code className={className}>{codeText}</code>}
+      />
     </div>
   )
 }
