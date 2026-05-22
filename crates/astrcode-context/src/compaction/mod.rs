@@ -17,7 +17,7 @@ use crate::{
     token_budget::{estimate_request_tokens, estimate_text_tokens},
 };
 
-const COMPACT_SUMMARY_MARKER: &str = "<compact_summary>";
+pub const COMPACT_SUMMARY_MARKER: &str = "<compact_summary>";
 const COMPACT_SUMMARY_END: &str = "</compact_summary>";
 const MAX_PTL_RETRIES: usize = 3;
 
@@ -303,6 +303,14 @@ pub fn is_compact_summary_message(message: &LlmMessage) -> bool {
                     if text.trim_start().starts_with(COMPACT_SUMMARY_MARKER)
             )
         })
+}
+
+/// 检测文本内容是否以 compact summary 标记开头。
+///
+/// 用于只持有序列化文本的客户端（如 TUI、snapshot DTO 转换），
+/// 不依赖 `LlmMessage` 结构化类型。
+pub fn is_compact_summary_text(content: &str) -> bool {
+    content.trim_start().starts_with(COMPACT_SUMMARY_MARKER)
 }
 
 /// 预留给更宽泛的 synthetic context 判断。
