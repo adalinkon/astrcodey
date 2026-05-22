@@ -259,6 +259,7 @@ fn apply_event(app: &mut App, event: &Event) {
             call_id,
             tool_name,
             result,
+            ..
         } => {
             // Codex style: show one compact line in scrollback for the completed tool.
             // Format: "● Ran <command>" or "✗ <error>" or "● Task completed"
@@ -1027,6 +1028,8 @@ mod codex_style_tests {
                 call_id: "call-1".into(),
                 tool_name: "grep".into(),
                 result: tool_result("match1\nmatch2\nmatch3", false),
+                arguments: String::new(),
+                arguments_json: None,
             },
         );
         assert_eq!(app.messages.len(), 1);
@@ -1049,6 +1052,8 @@ mod codex_style_tests {
                 call_id: "call-1".into(),
                 tool_name: "shell".into(),
                 result: tool_result("permission denied", true),
+                arguments: String::new(),
+                arguments_json: None,
             },
         );
         assert_eq!(app.messages.len(), 1);
@@ -1072,6 +1077,8 @@ mod codex_style_tests {
                 call_id: "call-agent".into(),
                 tool_name: "agent".into(),
                 result: tool_result("Found 3 relevant files", false),
+                arguments: String::new(),
+                arguments_json: None,
             },
         );
         assert_eq!(app.messages.len(), 1);

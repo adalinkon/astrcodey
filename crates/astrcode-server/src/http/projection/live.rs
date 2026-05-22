@@ -346,6 +346,8 @@ mod tests {
                     metadata: Default::default(),
                     duration_ms: None,
                 },
+                arguments: String::new(),
+                arguments_json: None,
             },
         );
 

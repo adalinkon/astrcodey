@@ -34,6 +34,9 @@ pub(in crate::http) fn completed_block_from_payload(event: &Event) -> Option<Con
             call_id,
             tool_name,
             result,
+            arguments,
+            arguments_json,
+            ..
         } => {
             let metadata: serde_json::Value = serde_json::to_value(&result.metadata)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
@@ -45,7 +48,7 @@ pub(in crate::http) fn completed_block_from_payload(event: &Event) -> Option<Con
             Some(ConversationBlockDto::ToolCall {
                 id: call_id.to_string(),
                 name: tool_name.clone(),
-                arguments: String::new(),
+                arguments: arguments.clone(),
                 text: result.content.clone(),
                 status: if result.is_error {
                     ConversationBlockStatusDto::Error
@@ -58,7 +61,7 @@ pub(in crate::http) fn completed_block_from_payload(event: &Event) -> Option<Con
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string()),
                 metadata,
-                arguments_json: None,
+                arguments_json: arguments_json.clone(),
             })
         },
         EventPayload::ErrorOccurred { message, .. } => Some(ConversationBlockDto::Error {

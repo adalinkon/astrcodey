@@ -251,6 +251,12 @@ pub enum EventPayload {
         tool_name: String,
         /// 工具执行结果。
         result: ToolResult,
+        /// 原始调用参数的折叠摘要文本。
+        #[serde(default)]
+        arguments: String,
+        /// 原始调用参数的 JSON 值。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arguments_json: Option<serde_json::Value>,
     },
 
     /// 上下文压缩已开始。
@@ -556,6 +562,8 @@ mod tests {
                     metadata: BTreeMap::new(),
                     duration_ms: Some(10),
                 },
+                arguments: String::new(),
+                arguments_json: None,
             }
             .is_durable()
         );

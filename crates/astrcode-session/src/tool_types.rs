@@ -51,6 +51,8 @@ pub struct PendingCommittedToolResult {
     pub call_id: String,
     pub tool_name: String,
     pub result: ToolResult,
+    pub arguments: String,
+    pub arguments_json: Option<serde_json::Value>,
 }
 
 pub enum ToolExecutionStep {

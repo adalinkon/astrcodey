@@ -455,6 +455,8 @@ impl ToolPipeline {
                 call_id: call.call_id.clone(),
                 tool_name: call.name.clone(),
                 result,
+                arguments: call.tool_input.to_string(),
+                arguments_json: Some(call.tool_input.clone()),
             });
         }
 
@@ -482,6 +484,8 @@ impl ToolPipeline {
                         call_id: pending.call_id.clone().into(),
                         tool_name: pending.tool_name.clone(),
                         result: pending.result.clone(),
+                        arguments: pending.arguments.clone(),
+                        arguments_json: pending.arguments_json.clone(),
                     },
                 );
             }

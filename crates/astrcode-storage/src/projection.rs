@@ -161,6 +161,7 @@ pub fn reduce(event: &Event, model: &mut SessionReadModel) {
             call_id,
             tool_name,
             result,
+            ..
         } => {
             model.pending_tool_calls.remove(call_id);
             if let Some(task_id) = result

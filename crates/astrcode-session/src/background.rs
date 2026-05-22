@@ -31,6 +31,8 @@ impl BackgroundTaskCompletion {
             call_id: call_id.clone(),
             tool_name: self.tool_name.clone(),
             result: self.result.clone(),
+            arguments: String::new(),
+            arguments_json: None,
         };
         let background_task_completed = EventPayload::BackgroundTaskCompleted {
             task_id: self.task_id,

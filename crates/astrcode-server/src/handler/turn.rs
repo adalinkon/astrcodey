@@ -327,6 +327,8 @@ impl CommandHandler {
                         call_id: pending.call_id.clone().into(),
                         tool_name: pending.tool_name,
                         result: interrupted_tool_result(&pending.call_id),
+                        arguments: String::new(),
+                        arguments_json: None,
                     },
                 )
                 .await

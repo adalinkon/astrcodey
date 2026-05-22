@@ -586,6 +586,8 @@ async fn compact_route_returns_same_session_and_hydrates_post_compact_context() 
                     metadata: BTreeMap::new(),
                     duration_ms: None,
                 },
+                arguments: String::new(),
+                arguments_json: None,
             },
         ))
         .await

@@ -6,7 +6,7 @@
 //! 3. `live_stream`：订阅 `ServerEventBus` 的 broadcast，过滤 sid，推增量。 Lagged 时自发一条
 //!    `RehydrateRequired` 让客户端重新拉快照。
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use astrcode_core::{
     event::Event,
@@ -14,10 +14,7 @@ use astrcode_core::{
 };
 use astrcode_protocol::{
     events::ClientNotification,
-    http::{
-        ConversationBlockDto, ConversationCursorDto, ConversationDeltaDto,
-        ConversationStreamEnvelopeDto,
-    },
+    http::{ConversationCursorDto, ConversationDeltaDto, ConversationStreamEnvelopeDto},
 };
 use axum::{
     extract::{Path, Query, State},
@@ -51,57 +48,8 @@ struct LiveStreamState {
     /// 单个事件产出多条 delta 时，剩余待发送的缓冲。
     pending:
         std::collections::VecDeque<Result<axum::response::sse::Event, std::convert::Infallible>>,
-    /// 缓存 PatchArguments 的累积参数，FinalizeBlock 时注入。
-    ///
-    /// TODO: 如果事件模型改为在 FinalizeBlock 时直接携带完整 arguments，
-    /// 则此缓存可移除。当前是补事件流增量模型的设计缺口。
-    tool_args: HashMap<String, String>,
-    /// 缓存 PatchArguments 的原始 JSON 参数，FinalizeBlock 时注入。
-    tool_args_json: HashMap<String, serde_json::Value>,
     /// 会话是否已有消息，用于正确计算 can_request_compact。
     has_messages: bool,
-}
-
-impl LiveStreamState {
-    /// 追踪 PatchArguments 增量并在 FinalizeBlock 时注入完整参数。
-    fn patch_tool_args(&mut self, deltas: &mut [ConversationDeltaDto]) {
-        for delta in deltas.iter() {
-            if let ConversationDeltaDto::PatchArguments {
-                block_id,
-                arguments,
-                arguments_json,
-            } = delta
-            {
-                self.tool_args.insert(block_id.clone(), arguments.clone());
-                if let Some(json) = arguments_json {
-                    self.tool_args_json.insert(block_id.clone(), json.clone());
-                }
-            }
-        }
-        for delta in deltas.iter_mut() {
-            if let ConversationDeltaDto::FinalizeBlock {
-                block:
-                    ConversationBlockDto::ToolCall {
-                        id,
-                        arguments,
-                        arguments_json,
-                        ..
-                    },
-            } = delta
-            {
-                if arguments.is_empty() {
-                    if let Some(args) = self.tool_args.remove(id) {
-                        *arguments = args;
-                    }
-                }
-                if arguments_json.is_none() {
-                    if let Some(json) = self.tool_args_json.remove(id) {
-                        *arguments_json = Some(json);
-                    }
-                }
-            }
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,8 +143,6 @@ pub(in crate::http) async fn session_stream(
             replay_max_seq,
             closing: false,
             pending: std::collections::VecDeque::new(),
-            tool_args: HashMap::new(),
-            tool_args_json: HashMap::new(),
             has_messages,
         },
         |mut state| async move {
@@ -220,11 +166,10 @@ pub(in crate::http) async fn session_stream(
                         {
                             continue;
                         }
-                        let mut deltas = event_to_deltas(&event, state.has_messages);
+                        let deltas = event_to_deltas(&event, state.has_messages);
                         if deltas.is_empty() {
                             continue;
                         }
-                        state.patch_tool_args(&mut deltas);
                         let cursor = event_cursor(&state.runtime, &event).await;
                         let mut items: std::collections::VecDeque<_> = deltas
                             .into_iter()

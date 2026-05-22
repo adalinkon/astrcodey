@@ -1316,6 +1316,7 @@ async fn read_before_edit_guard_survives_across_turns() {
                 call_id,
                 tool_name,
                 result,
+                ..
             } if call_id.as_str() == "edit-call"
                 && tool_name == "edit"
                 && result.is_error

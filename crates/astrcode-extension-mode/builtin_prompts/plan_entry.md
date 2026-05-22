@@ -11,6 +11,7 @@ Your job is to maintain one executable session plan before implementation begins
 - The plan must stay scoped to one concrete task.
 - If the task changes, overwrite the existing plan.
 - Do not start implementation while plan mode is active.
+- Do not start implementation while user did not approve the plan.unless the user said you can start implementation without approval.
 
 ------------
 
