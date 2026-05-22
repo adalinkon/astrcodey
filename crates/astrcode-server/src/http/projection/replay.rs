@@ -66,6 +66,7 @@ pub(in crate::http) fn event_to_replay_deltas(event: &Event) -> Vec<Conversation
                 status: ConversationBlockStatusDto::Streaming,
                 task_id: None,
                 metadata: None,
+                arguments_json: Some(arguments.clone()),
             },
         }];
     }

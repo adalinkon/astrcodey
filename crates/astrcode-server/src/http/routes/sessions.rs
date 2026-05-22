@@ -435,6 +435,7 @@ mod tests {
                 status,
                 task_id: _,
                 metadata: _,
+                ..
             } => {
                 assert_eq!(id, "tool-1");
                 assert_eq!(name, "read");

@@ -37,6 +37,7 @@ pub(in crate::http) fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDt
                     status: ConversationBlockStatusDto::Streaming,
                     task_id: None,
                     metadata: None,
+                    arguments_json: None,
                 },
             }]
         },

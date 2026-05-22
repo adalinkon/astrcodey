@@ -58,6 +58,7 @@ pub(in crate::http) fn completed_block_from_payload(event: &Event) -> Option<Con
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string()),
                 metadata,
+                arguments_json: None,
             })
         },
         EventPayload::ErrorOccurred { message, .. } => Some(ConversationBlockDto::Error {
@@ -132,6 +133,7 @@ pub(in crate::http) fn messages_to_blocks(
                         status: ConversationBlockStatusDto::Streaming,
                         task_id: None,
                         metadata: None,
+                        arguments_json: Some(arguments.clone()),
                     });
                     tool_block_indices.insert(call_id.clone(), block_index);
                 }
@@ -204,6 +206,7 @@ fn push_tool_result_block(
             status,
             task_id: background_task.map(|task| task.task_id.to_string()),
             metadata: None,
+            arguments_json: None,
         });
         pushed_result = true;
     }
@@ -217,6 +220,7 @@ fn push_tool_result_block(
             status: ConversationBlockStatusDto::Complete,
             task_id: None,
             metadata: None,
+            arguments_json: None,
         });
     }
 }

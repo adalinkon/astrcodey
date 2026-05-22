@@ -35,7 +35,8 @@ fn tool_argument_summary(tool_name: &str, args: &serde_json::Value) -> Option<St
     match tool_name {
         "agent" => {
             let description = string_arg(args, "description");
-            let subagent_type = string_arg(args, "subagent_type");
+            let subagent_type =
+                string_arg(args, "subagentType").or_else(|| string_arg(args, "subagent_type"));
             match (description, subagent_type) {
                 (Some(description), Some(subagent_type)) => {
                     Some(format!("{description} ({subagent_type})"))

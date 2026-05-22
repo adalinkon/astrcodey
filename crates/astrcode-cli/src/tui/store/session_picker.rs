@@ -107,7 +107,14 @@ mod tests {
     fn canonicalize_strips_trailing_slash_when_path_missing() {
         // 不存在的路径走回退分支
         assert_eq!(canonicalize_working_dir("/no/such/path/"), "/no/such/path");
-        assert_eq!(canonicalize_working_dir("/"), "/");
+        if cfg!(unix) {
+            assert_eq!(canonicalize_working_dir("/"), "/");
+        } else if cfg!(windows) {
+            // 在 Windows 上，`/` 被解析为当前驱动器根目录（如 `D:\`），是个真实存在的路径，
+            // 因而不会走 fallback 分支，而是成功规范化为带有 UNC 前缀的根盘符。
+            let res = canonicalize_working_dir("/");
+            assert!(res.contains(":\\") || res.contains(":/") || res.starts_with("\\\\?\\"));
+        }
         assert_eq!(canonicalize_working_dir(""), "");
     }
 

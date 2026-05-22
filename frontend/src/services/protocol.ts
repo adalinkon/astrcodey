@@ -156,6 +156,10 @@ export function decodeConversationBlock(value: unknown): ConversationBlock {
         status: decodeBlockStatus(object.status),
         taskId: optionalString(object, 'taskId'),
         metadata: optionalObject(object, 'metadata'),
+        argumentsJson:
+          object.argumentsJson && typeof object.argumentsJson === 'object'
+            ? (object.argumentsJson as Record<string, unknown>)
+            : undefined,
       }
     case 'error':
       return { kind, id, message: requiredString(object, 'message') }

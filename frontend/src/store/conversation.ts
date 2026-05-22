@@ -72,6 +72,8 @@ function mergeBlock(
       // taskId 不随 FinalizeBlock 返回，保留当前值
       taskId: incoming.taskId ?? current.taskId,
       metadata: incoming.metadata ?? current.metadata,
+      // argumentsJson 不随 FinalizeBlock 返回，保留当前值
+      argumentsJson: incoming.argumentsJson ?? current.argumentsJson,
     }
   }
 

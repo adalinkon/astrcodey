@@ -56,6 +56,8 @@ struct LiveStreamState {
     /// TODO: 如果事件模型改为在 FinalizeBlock 时直接携带完整 arguments，
     /// 则此缓存可移除。当前是补事件流增量模型的设计缺口。
     tool_args: HashMap<String, String>,
+    /// 缓存 PatchArguments 的原始 JSON 参数，FinalizeBlock 时注入。
+    tool_args_json: HashMap<String, serde_json::Value>,
 }
 
 impl LiveStreamState {
@@ -65,20 +67,34 @@ impl LiveStreamState {
             if let ConversationDeltaDto::PatchArguments {
                 block_id,
                 arguments,
-                ..
+                arguments_json,
             } = delta
             {
                 self.tool_args.insert(block_id.clone(), arguments.clone());
+                if let Some(json) = arguments_json {
+                    self.tool_args_json.insert(block_id.clone(), json.clone());
+                }
             }
         }
         for delta in deltas.iter_mut() {
             if let ConversationDeltaDto::FinalizeBlock {
-                block: ConversationBlockDto::ToolCall { id, arguments, .. },
+                block:
+                    ConversationBlockDto::ToolCall {
+                        id,
+                        arguments,
+                        arguments_json,
+                        ..
+                    },
             } = delta
             {
                 if arguments.is_empty() {
                     if let Some(args) = self.tool_args.remove(id) {
                         *arguments = args;
+                    }
+                }
+                if arguments_json.is_none() {
+                    if let Some(json) = self.tool_args_json.remove(id) {
+                        *arguments_json = Some(json);
                     }
                 }
             }
@@ -174,6 +190,7 @@ pub(in crate::http) async fn session_stream(
             closing: false,
             pending: std::collections::VecDeque::new(),
             tool_args: HashMap::new(),
+            tool_args_json: HashMap::new(),
         },
         |mut state| async move {
             if state.closing {

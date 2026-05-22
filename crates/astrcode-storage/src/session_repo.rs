@@ -454,7 +454,14 @@ impl EventStore for FileSystemSessionRepository {
     }
 
     async fn list_sessions(&self) -> Result<Vec<SessionId>, StorageError> {
-        let mut ids: Vec<SessionId> = self.sessions.read().await.keys().cloned().collect();
+        let mut ids: Vec<SessionId> = self
+            .sessions
+            .read()
+            .await
+            .iter()
+            .filter(|(_, meta)| !is_subagent_dir(&meta.dir))
+            .map(|(id, _)| id.clone())
+            .collect();
         for base_path in self.session_roots().await {
             self.collect_session_ids_recursive(&base_path, &mut ids)
                 .await;
@@ -651,6 +658,13 @@ impl EventStore for FileSystemSessionRepository {
     }
 }
 
+/// 判断目录是否位于 subagents 子树下。
+/// TODO: 更好的办法？
+fn is_subagent_dir(dir: &Path) -> bool {
+    dir.ancestors()
+        .any(|a| a.file_name().is_some_and(|n| n == "subagents"))
+}
+
 impl FileSystemSessionRepository {
     async fn session_roots(&self) -> Vec<PathBuf> {
         self.all_session_roots().await
@@ -738,7 +752,14 @@ impl FileSystemSessionRepository {
 
     /// 仅扫描磁盘上的会话目录名，不打开任何文件。
     async fn list_session_dirs(&self) -> Result<Vec<SessionId>, StorageError> {
-        let mut ids: Vec<SessionId> = self.sessions.read().await.keys().cloned().collect();
+        let mut ids: Vec<SessionId> = self
+            .sessions
+            .read()
+            .await
+            .iter()
+            .filter(|(_, meta)| !is_subagent_dir(&meta.dir))
+            .map(|(id, _)| id.clone())
+            .collect();
         for base_path in self.session_roots().await {
             self.collect_session_ids_recursive(&base_path, &mut ids)
                 .await;

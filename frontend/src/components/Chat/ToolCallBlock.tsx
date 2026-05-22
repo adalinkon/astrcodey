@@ -50,27 +50,37 @@ function compactLine(text: string): string {
  * 从 agent 工具的原始 JSON 参数构造 streaming 阶段的 RenderSpec。
  * 直接读结构化字段，不依赖后端格式化字符串。
  */
+function stringField(
+  obj: Record<string, unknown>,
+  camel: string,
+  snake?: string
+): string {
+  const v = obj[camel] ?? (snake ? obj[snake] : undefined)
+  return typeof v === 'string' ? v : ''
+}
+
+function boolField(obj: Record<string, unknown>, camel: string): boolean | undefined {
+  const v = obj[camel]
+  return typeof v === 'boolean' ? v : undefined
+}
+
 function buildStreamingAgentSpec(
   argsJson: Record<string, unknown>
 ): import('../../types/render-spec').RenderSpec {
   const entries: { key: string; value: string; tone: 'accent' | 'muted' }[] = []
 
-  const description = typeof argsJson.description === 'string' ? argsJson.description : ''
-  const agent = typeof argsJson.subagentType === 'string' ? argsJson.subagentType : ''
-  const model = typeof argsJson.model === 'string' ? argsJson.model : ''
-  const mode =
-    typeof argsJson.waitForResult === 'boolean'
-      ? argsJson.waitForResult
-        ? 'sync'
-        : 'async'
-      : ''
+  const description = stringField(argsJson, 'description')
+  const agent = stringField(argsJson, 'subagentType', 'subagent_type')
+  const model = stringField(argsJson, 'model')
+  const rawMode = boolField(argsJson, 'waitForResult')
+  const mode = rawMode !== undefined ? (rawMode ? 'sync' : 'async') : ''
 
   if (description) entries.push({ key: 'task', value: description, tone: 'accent' })
   if (agent) entries.push({ key: 'agent', value: agent, tone: 'accent' })
   if (model) entries.push({ key: 'model', value: model, tone: 'muted' })
   if (mode) entries.push({ key: 'mode', value: mode, tone: 'muted' })
 
-  const prompt = typeof argsJson.prompt === 'string' ? argsJson.prompt : ''
+  const prompt = stringField(argsJson, 'prompt')
 
   return {
     type: 'box',
@@ -96,9 +106,9 @@ function ToolCallBlock({ block }: ToolCallBlockProps) {
       block.text ||
       (block.status === 'streaming' ? '等待输出...' : '(无输出)')
   )
-  // 展开区域：streaming 时对 agent 工具从 JSON 参数构造实时 spec，否则显示结果
-  const streamingAgentSpec =
-    block.status === 'streaming' && block.name === 'agent' && block.argumentsJson
+  // 展开区域：agent 工具从 JSON 参数构造实时 spec，否则显示结果
+  const agentSpec =
+    block.name === 'agent' && block.argumentsJson && !renderSpec
       ? buildStreamingAgentSpec(block.argumentsJson)
       : undefined
   const resultText =
@@ -107,7 +117,7 @@ function ToolCallBlock({ block }: ToolCallBlockProps) {
   return (
     <details
       className="group mb-2 ml-[var(--chat-assistant-content-offset)] block min-w-0 max-w-full animate-block-enter motion-reduce:animate-none"
-      open={block.status === 'error' || isOpen || !!streamingAgentSpec}
+      open={block.status === 'error' || isOpen || !!agentSpec}
       onToggle={(e) => setIsOpen(e.currentTarget.open)}
     >
       <summary className="flex min-w-0 cursor-pointer items-center gap-2 py-1.5 font-mono text-[13px] leading-relaxed text-text-secondary list-none [&::-webkit-details-marker]:hidden hover:opacity-85">
@@ -142,8 +152,8 @@ function ToolCallBlock({ block }: ToolCallBlockProps) {
         <div className="min-w-0 overflow-y-auto overscroll-contain pr-1 max-h-[min(58vh,560px)]">
           {renderSpec ? (
             <RenderSpecViewer spec={renderSpec} />
-          ) : streamingAgentSpec ? (
-            <RenderSpecViewer spec={streamingAgentSpec} />
+          ) : agentSpec ? (
+            <RenderSpecViewer spec={agentSpec} />
           ) : (
             <div className={codeBlockShell}>
               <pre className={codeBlockContent}>

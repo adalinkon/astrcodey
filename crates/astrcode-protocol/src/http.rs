@@ -264,6 +264,9 @@ pub enum ConversationBlockDto {
         /// 工具元数据（如 planContent、path 等），不进入 LLM 上下文。
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<serde_json::Value>,
+        /// 原始 JSON 参数，供前端结构化解析（如 agent 工具的 task/agent 提取）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arguments_json: Option<serde_json::Value>,
     },
     Error {
         id: String,
