@@ -459,6 +459,7 @@ impl ToolPipeline {
         }
 
         for pending in &mut pending_results {
+            // 对于超过 inline 限制的工具结果，先持久化到磁盘并替换为摘要引用，再继续后续处理。
             self.persist_large_tool_result(
                 &pending.tool_name,
                 &pending.call_id,
@@ -467,6 +468,7 @@ impl ToolPipeline {
             .await?;
         }
         let committed_tool_result_chars = committed_tool_result_content_len(input.messages);
+        // 当累计工具结果超过消息字符预算时，按体积从大到小持久化，直到总量回到预算内。
         self.enforce_tool_result_message_budget(committed_tool_result_chars, &mut pending_results)
             .await?;
 
@@ -483,6 +485,7 @@ impl ToolPipeline {
                     },
                 );
             }
+            // 将工具结果消息追加到 LLM 对话历史，供下一轮调用使用。
             input.messages.push(LlmMessage {
                 role: LlmRole::Tool,
                 content: vec![LlmContent::ToolResult {

@@ -19,7 +19,7 @@ pub const READ_TOOL_RESULT_INLINE_LIMIT: usize = 40_000;
 pub const MAX_TOOL_RESULTS_PER_MESSAGE_CHARS: usize = 200_000;
 
 /// 摘要中保留的预览字符数。
-pub const TOOL_RESULT_PREVIEW_CHARS: usize = 2_000;
+pub const TOOL_RESULT_PREVIEW_CHARS: usize = 600;
 
 /// 工具结果摘要预览。
 #[derive(Debug, Clone, PartialEq, Eq)]
