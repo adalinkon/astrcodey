@@ -58,6 +58,8 @@ struct LiveStreamState {
     tool_args: HashMap<String, String>,
     /// 缓存 PatchArguments 的原始 JSON 参数，FinalizeBlock 时注入。
     tool_args_json: HashMap<String, serde_json::Value>,
+    /// 会话是否已有消息，用于正确计算 can_request_compact。
+    has_messages: bool,
 }
 
 impl LiveStreamState {
@@ -116,19 +118,22 @@ pub(in crate::http) async fn session_stream(
     let session_id = SessionId::from(raw_session_id);
 
     // Validate session exists before opening the stream.
-    if http_state
+    let read_model = match http_state
         .runtime
         .session_manager
         .read_model(&session_id)
         .await
-        .is_err()
     {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            "session_not_found",
-            "Session not found",
-        );
-    }
+        Ok(model) => model,
+        Err(_) => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "session_not_found",
+                "Session not found",
+            );
+        },
+    };
+    let has_messages = !read_model.messages.is_empty();
 
     let rx = http_state.event_bus.fanout().subscribe();
     let (missed_events, replay_error) = match query.cursor.as_ref() {
@@ -150,12 +155,13 @@ pub(in crate::http) async fn session_stream(
     let replay_max_seq = missed_events.iter().filter_map(|event| event.seq).max();
     let replay_runtime = Arc::clone(&http_state.runtime);
     let replay_session_id = session_id.clone();
+    let replay_has_messages = has_messages;
     let replay_stream = stream::iter(missed_events)
         .then(move |event| {
             let runtime = Arc::clone(&replay_runtime);
             let replay_sid = replay_session_id.clone();
             async move {
-                let deltas = event_to_replay_deltas(&event);
+                let deltas = event_to_replay_deltas(&event, replay_has_messages);
                 let cursor = event_cursor(&runtime, &event).await;
                 deltas
                     .into_iter()
@@ -191,6 +197,7 @@ pub(in crate::http) async fn session_stream(
             pending: std::collections::VecDeque::new(),
             tool_args: HashMap::new(),
             tool_args_json: HashMap::new(),
+            has_messages,
         },
         |mut state| async move {
             if state.closing {
@@ -213,7 +220,7 @@ pub(in crate::http) async fn session_stream(
                         {
                             continue;
                         }
-                        let mut deltas = event_to_deltas(&event);
+                        let mut deltas = event_to_deltas(&event, state.has_messages);
                         if deltas.is_empty() {
                             continue;
                         }

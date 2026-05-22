@@ -9,7 +9,10 @@ use super::{
     args::format_args_inline, blocks::completed_block_from_payload, live::control_from_phase,
 };
 
-pub(in crate::http) fn event_to_replay_deltas(event: &Event) -> Vec<ConversationDeltaDto> {
+pub(in crate::http) fn event_to_replay_deltas(
+    event: &Event,
+    has_messages: bool,
+) -> Vec<ConversationDeltaDto> {
     if let EventPayload::CompactBoundaryCreated {
         continued_session_id,
         ..
@@ -72,7 +75,7 @@ pub(in crate::http) fn event_to_replay_deltas(event: &Event) -> Vec<Conversation
     }
     if matches!(&event.payload, EventPayload::TurnCompleted { .. }) {
         return vec![ConversationDeltaDto::UpdateControlState {
-            control: control_from_phase(Phase::Idle),
+            control: control_from_phase(Phase::Idle, has_messages),
         }];
     }
     Vec::new()
@@ -104,7 +107,7 @@ mod tests {
         );
         boundary.seq = Some(7);
 
-        let deltas = event_to_replay_deltas(&boundary);
+        let deltas = event_to_replay_deltas(&boundary, true);
         assert_eq!(deltas.len(), 2);
         assert!(matches!(
             &deltas[0],
@@ -139,7 +142,7 @@ mod tests {
         );
 
         assert!(matches!(
-            event_to_replay_deltas(&continued).as_slice(),
+            event_to_replay_deltas(&continued, true).as_slice(),
             [ConversationDeltaDto::RehydrateRequired]
         ));
     }

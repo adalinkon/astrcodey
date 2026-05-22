@@ -9,7 +9,10 @@ use astrcode_protocol::http::{
 use super::{args::format_args_inline, blocks::completed_block_from_payload};
 use crate::handler::snapshot;
 
-pub(in crate::http) fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDto> {
+pub(in crate::http) fn event_to_deltas(
+    event: &Event,
+    has_messages: bool,
+) -> Vec<ConversationDeltaDto> {
     match &event.payload {
         EventPayload::AssistantMessageStarted { message_id } => {
             vec![ConversationDeltaDto::AppendBlock {
@@ -100,7 +103,7 @@ pub(in crate::http) fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDt
         | EventPayload::CompactionStarted
         | EventPayload::BackgroundTaskCompleted { .. } => {
             vec![ConversationDeltaDto::UpdateControlState {
-                control: control_from_phase(projected_phase(&event.payload)),
+                control: control_from_phase(projected_phase(&event.payload), has_messages),
             }]
         },
         EventPayload::ToolCallBackgrounded {
@@ -108,7 +111,7 @@ pub(in crate::http) fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDt
         } => {
             vec![
                 ConversationDeltaDto::UpdateControlState {
-                    control: control_from_phase(projected_phase(&event.payload)),
+                    control: control_from_phase(projected_phase(&event.payload), has_messages),
                 },
                 ConversationDeltaDto::ToolCallBackgrounded {
                     call_id: call_id.to_string(),
@@ -118,7 +121,7 @@ pub(in crate::http) fn event_to_deltas(event: &Event) -> Vec<ConversationDeltaDt
         },
         EventPayload::TurnCompleted { .. } | EventPayload::AgentRunCompleted { .. } => {
             vec![ConversationDeltaDto::UpdateControlState {
-                control: control_from_phase(Phase::Idle),
+                control: control_from_phase(Phase::Idle, has_messages),
             }]
         },
         EventPayload::ThinkingDelta { message_id, delta } => {
@@ -214,12 +217,15 @@ fn projected_phase(payload: &EventPayload) -> Phase {
     }
 }
 
-pub(in crate::http) fn control_from_phase(phase: Phase) -> ConversationControlStateDto {
+pub(in crate::http) fn control_from_phase(
+    phase: Phase,
+    has_messages: bool,
+) -> ConversationControlStateDto {
     let can_submit_prompt = matches!(phase, Phase::Idle | Phase::Error);
     ConversationControlStateDto {
         phase,
         can_submit_prompt,
-        can_request_compact: can_submit_prompt,
+        can_request_compact: can_submit_prompt && has_messages,
         compact_pending: false,
         compacting: matches!(phase, Phase::Compacting),
         current_mode_id: None,
@@ -247,7 +253,7 @@ mod tests {
             },
         );
 
-        let deltas = event_to_deltas(&event);
+        let deltas = event_to_deltas(&event, true);
 
         assert_eq!(deltas.len(), 1);
         match &deltas[0] {
@@ -280,7 +286,7 @@ mod tests {
             },
         );
 
-        let deltas = event_to_deltas(&event);
+        let deltas = event_to_deltas(&event, true);
         assert_eq!(
             deltas.len(),
             1,
@@ -317,7 +323,7 @@ mod tests {
             },
         );
 
-        let deltas = event_to_deltas(&event);
+        let deltas = event_to_deltas(&event, true);
 
         assert_eq!(deltas.len(), 1);
         match &deltas[0] {
@@ -348,7 +354,7 @@ mod tests {
             },
         );
 
-        let deltas = event_to_deltas(&event);
+        let deltas = event_to_deltas(&event, true);
         assert_eq!(deltas.len(), 1, "tool completion should produce one delta");
         let delta = deltas.into_iter().next().unwrap();
 
