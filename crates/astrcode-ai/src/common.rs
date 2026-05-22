@@ -140,6 +140,8 @@ async fn parse_sse_response(
     let mut decoder = Utf8StreamDecoder::new();
     let mut line_reader = SseLineReader::new();
     let mut bytes_read = 0usize;
+    let mut has_data_line = false;
+    let mut body_preview = String::new();
 
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.map_err(|e| {
@@ -153,13 +155,31 @@ async fn parse_sse_response(
             )
         })?;
         bytes_read += bytes.len();
+        if body_preview.is_empty() && !bytes.is_empty() {
+            let preview_len = bytes.len().min(512);
+            body_preview = String::from_utf8_lossy(&bytes[..preview_len]).to_string();
+        }
         if let Some(text) = decoder.push(&bytes) {
             for line in line_reader.push_chunk(&text) {
+                if line.starts_with("data:") {
+                    has_data_line = true;
+                }
                 process_data_line(&line, tx, &parse_line);
             }
         }
     }
     drain_decoder(&mut decoder, &mut line_reader, tx, &parse_line);
+
+    if bytes_read > 0 && !has_data_line {
+        return Err(LlmError::StreamParse(format!(
+            "LLM returned 200 but response is not valid SSE (no data: lines found). \
+             Content-Type: {}, bytes: {}, preview: {}",
+            content_type.as_deref().unwrap_or("<missing>"),
+            bytes_read,
+            truncate_str(&body_preview, 256),
+        )));
+    }
+
     Ok(())
 }
 
@@ -177,6 +197,8 @@ async fn parse_sse_response_with_event_type(
     let mut line_reader = SseLineReader::new();
     let mut current_event_type = String::new();
     let mut bytes_read = 0usize;
+    let mut has_data_line = false;
+    let mut body_preview = String::new();
 
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.map_err(|e| {
@@ -190,6 +212,10 @@ async fn parse_sse_response_with_event_type(
             )
         })?;
         bytes_read += bytes.len();
+        if body_preview.is_empty() && !bytes.is_empty() {
+            let preview_len = bytes.len().min(512);
+            body_preview = String::from_utf8_lossy(&bytes[..preview_len]).to_string();
+        }
         if let Some(text) = decoder.push(&bytes) {
             for line in line_reader.push_chunk(&text) {
                 if let Some(ev_type) = line.strip_prefix("event:") {
@@ -197,6 +223,7 @@ async fn parse_sse_response_with_event_type(
                     continue;
                 }
                 if let Some(data) = line.strip_prefix("data:") {
+                    has_data_line = true;
                     let data = data.trim();
                     if data == "[DONE]" || data.is_empty() {
                         continue;
@@ -211,6 +238,7 @@ async fn parse_sse_response_with_event_type(
     if let Some(tail) = decoder.finish() {
         for line in line_reader.push_chunk(&tail) {
             if let Some(data) = line.strip_prefix("data:") {
+                has_data_line = true;
                 if let Ok(event) = serde_json::from_str::<serde_json::Value>(data.trim()) {
                     handle_event("", &event, tx);
                 }
@@ -219,11 +247,23 @@ async fn parse_sse_response_with_event_type(
     }
     if let Some(line) = line_reader.flush() {
         if let Some(data) = line.strip_prefix("data:") {
+            has_data_line = true;
             if let Ok(event) = serde_json::from_str::<serde_json::Value>(data.trim()) {
                 handle_event("", &event, tx);
             }
         }
     }
+
+    if bytes_read > 0 && !has_data_line {
+        return Err(LlmError::StreamParse(format!(
+            "LLM returned 200 but response is not valid SSE (no data: lines found). \
+             Content-Type: {}, bytes: {}, preview: {}",
+            content_type.as_deref().unwrap_or("<missing>"),
+            bytes_read,
+            truncate_str(&body_preview, 256),
+        )));
+    }
+
     Ok(())
 }
 
@@ -254,6 +294,18 @@ fn drain_decoder(
     }
     if let Some(line) = line_reader.flush() {
         process_data_line(&line, tx, &parse_line);
+    }
+}
+
+fn truncate_str(s: &str, max_chars: usize) -> &str {
+    if s.len() <= max_chars {
+        s
+    } else {
+        let mut boundary = max_chars;
+        while !s.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        &s[..boundary]
     }
 }
 
