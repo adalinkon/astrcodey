@@ -14,6 +14,10 @@ use astrcode_extensions::{
 use astrcode_session::SessionRuntimeServices;
 use astrcode_storage::config_store::FileConfigStore;
 
+mod server_system;
+
+pub use server_system::{ServerSystem, spawn_server_system};
+
 pub use crate::config_manager::ConfigManager;
 use crate::session_manager::SessionManager;
 
