@@ -130,7 +130,7 @@ function RenderSpecViewerInner({ spec, className }: RenderSpecViewerProps) {
       return (
         <div className={cn(codeBlockShell, className)}>
           <pre
-            className={cn(codeBlockContent, 'whitespace-pre-wrap')}
+            className={cn(codeBlockContent, 'whitespace-pre')}
             children={
               <DiffCodeLines text={spec.text} lineClassName="-mx-4 px-4" />
             }
@@ -163,7 +163,10 @@ function RenderSpecViewerInner({ spec, className }: RenderSpecViewerProps) {
     case 'raw_ansi_limited':
       return (
         <pre
-          className={cn('whitespace-pre-wrap font-mono text-[13px]', className)}
+          className={cn(
+            'overflow-x-auto whitespace-pre font-mono text-[13px]',
+            className
+          )}
           children={spec.text}
         />
       )

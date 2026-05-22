@@ -22,7 +22,7 @@ export const codeBlockShell =
 export const codeBlockHeader =
   'flex items-center justify-between bg-code-surface px-4 pb-1 pt-2 text-xs text-code-label'
 export const codeBlockContent =
-  'm-0 overflow-x-auto px-4 pb-4 pt-2 font-mono text-sm leading-relaxed text-code-text'
+  'm-0 overflow-x-auto whitespace-pre px-4 pb-4 pt-2 font-mono text-sm leading-relaxed text-code-text'
 
 export const errorSurface =
   'self-stretch rounded-2xl border border-danger/20 bg-danger-soft px-4 py-3.5 text-danger'

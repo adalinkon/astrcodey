@@ -74,6 +74,14 @@ function boolValue(source: JsonRecord, ...keys: string[]): boolean | undefined {
   return undefined
 }
 
+function arrayValue(source: JsonRecord, ...keys: string[]): unknown[] {
+  for (const key of keys) {
+    const value = source[key]
+    if (Array.isArray(value)) return value
+  }
+  return []
+}
+
 function formatBytes(bytes?: number): string {
   if (bytes == null) return ''
   if (bytes < 1024) return `${bytes} B`
@@ -133,6 +141,22 @@ function changesLabel(meta: JsonRecord): string {
       : formatBytes(newBytes)
   }
   return ''
+}
+
+function paginationLabel(meta: JsonRecord): string {
+  const hasMore = boolValue(meta, 'hasMore', 'truncated')
+  const nextOffset = numberValue(meta, 'nextOffset')
+  const nextCharOffset = numberValue(meta, 'nextCharOffset')
+  if (!hasMore) return ''
+  if (nextOffset != null) return `more at offset ${nextOffset}`
+  if (nextCharOffset != null) return `more at char ${nextCharOffset}`
+  return 'has more'
+}
+
+function pathScopeLabel(args: JsonRecord, meta: JsonRecord): string {
+  return (
+    stringValue(meta, 'path', 'root') || stringValue(args, 'path', 'root') || ''
+  )
 }
 
 /**
@@ -252,11 +276,45 @@ function CodePreview({
   return (
     <pre
       className={cn(
-        'm-0 max-h-[min(52vh,520px)] overflow-auto whitespace-pre-wrap break-words pt-3 font-mono text-[12.5px] leading-relaxed',
+        'm-0 overflow-x-auto whitespace-pre pt-3 font-mono text-[12.5px] leading-relaxed',
         color
       )}
       children={children}
     />
+  )
+}
+
+function ReadContentPreview({ text }: { text: string }) {
+  const lines = previewText(text).split('\n')
+  const parsed = lines.map((line) => {
+    const match = line.match(/^\s*(\d+)\t(.*)$/)
+    return match ? { number: match[1], code: match[2] } : undefined
+  })
+  const hasLineNumbers = parsed.some(Boolean)
+
+  if (!hasLineNumbers) {
+    return <CodePreview text={text} />
+  }
+
+  return (
+    <div className="overflow-x-auto pt-3 font-mono text-[12.5px] leading-relaxed text-code-text">
+      {lines.map((line, index) => {
+        const item = parsed[index]
+        return (
+          <div
+            key={index}
+            className="grid min-w-fit grid-cols-[4.5rem_minmax(0,1fr)] gap-3"
+          >
+            <span className="select-none text-right text-text-muted">
+              {item?.number ?? ''}
+            </span>
+            <code className="min-w-0 whitespace-pre">
+              {(item?.code ?? line) || ' '}
+            </code>
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
@@ -447,6 +505,201 @@ function ShellToolDetails({ block }: { block: ToolCall }) {
   )
 }
 
+function ReadToolDetails({ block }: { block: ToolCall }) {
+  const args = toolArgs(block)
+  const meta = toolMeta(block)
+  const path = pathFor(block)
+  const offset = numberValue(meta, 'offset') ?? numberValue(args, 'offset')
+  const shownLines = numberValue(meta, 'shownLines')
+  const totalLines = numberValue(meta, 'totalLines')
+  const returnedChars = numberValue(meta, 'returnedChars')
+  const charOffset =
+    numberValue(meta, 'charOffset') ?? numberValue(args, 'charOffset')
+
+  return (
+    <div className="min-w-0 divide-y divide-border/70">
+      <div className="pb-3">
+        <MetaGrid>
+          <MetaRow label="path" value={path} />
+          <MetaRow
+            label="lines"
+            value={
+              shownLines != null && totalLines != null
+                ? `${shownLines}/${totalLines}`
+                : shownLines
+            }
+          />
+          <MetaRow label="offset" value={offset} />
+          <MetaRow label="chars" value={returnedChars} />
+          <MetaRow label="charOffset" value={charOffset} />
+          <MetaRow label="next" value={paginationLabel(meta)} />
+        </MetaGrid>
+      </div>
+      <ReadContentPreview text={block.text || '(no content)'} />
+    </div>
+  )
+}
+
+function SearchToolDetails({ block }: { block: ToolCall }) {
+  const args = toolArgs(block)
+  const meta = toolMeta(block)
+  const isFind = block.name === 'find'
+  const pattern = stringValue(meta, 'pattern') || stringValue(args, 'pattern')
+  const scope = pathScopeLabel(args, meta)
+  const outputMode = stringValue(meta, 'outputMode') || 'files_with_matches'
+  const returned = numberValue(meta, 'returned') ?? numberValue(meta, 'count')
+  const totalMatches = numberValue(meta, 'totalMatches')
+  const skippedFiles = numberValue(meta, 'skippedFiles')
+  const glob = stringValue(args, 'glob')
+  const fileType = stringValue(args, 'fileType')
+
+  return (
+    <div className="min-w-0 divide-y divide-border/70">
+      <div className="pb-3">
+        <MetaGrid>
+          <MetaRow label="pattern" value={pattern} />
+          <MetaRow label="scope" value={scope} />
+          <MetaRow label="mode" value={isFind ? 'files' : outputMode} />
+          <MetaRow
+            label="returned"
+            value={
+              totalMatches != null && isFind
+                ? `${returned ?? 0}/${totalMatches}`
+                : returned
+            }
+          />
+          <MetaRow label="glob" value={glob} />
+          <MetaRow label="type" value={fileType} />
+          <MetaRow label="skipped" value={skippedFiles} />
+          <MetaRow label="next" value={paginationLabel(meta)} />
+        </MetaGrid>
+      </div>
+      <CodePreview text={block.text || '(no results)'} />
+    </div>
+  )
+}
+
+function PatchToolDetails({ block }: { block: ToolCall }) {
+  const args = toolArgs(block)
+  const meta = toolMeta(block)
+  const patch = stringValue(args, 'patch')
+  const files = arrayValue(meta, 'files')
+  const applied = numberValue(meta, 'filesApplied', 'filesChanged')
+  const failed = numberValue(meta, 'filesFailed')
+
+  return (
+    <div className="min-w-0 divide-y divide-border/70">
+      <div className="pb-3">
+        <MetaGrid>
+          <MetaRow label="applied" value={applied} />
+          <MetaRow label="failed" value={failed} />
+          <MetaRow label="files" value={files.length || undefined} />
+        </MetaGrid>
+      </div>
+      {files.length > 0 && (
+        <div className="space-y-1 py-3 font-mono text-[12px] leading-relaxed">
+          {files.slice(0, 12).map((file, index) => {
+            const item = asRecord(file)
+            const applied = boolValue(item, 'applied')
+            const changeType = stringValue(item, 'changeType') || 'changed'
+            const path = stringValue(item, 'path')
+            const error = stringValue(item, 'error')
+            return (
+              <div key={index} className="flex min-w-0 items-baseline gap-2">
+                <span
+                  className={cn(
+                    'shrink-0 text-[11px] font-semibold uppercase',
+                    applied === false ? 'text-danger' : 'text-success'
+                  )}
+                >
+                  {applied === false ? 'failed' : changeType}
+                </span>
+                <span className="min-w-0 flex-1 break-words text-code-text">
+                  {path || '(unknown path)'}
+                </span>
+                {error && (
+                  <span className="min-w-0 break-words text-danger">
+                    {error}
+                  </span>
+                )}
+              </div>
+            )
+          })}
+          {files.length > 12 && (
+            <div className="text-text-muted">
+              +{files.length - 12} more files
+            </div>
+          )}
+        </div>
+      )}
+      {patch ? (
+        <CodePreview text={patch} tone="diff" />
+      ) : (
+        <CodePreview text={block.text || '(no patch preview)'} />
+      )}
+    </div>
+  )
+}
+
+function TerminalToolDetails({ block }: { block: ToolCall }) {
+  const args = toolArgs(block)
+  const meta = toolMeta(block)
+  const action = stringValue(args, 'action')
+  const id = stringValue(meta, 'id') || stringValue(args, 'id')
+  const command = stringValue(meta, 'command') || stringValue(args, 'command')
+  const cwd = stringValue(args, 'cwd')
+  const input = stringValue(args, 'input')
+  const waitMs = numberValue(args, 'waitMs')
+  const bytesSent = numberValue(meta, 'bytesSent')
+  const droppedBytes = numberValue(meta, 'droppedBytes')
+  const exitCode = numberValue(meta, 'exitCode')
+  const alive = boolValue(meta, 'alive')
+  const count = numberValue(meta, 'count')
+  const terminals = arrayValue(meta, 'terminals')
+
+  return (
+    <div className="min-w-0 divide-y divide-border/70">
+      <div className="pb-3">
+        <MetaGrid>
+          <MetaRow label="action" value={action} />
+          <MetaRow label="id" value={id} />
+          <MetaRow label="command" value={command} />
+          <MetaRow label="cwd" value={cwd} />
+          <MetaRow
+            label="alive"
+            value={alive != null ? (alive ? 'yes' : 'no') : undefined}
+          />
+          <MetaRow label="exit" value={exitCode} />
+          <MetaRow label="sent" value={formatBytes(bytesSent)} />
+          <MetaRow label="dropped" value={formatBytes(droppedBytes)} />
+          <MetaRow
+            label="wait"
+            value={waitMs != null ? `${waitMs}ms` : undefined}
+          />
+          <MetaRow
+            label="input"
+            value={input ? `${formatBytes(input.length)} piped` : undefined}
+          />
+          <MetaRow label="count" value={count} />
+        </MetaGrid>
+      </div>
+      {terminals.length > 0 && (
+        <div className="space-y-1 py-3 font-mono text-[12px] text-code-text">
+          {terminals.slice(0, 10).map((terminal, index) => (
+            <div key={index}>{String(terminal)}</div>
+          ))}
+          {terminals.length > 10 && (
+            <div className="text-text-muted">
+              +{terminals.length - 10} more terminals
+            </div>
+          )}
+        </div>
+      )}
+      <CodePreview text={block.text || '(no output)'} />
+    </div>
+  )
+}
+
 function DefaultToolDetails({ block }: { block: ToolCall }) {
   const resultText =
     block.text || (block.status === 'streaming' ? '等待输出...' : '')
@@ -469,6 +722,79 @@ function ToolDetails({
 }
 
 const builtinToolRenderers: ToolRenderer[] = [
+  {
+    id: 'builtin:read',
+    priority: 100,
+    match: ({ block }) => block.name === 'read',
+    summary: ({ block, meta }) => {
+      const path = pathFor(block)
+      const shownLines = numberValue(meta, 'shownLines')
+      const totalLines = numberValue(meta, 'totalLines')
+      const linePart =
+        shownLines != null && totalLines != null
+          ? `${shownLines}/${totalLines} lines`
+          : shownLines != null
+            ? `${shownLines} lines`
+            : ''
+      return compactLine(
+        ['read', path && truncateMiddle(path), linePart, paginationLabel(meta)]
+          .filter(Boolean)
+          .join(' ')
+      )
+    },
+    render: ({ block }) => <ReadToolDetails block={block} />,
+  },
+  {
+    id: 'builtin:grep',
+    priority: 100,
+    match: ({ block }) => block.name === 'grep',
+    summary: ({ args, meta }) => {
+      const pattern =
+        stringValue(meta, 'pattern') || stringValue(args, 'pattern')
+      const returned = numberValue(meta, 'returned')
+      const outputMode = stringValue(meta, 'outputMode') || 'files_with_matches'
+      return compactLine(
+        [
+          'grep',
+          pattern && `"${truncateMiddle(pattern, 60)}"`,
+          returned != null && `${returned} result${returned === 1 ? '' : 's'}`,
+          outputMode,
+          paginationLabel(meta),
+        ]
+          .filter(Boolean)
+          .join(' ')
+      )
+    },
+    render: ({ block }) => <SearchToolDetails block={block} />,
+  },
+  {
+    id: 'builtin:find',
+    priority: 100,
+    match: ({ block }) => block.name === 'find',
+    summary: ({ args, meta }) => {
+      const pattern =
+        stringValue(meta, 'pattern') || stringValue(args, 'pattern')
+      const count = numberValue(meta, 'count')
+      const total = numberValue(meta, 'totalMatches')
+      const countPart =
+        count != null && total != null
+          ? `${count}/${total} files`
+          : count != null
+            ? `${count} files`
+            : ''
+      return compactLine(
+        [
+          'find',
+          pattern && truncateMiddle(pattern, 64),
+          countPart,
+          paginationLabel(meta),
+        ]
+          .filter(Boolean)
+          .join(' ')
+      )
+    },
+    render: ({ block }) => <SearchToolDetails block={block} />,
+  },
   {
     id: 'builtin:file-change',
     priority: 100,
@@ -513,6 +839,58 @@ const builtinToolRenderers: ToolRenderer[] = [
       return command ? `$ ${compactLine(command)}` : ''
     },
     render: ({ block }) => <ShellToolDetails block={block} />,
+  },
+  {
+    id: 'builtin:patch',
+    priority: 100,
+    match: ({ block }) => block.name === 'patch',
+    summary: ({ meta }) => {
+      const applied = numberValue(meta, 'filesApplied', 'filesChanged') ?? 0
+      const failed = numberValue(meta, 'filesFailed') ?? 0
+      return compactLine(
+        ['patch', `${applied} applied`, failed > 0 && `${failed} failed`]
+          .filter(Boolean)
+          .join(' ')
+      )
+    },
+    render: ({ block }) => <PatchToolDetails block={block} />,
+  },
+  {
+    id: 'builtin:terminal',
+    priority: 100,
+    match: ({ block }) => block.name === 'terminal',
+    summary: ({ args, meta }) => {
+      const action = stringValue(args, 'action')
+      const id = stringValue(meta, 'id') || stringValue(args, 'id')
+      const command =
+        stringValue(meta, 'command') || stringValue(args, 'command')
+      const bytesSent = numberValue(meta, 'bytesSent')
+      const alive = boolValue(meta, 'alive')
+      const exitCode = numberValue(meta, 'exitCode')
+      const count = numberValue(meta, 'count')
+      const status =
+        alive != null
+          ? alive
+            ? 'alive'
+            : 'exited'
+          : exitCode != null
+            ? `exit ${exitCode}`
+            : ''
+      return compactLine(
+        [
+          'terminal',
+          action,
+          command && truncateMiddle(command, 72),
+          id && truncateMiddle(id, 36),
+          bytesSent != null && formatBytes(bytesSent),
+          count != null && `${count} active`,
+          status,
+        ]
+          .filter(Boolean)
+          .join(' ')
+      )
+    },
+    render: ({ block }) => <TerminalToolDetails block={block} />,
   },
 ]
 
