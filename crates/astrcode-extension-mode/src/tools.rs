@@ -31,10 +31,12 @@ pub fn switch_mode_tool_definition() -> ToolDefinition {
                        explore the codebase and produce a structured plan before \
                        implementation.\n\nEnter plan mode proactively when the task matches ANY \
                        of these:\n• Implementing a new feature\n• Multiple valid approaches \
-                       exist and you need to pick one\n• The user want you to plan\n• Planning \
+                       exist and you need to pick one\n• The user wants you to plan\n• Planning \
                        will be helpful for the task\n\nDo NOT enter plan mode for:\n• \
                        Single-file fixes or small tweaks\n• Clear, well-scoped tasks with \
-                       obvious solutions\n• User explicitly said to just do it\n\n")
+                       obvious solutions\n• User explicitly said to just do it\n\nIn plan mode: \
+                       explore the codebase → write a plan with `upsertSessionPlan` → switch \
+                       back to code mode to implement.")
             .into(),
         parameters: json!({
             "type": "object",
@@ -99,21 +101,6 @@ fn transition_context(from: &ModeId, to: &ModeId) -> Option<String> {
     }
 }
 
-/// Exit gate review checklist formatted as a message.
-fn review_checklist_message() -> String {
-    let items = crate::catalog::EXIT_REVIEW_CHECKLIST
-        .iter()
-        .enumerate()
-        .map(|(i, item)| format!("{}. {}", i + 1, item))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "Exit review gate: review the plan against these criteria before calling switchMode \
-         again.\n\n{items}\n\nIf the review changes the plan, update it with \
-         {UPSERT_PLAN_TOOL_NAME} first, then retry switchMode."
-    )
-}
-
 pub fn handle_switch_mode(
     arguments: Value,
     mode_root: &Path,
@@ -145,107 +132,46 @@ pub fn handle_switch_mode(
         .get(&current_id)
         .ok_or_else(|| format!("unknown current mode '{}'", current_id))?;
 
-    // Exit gate: check if current mode requires review before leaving.
-    if current_spec.exit_review_passes > 0
-        && state.exit_review_passes_completed < current_spec.exit_review_passes
-    {
-        let mut plan_content_for_review: Option<String> = None;
-        // Check plan artifact exists.
-        if current_spec.requires_plan_artifact {
-            match store::load_plan(plan_dir)? {
-                None => {
+    // Require plan artifact before leaving plan mode.
+    if current_spec.requires_plan_artifact {
+        match store::load_plan(plan_dir)? {
+            None => {
+                return Ok(ToolResult::text(
+                    format!(
+                        "Cannot exit {} mode: no plan artifact found. Create one with \
+                         {UPSERT_PLAN_TOOL_NAME} first.",
+                        current_spec.name
+                    ),
+                    true,
+                    tool_metadata([("gateBlocked", json!("no_plan_artifact"))]),
+                ));
+            },
+            Some(content) => {
+                let missing = store::validate_plan_headings(&content);
+                if !missing.is_empty() {
                     return Ok(ToolResult::text(
                         format!(
-                            "Cannot exit {} mode: no plan artifact found. Create one with \
-                             {UPSERT_PLAN_TOOL_NAME} first.",
-                            current_spec.name
+                            "Plan artifact is incomplete. Missing headings: {}",
+                            missing.join(", ")
                         ),
                         true,
-                        tool_metadata([("gateBlocked", json!("no_plan_artifact"))]),
+                        tool_metadata([
+                            ("gateBlocked", json!("incomplete_plan")),
+                            ("missingHeadings", json!(missing)),
+                        ]),
                     ));
-                },
-                Some(content) => {
-                    let missing = store::validate_plan_headings(&content);
-                    if !missing.is_empty() {
-                        return Ok(ToolResult::text(
-                            format!(
-                                "Plan artifact is incomplete. Missing headings: {}",
-                                missing.join(", ")
-                            ),
-                            true,
-                            tool_metadata([
-                                ("gateBlocked", json!("incomplete_plan")),
-                                ("missingHeadings", json!(missing)),
-                            ]),
-                        ));
-                    }
-                    plan_content_for_review = Some(content);
-                },
-            }
+                }
+            },
         }
-
-        // First exit attempt: return review checkpoint.
-        state.exit_review_passes_completed += 1;
-        store::save_mode_state(mode_root, &state)?;
-
-        if let Some(plan) = plan_content_for_review {
-            let ui_render = RenderSpec::Box {
-                title: Some("Plan review".into()),
-                tone: RenderTone::Accent,
-                children: vec![
-                    RenderSpec::Markdown {
-                        text: plan.clone(),
-                        tone: RenderTone::Default,
-                    },
-                    RenderSpec::Text {
-                        text: review_checklist_message(),
-                        tone: RenderTone::Muted,
-                    },
-                ],
-            };
-            return Ok(ToolResult::text(
-                review_checklist_message(),
-                false,
-                tool_metadata([
-                    ("gateStatus", json!("review_pending")),
-                    ("reviewPass", json!(state.exit_review_passes_completed)),
-                    ("requiredPasses", json!(current_spec.exit_review_passes)),
-                    ("planContent", json!(plan)),
-                    (
-                        UI_RENDER_METADATA_KEY,
-                        serde_json::to_value(&ui_render).unwrap_or_default(),
-                    ),
-                ]),
-            ));
-        }
-
-        return Ok(ToolResult::text(
-            review_checklist_message(),
-            false,
-            tool_metadata([
-                ("gateStatus", json!("review_pending")),
-                ("reviewPass", json!(state.exit_review_passes_completed)),
-                ("requiredPasses", json!(current_spec.exit_review_passes)),
-            ]),
-        ));
     }
 
-    // Gate passed (or no gate): perform transition.
     let target_spec = catalog
         .get(&target_id)
         .ok_or_else(|| format!("unknown target mode '{}'", args.mode))?;
 
     state.previous_mode = Some(state.current_mode.clone());
     state.current_mode = target_id.as_str().to_string();
-    state.exit_review_passes_completed = 0;
-    let mut context = transition_context(&current_id, &target_id);
-
-    // When exiting plan mode, append the plan content so the agent can present it to the user.
-    if current_id.as_str() == "plan" {
-        if let Some(plan_content) = store::load_plan(plan_dir)? {
-            context = context.map(|ctx| format!("{ctx}\n\n---\n\n{plan_content}"));
-        }
-    }
+    let context = transition_context(&current_id, &target_id);
 
     state.pending_transition_context = context;
     store::save_mode_state(mode_root, &state)?;
@@ -392,15 +318,13 @@ mod tests {
     }
 
     #[test]
-    fn exit_gate_blocks_without_plan_artifact() {
+    fn exit_requires_plan_artifact() {
         let mode_root = test_root("gate-no-plan").join("mode");
         let plan_dir = test_root("gate-no-plan").join("plan");
         let catalog = builtin_catalog();
 
-        // Enter plan mode first.
         handle_switch_mode(json!({ "mode": "plan" }), &mode_root, &plan_dir, &catalog).unwrap();
 
-        // Try to exit — should be blocked (no plan artifact).
         let result = handle_switch_mode(json!({ "mode": "code" }), &mode_root, &plan_dir, &catalog)
             .expect("should return result");
         assert!(result.is_error);
@@ -408,43 +332,16 @@ mod tests {
     }
 
     #[test]
-    fn exit_gate_returns_review_checkpoint_when_plan_exists() {
-        let mode_root = test_root("gate-review").join("mode");
-        let plan_dir = test_root("gate-review").join("plan");
+    fn exit_switches_directly_when_plan_exists() {
+        let mode_root = test_root("direct-exit").join("mode");
+        let plan_dir = test_root("direct-exit").join("plan");
         let catalog = builtin_catalog();
 
-        // Enter plan mode.
         handle_switch_mode(json!({ "mode": "plan" }), &mode_root, &plan_dir, &catalog).unwrap();
 
-        // Create a valid plan.
         let plan = crate::prompts::plan_template().replace("<title>", "test");
         store::save_plan(&plan_dir, &plan).unwrap();
 
-        // First exit attempt — review checkpoint.
-        let result = handle_switch_mode(json!({ "mode": "code" }), &mode_root, &plan_dir, &catalog)
-            .expect("should return result");
-        assert!(!result.is_error);
-        assert!(result.content.contains("review gate"));
-        assert_eq!(result.metadata["gateStatus"], "review_pending");
-    }
-
-    #[test]
-    fn exit_gate_allows_transition_after_review() {
-        let mode_root = test_root("gate-pass").join("mode");
-        let plan_dir = test_root("gate-pass").join("plan");
-        let catalog = builtin_catalog();
-
-        // Enter plan mode.
-        handle_switch_mode(json!({ "mode": "plan" }), &mode_root, &plan_dir, &catalog).unwrap();
-
-        // Create a valid plan.
-        let plan = crate::prompts::plan_template().replace("<title>", "test");
-        store::save_plan(&plan_dir, &plan).unwrap();
-
-        // First exit — review checkpoint.
-        handle_switch_mode(json!({ "mode": "code" }), &mode_root, &plan_dir, &catalog).unwrap();
-
-        // Second exit — gate passed.
         let result = handle_switch_mode(json!({ "mode": "code" }), &mode_root, &plan_dir, &catalog)
             .expect("should succeed");
         assert!(!result.is_error);
@@ -457,7 +354,6 @@ mod tests {
         let plan_dir = test_root("upsert-create").join("plan");
         let catalog = builtin_catalog();
 
-        // Enter plan mode.
         handle_switch_mode(json!({ "mode": "plan" }), &mode_root, &plan_dir, &catalog).unwrap();
 
         let plan = crate::prompts::plan_template().replace("<title>", "test plan");
@@ -502,28 +398,16 @@ mod tests {
     }
 
     #[test]
-    fn full_round_trip_with_gate() {
+    fn full_round_trip() {
         let mode_root = test_root("full-round-trip").join("mode");
         let plan_dir = test_root("full-round-trip").join("plan");
         let catalog = builtin_catalog();
 
-        // Enter plan mode.
         handle_switch_mode(json!({ "mode": "plan" }), &mode_root, &plan_dir, &catalog).unwrap();
 
-        // Create valid plan.
         let plan = crate::prompts::plan_template().replace("<title>", "full test");
         handle_upsert_plan(json!({ "content": plan }), &mode_root, &plan_dir).unwrap();
 
-        // First exit — review.
-        let review =
-            handle_switch_mode(json!({ "mode": "code" }), &mode_root, &plan_dir, &catalog).unwrap();
-        assert_eq!(review.metadata["gateStatus"], "review_pending");
-
-        // Update plan after review.
-        let updated_plan = plan.replace("<title>", "full test reviewed");
-        handle_upsert_plan(json!({ "content": updated_plan }), &mode_root, &plan_dir).unwrap();
-
-        // Second exit — success.
         let exit =
             handle_switch_mode(json!({ "mode": "code" }), &mode_root, &plan_dir, &catalog).unwrap();
         assert!(!exit.is_error);

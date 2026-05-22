@@ -159,8 +159,6 @@ mod tests {
     }
 
     #[test]
-    // TODO: a better way to enforce that critical tools like "agent" are not accidentally
-    // restricted by mode definitions.
     fn plan_mode_does_not_restrict_agent_tool() {
         let catalog = builtin_catalog();
         assert!(

@@ -775,25 +775,6 @@ impl FileSystemSessionRepository {
                 if !ids.contains(&id) {
                     ids.push(id);
                 }
-                let subagents = entry.path().join("subagents");
-                if tokio::fs::metadata(&subagents)
-                    .await
-                    .is_ok_and(|m| m.is_dir())
-                {
-                    let Ok(mut extension_entries) = tokio::fs::read_dir(&subagents).await else {
-                        continue;
-                    };
-                    while let Ok(Some(extension_entry)) = extension_entries.next_entry().await {
-                        let extension_name = extension_entry.file_name();
-                        if extension_name.to_string_lossy() == ".recycled" {
-                            continue;
-                        }
-                        if extension_entry.file_type().await.is_ok_and(|t| t.is_dir()) {
-                            self.collect_session_ids_recursive(&extension_entry.path(), ids)
-                                .await;
-                        }
-                    }
-                }
             }
         })
     }
@@ -1267,7 +1248,7 @@ mod tests {
         let sessions = reopened.list_sessions().await.unwrap();
         let child = reopened.session_read_model(&child_id).await.unwrap();
 
-        assert_eq!(sessions, vec![child_id.clone(), parent_id]);
+        assert_eq!(sessions, vec![parent_id]);
         assert_eq!(
             child.parent_session_id.as_ref(),
             Some(&SessionId::from("parent"))
