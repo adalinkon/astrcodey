@@ -72,19 +72,22 @@ impl StandardAccumulator {
         &self.text
     }
 
-    fn ingest_chat_tool_call_delta(
+    fn ingest_tool_call_like_delta(
         &mut self,
         index: u64,
-        tool_call: &serde_json::Value,
+        id: Option<&str>,
+        fallback_id: Option<&str>,
+        function: &serde_json::Value,
         tx: &mpsc::UnboundedSender<LlmEvent>,
     ) {
         let partial = self.tool_calls.entry(index).or_default();
-        if let Some(id) = tool_call["id"].as_str() {
+        if let Some(id) = id {
             partial.id = Some(id.to_string());
+        } else if partial.id.is_none() {
+            if let Some(fallback) = fallback_id {
+                partial.id = Some(fallback.to_string());
+            }
         }
-        let Some(function) = tool_call.get("function") else {
-            return;
-        };
         if let Some(name) = function["name"].as_str() {
             partial.name = Some(name.to_string());
         }
@@ -125,56 +128,25 @@ impl StandardAccumulator {
         }
     }
 
+    fn ingest_chat_tool_call_delta(
+        &mut self,
+        index: u64,
+        tool_call: &serde_json::Value,
+        tx: &mpsc::UnboundedSender<LlmEvent>,
+    ) {
+        let id = tool_call["id"].as_str();
+        let Some(function) = tool_call.get("function") else {
+            return;
+        };
+        self.ingest_tool_call_like_delta(index, id, None, function, tx);
+    }
+
     fn ingest_legacy_function_call_delta(
         &mut self,
         function_call: &serde_json::Value,
         tx: &mpsc::UnboundedSender<LlmEvent>,
     ) {
-        let index = 0;
-        let partial = self.tool_calls.entry(index).or_default();
-        if partial.id.is_none() {
-            partial.id = Some("function_call".into());
-        }
-        if let Some(name) = function_call["name"].as_str() {
-            partial.name = Some(name.to_string());
-        }
-
-        let arguments = function_call
-            .get("arguments")
-            .and_then(json_argument_fragment);
-        if !partial.started {
-            if let Some(name) = partial.name.clone() {
-                let call_id = chat_tool_call_id(index, partial);
-                partial.emitted_call_id = Some(call_id.clone());
-                partial.started = true;
-                let _ = tx.send(LlmEvent::ToolCallStart {
-                    call_id: call_id.clone(),
-                    name,
-                    arguments: String::new(),
-                });
-                if !partial.pending_arguments.is_empty() {
-                    let delta = std::mem::take(&mut partial.pending_arguments);
-                    let _ = tx.send(LlmEvent::ToolCallDelta {
-                        call_id: call_id.clone(),
-                        delta,
-                    });
-                }
-            }
-        }
-
-        if let Some(arguments) = arguments {
-            if arguments.is_empty() {
-                return;
-            }
-            if partial.started {
-                let _ = tx.send(LlmEvent::ToolCallDelta {
-                    call_id: chat_tool_call_id(index, partial),
-                    delta: arguments,
-                });
-            } else {
-                partial.pending_arguments.push_str(&arguments);
-            }
-        }
+        self.ingest_tool_call_like_delta(0, None, Some("function_call"), function_call, tx);
     }
 
     fn emit_response_tool_start(

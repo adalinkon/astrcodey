@@ -114,7 +114,7 @@ pub struct TurnRunner {
     initial_history: Vec<LlmMessage>,
     tools: ToolPipeline,
     /// 订阅 session 事件通道，用于在 step 边界接收中途注入的 UserMessage。
-    event_rx: mpsc::UnboundedReceiver<Event>,
+    event_rx: mpsc::Receiver<Event>,
 }
 
 #[derive(Clone)]
@@ -363,8 +363,8 @@ impl TurnRunner {
     ) -> Result<PreparedProviderRequest, TurnError> {
         self.refresh_system_prompt(state).await?;
 
-        // 每轮重新拉 llm 快照，跟随 ConfigManager 热更新。
-        let llm = self.session.caps().llm();
+        // 从 session-owned provider 读取，turn 期间不会因其他 session 切换模型而改变。
+        let llm = self.session.runtime().llm();
         let context_assembler = Arc::clone(self.session.caps().context_assembler());
 
         let custom_instructions = collect_compact_instructions(
@@ -531,7 +531,7 @@ impl TurnRunner {
     ) -> Result<bool, TurnError> {
         self.refresh_system_prompt(state).await?;
 
-        let llm = self.session.caps().llm();
+        let llm = self.session.runtime().llm();
         let context_assembler = Arc::clone(self.session.caps().context_assembler());
         let custom_instructions = collect_compact_instructions(
             extension_runner,

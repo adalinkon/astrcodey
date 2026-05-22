@@ -32,7 +32,7 @@ use crate::{
 /// This function blocks until the connection is closed or an unrecoverable
 /// error occurs.
 pub async fn run_acp_server(runtime: Arc<ServerRuntime>) -> agent_client_protocol::Result<()> {
-    let event_tx = Arc::new(EventFanout::new());
+    let event_tx = Arc::new(EventFanout::new(1024));
     let server_system = crate::bootstrap::spawn_server_system(&runtime, Arc::clone(&event_tx));
     let command_handle = server_system.handler;
 
@@ -186,7 +186,7 @@ async fn handle_prompt(
 /// Deterministic flush of queued events after completion signal.
 /// Uses `try_recv` to drain without blocking.
 fn flush_queued_events(
-    event_rx: &mut mpsc::UnboundedReceiver<ClientNotification>,
+    event_rx: &mut mpsc::Receiver<ClientNotification>,
     accepted_sessions: &mut HashSet<SessionId>,
     turn_id: &astrcode_core::types::TurnId,
     acp_session_id: &SessionId,

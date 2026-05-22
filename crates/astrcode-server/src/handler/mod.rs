@@ -591,8 +591,19 @@ impl CommandHandler {
             },
             Err(error) => return Err(error),
         };
-        self.event_bus.send_notification(notification);
 
+        // 全局配置已更新，同步活跃 session 的 provider 和 model_id。
+        if let Some(ref sid) = self.active_session_id {
+            let session = self.runtime.session_manager.open(sid.clone()).await?;
+            let caps = session.caps();
+            session.runtime().set_llm(caps.llm());
+            session.runtime().set_small_llm(caps.small_llm());
+            session
+                .runtime()
+                .set_model_id(caps.read_effective().llm.model_id.clone());
+        }
+
+        self.event_bus.send_notification(notification);
         Ok(())
     }
 
@@ -613,6 +624,20 @@ impl CommandHandler {
             .model_selection
             .handle_response(request_id, value)
             .await?;
+
+        // 交互式选择完成时同步活跃 session 的 provider。
+        if self.model_selection.is_idle() {
+            if let Some(ref sid) = self.active_session_id {
+                let session = self.runtime.session_manager.open(sid.clone()).await?;
+                let caps = session.caps();
+                session.runtime().set_llm(caps.llm());
+                session.runtime().set_small_llm(caps.small_llm());
+                session
+                    .runtime()
+                    .set_model_id(caps.read_effective().llm.model_id.clone());
+            }
+        }
+
         self.event_bus.send_notification(notification);
         Ok(())
     }

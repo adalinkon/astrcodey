@@ -182,10 +182,107 @@ impl ClientTransport for MockTransport {
         Ok(())
     }
 
-    async fn subscribe(
-        &self,
-    ) -> Result<mpsc::UnboundedReceiver<ClientNotification>, TransportError> {
-        let (_, rx) = mpsc::unbounded_channel::<ClientNotification>();
+    async fn subscribe(&self) -> Result<mpsc::Receiver<ClientNotification>, TransportError> {
+        let (_, rx) = mpsc::channel::<ClientNotification>(1024);
         Ok(rx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A transport that records sent commands and allows injecting responses.
+    struct StubTransport {
+        sent: std::sync::Mutex<Vec<ClientCommand>>,
+        responses: std::sync::Mutex<Vec<ClientNotification>>,
+    }
+
+    impl StubTransport {
+        fn new(responses: Vec<ClientNotification>) -> Self {
+            Self {
+                sent: std::sync::Mutex::new(Vec::new()),
+                responses: std::sync::Mutex::new(responses),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ClientTransport for StubTransport {
+        async fn send(&self, command: &ClientCommand) -> Result<(), TransportError> {
+            self.sent.lock().expect("sent lock").push(command.clone());
+            Ok(())
+        }
+
+        async fn subscribe(&self) -> Result<mpsc::Receiver<ClientNotification>, TransportError> {
+            let (tx, rx) = mpsc::channel::<ClientNotification>(1024);
+            let responses = std::mem::take(&mut *self.responses.lock().expect("responses lock"));
+            tokio::spawn(async move {
+                for notification in responses {
+                    let _ = tx.send(notification).await;
+                }
+                // tx drops here, closing the channel after all responses are sent
+            });
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn create_session_extracts_session_id() {
+        use astrcode_core::event::{Event, EventPayload};
+
+        let session_id = astrcode_core::types::SessionId::new("test-session");
+        let event = Event::new(
+            session_id.clone(),
+            None,
+            EventPayload::SessionStarted {
+                working_dir: "/tmp".into(),
+                model_id: "model-1".into(),
+                parent_session_id: None,
+                source_extension: None,
+                tool_policy: None,
+            },
+        );
+        let transport = StubTransport::new(vec![ClientNotification::Event(event)]);
+        let client = AstrcodeClient::new(transport);
+
+        let id = client.create_session("/tmp").await.unwrap();
+        assert_eq!(id, "test-session");
+    }
+
+    #[tokio::test]
+    async fn create_session_returns_server_error() {
+        let transport = StubTransport::new(vec![ClientNotification::Error {
+            code: -32603,
+            message: "internal error".into(),
+        }]);
+        let client = AstrcodeClient::new(transport);
+
+        let err = client.create_session("/tmp").await.unwrap_err();
+        assert!(matches!(err, ClientError::Server(msg) if msg.contains("internal error")));
+    }
+
+    #[tokio::test]
+    async fn submit_prompt_sends_command() {
+        let transport = StubTransport::new(vec![]);
+        let client = AstrcodeClient::new(transport);
+
+        client.submit_prompt("hello").await.unwrap();
+
+        let sent = client.transport.sent.lock().expect("sent lock");
+        assert_eq!(sent.len(), 1);
+        assert!(matches!(&sent[0], ClientCommand::SubmitPrompt { text, .. } if text == "hello"));
+    }
+
+    #[tokio::test]
+    async fn abort_sends_abort_command() {
+        let transport = StubTransport::new(vec![]);
+        let client = AstrcodeClient::new(transport);
+
+        client.abort().await.unwrap();
+
+        let sent = client.transport.sent.lock().expect("sent lock");
+        assert_eq!(sent.len(), 1);
+        assert!(matches!(&sent[0], ClientCommand::Abort));
     }
 }

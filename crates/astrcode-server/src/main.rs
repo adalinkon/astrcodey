@@ -60,7 +60,7 @@ async fn main() {
     };
     write_initialize_response(request_id, accepted_version);
 
-    let event_tx = Arc::new(EventFanout::new());
+    let event_tx = Arc::new(EventFanout::new(1024));
     let server_system =
         astrcode_server::bootstrap::spawn_server_system(&runtime, Arc::clone(&event_tx));
     let handler = server_system.handler;
@@ -89,7 +89,7 @@ async fn main() {
     tracing::info!("Server ready");
     while let Some(cmd) = transport.read_command().await {
         if let Err(e) = handler.handle(cmd).await {
-            let _ = event_tx.send(ClientNotification::Error {
+            event_tx.send(ClientNotification::Error {
                 code: -32603,
                 message: e.to_string(),
             });

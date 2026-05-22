@@ -49,9 +49,7 @@ pub trait ClientTransport: Send + Sync {
     }
 
     /// 订阅服务端事件流，返回一个 mpsc 接收端。
-    async fn subscribe(
-        &self,
-    ) -> Result<mpsc::UnboundedReceiver<ClientNotification>, TransportError>;
+    async fn subscribe(&self) -> Result<mpsc::Receiver<ClientNotification>, TransportError>;
 }
 
 pub use astrcode_protocol::transport::TransportError;
@@ -140,7 +138,7 @@ impl StdioClientTransport {
         }
 
         // 创建事件 fan-out 通道，读取线程通过它将事件分发给所有订阅者。
-        let event_tx = Arc::new(EventFanout::new());
+        let event_tx = Arc::new(EventFanout::new(1024));
         let tx = Arc::clone(&event_tx);
 
         // 启动后台读取线程，从子进程 stdout 逐行解析事件并广播。
@@ -194,9 +192,7 @@ impl ClientTransport for StdioClientTransport {
         self.write_command(command)
     }
 
-    async fn subscribe(
-        &self,
-    ) -> Result<mpsc::UnboundedReceiver<ClientNotification>, TransportError> {
+    async fn subscribe(&self) -> Result<mpsc::Receiver<ClientNotification>, TransportError> {
         Ok(self.event_tx.subscribe())
     }
 }

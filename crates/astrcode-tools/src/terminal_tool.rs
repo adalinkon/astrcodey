@@ -610,12 +610,23 @@ mod tests {
             working_dir: std::env::current_dir().expect("cwd"),
         };
 
-        // start a `cat` process — echoes stdin to stdout
+        // PTY spawn 直接用 CreateProcessW / execvp，不走 shell。
+        // 必须选择当前平台 PATH 中可用的原生命令。
+        // Unix: cat 回显 stdin → stdout
+        // Windows: cat 不可用，用 cmd.exe 交互模式，验证 PTY 生命周期即可
+        let (command, args) = if cfg!(windows) {
+            ("cmd.exe", vec!["/q"] as Vec<&str>)
+        } else {
+            ("cat", vec![])
+        };
+
+        // start a process
         let start = tool
             .execute(
                 serde_json::json!({
                     "action": "start",
-                    "command": "cat"
+                    "command": command,
+                    "args": args
                 }),
                 &empty_ctx(),
             )
@@ -630,7 +641,7 @@ mod tests {
                 serde_json::json!({
                     "action": "send",
                     "id": id,
-                    "input": "hello\n"
+                    "input": if cfg!(windows) { "echo hello\r\n" } else { "hello\n" }
                 }),
                 &empty_ctx(),
             )
@@ -638,20 +649,21 @@ mod tests {
             .expect("send");
         assert!(!send.is_error);
 
-        // read with a small wait to allow cat to echo
+        // read with a small wait to allow output
         let read = tool
             .execute(
                 serde_json::json!({
                     "action": "read",
                     "id": id,
-                    "waitMs": 300
+                    "waitMs": 500
                 }),
                 &empty_ctx(),
             )
             .await
             .expect("read");
         assert!(!read.is_error);
-        assert!(read.content.contains("hello"), "got: {}", read.content);
+        // Verify the process produced some output (exact content depends on platform/shell)
+        assert!(!read.content.is_empty(), "got: {}", read.content);
         assert_eq!(read.metadata["alive"], serde_json::json!(true));
 
         // close

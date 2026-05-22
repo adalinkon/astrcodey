@@ -129,7 +129,7 @@ impl Session {
     ///
     /// 同 sid 不同 Session 实例订阅的是同一份 EventFanout（在 runtime 上），
     /// 因此一个订阅者能看到任何实例发出的事件。
-    pub fn subscribe(&self) -> mpsc::UnboundedReceiver<Event> {
+    pub fn subscribe(&self) -> mpsc::Receiver<Event> {
         self.runtime.subscribe()
     }
 
@@ -362,7 +362,7 @@ impl Session {
             }
         };
 
-        let model_id = caps.read_effective().llm.model_id.clone();
+        let model_id = runtime.model_id();
         let prompt_files =
             astrcode_context::prompt_engine::load_system_prompt_files(working_dir).await;
         let registry = runtime.tool_registry();
@@ -429,8 +429,8 @@ impl Session {
             turn_runner::{TurnRunner, run_turn},
         };
 
-        // 刷新 model_id 与 session 当前值不同时写入事件
-        let model_id = self.caps.read_effective().llm.model_id.clone();
+        // 从 session-owned 状态读取 model_id，与当前 provider 对应。
+        let model_id = self.runtime.model_id();
         if let Err(e) = self.update_model_id(&model_id).await {
             tracing::warn!(session_id = %self.id, error = %e, "failed to update session model_id");
         }
@@ -524,7 +524,11 @@ impl Session {
         source_extension: Option<&str>,
         tool_call_id: ToolCallId,
     ) -> Result<Session, SessionError> {
-        let child_runtime = Arc::new(SessionRuntimeState::default());
+        let child_runtime = Arc::new(SessionRuntimeState::new(
+            self.caps.llm(),
+            self.caps.small_llm(),
+            model_id.to_string(),
+        ));
         if extra_system_prompt.is_some() {
             child_runtime.set_extra_system_prompt(extra_system_prompt);
         }

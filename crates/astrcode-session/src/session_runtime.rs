@@ -1,6 +1,8 @@
 use std::{sync::Arc, time::Duration};
 
-use astrcode_core::{event::Event, extension::ChildToolPolicy, tool::FileObservationStore};
+use astrcode_core::{
+    event::Event, extension::ChildToolPolicy, llm::LlmProvider, tool::FileObservationStore,
+};
 use astrcode_support::event_fanout::EventFanout;
 use astrcode_tools::registry::ToolRegistry;
 use parking_lot::Mutex;
@@ -37,11 +39,21 @@ pub struct SessionRuntimeState {
     /// 本 session 事件的 fan-out 通道。同一 sid 下所有 Session 实例共享这份 sender，
     /// 通过 SessionRuntimeState 的 Arc 共享保证订阅一致性。
     event_out: Arc<EventFanout<Event>>,
+    /// session-owned LLM provider。创建时从全局 caps 快照注入，
+    /// turn 执行期间不会因其他 session 切换模型而改变。
+    llm: Mutex<Arc<dyn LlmProvider>>,
+    small_llm: Mutex<Arc<dyn LlmProvider>>,
+    /// 当前 session 使用的模型 ID，与 llm provider 对应。
+    model_id: Mutex<String>,
 }
 
-impl Default for SessionRuntimeState {
-    fn default() -> Self {
-        let event_out = Arc::new(EventFanout::new());
+impl SessionRuntimeState {
+    pub fn new(
+        llm: Arc<dyn LlmProvider>,
+        small_llm: Arc<dyn LlmProvider>,
+        model_id: String,
+    ) -> Self {
+        let event_out = Arc::new(EventFanout::new(1024));
         Self {
             file_observation_store: Arc::new(InMemoryFileObservationStore::default()),
             tool_registry: Mutex::new(Arc::new(ToolRegistry::new())),
@@ -53,11 +65,36 @@ impl Default for SessionRuntimeState {
                 Duration::from_secs(60),
             )),
             event_out,
+            llm: Mutex::new(llm),
+            small_llm: Mutex::new(small_llm),
+            model_id: Mutex::new(model_id),
         }
     }
-}
 
-impl SessionRuntimeState {
+    pub fn llm(&self) -> Arc<dyn LlmProvider> {
+        self.llm.lock().clone()
+    }
+
+    pub fn set_llm(&self, provider: Arc<dyn LlmProvider>) {
+        *self.llm.lock() = provider;
+    }
+
+    pub fn small_llm(&self) -> Arc<dyn LlmProvider> {
+        self.small_llm.lock().clone()
+    }
+
+    pub fn set_small_llm(&self, provider: Arc<dyn LlmProvider>) {
+        *self.small_llm.lock() = provider;
+    }
+
+    pub fn model_id(&self) -> String {
+        self.model_id.lock().clone()
+    }
+
+    pub fn set_model_id(&self, id: String) {
+        *self.model_id.lock() = id;
+    }
+
     pub fn file_observation_store(&self) -> Arc<dyn FileObservationStore> {
         Arc::clone(&self.file_observation_store)
     }
@@ -101,7 +138,7 @@ impl SessionRuntimeState {
     }
 
     /// 订阅本 session 的事件流。
-    pub fn subscribe(&self) -> tokio::sync::mpsc::UnboundedReceiver<Event> {
+    pub fn subscribe(&self) -> tokio::sync::mpsc::Receiver<Event> {
         self.event_out.subscribe()
     }
 

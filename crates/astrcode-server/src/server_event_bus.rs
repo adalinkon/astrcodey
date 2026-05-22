@@ -50,7 +50,7 @@ impl ServerEventBus {
     /// 时 task 自然结束。Session 删除（registry 移除）后调用方应调 `detach`
     /// 释放 sid 占位，否则后续同 sid 重建的 session 不会被重新 attach。
     ///
-    /// 使用 unbounded mpsc fan-out，不会发生 Lagged 丢事件。
+    /// 使用 bounded mpsc fan-out，慢消费者会被自动断开。
     pub fn attach(&self, session: &Session) {
         let session_id = session.id().clone();
         if !self.attached.lock().insert(session_id.clone()) {

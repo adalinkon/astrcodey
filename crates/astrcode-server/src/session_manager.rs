@@ -89,7 +89,14 @@ impl SessionManager {
         self.runtime_states
             .lock()
             .entry(session_id.clone())
-            .or_insert_with(|| Arc::new(SessionRuntimeState::default()))
+            .or_insert_with(|| {
+                let model_id = self.config.read_effective().llm.model_id.clone();
+                Arc::new(SessionRuntimeState::new(
+                    self.capabilities.llm(),
+                    self.capabilities.small_llm(),
+                    model_id,
+                ))
+            })
             .clone()
     }
 

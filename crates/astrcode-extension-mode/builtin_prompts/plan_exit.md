@@ -11,4 +11,4 @@ If the user requests changes, update the plan artifact with `upsertSessionPlan` 
 
 ---
 
-The plan content is attached below. Present it and ask for feedback.
+The plan content is attached below. Present it and ask for feedback.You must not implement until the user approves the plan. 

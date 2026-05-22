@@ -34,7 +34,7 @@ impl InProcessTransport {
     /// 启动后台服务器任务并返回已连接的传输实例。
     pub fn start() -> Self {
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<ClientCommand>();
-        let event_tx = Arc::new(EventFanout::new());
+        let event_tx = Arc::new(EventFanout::new(1024));
         let (ready_tx, ready_rx) = watch::channel(BootstrapState::Starting);
         let tx = Arc::clone(&event_tx);
 
@@ -112,9 +112,7 @@ impl ClientTransport for InProcessTransport {
     }
 
     /// 订阅事件 fan-out 通道，返回一个新的接收端。
-    async fn subscribe(
-        &self,
-    ) -> Result<mpsc::UnboundedReceiver<ClientNotification>, TransportError> {
+    async fn subscribe(&self) -> Result<mpsc::Receiver<ClientNotification>, TransportError> {
         Ok(self.event_tx.subscribe())
     }
 }

@@ -203,7 +203,7 @@ impl LlmProvider for AnthropicProvider {
                                         {
                                             index_to_call_id
                                                 .lock()
-                                                .unwrap()
+                                                .unwrap_or_else(|e| e.into_inner())
                                                 .insert(index, call_id.clone());
                                         }
                                         // 部分兼容 provider 把完整参数放在 input 字段，
@@ -211,7 +211,7 @@ impl LlmProvider for AnthropicProvider {
                                         let initial_args = block
                                             .get("input")
                                             .filter(|v| {
-                                                v.is_object() && !v.as_object().unwrap().is_empty()
+                                                v.as_object().is_some_and(|obj| !obj.is_empty())
                                             })
                                             .map(|v| v.to_string())
                                             .unwrap_or_default();
@@ -275,7 +275,7 @@ impl LlmProvider for AnthropicProvider {
                                             .unwrap_or_default();
                                         let call_id = index_to_call_id
                                             .lock()
-                                            .unwrap()
+                                            .unwrap_or_else(|e| e.into_inner())
                                             .get(&index)
                                             .cloned()
                                             .unwrap_or_else(|| index.to_string());

@@ -630,4 +630,53 @@ mod tests {
             result.content
         );
     }
+
+    #[tokio::test]
+    async fn shell_rejects_empty_command() {
+        let tool = ShellTool {
+            working_dir: std::env::current_dir().expect("cwd should exist"),
+            timeout_secs: 30,
+        };
+        let result = tool
+            .execute(serde_json::json!({ "command": "   " }), &empty_ctx())
+            .await;
+        let err = result.expect_err("empty command should fail");
+        assert!(
+            err.to_string().contains("empty"),
+            "error should mention empty: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shell_nonzero_exit_code_is_error() {
+        let tool = ShellTool {
+            working_dir: std::env::current_dir().expect("cwd should exist"),
+            timeout_secs: 30,
+        };
+        let exit_cmd = match resolve_shell().family {
+            ShellFamily::PowerShell => "exit 42",
+            ShellFamily::Cmd => "exit /b 42",
+            // On MSYS2/bash, the exit code may be transformed; just verify non-zero.
+            ShellFamily::Posix | ShellFamily::Wsl => "exit 42",
+        };
+        let result = tool
+            .execute(serde_json::json!({ "command": exit_cmd }), &empty_ctx())
+            .await
+            .expect("shell should execute");
+        assert!(result.is_error, "non-zero exit should be error");
+        let exit_code = result.metadata["exitCode"].as_i64().expect("exitCode");
+        assert_ne!(
+            exit_code, 0,
+            "exit code should be non-zero, got {exit_code}"
+        );
+    }
+
+    #[test]
+    fn render_shell_output_formats_stdout_and_stderr() {
+        use super::render_shell_output;
+        assert_eq!(render_shell_output("", ""), "");
+        assert_eq!(render_shell_output("hello", ""), "hello");
+        assert_eq!(render_shell_output("", "oops"), "STDERR:\noops");
+        assert_eq!(render_shell_output("hi", "err"), "hi\nSTDERR:\nerr");
+    }
 }

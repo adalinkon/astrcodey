@@ -11,3 +11,4 @@ serde = { workspace = true }
 serde_yaml = { workspace = true }
 dirs = { workspace = true }
 parking_lot = { workspace = true }
+tracing = { workspace = true }

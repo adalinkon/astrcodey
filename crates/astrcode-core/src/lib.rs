@@ -14,6 +14,11 @@
 //! - [`storage`]：会话存储 trait
 //! - [`tool`]：工具 trait 及关联类型
 //! - [`types`]：核心共享标识符和数据类型
+//!
+//! # 导入约定
+//!
+//! 下游 crate 应使用完整模块路径导入，如 `use astrcode_core::event::EventPayload`，
+//! 而非依赖 crate root 的 glob re-export。
 
 pub mod config;
 pub mod event;
@@ -24,14 +29,3 @@ pub mod render;
 pub mod storage;
 pub mod tool;
 pub mod types;
-
-// 重新导出常用类型，方便外部 crate 直接使用
-pub use config::*;
-pub use event::*;
-pub use extension::*;
-pub use llm::*;
-pub use prompt::*;
-pub use render::*;
-pub use storage::*;
-pub use tool::*;
-pub use types::*;

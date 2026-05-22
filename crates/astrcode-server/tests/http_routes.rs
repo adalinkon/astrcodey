@@ -134,7 +134,7 @@ impl LlmProvider for SummaryLlm {
 #[tokio::test]
 async fn http_routes_require_bearer_token() {
     let runtime = runtime(Arc::new(ImmediateLlm));
-    let event_tx = Arc::new(EventFanout::new());
+    let event_tx = Arc::new(EventFanout::new(1024));
     let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
 
     let unauthorized = app
@@ -167,7 +167,7 @@ async fn http_routes_require_bearer_token() {
 #[tokio::test]
 async fn concurrent_prompt_accepts_one_and_queues_one() {
     let runtime = runtime(Arc::new(PendingLlm));
-    let event_tx = Arc::new(EventFanout::new());
+    let event_tx = Arc::new(EventFanout::new(1024));
     let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
     let session_id = create_session(app.clone(), &token).await;
     let prompt_uri = format!("/api/sessions/{session_id}/prompt");
@@ -219,7 +219,7 @@ async fn sse_receiver_lag_emits_rehydrate_and_closes() {
         .create_session(&session_id, ".", "mock-model", None, None, None)
         .await
         .unwrap();
-    let event_tx = Arc::new(EventFanout::new());
+    let event_tx = Arc::new(EventFanout::new(1024));
     let (app, token) = router(Arc::clone(&runtime), Arc::clone(&event_tx)).unwrap();
 
     let response = app
@@ -264,7 +264,7 @@ async fn sse_receiver_lag_emits_rehydrate_and_closes() {
 #[tokio::test]
 async fn create_snapshot_then_stream_receives_live_prompt_delta() {
     let runtime = runtime(Arc::new(ImmediateLlm));
-    let event_tx = Arc::new(EventFanout::new());
+    let event_tx = Arc::new(EventFanout::new(1024));
     let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
     let session_id = create_session(app.clone(), &token).await;
 
@@ -306,7 +306,7 @@ async fn create_snapshot_then_stream_receives_live_prompt_delta() {
     assert!(body.contains("hello from http"));
     assert!(body.contains(r#""status":"complete""#));
 
-    let (after_app, after_token) = router(runtime, Arc::new(EventFanout::new())).unwrap();
+    let (after_app, after_token) = router(runtime, Arc::new(EventFanout::new(1024))).unwrap();
     let after = get_json::<ConversationSnapshotResponseDto>(
         after_app,
         &format!("/api/sessions/{session_id}/conversation"),
@@ -319,7 +319,7 @@ async fn create_snapshot_then_stream_receives_live_prompt_delta() {
 #[tokio::test]
 async fn prompt_stream_returns_control_to_idle_when_turn_finishes() {
     let runtime = runtime(Arc::new(ImmediateLlm));
-    let event_tx = Arc::new(EventFanout::new());
+    let event_tx = Arc::new(EventFanout::new(1024));
     let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
     let session_id = create_session(app.clone(), &token).await;
 
@@ -352,7 +352,7 @@ async fn prompt_stream_returns_control_to_idle_when_turn_finishes() {
 #[tokio::test]
 async fn stream_replays_events_after_snapshot_cursor() {
     let runtime = runtime(Arc::new(ImmediateLlm));
-    let event_tx = Arc::new(EventFanout::new());
+    let event_tx = Arc::new(EventFanout::new(1024));
     let (app, token) = router(Arc::clone(&runtime), Arc::clone(&event_tx)).unwrap();
     let session_id = create_session(app.clone(), &token).await;
     let sid = SessionId::from(session_id.clone());
@@ -428,7 +428,7 @@ async fn stream_replays_events_after_snapshot_cursor() {
 #[tokio::test]
 async fn stream_invalid_cursor_requests_rehydrate() {
     let runtime = runtime(Arc::new(ImmediateLlm));
-    let event_tx = Arc::new(EventFanout::new());
+    let event_tx = Arc::new(EventFanout::new(1024));
     let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
     let session_id = create_session(app.clone(), &token).await;
 
@@ -451,7 +451,7 @@ async fn stream_invalid_cursor_requests_rehydrate() {
 #[tokio::test]
 async fn command_list_route_exposes_backend_slash_commands() {
     let runtime = runtime(Arc::new(ImmediateLlm));
-    let event_tx = Arc::new(EventFanout::new());
+    let event_tx = Arc::new(EventFanout::new(1024));
     let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
     let session_id = create_session(app.clone(), &token).await;
 
@@ -474,7 +474,7 @@ async fn command_list_route_exposes_backend_slash_commands() {
 #[tokio::test]
 async fn prompt_route_compact_returns_handled_and_streams_continuation() {
     let runtime = runtime(Arc::new(SummaryLlm));
-    let event_tx = Arc::new(EventFanout::new());
+    let event_tx = Arc::new(EventFanout::new(1024));
     let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
     let session_id = create_session(app.clone(), &token).await;
     let sid = SessionId::from(session_id.clone());
@@ -549,7 +549,7 @@ async fn prompt_route_compact_returns_handled_and_streams_continuation() {
 #[tokio::test]
 async fn compact_route_returns_same_session_and_hydrates_post_compact_context() {
     let runtime = runtime(Arc::new(SummaryLlm));
-    let event_tx = Arc::new(EventFanout::new());
+    let event_tx = Arc::new(EventFanout::new(1024));
     let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
     let session_id = create_session(app.clone(), &token).await;
     let sid = SessionId::from(session_id.clone());

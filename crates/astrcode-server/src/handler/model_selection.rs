@@ -58,6 +58,10 @@ pub(in crate::handler) struct ModelSelectionController {
 }
 
 impl ModelSelectionController {
+    pub fn is_idle(&self) -> bool {
+        self.pending.is_none()
+    }
+
     pub fn new(config_manager: Arc<ConfigManager>) -> Self {
         Self {
             flow: ModelSelectionFlow::new(config_manager),
