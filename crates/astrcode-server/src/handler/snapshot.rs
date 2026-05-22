@@ -70,6 +70,36 @@ fn is_compact_summary_message(content: &str) -> bool {
     content.trim_start().starts_with("<compact_summary>")
 }
 
+/// 将 LLM 内容块转换为快照纯文本。
+///
+/// 快照的目的是让客户端在 resume 时能重建可读的对话视图。
+/// 这是有损转换——不可能完全还原原始渲染效果（如 RenderSpec、折叠等）。
+///
+/// 设计决策：
+/// - `Text` / `ToolResult`：原样输出，这些就是用户看到的内容。
+/// - `ToolCall`：大部分工具调用（shell、write 等）在 resume 时不需要回放参数， 但
+///   `upsertSessionPlan` 的 arguments.content 携带 plan 正文，需要提取并保留。
+///   其他工具调用只输出工具名。
+/// - 如果后续有更多工具需要在快照中展示参数内容，可以在这里扩展， 或改为让 ToolRenderer 参与
+///   snapshot 生成（目前没必要）。
+pub(crate) fn content_to_text(content: &LlmContent) -> String {
+    match content {
+        LlmContent::Text { text } => text.clone(),
+        LlmContent::Image { .. } => "[image]".into(),
+        LlmContent::ToolCall {
+            name, arguments, ..
+        } => match name.as_str() {
+            "upsertSessionPlan" => arguments
+                .get("content")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
+            _ => format!("tool call: {name}"),
+        },
+        LlmContent::ToolResult { content, .. } => content.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use astrcode_core::llm::{LlmContent, LlmRole};
@@ -117,35 +147,5 @@ mod tests {
         assert!(is_compact_summary_message("\n<compact_summary>\nContent"));
         assert!(!is_compact_summary_message("Regular message"));
         assert!(!is_compact_summary_message("</compact_summary>"));
-    }
-}
-
-/// 将 LLM 内容块转换为快照纯文本。
-///
-/// 快照的目的是让客户端在 resume 时能重建可读的对话视图。
-/// 这是有损转换——不可能完全还原原始渲染效果（如 RenderSpec、折叠等）。
-///
-/// 设计决策：
-/// - `Text` / `ToolResult`：原样输出，这些就是用户看到的内容。
-/// - `ToolCall`：大部分工具调用（shell、write 等）在 resume 时不需要回放参数， 但
-///   `upsertSessionPlan` 的 arguments.content 携带 plan 正文，需要提取并保留。
-///   其他工具调用只输出工具名。
-/// - 如果后续有更多工具需要在快照中展示参数内容，可以在这里扩展， 或改为让 ToolRenderer 参与
-///   snapshot 生成（目前没必要）。
-pub(crate) fn content_to_text(content: &LlmContent) -> String {
-    match content {
-        LlmContent::Text { text } => text.clone(),
-        LlmContent::Image { .. } => "[image]".into(),
-        LlmContent::ToolCall {
-            name, arguments, ..
-        } => match name.as_str() {
-            "upsertSessionPlan" => arguments
-                .get("content")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_default(),
-            _ => format!("tool call: {name}"),
-        },
-        LlmContent::ToolResult { content, .. } => content.clone(),
     }
 }
