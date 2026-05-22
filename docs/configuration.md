@@ -72,10 +72,10 @@ Each profile in `profiles` array represents an LLM provider configuration:
 |-------|------|-------------|
 | `name` | string | Profile identifier (referenced by `activeProfile`) |
 | `providerKind` | string | Provider type: `openai`, `anthropic`, `google` |
-| `baseUrl` | string | API endpoint URL |
+| `baseUrl` | string | API endpoint URL. For Anthropic profiles, `/v1/messages` is auto-appended if the URL does not already include a version segment (e.g., `/v1`). So both `https://api.anthropic.com/v1` and `https://api.anthropic.com` work. |
 | `apiKey` | string | API key or environment variable reference (e.g., `${OPENAI_API_KEY}`) |
 | `models` | array | Available models for this profile |
-| `apiMode` | string | API mode: `chat_completions` or `responses` |
+| `apiMode` | string | API mode: `chat_completions` or `responses` (only for `openai` providerKind) |
 
 ### Model Fields
 

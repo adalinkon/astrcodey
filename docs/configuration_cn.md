@@ -72,10 +72,10 @@ runtime 里面 null 表示默认值
 |-----|------|------|
 | `name` | string | 配置文件标识符（被 `activeProfile` 引用） |
 | `providerKind` | string | 提供者类型：`openai`、`anthropic`、`google` |
-| `baseUrl` | string | API 端点 URL |
+| `baseUrl` | string | API 端点 URL。Anthropic 类型的 profile 会自动补全 `/v1/messages`：如果 URL 不包含版本段（如 `/v1`），系统会自动添加。因此 `https://api.anthropic.com/v1` 和 `https://api.anthropic.com` 都可以。 |
 | `apiKey` | string | API 密钥或环境变量引用（如 `${OPENAI_API_KEY}`） |
 | `models` | array | 该配置文件可用的模型列表 |
-| `apiMode` | string | API 模式：`chat_completions` 或 `responses` |
+| `apiMode` | string | API 模式：`chat_completions` 或 `responses`（仅适用于 `openai` 类型） |
 
 ### 模型字段
 

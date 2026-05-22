@@ -42,8 +42,10 @@ impl AnthropicProvider {
         let base = self.config.base_url.trim_end_matches('/');
         if base.ends_with("/messages") {
             base.to_string()
-        } else {
+        } else if is_versioned_path(base) {
             format!("{base}/messages")
+        } else {
+            format!("{base}/v1/messages")
         }
     }
 
@@ -396,6 +398,13 @@ fn convert_tools(tools: &[ToolDefinition]) -> serde_json::Value {
 /// 把"历史末尾"标为缓存边界。当前轮的 user input 通常作为最后一条 user message
 /// 出现，调用方决定是否把它包含在 messages 中——这里只标记最后一项，缓存命中
 /// 由前缀稳定性保证。
+/// 判断 URL 路径是否已包含版本段（如 `/v1`、`/v2`）。
+fn is_versioned_path(url: &str) -> bool {
+    url.rsplit('/')
+        .next()
+        .is_some_and(|seg| seg.starts_with('v') && seg.len() > 1 && seg[1..].chars().all(|c| c.is_ascii_digit()))
+}
+
 fn mark_history_cache_breakpoint(api_messages: &mut [serde_json::Value]) {
     let Some(last_msg) = api_messages.last_mut() else {
         return;
@@ -493,6 +502,37 @@ mod tests {
             None,
         );
         assert_eq!(provider.endpoint(), "https://api.anthropic.com/v1/messages");
+    }
+
+    #[test]
+    fn endpoint_auto_adds_v1_for_bare_base() {
+        let provider = AnthropicProvider::new(
+            LlmClientConfig {
+                base_url: "https://open.bigmodel.cn/api/anthropic".into(),
+                ..LlmClientConfig::default()
+            },
+            "glm-5.1".into(),
+            None,
+            None,
+        );
+        assert_eq!(
+            provider.endpoint(),
+            "https://open.bigmodel.cn/api/anthropic/v1/messages"
+        );
+    }
+
+    #[test]
+    fn endpoint_preserves_full_messages_url() {
+        let provider = AnthropicProvider::new(
+            LlmClientConfig {
+                base_url: "https://custom.proxy/messages".into(),
+                ..LlmClientConfig::default()
+            },
+            "test-model".into(),
+            None,
+            None,
+        );
+        assert_eq!(provider.endpoint(), "https://custom.proxy/messages");
     }
 
     #[test]
