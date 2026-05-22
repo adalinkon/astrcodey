@@ -23,7 +23,7 @@ AstrCode is a full-stack AI coding assistant built from scratch in ~55k lines of
 npm install -g astrcode
 ```
 
-The `astrcode` npm package (v0.1.3) provides pre-built binaries for Linux, macOS, and Windows (x64 + arm64). After installation, the `astrcode` command will be available globally.
+The `astrcode` npm package (v0.1.4) provides pre-built binaries for Linux, macOS, and Windows (x64 + arm64). After installation, the `astrcode` command will be available globally.
 
 **Package**: [`astrcode`](https://www.npmjs.com/package/astrcode)
 
