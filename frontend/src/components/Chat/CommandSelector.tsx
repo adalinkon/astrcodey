@@ -124,17 +124,17 @@ export default function CommandSelector({
                 onMouseEnter={() => setSelectedIndex(index)}
                 onClick={() => onSelect(option)}
                 className={cn(
-                  'w-full flex items-center justify-start gap-3 px-2 h-[34px] text-left transition-all duration-75 rounded-lg cursor-pointer',
+                  'w-full flex items-center justify-start gap-3 h-[34px] text-left transition-all duration-100 ease-out rounded-lg cursor-pointer border',
                   index === selectedIndex
-                    ? 'bg-black/5 text-text-primary'
-                    : 'text-text-secondary'
+                    ? 'bg-accent-soft text-accent-strong border-l-[3px] border-l-accent-strong pl-[7px] pr-2.5 font-semibold'
+                    : 'text-text-secondary border-transparent px-2.5 hover:bg-surface-muted'
                 )}
               >
                 <span
                   className={cn(
                     'flex items-center justify-center shrink-0 w-4 h-4',
                     index === selectedIndex
-                      ? 'text-text-primary'
+                      ? 'text-accent-strong'
                       : 'text-text-muted'
                   )}
                 >
@@ -157,7 +157,7 @@ export default function CommandSelector({
                       className={cn(
                         'text-[12px] truncate min-w-0 flex-1 leading-normal',
                         index === selectedIndex
-                          ? 'text-text-secondary'
+                          ? 'text-accent-strong/80'
                           : 'text-text-muted'
                       )}
                       title={option.description}
@@ -200,7 +200,7 @@ function CommandIcon({
       <svg
         className={cn(
           'h-4 w-4',
-          selected ? 'text-text-primary' : 'text-text-muted'
+          selected ? 'text-accent-strong' : 'text-text-muted'
         )}
         viewBox="0 0 24 24"
         aria-hidden="true"
@@ -214,7 +214,7 @@ function CommandIcon({
     <svg
       className={cn(
         'h-4 w-4 fill-none',
-        selected ? 'stroke-text-primary' : 'stroke-text-muted'
+        selected ? 'stroke-accent-strong' : 'stroke-text-muted'
       )}
       viewBox="0 0 24 24"
       strokeLinecap="round"

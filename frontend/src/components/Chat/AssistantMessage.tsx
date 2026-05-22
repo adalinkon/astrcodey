@@ -213,7 +213,7 @@ function AssistantMessage({ block, reasoningText }: AssistantMessageProps) {
   const streaming = block.status === 'streaming'
 
   return (
-    <div className="flex items-start gap-4 animate-message-enter max-sm:gap-3 motion-reduce:animate-none">
+    <div className="flex items-start gap-[16px] animate-message-enter max-sm:gap-[12px] motion-reduce:animate-none">
       <div className={assistantAvatar} aria-hidden="true">
         <svg viewBox="0 0 20 20" className="w-4 h-4">
           <rect
@@ -243,11 +243,11 @@ function AssistantMessage({ block, reasoningText }: AssistantMessageProps) {
               className="mb-3.5 bg-transparent border-none rounded-0 overflow-visible group"
               open={streaming}
             >
-              <summary className="inline-flex items-center gap-2 py-1 min-h-[24px] cursor-pointer select-none bg-transparent border-none rounded-0 text-text-secondary transition-opacity duration-150 ease-out text-sm font-medium list-none [&::-webkit-details-marker]:hidden hover:opacity-80">
-                <span className="w-4 h-4 inline-flex items-center justify-center shrink-0 text-[13px] text-text-secondary">
+              <summary className="inline-flex items-center gap-2 py-1 min-h-[24px] cursor-pointer select-none bg-transparent border-none rounded-0 text-text-secondary/80 transition-opacity duration-150 ease-out text-[13px] font-medium list-none [&::-webkit-details-marker]:hidden hover:opacity-100">
+                <span className="w-4 h-4 inline-flex items-center justify-center shrink-0 text-[13px] text-text-secondary/70">
                   <svg
-                    width="16"
-                    height="16"
+                    width="15"
+                    height="15"
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"
@@ -260,11 +260,13 @@ function AssistantMessage({ block, reasoningText }: AssistantMessageProps) {
                     <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" />
                   </svg>
                 </span>
-                <span>Thinking</span>
-                <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-text-secondary opacity-60 transition-transform duration-150 ease-out group-open:rotate-90">
+                <span className="font-semibold tracking-wide text-text-secondary/75 font-outfit">
+                  Thinking
+                </span>
+                <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-text-secondary opacity-50 transition-transform duration-150 ease-out group-open:rotate-90">
                   <svg
-                    width="14"
-                    height="14"
+                    width="13"
+                    height="13"
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"
@@ -276,7 +278,7 @@ function AssistantMessage({ block, reasoningText }: AssistantMessageProps) {
                   </svg>
                 </span>
               </summary>
-              <div className="mb-3 ml-2 mt-2 border-l-2 border-border pl-4 overflow-wrap-anywhere text-sm leading-relaxed text-text-secondary prose-chat">
+              <div className="mb-3 ml-2 mt-2 border-l-2 border-border pl-4 overflow-wrap-anywhere text-[13.5px] leading-relaxed text-text-secondary/80 prose-chat">
                 {streaming ? (
                   <StreamingMarkdown text={block} />
                 ) : (

@@ -441,7 +441,11 @@ export const useAppStore = create<ConversationState>((set, get) => ({
           next[idx] = {
             ...block,
             arguments: argumentsText,
-            ...(delta.argumentsJson ? { argumentsJson: delta.argumentsJson as Record<string, unknown> } : {}),
+            ...(delta.argumentsJson
+              ? {
+                  argumentsJson: delta.argumentsJson as Record<string, unknown>,
+                }
+              : {}),
           }
           return { blocks: next }
         })

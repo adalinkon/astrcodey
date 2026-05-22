@@ -99,7 +99,7 @@ export default function Sidebar() {
               setShowNewProject(true)
             }
           }}
-          className="flex min-h-[34px] w-full items-center gap-2 rounded-lg border-none bg-transparent px-2 text-text-primary outline-none transition-[background-color,color] duration-150 ease-out hover:bg-black/5"
+          className="flex min-h-[34px] w-full items-center gap-2 rounded-lg border-none bg-transparent px-2 text-text-primary outline-none transition-[background-color,color] duration-150 ease-out hover:bg-surface-muted"
         >
           <div className="w-4 h-4 flex items-center justify-center shrink-0 text-text-secondary">
             <svg
@@ -142,14 +142,24 @@ export default function Sidebar() {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            className="h-[38px] flex-1 rounded-xl border border-border bg-surface text-center text-sm font-semibold text-text-primary shadow-soft transition-[background-color,border-color,transform] duration-150 ease-out hover:border-border-strong hover:bg-white hover:-translate-y-px"
+            className={cn(
+              'h-[38px] flex-1 rounded-xl border text-center text-sm font-semibold transition-all duration-150 ease-out hover:-translate-y-px active:translate-y-0 active:scale-[0.98] active:shadow-none',
+              showNewProject
+                ? 'bg-accent-soft border-accent-strong/20 text-accent-strong shadow-inner translate-y-0 scale-[0.98]'
+                : 'bg-surface border-border text-text-primary shadow-soft hover:border-border-strong hover:bg-white'
+            )}
             onClick={() => setShowNewProject(true)}
           >
             + 新项目
           </button>
           <button
             type="button"
-            className="inline-flex h-[38px] w-[38px] items-center justify-center rounded-xl border border-border bg-surface text-text-secondary shadow-soft transition-[background-color,color,border-color,transform] duration-150 ease-out hover:border-border-strong hover:bg-white hover:text-text-primary hover:-translate-y-px"
+            className={cn(
+              'inline-flex h-[38px] w-[38px] items-center justify-center rounded-xl border transition-all duration-150 ease-out hover:-translate-y-px active:translate-y-0 active:scale-[0.98] active:shadow-none',
+              showSettings
+                ? 'bg-accent-soft border-accent-strong/20 text-accent-strong shadow-inner translate-y-0 scale-[0.98]'
+                : 'bg-surface border-border text-text-secondary shadow-soft hover:border-border-strong hover:bg-white hover:text-text-primary'
+            )}
             onClick={() => setShowSettings(true)}
             aria-label="打开设置"
             title="设置"

@@ -183,7 +183,12 @@ export type ConversationDelta =
       delta: string
     }
   | { kind: 'thinkingDelta'; blockId: string; delta: string }
-  | { kind: 'patchArguments'; blockId: string; arguments: string; argumentsJson?: Record<string, unknown> }
+  | {
+      kind: 'patchArguments'
+      blockId: string
+      arguments: string
+      argumentsJson?: Record<string, unknown>
+    }
   | { kind: 'toolCallBackgrounded'; callId: string; taskId: string }
   | { kind: 'agentSessionUpdated'; agentSession: AgentSessionLink }
   | { kind: 'statusItemUpdate'; id: string; text: string }

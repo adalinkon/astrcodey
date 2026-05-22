@@ -50,51 +50,57 @@
 }
 
 :root {
-  --app-bg: #f7f1ea;
-  --panel-bg: #fcfaf7;
-  --sidebar-bg: #f5efe6;
-  --surface: #fffdfa;
-  --surface-muted: #f3ece3;
-  --surface-soft: #faf5ee;
-  --border: #e6dccd;
-  --border-strong: #d9cab6;
-  --text-primary: #2f2923;
-  --text-secondary: #7f7468;
-  --text-muted: #aea293;
-  --accent-strong: #2f2b27;
-  --accent-soft: #39c98f;
-  --success-soft: #e7f7ee;
-  --success: #3ebc7f;
-  --danger-soft: #fff0ed;
-  --danger: #cc5b5b;
-  --code-surface: #f5f3ef;
-  --code-border: #d7cbbd;
-  --code-label: #7a6f60;
-  --code-text: #2f3a48;
-  --avatar-surface: #f3eadf;
-  --avatar-surface-strong: #ebdfd1;
-  --avatar-text: #8a7458;
-  --shadow-soft: 0 10px 30px rgba(117, 90, 52, 0.08);
+  --app-bg: #f9f6f0;
+  --panel-bg: #fbf9f6;
+  --sidebar-bg: #f7f4ed;
+  --surface: #ffffff;
+  --surface-muted: #e8e2d5;
+  --surface-soft: #f8f6f0;
+  --border: #e5dfd5;
+  --border-strong: #d5cab8;
+  --text-primary: #191919;
+  --text-secondary: #6d6961;
+  --text-muted: #9e998f;
+  --accent-strong: #d97706;
+  --accent-soft: #fbf0df;
+  --success-soft: #eaf7f0;
+  --success: #15803d;
+  --danger-soft: #fef2f2;
+  --danger: #b91c1c;
+  --code-surface: #f9f7f2;
+  --code-border: #e5dfd5;
+  --code-label: #7c7263;
+  --code-text: #2f2923;
+  --avatar-surface: #f3ece0;
+  --avatar-surface-strong: #e5dfd5;
+  --avatar-text: #7c6e5a;
+  --shadow-soft: 0 4px 20px rgba(92, 79, 61, 0.04);
   --shadow-composer-shell:
-    0 24px 42px rgba(117, 90, 52, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.82);
+    0 12px 36px rgba(92, 79, 61, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.9);
   --shadow-focus-accent:
-    0 0 0 4px rgba(57, 201, 143, 0.12), 0 28px 48px rgba(117, 90, 52, 0.13);
-  --phase-idle: #4ec9b0;
-  --phase-thinking: #dcdcaa;
-  --phase-calling-tool: #9cdcfe;
-  --phase-streaming: #c586c0;
-  --phase-error: #f44747;
-  --terminal-border: #2c3138;
-  --terminal-bg-from: #12161b;
-  --terminal-bg-to: #181d23;
-  --terminal-text: #e8edf4;
-  --user-bubble: #f3f2ee;
-  --chat-content-max-width: 860px;
-  --chat-composer-max-width: 916px;
+    0 0 0 4px rgba(217, 119, 6, 0.08), 0 20px 48px rgba(92, 79, 61, 0.08);
+  --phase-idle: #d97706;
+  --phase-thinking: #b45309;
+  --phase-calling-tool: #0284c7;
+  --phase-streaming: #7c3aed;
+  --phase-error: #dc2626;
+  --terminal-border: #d5cab8;
+  --terminal-bg-from: #fdfcfb;
+  --terminal-bg-to: #fbf9f6;
+  --terminal-text: #2f2923;
+  --user-bubble: #f3ece0;
+  --chat-content-max-width: 840px;
+  --chat-composer-max-width: 840px;
   --chat-content-horizontal-padding: 32px;
   --chat-assistant-content-offset: 44px;
-  --chat-assistant-center-shift: 22px;
+  --chat-assistant-center-shift: 0px;
   --chat-composer-shell-padding-x: 16px;
+}
+
+@media (max-width: 640px) {
+  :root {
+    --chat-assistant-content-offset: 40px;
+  }
 }
 
 html,
@@ -108,9 +114,13 @@ body,
   background: #ffffff;
   color: var(--text-primary);
   font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
-    Arial, sans-serif;
-  font-size: 16px;
+    'Inter',
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  font-size: 15px;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
 }
@@ -159,7 +169,10 @@ button {
   border: none;
   background: none;
   color: inherit;
-  font-family: inherit;
+  font-family:
+    'Outfit',
+    -apple-system,
+    sans-serif;
   font-size: inherit;
   padding: 0;
 }
@@ -180,8 +193,14 @@ pre {
   font-size: 13px;
 }
 
+.prose-chat {
+  font-size: 15px;
+  line-height: 1.7;
+}
+
 .prose-chat p {
-  margin: 0 0 14px;
+  margin: 0 0 16px;
+  line-height: 1.7;
 }
 .prose-chat p:last-child {
   margin-bottom: 0;
@@ -201,16 +220,23 @@ pre {
 }
 .prose-chat li {
   margin-bottom: 6px;
+  line-height: 1.7;
 }
 .prose-chat strong {
-  color: #201b16;
+  color: var(--text-primary);
+  font-weight: 600;
 }
 .prose-chat h1,
 .prose-chat h2,
 .prose-chat h3 {
-  margin: 24px 0 12px;
+  font-family:
+    'Outfit',
+    -apple-system,
+    sans-serif;
+  margin: 28px 0 14px;
   font-weight: 600;
-  color: #201b16;
+  color: var(--text-primary);
+  line-height: 1.4;
 }
 .prose-chat h1 {
   font-size: 1.5em;

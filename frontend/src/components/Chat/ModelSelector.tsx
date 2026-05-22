@@ -108,7 +108,12 @@ export default function ModelSelector({
     <div ref={wrapperRef} className="relative">
       <button
         type="button"
-        className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-[13px] text-text-secondary transition-all duration-150 ease-out hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-60"
+        className={cn(
+          'flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] transition-all duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-60 border',
+          open
+            ? 'bg-surface border-border shadow-soft text-accent-strong font-medium'
+            : 'border-transparent text-text-secondary hover:bg-surface-muted'
+        )}
         onClick={() => {
           if (!loading) {
             setOpen((v) => {
@@ -169,8 +174,10 @@ export default function ModelSelector({
                           key={`${opt.profileName}-${opt.modelId}`}
                           type="button"
                           className={cn(
-                            'w-full flex items-center justify-between px-3 h-[34px] text-left rounded-lg text-[13px] font-medium text-text-primary',
-                            isActive && 'bg-black/5'
+                            'w-full flex items-center justify-between px-3 h-[34px] text-left rounded-lg text-[13px] font-medium transition-all duration-100 ease-out',
+                            isActive
+                              ? 'bg-accent-soft text-accent-strong border-l-[3px] border-l-accent-strong pl-[9px]'
+                              : 'text-text-primary hover:bg-surface-muted'
                           )}
                           onClick={() =>
                             void handleSelect(opt.profileName, opt.modelId)
@@ -179,7 +186,7 @@ export default function ModelSelector({
                           <span className="truncate">{opt.modelId}</span>
                           {isActive && (
                             <svg
-                              className="w-4 h-4 text-text-primary shrink-0"
+                              className="w-4 h-4 text-accent-strong shrink-0"
                               viewBox="0 0 24 24"
                               fill="none"
                               stroke="currentColor"

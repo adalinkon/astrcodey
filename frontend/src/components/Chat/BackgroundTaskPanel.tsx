@@ -23,10 +23,17 @@ function BackgroundTaskPanel() {
   const blocks = useAppStore((s) => s.blocks)
 
   const running = useMemo(
-    () => blocks.filter(
-      (b): b is Extract<ConversationBlock, { kind: 'toolCall' }> & { taskId: string } =>
-        b.kind === 'toolCall' && b.taskId !== undefined && b.status === 'backgrounded'
-    ),
+    () =>
+      blocks.filter(
+        (
+          b
+        ): b is Extract<ConversationBlock, { kind: 'toolCall' }> & {
+          taskId: string
+        } =>
+          b.kind === 'toolCall' &&
+          b.taskId !== undefined &&
+          b.status === 'backgrounded'
+      ),
     [blocks]
   )
 

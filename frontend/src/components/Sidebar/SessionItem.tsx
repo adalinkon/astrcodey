@@ -71,8 +71,10 @@ function SessionItem({
       <button
         type="button"
         className={cn(
-          'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-[background-color] duration-150 ease-out hover:bg-black/5',
-          isActive && 'bg-black/5'
+          'flex w-full items-center gap-2.5 rounded-lg py-2 text-left outline-none transition-all duration-150 ease-out border',
+          isActive
+            ? 'bg-surface border-border shadow-soft border-l-[3px] border-l-accent-strong pl-[7px] pr-2.5'
+            : 'border-transparent px-2.5 hover:bg-surface-muted'
         )}
         onClick={() => onSelect(session.sessionId)}
         onContextMenu={handleContextMenu}
@@ -84,10 +86,15 @@ function SessionItem({
           )}
         />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[13px] text-text-primary">
+          <div
+            className={cn(
+              'truncate text-[13px]',
+              isActive ? 'text-text-primary font-medium' : 'text-text-secondary'
+            )}
+          >
             {session.firstUserMessage || '新会话'}
           </div>
-          <div className="truncate text-[11px] text-text-muted">
+          <div className="truncate text-[11px] text-text-muted opacity-85 mt-0.5">
             {session.workingDir}
           </div>
         </div>

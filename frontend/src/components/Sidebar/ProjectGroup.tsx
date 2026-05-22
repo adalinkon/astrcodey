@@ -74,15 +74,27 @@ function ProjectGroup({
     setConfirmDelete(false)
   }, [])
 
+  const isFolderActive = sessions.some((s) => s.sessionId === activeSessionId)
+
   return (
     <div className="mb-1">
       <button
         type="button"
-        className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left outline-none transition-[background-color] duration-150 ease-out hover:bg-black/5"
+        className={cn(
+          'flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left outline-none border transition-all duration-150 ease-out',
+          isFolderActive
+            ? 'bg-accent-soft text-accent-strong border-accent-strong/20 shadow-xs font-semibold'
+            : 'border-transparent text-text-secondary hover:bg-surface-muted'
+        )}
         onClick={toggleExpand}
         onContextMenu={handleContextMenu}
       >
-        <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-text-secondary">
+        <span
+          className={cn(
+            'inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center transition-colors',
+            isFolderActive ? 'text-accent-strong' : 'text-text-secondary'
+          )}
+        >
           <svg className="h-3.5 w-3.5" viewBox="0 0 20 20">
             <path
               d="M2.5 5.75A1.75 1.75 0 0 1 4.25 4h4.03c.46 0 .9.18 1.23.5l1.02 1c.32.3.74.47 1.18.47h4.04A1.75 1.75 0 0 1 17.5 7.72v6.53A1.75 1.75 0 0 1 15.75 16H4.25A1.75 1.75 0 0 1 2.5 14.25V5.75Z"
@@ -93,12 +105,20 @@ function ProjectGroup({
             />
           </svg>
         </span>
-        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-text-primary">
+        <span
+          className={cn(
+            'min-w-0 flex-1 truncate text-[13px]',
+            isFolderActive
+              ? 'text-accent-strong font-semibold'
+              : 'text-text-primary font-medium'
+          )}
+        >
           {projectName}
         </span>
         <span
           className={cn(
-            'inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-text-secondary transition-transform duration-150 ease-out',
+            'inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center transition-all duration-150 ease-out',
+            isFolderActive ? 'text-accent-strong' : 'text-text-secondary',
             isExpanded && 'rotate-90'
           )}
         >

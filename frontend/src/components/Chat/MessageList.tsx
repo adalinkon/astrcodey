@@ -59,7 +59,7 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
         key={block.id}
         className={cn(
           'mx-auto w-[min(100%,var(--chat-content-max-width))] min-w-0 transition-[margin-top] duration-200 ease-out',
-          isContinuation && '-mt-4'
+          isContinuation && '-mt-[32px]'
         )}
       >
         {block.kind === 'assistant' ? (
@@ -85,7 +85,7 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
   return (
     <div
       ref={listRef}
-      className="flex min-w-0 flex-1 flex-col gap-[22px] overflow-x-hidden overflow-y-auto bg-panel-bg px-[var(--chat-content-horizontal-padding)] py-7"
+      className="flex min-w-0 flex-1 flex-col gap-10 overflow-x-hidden overflow-y-auto bg-panel-bg px-[var(--chat-content-horizontal-padding)] py-7"
       onScroll={updateStickiness}
     >
       {blocks.length === 0 && (
