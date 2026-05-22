@@ -3,6 +3,9 @@
 //! Implements [`LlmProvider`] for Anthropic's Messages API with SSE streaming,
 //! tool use, and thinking support.
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use astrcode_core::{llm::*, tool::ToolDefinition};
 use tokio::sync::mpsc;
 
@@ -171,6 +174,11 @@ impl LlmProvider for AnthropicProvider {
         };
 
         tokio::spawn(async move {
+            // SSE content block index → actual tool call id 的映射。
+            // content_block_start 带 id（如 "call_549f..."）和 index（如 0），
+            // content_block_delta 只有 index，需要通过此映射找到真实 call_id。
+            let index_to_call_id: Mutex<HashMap<u64, String>> = Mutex::new(HashMap::new());
+
             let result = stream_with_event_type(
                 client,
                 endpoint,
@@ -178,7 +186,137 @@ impl LlmProvider for AnthropicProvider {
                 request_body,
                 retry,
                 tx.clone(),
-                process_anthropic_event,
+                |event_type, event, tx| {
+                    match event_type {
+                        "content_block_start" => {
+                            if let Some(block) = event.get("content_block") {
+                                match block.get("type").and_then(|v| v.as_str()) {
+                                    Some("tool_use") => {
+                                        let call_id = block
+                                            .get("id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or_default()
+                                            .to_string();
+                                        let name = block
+                                            .get("name")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or_default()
+                                            .to_string();
+                                        if let Some(index) =
+                                            event.get("index").and_then(|v| v.as_u64())
+                                        {
+                                            index_to_call_id
+                                                .lock()
+                                                .unwrap()
+                                                .insert(index, call_id.clone());
+                                        }
+                                        // 部分兼容 provider 把完整参数放在 input 字段，
+                                        // 而不是通过 input_json_delta 增量发送。
+                                        let initial_args = block
+                                            .get("input")
+                                            .filter(|v| {
+                                                v.is_object()
+                                                    && !v.as_object().unwrap().is_empty()
+                                            })
+                                            .map(|v| v.to_string())
+                                            .unwrap_or_default();
+                                        let _ = tx.send(LlmEvent::ToolCallStart {
+                                            call_id,
+                                            name,
+                                            arguments: initial_args,
+                                        });
+                                    },
+                                    Some("thinking") => {
+                                        if let Some(thinking) =
+                                            block.get("thinking").and_then(|v| v.as_str())
+                                        {
+                                            if !thinking.is_empty() {
+                                                let _ = tx.send(LlmEvent::ThinkingDelta {
+                                                    delta: thinking.to_string(),
+                                                });
+                                            }
+                                        }
+                                    },
+                                    Some("text") => {
+                                        if let Some(text) =
+                                            block.get("text").and_then(|v| v.as_str())
+                                        {
+                                            if !text.is_empty() {
+                                                let _ = tx.send(LlmEvent::ContentDelta {
+                                                    delta: text.to_string(),
+                                                });
+                                            }
+                                        }
+                                    },
+                                    _ => {},
+                                }
+                            }
+                        },
+                        "content_block_delta" => {
+                            if let Some(delta) = event.get("delta") {
+                                match delta.get("type").and_then(|v| v.as_str()) {
+                                    Some("text_delta") => {
+                                        if let Some(text) =
+                                            delta.get("text").and_then(|v| v.as_str())
+                                        {
+                                            let _ = tx.send(LlmEvent::ContentDelta {
+                                                delta: text.to_string(),
+                                            });
+                                        }
+                                    },
+                                    Some("thinking_delta") => {
+                                        if let Some(thinking) =
+                                            delta.get("thinking").and_then(|v| v.as_str())
+                                        {
+                                            let _ = tx.send(LlmEvent::ThinkingDelta {
+                                                delta: thinking.to_string(),
+                                            });
+                                        }
+                                    },
+                                    Some("input_json_delta") => {
+                                        let index = event
+                                            .get("index")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or_default();
+                                        let call_id = index_to_call_id
+                                            .lock()
+                                            .unwrap()
+                                            .get(&index)
+                                            .cloned()
+                                            .unwrap_or_else(|| index.to_string());
+                                        if let Some(partial) =
+                                            delta.get("partial_json").and_then(|v| v.as_str())
+                                        {
+                                            let _ = tx.send(LlmEvent::ToolCallDelta {
+                                                call_id,
+                                                delta: partial.to_string(),
+                                            });
+                                        }
+                                    },
+                                    _ => {},
+                                }
+                            }
+                        },
+                        "message_delta" => {
+                            if let Some(stop_reason) =
+                                event.pointer("/delta/stop_reason").and_then(|v| v.as_str())
+                            {
+                                let _ = tx.send(LlmEvent::Done {
+                                    finish_reason: stop_reason.to_string(),
+                                });
+                            }
+                        },
+                        "error" => {
+                            let message = event
+                                .pointer("/error/message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown Anthropic error")
+                                .to_string();
+                            let _ = tx.send(LlmEvent::Error { message });
+                        },
+                        _ => {},
+                    }
+                },
             )
             .await;
             if let Err(e) = result {
@@ -193,106 +331,6 @@ impl LlmProvider for AnthropicProvider {
 
     fn model_limits(&self) -> ModelLimits {
         self.model_limits_val.clone()
-    }
-}
-
-fn process_anthropic_event(
-    event_type: &str,
-    event: &serde_json::Value,
-    tx: &mpsc::UnboundedSender<LlmEvent>,
-) {
-    match event_type {
-        "content_block_start" => {
-            if let Some(block) = event.get("content_block") {
-                match block.get("type").and_then(|v| v.as_str()) {
-                    Some("tool_use") => {
-                        let _ = tx.send(LlmEvent::ToolCallStart {
-                            call_id: block
-                                .get("id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or_default()
-                                .into(),
-                            name: block
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or_default()
-                                .into(),
-                            arguments: String::new(),
-                        });
-                    },
-                    Some("thinking") => {
-                        if let Some(thinking) = block.get("thinking").and_then(|v| v.as_str()) {
-                            if !thinking.is_empty() {
-                                let _ = tx.send(LlmEvent::ThinkingDelta {
-                                    delta: thinking.to_string(),
-                                });
-                            }
-                        }
-                    },
-                    Some("text") => {
-                        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                            if !text.is_empty() {
-                                let _ = tx.send(LlmEvent::ContentDelta {
-                                    delta: text.to_string(),
-                                });
-                            }
-                        }
-                    },
-                    _ => {},
-                }
-            }
-        },
-        "content_block_delta" => {
-            if let Some(delta) = event.get("delta") {
-                match delta.get("type").and_then(|v| v.as_str()) {
-                    Some("text_delta") => {
-                        if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
-                            let _ = tx.send(LlmEvent::ContentDelta {
-                                delta: text.to_string(),
-                            });
-                        }
-                    },
-                    Some("thinking_delta") => {
-                        if let Some(thinking) = delta.get("thinking").and_then(|v| v.as_str()) {
-                            let _ = tx.send(LlmEvent::ThinkingDelta {
-                                delta: thinking.to_string(),
-                            });
-                        }
-                    },
-                    Some("input_json_delta") => {
-                        let call_id = event
-                            .get("index")
-                            .and_then(|v| v.as_u64())
-                            .map(|i| i.to_string())
-                            .unwrap_or_default();
-                        if let Some(partial) = delta.get("partial_json").and_then(|v| v.as_str()) {
-                            let _ = tx.send(LlmEvent::ToolCallDelta {
-                                call_id,
-                                delta: partial.to_string(),
-                            });
-                        }
-                    },
-                    _ => {},
-                }
-            }
-        },
-        "message_delta" => {
-            if let Some(stop_reason) = event.pointer("/delta/stop_reason").and_then(|v| v.as_str())
-            {
-                let _ = tx.send(LlmEvent::Done {
-                    finish_reason: stop_reason.to_string(),
-                });
-            }
-        },
-        "error" => {
-            let message = event
-                .pointer("/error/message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown Anthropic error")
-                .to_string();
-            let _ = tx.send(LlmEvent::Error { message });
-        },
-        _ => {},
     }
 }
 
