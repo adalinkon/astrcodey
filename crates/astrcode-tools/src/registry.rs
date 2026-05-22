@@ -2,12 +2,16 @@
 
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
-use astrcode_core::tool::{
-    BackgroundPolicy, ExecutionMode, Tool, ToolDefinition, ToolError, ToolExecutionContext,
-    ToolPromptMetadata, ToolResult,
+use astrcode_core::{
+    extension::ChildToolPolicy,
+    tool::{
+        BackgroundPolicy, ExecutionMode, Tool, ToolDefinition, ToolError, ToolExecutionContext,
+        ToolPromptMetadata, ToolResult,
+    },
 };
 
 /// 单个已注册工具的全部元数据与实例。
+#[derive(Clone)]
 struct RegisteredTool {
     tool: Arc<dyn Tool>,
     definition: ToolDefinition,
@@ -19,6 +23,7 @@ struct RegisteredTool {
 /// 用 `BTreeMap` 同时承载 O(log n) 命名查找、按名稱有序遍历，以及单一事实
 /// 来源——避免之前 `HashMap` + sorted `Vec` 双结构在 `register` 时做 O(n)
 /// sorted insert。`list_definitions()` 走迭代，仍按名稱有序输出。
+#[derive(Clone)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, RegisteredTool>,
 }
@@ -120,6 +125,46 @@ impl ToolRegistry {
     pub fn unregister(&mut self, name: &str) {
         self.tools.remove(name);
     }
+
+    /// Return a cloned registry with the child-session policy applied.
+    ///
+    /// Tool instances are held behind `Arc`, so this is cheap and avoids
+    /// rerunning extension discovery when a child session inherits the same
+    /// working directory as its parent.
+    pub fn clone_with_child_policy(&self, policy: Option<&ChildToolPolicy>) -> Self {
+        let mut cloned = self.clone();
+        if let Some(policy) = policy {
+            cloned.apply_child_tool_policy(policy);
+        }
+        cloned
+    }
+
+    fn apply_child_tool_policy(&mut self, policy: &ChildToolPolicy) {
+        match policy {
+            ChildToolPolicy::Deny { tools } => {
+                for name in tools {
+                    if self.find_definition(name).is_none() {
+                        tracing::debug!(tool = %name, "deny policy mentions unknown tool, skipping");
+                        continue;
+                    }
+                    self.unregister(name);
+                }
+            },
+            ChildToolPolicy::Allow { tools } => {
+                let allow: std::collections::HashSet<&str> =
+                    tools.iter().map(String::as_str).collect();
+                let to_remove: Vec<String> = self
+                    .list_definitions()
+                    .into_iter()
+                    .map(|definition| definition.name)
+                    .filter(|name| !allow.contains(name.as_str()))
+                    .collect();
+                for name in to_remove {
+                    self.unregister(&name);
+                }
+            },
+        }
+    }
 }
 
 /// Build the core builtin tool set.
@@ -210,6 +255,22 @@ mod tests {
             let definition = registry.find_definition(name).unwrap();
             assert_eq!(definition.execution_mode, ExecutionMode::Sequential);
         }
+    }
+
+    #[test]
+    fn clone_with_child_policy_filters_without_rebuilding_tools() {
+        let mut registry = ToolRegistry::new();
+        for tool in builtin_tools(std::path::PathBuf::from("."), 30) {
+            registry.register(tool);
+        }
+
+        let filtered = registry.clone_with_child_policy(Some(&ChildToolPolicy::Deny {
+            tools: vec!["shell".into()],
+        }));
+
+        assert!(registry.find_definition("shell").is_some());
+        assert!(filtered.find_definition("shell").is_none());
+        assert!(filtered.find_definition("read").is_some());
     }
 
     #[test]

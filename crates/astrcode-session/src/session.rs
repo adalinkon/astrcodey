@@ -578,6 +578,12 @@ impl Session {
         if extra_system_prompt.is_some() {
             child_runtime.set_extra_system_prompt(extra_system_prompt);
         }
+        let parent_working_dir = self.read_model().await?.working_dir;
+        let parent_registry = self.runtime.tool_registry();
+        if parent_working_dir == working_dir && !parent_registry.list_definitions().is_empty() {
+            let child_registry = parent_registry.clone_with_child_policy(tool_policy.as_ref());
+            child_runtime.set_tool_registry(Arc::new(child_registry));
+        }
         let child_sid = new_session_id();
         let child = Session::create_with_id(
             Arc::clone(&self.store),

@@ -135,6 +135,10 @@ impl FileSystemSessionRepository {
     ///
     /// 先检查 flat 位置（根 session），再递归搜索 `subagents/` 子目录树。
     async fn find_session_dir(&self, id: &SessionId) -> Option<PathBuf> {
+        if let Some(meta) = self.sessions.read().await.get(id).cloned() {
+            return Some(meta.dir.clone());
+        }
+
         for root in self.all_session_roots().await {
             let dir = root.join(id.as_str());
             if tokio::fs::metadata(&dir).await.is_ok_and(|m| m.is_dir()) {

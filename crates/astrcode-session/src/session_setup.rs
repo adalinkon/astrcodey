@@ -60,33 +60,11 @@ pub async fn build_tool_registry_snapshot(
 }
 
 /// 按 [`ChildToolPolicy`] 裁剪工具表。
-///
+/// TODO: 更好的方式？支持子智能体自定义工具？
 /// `Deny` 直接 `unregister`；`Allow` 把不在白名单里的工具全部 `unregister`。
 /// 命中不存在的工具名只打 debug 日志，不报错——插件可能针对多版本宿主写策略。
 fn apply_child_tool_policy(registry: &mut ToolRegistry, policy: &ChildToolPolicy) {
-    match policy {
-        ChildToolPolicy::Deny { tools } => {
-            for name in tools {
-                if registry.find_definition(name).is_none() {
-                    tracing::debug!(tool = %name, "deny policy mentions unknown tool, skipping");
-                    continue;
-                }
-                registry.unregister(name);
-            }
-        },
-        ChildToolPolicy::Allow { tools } => {
-            let allow: std::collections::HashSet<&str> = tools.iter().map(String::as_str).collect();
-            let to_remove: Vec<String> = registry
-                .list_definitions()
-                .into_iter()
-                .map(|definition| definition.name)
-                .filter(|name| !allow.contains(name.as_str()))
-                .collect();
-            for name in to_remove {
-                registry.unregister(&name);
-            }
-        },
-    }
+    *registry = registry.clone_with_child_policy(Some(policy));
 }
 
 pub struct SystemPromptSnapshotInput<'a> {
