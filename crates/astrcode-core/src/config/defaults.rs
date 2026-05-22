@@ -32,8 +32,8 @@ pub const DEFAULT_COMPACT_THRESHOLD_PERCENT: f32 = 83.5;
 pub const DEFAULT_COMPACT_MAX_RETRY_ATTEMPTS: u8 = 3;
 /// LLM 压缩输出的最大 token 数。
 pub const DEFAULT_COMPACT_MAX_OUTPUT_TOKENS: usize = 20_000;
-/// 自动/反应式 compact 默认保留的最近完整 turn 数。None 表示使用 compact 模块默认策略。
-pub const DEFAULT_COMPACT_KEEP_RECENT_TURNS: Option<usize> = None;
+/// 自动/反应式 compact 默认保留的最近完整 turn 数。
+pub const DEFAULT_COMPACT_KEEP_RECENT_TURNS: Option<usize> = Some(1);
 /// auto-compact LLM 熔断器触发阈值。
 pub const DEFAULT_COMPACT_CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
 /// auto-compact LLM 熔断器冷却时间（秒）。

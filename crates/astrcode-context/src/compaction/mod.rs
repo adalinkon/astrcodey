@@ -339,6 +339,7 @@ fn split_compact_start(messages: &[LlmMessage], keep_recent_turns: Option<usize>
     }
 
     let turn_starts = user_turn_starts(messages);
+    // 将 `keep_recent_turns` 兜底为1，确保默认保留最近一轮llm消息，避免压缩掉所有消息导致信息丢失
     let keep_turns = keep_recent_turns.unwrap_or(1);
     if keep_turns >= turn_starts.len() {
         return None;
