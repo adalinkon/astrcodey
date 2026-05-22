@@ -3,7 +3,8 @@
 **BE PI OR BETTER THAN PI**
 Inspired by Claude Code, Codex, OpenCode, and Pi — but built as a Rust-native
 
-<img width="1401" height="995" alt="image" src="https://github.com/user-attachments/assets/26e9b719-8911-4fdf-a989-065ce9b9ea7e" />
+<img width="1252" height="960" alt="image" src="https://github.com/user-attachments/assets/1ad71c44-70e0-4e90-b17c-a0b743a8d0af" />
+
 
 
 用 Rust 从零构建的 AI 编程助手平台。
