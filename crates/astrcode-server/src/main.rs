@@ -14,9 +14,8 @@ use astrcode_protocol::{
     framing::{PROTOCOL_VERSION, notification_to_jsonrpc_message, to_jsonl_line},
     version::negotiate_version,
 };
-use astrcode_server::{
-    handler::CommandHandler,
-    transport::{ServerTransport, StdioTransport, write_error_response, write_initialize_response},
+use astrcode_server::transport::{
+    ServerTransport, StdioTransport, write_error_response, write_initialize_response,
 };
 use astrcode_support::event_fanout::EventFanout;
 
@@ -62,20 +61,9 @@ async fn main() {
     write_initialize_response(request_id, accepted_version);
 
     let event_tx = Arc::new(EventFanout::new());
-
-    let event_bus = Arc::new(astrcode_server::server_event_bus::ServerEventBus::new(
-        runtime.event_store.clone(),
-        Arc::clone(&event_tx),
-    ));
-    {
-        let event_bus = Arc::clone(&event_bus);
-        runtime
-            .session_manager
-            .set_attach_hook(Arc::new(move |session| {
-                event_bus.attach(session);
-            }));
-    }
-    let handler = CommandHandler::spawn_actor(Arc::clone(&runtime), Arc::clone(&event_bus));
+    let server_system =
+        astrcode_server::bootstrap::spawn_server_system(&runtime, Arc::clone(&event_tx));
+    let handler = server_system.handler;
 
     // Background task: forward events → stdout
     let mut event_rx = event_tx.subscribe();
