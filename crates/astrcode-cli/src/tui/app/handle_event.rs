@@ -384,34 +384,14 @@ fn apply_event(app: &mut App, event: &Event) {
                 app.messages.remove(idx);
             }
 
-            // 检查是否有排队的输入
-            let queue_count = app.queued_inputs.len();
-            let has_queued_input = queue_count > 0;
-            if has_queued_input {
-                app.push_message(
-                    MessageRole::System,
-                    "Compacted".into(),
-                    format!(
-                        "Compacted (removed {} messages), processing queued input...",
-                        messages_removed
-                    ),
-                    false,
-                    None,
-                );
-            } else {
-                app.push_message(
-                    MessageRole::System,
-                    "Compacted".into(),
-                    format!("Compacted (removed {} messages)", messages_removed),
-                    false,
-                    None,
-                );
-            }
-            app.status_text = if has_queued_input {
-                format!("Processing queued input ({})", queue_count)
-            } else {
-                "Ready".into()
-            };
+            app.push_message(
+                MessageRole::System,
+                "Compacted".into(),
+                format!("Compacted (removed {} messages)", messages_removed),
+                false,
+                None,
+            );
+            app.status_text = "Ready".into();
         },
         EventPayload::ErrorOccurred { message, .. } => {
             app.show_error(message);
@@ -598,6 +578,8 @@ fn apply_session_resumed(app: &mut App, session_id: &str, snapshot: &SessionSnap
     app.stream_states.clear();
     app.child_agents.clear();
     app.child_session_map.clear();
+    // 重置 compacting 状态，防止状态不一致
+    app.is_compacting = false;
 
     for message in &snapshot.messages {
         let role = match message.role.as_str() {

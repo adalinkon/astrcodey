@@ -51,6 +51,9 @@ impl CommandHandler {
             return Err(HandlerError::CompactBlocked);
         }
 
+        // 标记 session 为 compacting 状态，让输入自动排队
+        self.compacting_sessions.insert(sid.clone());
+
         let session = self
             .runtime
             .session_manager
