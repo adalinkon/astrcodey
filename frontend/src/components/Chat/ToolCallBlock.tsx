@@ -1,10 +1,21 @@
 import { memo, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { ConversationBlock } from '../../services/types'
-import { extractRenderSpec } from '../../types/render-spec'
+import type { RenderSpec } from '../../types/render-spec'
+import {
+  extractRenderSpec,
+  extractRenderSummary,
+} from '../../types/render-spec'
 import { chevronIcon } from '../../lib/styles'
 import { cn } from '../../lib/utils'
 import { RenderSpecViewer } from './RenderSpecViewer'
+import {
+  getToolRenderer,
+  registerToolRenderer,
+  type ToolRenderer,
+  type ToolRendererContext,
+} from './toolRendererRegistry'
+import { DiffCodeLines } from './DiffCodeLines'
 
 interface ToolCallBlockProps {
   block: Extract<ConversationBlock, { kind: 'toolCall' }>
@@ -124,47 +135,6 @@ function changesLabel(meta: JsonRecord): string {
   return ''
 }
 
-function summaryForTool(block: ToolCall): string {
-  const args = toolArgs(block)
-  const meta = toolMeta(block)
-
-  if (block.name === 'shell') {
-    const command = stringValue(meta, 'command') || stringValue(args, 'command')
-    return command ? `$ ${compactLine(command)}` : ''
-  }
-
-  if (block.name === 'write') {
-    const path = pathFor(block)
-    const created = boolValue(meta, 'created')
-    const action =
-      created === true ? 'create' : created === false ? 'write' : 'write'
-    return compactLine(
-      [action, path && truncateMiddle(path), changesLabel(meta)]
-        .filter(Boolean)
-        .join(' ')
-    )
-  }
-
-  if (block.name === 'edit') {
-    const path = pathFor(block)
-    const replacements = numberValue(meta, 'replacements')
-    const operations = numberValue(meta, 'operationCount')
-    const count =
-      replacements != null
-        ? `${replacements} replacement${replacements === 1 ? '' : 's'}`
-        : operations != null
-          ? `${operations} edit${operations === 1 ? '' : 's'}`
-          : ''
-    return compactLine(
-      ['edit', path && truncateMiddle(path), count, changesLabel(meta)]
-        .filter(Boolean)
-        .join(' ')
-    )
-  }
-
-  return ''
-}
-
 /**
  * 从 agent 工具的原始 JSON 参数构造 streaming 阶段的 RenderSpec。
  * 直接读结构化字段，不依赖后端格式化字符串。
@@ -188,7 +158,7 @@ function boolField(
 
 function buildStreamingAgentSpec(
   argsJson: Record<string, unknown>
-): import('../../types/render-spec').RenderSpec {
+): RenderSpec {
   const entries: { key: string; value: string; tone: 'accent' | 'muted' }[] = []
 
   const description = stringField(argsJson, 'description')
@@ -273,7 +243,11 @@ function CodePreview({
         ? 'text-code-text'
         : 'text-code-text'
   const children =
-    tone === 'diff' ? <DiffCodeLines text={content} /> : <code>{content}</code>
+    tone === 'diff' ? (
+      <DiffCodeLines text={content} lineClassName="-mx-4 px-4" />
+    ) : (
+      <code>{content}</code>
+    )
 
   return (
     <pre
@@ -283,34 +257,6 @@ function CodePreview({
       )}
       children={children}
     />
-  )
-}
-
-function DiffCodeLines({ text }: { text: string }) {
-  return (
-    <code className="block min-w-0">
-      {text.split('\n').map((line, index) => {
-        const isFileHeader = line.startsWith('+++') || line.startsWith('---')
-        const isAddition = line.startsWith('+') && !isFileHeader
-        const isDeletion = line.startsWith('-') && !isFileHeader
-        const isHunk = line.startsWith('@@')
-
-        return (
-          <span
-            key={index}
-            className={cn(
-              'block min-w-fit -mx-4 px-4',
-              isAddition && 'bg-success-soft/70 text-success',
-              isDeletion && 'bg-danger-soft/70 text-danger',
-              isFileHeader && 'text-text-muted',
-              isHunk && 'bg-surface text-text-secondary'
-            )}
-          >
-            {line || ' '}
-          </span>
-        )
-      })}
-    </code>
   )
 }
 
@@ -509,42 +455,95 @@ function DefaultToolDetails({ block }: { block: ToolCall }) {
 }
 
 function ToolDetails({
-  block,
-  renderSpec,
-  agentSpec,
+  context,
+  renderer,
 }: {
-  block: ToolCall
-  renderSpec?: import('../../types/render-spec').RenderSpec
-  agentSpec?: import('../../types/render-spec').RenderSpec
+  context: ToolRendererContext
+  renderer?: ToolRenderer
 }) {
-  if (renderSpec) return <RenderSpecViewer spec={renderSpec} />
-  if (agentSpec) return <RenderSpecViewer spec={agentSpec} />
-  if (block.name === 'write' || block.name === 'edit') {
-    return <FileToolDetails block={block} />
-  }
-  if (block.name === 'shell') {
-    return <ShellToolDetails block={block} />
-  }
-  return <DefaultToolDetails block={block} />
+  if (context.renderSpec) return <RenderSpecViewer spec={context.renderSpec} />
+  if (context.agentSpec) return <RenderSpecViewer spec={context.agentSpec} />
+  const rendered = renderer?.render?.(context)
+  if (rendered != null) return rendered
+  return <DefaultToolDetails block={context.block} />
 }
+
+const builtinToolRenderers: ToolRenderer[] = [
+  {
+    id: 'builtin:file-change',
+    priority: 100,
+    match: ({ block }) => block.name === 'write' || block.name === 'edit',
+    summary: ({ block, meta }) => {
+      if (block.name === 'write') {
+        const path = pathFor(block)
+        const created = boolValue(meta, 'created')
+        const action =
+          created === true ? 'create' : created === false ? 'write' : 'write'
+        return compactLine(
+          [action, path && truncateMiddle(path), changesLabel(meta)]
+            .filter(Boolean)
+            .join(' ')
+        )
+      }
+
+      const path = pathFor(block)
+      const replacements = numberValue(meta, 'replacements')
+      const operations = numberValue(meta, 'operationCount')
+      const count =
+        replacements != null
+          ? `${replacements} replacement${replacements === 1 ? '' : 's'}`
+          : operations != null
+            ? `${operations} edit${operations === 1 ? '' : 's'}`
+            : ''
+      return compactLine(
+        ['edit', path && truncateMiddle(path), count, changesLabel(meta)]
+          .filter(Boolean)
+          .join(' ')
+      )
+    },
+    render: ({ block }) => <FileToolDetails block={block} />,
+  },
+  {
+    id: 'builtin:shell',
+    priority: 100,
+    match: ({ block }) => block.name === 'shell',
+    summary: ({ args, meta }) => {
+      const command =
+        stringValue(meta, 'command') || stringValue(args, 'command')
+      return command ? `$ ${compactLine(command)}` : ''
+    },
+    render: ({ block }) => <ShellToolDetails block={block} />,
+  },
+]
+
+builtinToolRenderers.forEach(registerToolRenderer)
 
 function ToolCallBlock({ block }: ToolCallBlockProps) {
   const [isOpen, setIsOpen] = useState(false)
+  const args = toolArgs(block)
+  const meta = toolMeta(block)
 
-  const renderSpec = extractRenderSpec(
-    block.metadata as Record<string, unknown> | undefined
-  )
-
-  const summaryLine = compactLine(
-    summaryForTool(block) ||
-      block.arguments ||
-      block.text ||
-      (block.status === 'streaming' ? '等待输出...' : '(无输出)')
-  )
+  const renderSpec = extractRenderSpec(block.metadata)
   const agentSpec =
     block.name === 'agent' && block.argumentsJson && !renderSpec
       ? buildStreamingAgentSpec(block.argumentsJson)
       : undefined
+  const context: ToolRendererContext = {
+    block,
+    args,
+    meta,
+    renderSpec,
+    agentSpec,
+  }
+  const renderer = getToolRenderer(context)
+
+  const summaryLine = compactLine(
+    extractRenderSummary(block.metadata) ||
+      renderer?.summary?.(context) ||
+      block.arguments ||
+      block.text ||
+      (block.status === 'streaming' ? '等待输出...' : '(无输出)')
+  )
 
   return (
     <details
@@ -583,11 +582,7 @@ function ToolCallBlock({ block }: ToolCallBlockProps) {
       </summary>
       <div className="mt-1.5 flex min-w-0 flex-col rounded-xl border border-border bg-code-surface px-4 py-3 shadow-soft">
         <div className="min-w-0 overflow-y-auto overscroll-contain pr-1 max-h-[min(58vh,560px)]">
-          <ToolDetails
-            block={block}
-            renderSpec={renderSpec}
-            agentSpec={agentSpec}
-          />
+          <ToolDetails context={context} renderer={renderer} />
         </div>
       </div>
     </details>

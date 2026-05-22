@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
 /// 工具结果 metadata 中携带结构化渲染描述的键名。
 pub const UI_RENDER_METADATA_KEY: &str = "ui_render";
 
+/// 工具结果 metadata 中携带折叠摘要文本的键名。
+///
+/// UI 可用它覆盖默认的工具调用摘要行，详细内容仍由 [`UI_RENDER_METADATA_KEY`]
+/// 或普通工具输出承载。
+pub const UI_SUMMARY_METADATA_KEY: &str = "ui_summary";
+
 /// 渲染语气，由具体 TUI 皮肤映射到颜色和样式。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]

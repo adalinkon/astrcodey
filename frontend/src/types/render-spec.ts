@@ -126,6 +126,9 @@ const RENDER_SPEC_TYPES = new Set([
 /** Metadata key where tools embed RenderSpec. */
 export const UI_RENDER_METADATA_KEY = 'ui_render'
 
+/** Metadata key where tools can provide a compact summary line. */
+export const UI_SUMMARY_METADATA_KEY = 'ui_summary'
+
 /** Type guard: check if a value looks like a RenderSpec. */
 export function isRenderSpec(value: unknown): value is RenderSpec {
   if (typeof value !== 'object' || value === null) return false
@@ -143,6 +146,14 @@ export function extractRenderSpec(
   if (!metadata) return undefined
   const raw = metadata[UI_RENDER_METADATA_KEY]
   return isRenderSpec(raw) ? raw : undefined
+}
+
+export function extractRenderSummary(
+  metadata?: Record<string, unknown>
+): string | undefined {
+  if (!metadata) return undefined
+  const raw = metadata[UI_SUMMARY_METADATA_KEY]
+  return typeof raw === 'string' && raw.trim() ? raw : undefined
 }
 
 /**

@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm'
 import type { RenderSpec, RenderTone } from '../../types/render-spec'
 import { codeBlockShell, codeBlockContent } from '../../lib/styles'
 import { cn } from '../../lib/utils'
+import { DiffCodeLines } from './DiffCodeLines'
 
 // ── Tone → CSS class ─────────────────────────────────────────────────────
 
@@ -130,7 +131,9 @@ function RenderSpecViewerInner({ spec, className }: RenderSpecViewerProps) {
         <div className={cn(codeBlockShell, className)}>
           <pre
             className={cn(codeBlockContent, 'whitespace-pre-wrap')}
-            children={<code>{spec.text}</code>}
+            children={
+              <DiffCodeLines text={spec.text} lineClassName="-mx-4 px-4" />
+            }
           />
         </div>
       )
