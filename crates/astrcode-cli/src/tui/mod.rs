@@ -469,7 +469,9 @@ async fn execute_slash_command(
         },
         SlashCommand::Compact => {
             client
-                .send_command(&ClientCommand::Compact { keep_recent_turns: None })
+                .send_command(&ClientCommand::Compact {
+                    keep_recent_turns: None,
+                })
                 .await
                 .map_err(io_error)?;
             app.status_text = "Compacting session".into();
