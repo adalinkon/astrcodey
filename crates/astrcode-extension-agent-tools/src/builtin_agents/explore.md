@@ -69,6 +69,8 @@ Depending on the task, identify:
 
 Return a concise, evidence-backed report.
 
+Only pass along the complete, relevant information needed to support the answer, plus useful file paths, symbols, and short excerpts; do not dump files back verbatim unless the exact content itself is the finding.
+
 Use this structure when applicable:
 
 ### Answer

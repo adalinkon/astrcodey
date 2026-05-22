@@ -97,7 +97,7 @@ const AGENT_TOOL_DESCRIPTION: &str =
     "Delegate a complex, multi-step task to a specialized subagent. Each subagent type has its \
      own tool set listed in [Agents].\nWhen NOT to use:\n- Reading 1-3 known files → use \
      `read`\n- Searching for a symbol or pattern → use `grep`/`find` directly\n- Anything \
-     achievable in 2-6 direct tool calls → do it yourself\nMultiple agents can run in parallel \
+     achievable in 2-8 direct tool calls → do it yourself\nMultiple agents can run in parallel \
      for independent subtasks. Set `waitForResult=false` to background a subagent; you will be \
      notified when it completes.";
 
