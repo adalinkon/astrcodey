@@ -119,3 +119,143 @@ fn is_deferred_gate(tool: &ToolSnapshot) -> bool {
         .and_then(|metadata| metadata.deferred_discovery_gate.as_ref())
         .is_some()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use astrcode_core::tool::{
+        DEFERRED_TOOLS_METADATA_KEY, ToolDefinition, ToolOrigin, ToolPromptMetadata, ToolResult,
+    };
+
+    use super::*;
+
+    fn def(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.into(),
+            description: String::new(),
+            parameters: serde_json::json!({}),
+            origin: ToolOrigin::Builtin,
+            execution_mode: Default::default(),
+        }
+    }
+
+    fn plain_snapshot(name: &str) -> ToolSnapshot {
+        ToolSnapshot {
+            definition: def(name),
+            prompt_metadata: None,
+        }
+    }
+
+    fn deferred_snapshot(name: &str, group: &str) -> ToolSnapshot {
+        ToolSnapshot {
+            definition: def(name),
+            prompt_metadata: Some(
+                ToolPromptMetadata::default().deferred_discovery_group(group),
+            ),
+        }
+    }
+
+    fn gate_snapshot(name: &str, gate: &str) -> ToolSnapshot {
+        ToolSnapshot {
+            definition: def(name),
+            prompt_metadata: Some(
+                ToolPromptMetadata::default().deferred_discovery_gate(gate),
+            ),
+        }
+    }
+
+    #[test]
+    fn visible_indexes_normal_tools_always_shown() {
+        let tools = vec![plain_snapshot("read"), plain_snapshot("write")];
+        let active = HashSet::new();
+        let indexes = provider_visible_tool_indexes(&tools, &active);
+        assert_eq!(indexes, vec![0, 1]);
+    }
+
+    #[test]
+    fn visible_indexes_deferred_tools_hidden_by_default() {
+        let tools = vec![plain_snapshot("read"), deferred_snapshot("mcp_tool", "group-a")];
+        let active = HashSet::new();
+        let indexes = provider_visible_tool_indexes(&tools, &active);
+        assert_eq!(indexes, vec![0]);
+    }
+
+    #[test]
+    fn visible_indexes_deferred_tools_shown_when_activated() {
+        let tools = vec![plain_snapshot("read"), deferred_snapshot("mcp_tool", "group-a")];
+        let mut active = HashSet::new();
+        active.insert("mcp_tool".into());
+        let indexes = provider_visible_tool_indexes(&tools, &active);
+        assert_eq!(indexes, vec![0, 1]);
+    }
+
+    #[test]
+    fn visible_indexes_gate_always_visible() {
+        let tools = vec![
+            deferred_snapshot("mcp_tool", "group-a"),
+            gate_snapshot("discover", "group-a"),
+        ];
+        let active = HashSet::new();
+        let indexes = provider_visible_tool_indexes(&tools, &active);
+        assert_eq!(indexes, vec![1]);
+    }
+
+    #[test]
+    fn activate_only_inserts_available_tools() {
+        let tools = vec![deferred_snapshot("a", "g"), deferred_snapshot("b", "g")];
+        let mut active = HashSet::new();
+        let changed = activate_deferred_tools(&mut active, &tools, vec!["a".into(), "c".into()]);
+        assert!(changed);
+        assert!(active.contains("a"));
+        assert!(!active.contains("c"));
+    }
+
+    #[test]
+    fn activate_returns_false_when_no_new_tools() {
+        let tools = vec![deferred_snapshot("a", "g")];
+        let mut active = HashSet::new();
+        active.insert("a".into());
+        let changed = activate_deferred_tools(&mut active, &tools, vec!["a".into()]);
+        assert!(!changed);
+    }
+
+    #[test]
+    fn discovered_names_extracts_matches() {
+        let result = ToolResult {
+            call_id: "c1".into(),
+            content: String::new(),
+            is_error: false,
+            error: None,
+            metadata: vec![(
+                DEFERRED_TOOLS_METADATA_KEY.into(),
+                serde_json::json!({ "matches": ["tool_a", "tool_b"] }),
+            )]
+            .into_iter()
+            .collect(),
+            duration_ms: None,
+        };
+        let names = discovered_deferred_tool_names(&result);
+        assert_eq!(names, vec!["tool_a", "tool_b"]);
+    }
+
+    #[test]
+    fn discovered_names_empty_when_no_metadata() {
+        let result = ToolResult {
+            call_id: "c1".into(),
+            content: String::new(),
+            is_error: false,
+            error: None,
+            metadata: Default::default(),
+            duration_ms: None,
+        };
+        assert!(discovered_deferred_tool_names(&result).is_empty());
+    }
+
+    #[test]
+    fn tool_is_visible_found() {
+        let tools = vec![def("read"), def("write")];
+        assert!(tool_is_visible(&tools, "read"));
+        assert!(!tool_is_visible(&tools, "shell"));
+    }
+}

@@ -8,7 +8,7 @@ use std::{
     io::{BufRead, BufReader, BufWriter, ErrorKind, Read, Seek, Write},
     path::{Path, PathBuf},
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -26,9 +26,9 @@ use astrcode_core::{
 /// 内部持有 BufWriter<File> 避免每次 append 都重开文件，大幅减少系统调用开销。
 pub struct EventLog {
     path: PathBuf,
-    writer: Mutex<BufWriter<File>>,
+    writer: Arc<Mutex<BufWriter<File>>>,
     next_seq: Mutex<u64>,
-    sync_pending: AtomicBool,
+    sync_pending: Arc<AtomicBool>,
 }
 
 impl Drop for EventLog {
@@ -68,9 +68,9 @@ impl EventLog {
         Ok((
             Self {
                 path,
-                writer: Mutex::new(writer),
+                writer: Arc::new(Mutex::new(writer)),
                 next_seq: Mutex::new(1),
-                sync_pending: AtomicBool::new(false),
+                sync_pending: Arc::new(AtomicBool::new(false)),
             },
             event,
         ))
@@ -93,9 +93,9 @@ impl EventLog {
             .open(&path)?;
         Ok(Self {
             path,
-            writer: Mutex::new(BufWriter::new(file)),
+            writer: Arc::new(Mutex::new(BufWriter::new(file))),
             next_seq: Mutex::new(next_seq),
-            sync_pending: AtomicBool::new(false),
+            sync_pending: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -103,29 +103,40 @@ impl EventLog {
     ///
     /// Writes to the OS page cache immediately (process-crash-safe) but defers
     /// `sync_all()` until [`force_sync`] is called, typically at turn boundaries.
+    /// I/O is offloaded to a blocking thread to avoid stalling the tokio runtime.
     pub async fn append(&self, mut event: Event) -> Result<Event, StorageError> {
-        let mut next_seq = self
-            .next_seq
-            .lock()
-            .map_err(|_| StorageError::LockError("event log sequence lock poisoned".into()))?;
-        let seq = *next_seq;
-        event.seq = Some(seq);
+        {
+            let mut next_seq = self
+                .next_seq
+                .lock()
+                .map_err(|_| StorageError::LockError("event log sequence lock poisoned".into()))?;
+            event.seq = Some(*next_seq);
+            *next_seq += 1;
+        }
 
-        let mut writer = self
-            .writer
-            .lock()
-            .map_err(|_| StorageError::LockError("event log writer lock poisoned".into()))?;
         let line = serde_json::to_string(&event)?;
-        writeln!(writer, "{}", line)?;
-        writer.flush().map_err(|e| {
-            StorageError::Io(std::io::Error::new(
-                e.kind(),
-                enhance_flush_error(&self.path, e),
-            ))
-        })?;
-        self.sync_pending.store(true, Ordering::Release);
-        *next_seq += 1;
-        Ok(event)
+        let writer = self.writer.clone();
+        let path = self.path.clone();
+        let sync_pending = self.sync_pending.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let mut guard = writer
+                .lock()
+                .map_err(|_| StorageError::LockError("event log writer lock poisoned".into()))?;
+            writeln!(guard, "{}", line)?;
+            guard.flush().map_err(|e| {
+                StorageError::Io(std::io::Error::new(e.kind(), enhance_flush_error(&path, e)))
+            })?;
+            drop(guard);
+            sync_pending.store(true, Ordering::Release);
+            Ok(event)
+        })
+        .await
+        .map_err(|e| {
+            StorageError::Io(std::io::Error::other(format!(
+                "event log write task failed: {e}"
+            )))
+        })?
     }
 
     /// Replay all events from the beginning.
@@ -477,7 +488,8 @@ impl Iterator for EventLogIterator {
                         Ok(event) => event,
                         Err(e) => {
                             let preview = if trimmed.len() > 100 {
-                                format!("{}...", &trimmed[..100])
+                                let end = trimmed.floor_char_boundary(100);
+                                format!("{}...", &trimmed[..end])
                             } else {
                                 trimmed.to_string()
                             };

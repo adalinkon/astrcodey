@@ -17,6 +17,7 @@ use astrcode_core::{
     },
     types::*,
 };
+use astrcode_support::perf_snapshot;
 use tokio::sync::mpsc;
 
 use crate::{
@@ -139,12 +140,14 @@ impl Session {
     pub async fn append_event(&self, event: Event) -> Result<Event, SessionError> {
         let stored = self.store.append_event(event).await?;
         self.runtime.fanout(stored.clone());
+        perf_snapshot::capture_event("session.append_event", &stored);
         Ok(stored)
     }
 
     /// 发射只 fanout、不持久化的 live 事件。Infallible。
     pub async fn emit_live(&self, turn_id: Option<&TurnId>, payload: EventPayload) {
         let event = Event::new(self.id.clone(), turn_id.cloned(), payload);
+        perf_snapshot::capture_event("session.emit_live", &event);
         self.runtime.fanout(event);
     }
 
@@ -157,6 +160,7 @@ impl Session {
         let event = Event::new(self.id.clone(), turn_id.cloned(), payload);
         let stored = self.store.append_event(event).await?;
         self.runtime.fanout(stored.clone());
+        perf_snapshot::capture_event("session.emit_durable", &stored);
         Ok(stored)
     }
 

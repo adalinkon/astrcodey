@@ -156,6 +156,7 @@ impl TurnRunner {
             background_task_reader,
             file_observation_store: Some(runtime.file_observation_store()),
             session_ops: caps.session_ops(),
+            small_model_id: Some(caps.read_effective().small_llm.model_id.clone()),
         };
         let tools = ToolPipeline::new(
             shared.clone(),

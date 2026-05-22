@@ -194,3 +194,34 @@ pub async fn persist_compact_result(
         messages_removed: compaction.messages_removed,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use astrcode_core::extension::CompactTrigger;
+
+    use super::*;
+
+    #[test]
+    fn compact_trigger_name_auto() {
+        assert_eq!(
+            compact_trigger_name(CompactTrigger::AutoThreshold),
+            "auto_threshold"
+        );
+    }
+
+    #[test]
+    fn compact_trigger_name_manual() {
+        assert_eq!(
+            compact_trigger_name(CompactTrigger::ManualCommand),
+            "manual_command"
+        );
+    }
+
+    #[test]
+    fn compact_trigger_name_reactive() {
+        assert_eq!(
+            compact_trigger_name(CompactTrigger::ReactivePromptTooLong),
+            "reactive_prompt_too_long"
+        );
+    }
+}

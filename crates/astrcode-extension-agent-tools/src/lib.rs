@@ -131,8 +131,8 @@ const fn default_wait_for_result() -> bool {
     true
 }
 
-fn agent_run_render_spec(args: &AgentArgs, agent: &agent::AgentConfig) -> RenderSpec {
-    let model = agent.model.as_deref().unwrap_or("inherit/default");
+fn agent_run_render_spec(args: &AgentArgs, agent_name: &str, resolved_model: &str) -> RenderSpec {
+    let model = resolved_model;
     let mode_label = if args.wait_for_result {
         "sync"
     } else {
@@ -152,7 +152,7 @@ fn agent_run_render_spec(args: &AgentArgs, agent: &agent::AgentConfig) -> Render
                     },
                     RenderKeyValue {
                         key: "agent".into(),
-                        value: agent.name.clone(),
+                        value: agent_name.into(),
                         tone: RenderTone::Accent,
                     },
                     RenderKeyValue {
@@ -218,8 +218,16 @@ impl ToolHandler for AgentToolHandler {
                 })?,
         };
 
+        // TODO: 允许插件页面为每个 agent 单独选择模型
+        let model_for_child = ctx
+            .capabilities
+            .small_model_id
+            .as_deref()
+            .or(matched.model.as_deref())
+            .unwrap_or("inherit");
+
         // 构造 UI 渲染元数据
-        let render = agent_run_render_spec(&args, matched);
+        let render = agent_run_render_spec(&args, &matched.name, model_for_child);
         let render_json = serde_json::to_value(&render)
             .map_err(|e| ExtensionError::Internal(format!("serialize render: {e}")))?;
 
@@ -238,7 +246,7 @@ impl ToolHandler for AgentToolHandler {
                     name: matched.name.clone(),
                     working_dir: None,
                     system_prompt: Some(matched.body.clone()),
-                    model_preference: matched.model.clone(),
+                    model_preference: Some(model_for_child.to_string()),
                     // TODO： A BETTER policy 设计
                     tool_policy: Some(ChildToolPolicy::Deny {
                         tools: vec!["agent".into()],

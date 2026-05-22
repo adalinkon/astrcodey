@@ -261,6 +261,8 @@ export function decodeConversationDelta(value: unknown): ConversationDelta {
         id: requiredString(object, 'id'),
         text: requiredString(object, 'text'),
       }
+    case 'extensionRegistryChanged':
+      return { kind }
     default:
       throw new ProtocolDecodeError(`invalid delta kind ${kind}`)
   }
@@ -314,6 +316,7 @@ function decodeSessionListItem(value: unknown): SessionListItem {
     parentStorageSeq: optionalNumber(object, 'parentStorageSeq'),
     phase: decodePhase(object.phase),
     firstUserMessage: optionalString(object, 'firstUserMessage'),
+    sourceExtension: optionalString(object, 'sourceExtension'),
   }
 }
 
@@ -456,6 +459,8 @@ export function decodeConfigView(value: unknown): ConfigView {
     configPath: requiredString(object, 'configPath'),
     activeProfile: requiredString(object, 'activeProfile'),
     activeModel: requiredString(object, 'activeModel'),
+    activeSmallProfile: optionalString(object, 'activeSmallProfile'),
+    activeSmallModel: optionalString(object, 'activeSmallModel'),
     extensionStates,
     profiles: arrayField(object, 'profiles').map(decodeProfileView),
     warning: optionalString(object, 'warning'),
@@ -485,11 +490,15 @@ function decodeModelView(value: unknown): ModelView {
 export function decodeConfigReloadResponse(value: unknown): {
   activeProfile: string
   activeModel: string
+  activeSmallProfile?: string
+  activeSmallModel?: string
 } {
   const object = decodeObject(value, 'config reload response')
   return {
     activeProfile: requiredString(object, 'activeProfile'),
     activeModel: requiredString(object, 'activeModel'),
+    activeSmallProfile: optionalString(object, 'activeSmallProfile'),
+    activeSmallModel: optionalString(object, 'activeSmallModel'),
   }
 }
 

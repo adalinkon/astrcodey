@@ -83,6 +83,7 @@ export interface SessionListItem {
   parentStorageSeq?: number
   phase: Phase
   firstUserMessage?: string
+  sourceExtension?: string
 }
 
 export interface SessionListResponse {
@@ -221,6 +222,8 @@ export interface ConfigView {
   configPath: string
   activeProfile: string
   activeModel: string
+  activeSmallProfile?: string
+  activeSmallModel?: string
   extensionStates: Record<string, boolean>
   profiles: ProfileView[]
   warning?: string

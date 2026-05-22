@@ -410,10 +410,15 @@ impl CommandHandler {
             },
             CommandMessage::InjectMidTurnForSession { session_id, text } => {
                 if let Err(error) = self
-                    .inject_mid_turn_message_for_session(&session_id, text)
+                    .inject_mid_turn_message_for_session(&session_id, text.clone())
                     .await
                 {
-                    tracing::warn!(%session_id, error = %error, "failed to inject mid-turn message");
+                    if matches!(error, HandlerError::NoActiveTurn) {
+                        tracing::info!(%session_id, "parent turn finished, queuing child output for next turn");
+                        self.enqueue_input_for_next_turn(session_id, text);
+                    } else {
+                        tracing::warn!(%session_id, error = %error, "failed to inject mid-turn message");
+                    }
                 }
             },
             CommandMessage::CompactSession {

@@ -42,6 +42,8 @@ pub(crate) struct ToolRuntimeCapabilities {
     pub file_observation_store: Option<Arc<dyn FileObservationStore>>,
     /// 会话原子操作能力，供 agent 工具使用。
     pub session_ops: Option<Arc<dyn astrcode_core::tool::SessionOperations>>,
+    /// 小模型 ID，供子 agent 工具使用。
+    pub small_model_id: Option<String>,
 }
 
 pub(crate) struct ToolCallRuntimeContext {
@@ -127,10 +129,15 @@ fn error_tool_result(
 pub async fn execute_tool_call(
     tool_registry: Arc<ToolRegistry>,
     runtime: ToolCallRuntimeContext,
-    call: ExecutableToolCall,
+    mut call: ExecutableToolCall,
 ) -> (usize, ToolResult) {
     let policy = tool_registry.background_policy(&call.name);
     let effective_policy = resolve_effective_policy(policy, &call.tool_input);
+
+    // run_in_background 是执行层元参数，不属于工具本身的入参。
+    if let Some(obj) = call.tool_input.as_object_mut() {
+        obj.remove("runInBackground");
+    }
 
     match effective_policy {
         BackgroundPolicy::Never => execute_tool_call_blocking(tool_registry, runtime, call).await,
@@ -146,7 +153,7 @@ fn resolve_effective_policy(
     tool_input: &serde_json::Value,
 ) -> BackgroundPolicy {
     match tool_input
-        .get("run_in_background")
+        .get("runInBackground")
         .and_then(|v| v.as_bool())
     {
         // 显式请求后台化：立即转入后台（阈值 0）
@@ -199,6 +206,7 @@ async fn execute_tool_call_blocking(
         event_tx: tool_event_tx,
         capabilities: ToolCapabilities {
             model_id: Some(runtime.model_id),
+            small_model_id: runtime.capabilities.small_model_id,
             available_tools: Some(runtime.tools),
             tool_result_reader: runtime.tool_result_reader,
             background_task_reader: runtime.capabilities.background_task_reader,
@@ -277,6 +285,7 @@ async fn execute_tool_call_with_background(
         event_tx: tool_event_tx,
         capabilities: ToolCapabilities {
             model_id: Some(runtime.model_id.clone()),
+            small_model_id: runtime.capabilities.small_model_id.clone(),
             available_tools: Some(runtime.tools.clone()),
             tool_result_reader: runtime.tool_result_reader.clone(),
             background_task_reader: runtime.capabilities.background_task_reader.clone(),
@@ -403,10 +412,9 @@ async fn background_tool_call(
         "tool execution moved to background"
     );
 
-    let bg_reason = if threshold_secs == 0 {
-        "explicit".to_string()
-    } else {
-        "auto_threshold".to_string()
+    let bg_reason: String = match threshold_secs {
+        0 => "explicit".into(),
+        _ => "auto_threshold".into(),
     };
     send_event(
         runtime.event_tx.as_ref(),
@@ -519,5 +527,103 @@ impl FileObservationStore for InMemoryFileObservationStore {
     fn load(&self, path: &str) -> Option<FileObservation> {
         let map = self.observations.lock();
         map.get(path).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use astrcode_core::tool::{BackgroundPolicy, ToolError};
+
+    use super::*;
+
+    #[test]
+    fn resolve_effective_policy_explicit_true() {
+        let input = serde_json::json!({ "runInBackground": true });
+        let result = resolve_effective_policy(
+            BackgroundPolicy::AutoAfter { threshold_secs: 60 },
+            &input,
+        );
+        assert_eq!(result, BackgroundPolicy::AutoAfter { threshold_secs: 0 });
+    }
+
+    #[test]
+    fn resolve_effective_policy_explicit_false() {
+        let input = serde_json::json!({ "runInBackground": false });
+        let result = resolve_effective_policy(
+            BackgroundPolicy::AutoAfter { threshold_secs: 60 },
+            &input,
+        );
+        assert_eq!(result, BackgroundPolicy::Never);
+    }
+
+    #[test]
+    fn resolve_effective_policy_missing_field_returns_declared() {
+        let input = serde_json::json!({ "command": "echo hi" });
+        let result = resolve_effective_policy(
+            BackgroundPolicy::AutoAfter { threshold_secs: 60 },
+            &input,
+        );
+        assert_eq!(
+            result,
+            BackgroundPolicy::AutoAfter { threshold_secs: 60 }
+        );
+    }
+
+    #[test]
+    fn resolve_effective_policy_declared_never_with_override() {
+        let input = serde_json::json!({ "runInBackground": true });
+        let result = resolve_effective_policy(BackgroundPolicy::Never, &input);
+        assert_eq!(result, BackgroundPolicy::AutoAfter { threshold_secs: 0 });
+    }
+
+    #[test]
+    fn resolve_effective_policy_non_bool_is_none() {
+        let input = serde_json::json!({ "runInBackground": "yes" });
+        let result = resolve_effective_policy(
+            BackgroundPolicy::AutoAfter { threshold_secs: 30 },
+            &input,
+        );
+        assert_eq!(
+            result,
+            BackgroundPolicy::AutoAfter { threshold_secs: 30 }
+        );
+    }
+
+    #[test]
+    fn error_tool_result_not_found() {
+        let result = error_tool_result(
+            "call-1".into(),
+            "my_tool",
+            ToolError::NotFound("missing".into()),
+            std::time::Duration::from_millis(50),
+        );
+        assert_eq!(result.call_id, "call-1");
+        assert!(result.is_error);
+        assert!(result.content.contains("missing"));
+        assert!(result.content.contains("Suggestion"));
+    }
+
+    #[test]
+    fn error_tool_result_timeout_includes_ms() {
+        let result = error_tool_result(
+            "call-2".into(),
+            "shell",
+            ToolError::Timeout(5000),
+            std::time::Duration::from_millis(5000),
+        );
+        assert!(result.content.contains("5000ms"));
+        assert_eq!(result.metadata["timeoutMs"], serde_json::json!(5000));
+    }
+
+    #[test]
+    fn error_tool_result_blocked() {
+        let result = error_tool_result(
+            "call-3".into(),
+            "shell",
+            ToolError::Blocked("policy reason".into()),
+            std::time::Duration::from_millis(10),
+        );
+        assert!(result.content.contains("blocked"));
+        assert!(result.content.contains("policy reason"));
     }
 }

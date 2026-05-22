@@ -413,6 +413,8 @@ pub enum SessionApiError {
 pub struct ToolCapabilities {
     /// 当前使用的模型标识（仅 FFI bridge 需要）。
     pub model_id: Option<String>,
+    /// 小模型标识，供子 agent 使用。
+    pub small_model_id: Option<String>,
     /// 当前可用的工具定义列表（仅 FFI bridge 需要）。
     pub available_tools: Option<Vec<ToolDefinition>>,
     /// 当前 session 的工具结果 artifact 读取能力（仅 `read` 工具需要）。

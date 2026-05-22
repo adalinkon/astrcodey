@@ -11,7 +11,7 @@
 //! - **会话管理**：`CreateSession`、`ResumeSession`、`ForkSession`、
 //!   `DeleteSession`、`ListSessions`、`SwitchSession`
 //! - **提示与交互**：`SubmitPrompt`、`Abort`
-//! - **配置变更**：`SetModel`、`SetThinkingLevel`、`Compact`
+//! - **配置变更**：`SetModel`、`Compact`
 //! - **状态查询**：`GetState`
 //! - **扩展命令**：`ListExtensionCommands`、`ExecuteExtensionCommand`
 //! - **UI 响应**：`UiResponse`
@@ -99,12 +99,6 @@ pub enum ClientCommand {
     /// # 参数
     /// - `model_id`: 模型标识符（如 "gpt-4"、"claude-3" 等）
     SetModel { model_id: String },
-
-    /// 设置思考级别。
-    ///
-    /// # 参数
-    /// - `level`: 思考级别字符串（如 "low"、"medium"、"high"）
-    SetThinkingLevel { level: String },
 
     /// 压缩当前会话上下文。
     ///
@@ -194,4 +188,130 @@ pub enum UiResponseValue {
     ///
     /// 用于仅需要确认收到通知的场景。
     NotifyAck,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json;
+
+    use super::*;
+
+    fn roundtrip(cmd: &ClientCommand) -> ClientCommand {
+        let json = serde_json::to_string(cmd).unwrap();
+        serde_json::from_str(&json).unwrap()
+    }
+
+    #[test]
+    fn submit_prompt_roundtrip() {
+        let cmd = ClientCommand::SubmitPrompt {
+            text: "hello".into(),
+            attachments: vec![Attachment {
+                filename: "test.rs".into(),
+                content: "fn main() {}".into(),
+                media_type: "text/x-rust".into(),
+            }],
+        };
+        let parsed = roundtrip(&cmd);
+        assert!(matches!(parsed, ClientCommand::SubmitPrompt { .. }));
+        if let ClientCommand::SubmitPrompt { text, attachments } = parsed {
+            assert_eq!(text, "hello");
+            assert_eq!(attachments.len(), 1);
+            assert_eq!(attachments[0].filename, "test.rs");
+        }
+    }
+
+    #[test]
+    fn submit_prompt_serializes_snake_case_method() {
+        let cmd = ClientCommand::SubmitPrompt {
+            text: "hi".into(),
+            attachments: vec![],
+        };
+        let json = serde_json::to_value(&cmd).unwrap();
+        assert_eq!(json["method"], "submit_prompt");
+    }
+
+    #[test]
+    fn create_session_roundtrip() {
+        let cmd = ClientCommand::CreateSession {
+            working_dir: "/tmp".into(),
+        };
+        let parsed = roundtrip(&cmd);
+        if let ClientCommand::CreateSession { working_dir } = parsed {
+            assert_eq!(working_dir, "/tmp");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn fork_session_without_cursor() {
+        let cmd = ClientCommand::ForkSession {
+            session_id: "s1".into(),
+            at_cursor: None,
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(!json.contains("at_cursor"));
+        let parsed: ClientCommand = serde_json::from_str(&json).unwrap();
+        if let ClientCommand::ForkSession { session_id, at_cursor } = parsed {
+            assert_eq!(session_id, "s1");
+            assert!(at_cursor.is_none());
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn ui_response_confirm_roundtrip() {
+        let cmd = ClientCommand::UiResponse {
+            request_id: "r1".into(),
+            value: UiResponseValue::Confirm { accepted: true },
+        };
+        let parsed = roundtrip(&cmd);
+        if let ClientCommand::UiResponse { request_id, value } = parsed {
+            assert_eq!(request_id, "r1");
+            assert!(matches!(value, UiResponseValue::Confirm { accepted: true }));
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn ui_response_select_roundtrip() {
+        let value = UiResponseValue::Select {
+            selected: "option_a".into(),
+        };
+        let json = serde_json::to_string(&value).unwrap();
+        let parsed: UiResponseValue = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, UiResponseValue::Select { .. }));
+    }
+
+    #[test]
+    fn ui_response_input_roundtrip() {
+        let value = UiResponseValue::Input {
+            text: "some input".into(),
+        };
+        let json = serde_json::to_string(&value).unwrap();
+        let parsed: UiResponseValue = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, UiResponseValue::Input { .. }));
+    }
+
+    #[test]
+    fn list_sessions_roundtrip() {
+        let cmd = ClientCommand::ListSessions;
+        let parsed = roundtrip(&cmd);
+        assert!(matches!(parsed, ClientCommand::ListSessions));
+    }
+
+    #[test]
+    fn compact_roundtrip() {
+        let cmd = ClientCommand::Compact {
+            keep_recent_turns: Some(5),
+        };
+        let parsed = roundtrip(&cmd);
+        if let ClientCommand::Compact { keep_recent_turns } = parsed {
+            assert_eq!(keep_recent_turns, Some(5));
+        } else {
+            panic!("wrong variant");
+        }
+    }
 }

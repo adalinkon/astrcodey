@@ -250,10 +250,6 @@ impl CommandHandler {
             ClientCommand::UiResponse { request_id, value } => {
                 self.handle_ui_response(request_id, value).await?;
             },
-
-            _ => {
-                return Err(HandlerError::Other("Not implemented".into()));
-            },
         }
         Ok(())
     }

@@ -120,7 +120,7 @@ pub fn reduce(event: &Event, model: &mut SessionReadModel) {
             let mut msg = LlmMessage::assistant(text);
             msg.reasoning_content = reasoning_content.clone();
             model.messages.push(msg);
-            model.phase = Phase::Idle;
+            model.phase = Phase::Thinking;
         },
         EventPayload::ToolCallRequested {
             call_id,
@@ -250,13 +250,25 @@ pub fn reduce(event: &Event, model: &mut SessionReadModel) {
             model.phase = Phase::Compacting;
         },
         EventPayload::CompactionCompleted { .. } => {
-            model.phase = Phase::Idle;
+            model.phase = if model.pending_tool_calls.is_empty() {
+                Phase::Idle
+            } else {
+                Phase::CallingTool
+            };
         },
         EventPayload::CompactionSkipped { .. } => {
-            model.phase = Phase::Idle;
+            model.phase = if model.pending_tool_calls.is_empty() {
+                Phase::Idle
+            } else {
+                Phase::CallingTool
+            };
         },
         EventPayload::CompactionFailed { .. } => {
-            model.phase = Phase::Idle;
+            model.phase = if model.pending_tool_calls.is_empty() {
+                Phase::Idle
+            } else {
+                Phase::CallingTool
+            };
         },
         EventPayload::Custom { .. } => {},
         EventPayload::RecapGenerated { .. } => {},

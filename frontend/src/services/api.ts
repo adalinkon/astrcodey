@@ -181,6 +181,8 @@ export async function getConfig(): Promise<ConfigView> {
 export async function reloadConfig(): Promise<{
   activeProfile: string
   activeModel: string
+  activeSmallProfile?: string
+  activeSmallModel?: string
 }> {
   return decodeConfigReloadResponse(
     await request('/api/config/reload', {
@@ -191,12 +193,17 @@ export async function reloadConfig(): Promise<{
 
 export async function updateActiveSelection(
   activeProfile: string,
-  activeModel: string
+  activeModel: string,
+  activeSmallProfile?: string,
+  activeSmallModel?: string
 ): Promise<{ success: boolean; warning?: string }> {
+  const body: Record<string, unknown> = { activeProfile, activeModel }
+  if (activeSmallProfile) body.activeSmallProfile = activeSmallProfile
+  if (activeSmallModel) body.activeSmallModel = activeSmallModel
   return decodeActiveSelectionResponse(
     await request('/api/config/active-selection', {
       method: 'POST',
-      body: JSON.stringify({ activeProfile, activeModel }),
+      body: JSON.stringify(body),
     })
   )
 }

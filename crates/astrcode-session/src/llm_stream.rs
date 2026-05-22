@@ -206,3 +206,60 @@ pub fn provider_visible_messages(messages: Vec<LlmMessage>) -> Vec<LlmMessage> {
         .filter(LlmMessage::has_provider_visible_content)
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use astrcode_core::llm::LlmMessage;
+
+    use super::*;
+
+    #[test]
+    fn non_empty_reasoning_returns_some() {
+        assert_eq!(
+            non_empty_reasoning_content("thinking...".into()),
+            Some("thinking...".into())
+        );
+    }
+
+    #[test]
+    fn non_empty_reasoning_empty_returns_none() {
+        assert_eq!(non_empty_reasoning_content(String::new()), None);
+    }
+
+    #[test]
+    fn assistant_message_with_thinking_sets_reasoning() {
+        let msg = assistant_message_with_thinking("hi", Some("reason".into()));
+        assert_eq!(msg.reasoning_content.as_deref(), Some("reason"));
+        assert!(msg.content.iter().any(|c| matches!(
+            c,
+            astrcode_core::llm::LlmContent::Text { text } if text == "hi"
+        )));
+    }
+
+    #[test]
+    fn assistant_message_without_thinking() {
+        let msg = assistant_message_with_thinking("hi", None);
+        assert!(msg.reasoning_content.is_none());
+    }
+
+    #[test]
+    fn provider_visible_filters_empty_system_messages() {
+        let messages = vec![
+            LlmMessage::user("hello"),
+            LlmMessage::system(""),
+        ];
+        let visible = provider_visible_messages(messages);
+        assert_eq!(visible.len(), 1);
+        assert!(matches!(visible[0].role, astrcode_core::llm::LlmRole::User));
+    }
+
+    #[test]
+    fn provider_visible_keeps_non_empty() {
+        let messages = vec![
+            LlmMessage::user("hello"),
+            LlmMessage::assistant("world"),
+        ];
+        let visible = provider_visible_messages(messages);
+        assert_eq!(visible.len(), 2);
+    }
+}

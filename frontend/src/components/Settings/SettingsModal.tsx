@@ -16,7 +16,12 @@ interface SettingsModalProps {
   onClose: () => void
   getConfig: () => Promise<ConfigView>
   reloadConfig: () => Promise<void>
-  saveActiveSelection: (profile: string, model: string) => Promise<void>
+  saveActiveSelection: (
+    profile: string,
+    model: string,
+    smallProfile?: string,
+    smallModel?: string
+  ) => Promise<void>
   testConnection: () => Promise<ModelTestResult>
 }
 
@@ -39,6 +44,8 @@ export default function SettingsModal({
   const [configView, setConfigView] = useState<ConfigView | null>(null)
   const [selectedProfile, setSelectedProfile] = useState('')
   const [selectedModel, setSelectedModel] = useState('')
+  const [selectedSmallProfile, setSelectedSmallProfile] = useState('')
+  const [selectedSmallModel, setSelectedSmallModel] = useState('')
   const [testResult, setTestResult] = useState<ModelTestResult | null>(null)
   const [loading, setLoading] = useState(true)
   const [testing, setTesting] = useState(false)
@@ -56,6 +63,8 @@ export default function SettingsModal({
         setConfigView(cfg)
         setSelectedProfile(cfg.activeProfile)
         setSelectedModel(cfg.activeModel)
+        setSelectedSmallProfile(cfg.activeSmallProfile ?? '')
+        setSelectedSmallModel(cfg.activeSmallModel ?? '')
       } catch (err) {
         if (!cancelled) setErrorMessage(String(err))
       } finally {
@@ -87,7 +96,12 @@ export default function SettingsModal({
     setSaving(true)
     setErrorMessage(null)
     try {
-      await saveActiveSelection(selectedProfile, selectedModel)
+      await saveActiveSelection(
+        selectedProfile,
+        selectedModel,
+        selectedSmallProfile || undefined,
+        selectedSmallModel || undefined
+      )
       onClose()
     } catch (err) {
       setErrorMessage(String(err))
@@ -119,6 +133,8 @@ export default function SettingsModal({
       setConfigView(cfg)
       setSelectedProfile(cfg.activeProfile)
       setSelectedModel(cfg.activeModel)
+      setSelectedSmallProfile(cfg.activeSmallProfile ?? '')
+      setSelectedSmallModel(cfg.activeSmallModel ?? '')
       setTestResult(null)
     } catch (err) {
       setErrorMessage(String(err))
@@ -206,6 +222,56 @@ export default function SettingsModal({
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div className="mb-4">
+              <label className="block mb-2 text-text-secondary text-[13px] font-semibold">
+                Small Model
+              </label>
+              <select
+                className={`${fieldInput} mb-2`}
+                value={selectedSmallProfile}
+                onChange={(e) => {
+                  const name = e.target.value
+                  const profile = profiles.find((p) => p.name === name)
+                  setSelectedSmallProfile(name)
+                  setSelectedSmallModel(
+                    name && profile?.models.length ? profile.models[0].id : ''
+                  )
+                  setTestResult(null)
+                  setErrorMessage(null)
+                }}
+              >
+                <option value="">不使用</option>
+                {profiles.map((p) => (
+                  <option key={p.name} value={p.name}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              {selectedSmallProfile && (
+                <select
+                  className={fieldInput}
+                  value={selectedSmallModel}
+                  onChange={(e) => {
+                    setSelectedSmallModel(e.target.value)
+                    setTestResult(null)
+                    setErrorMessage(null)
+                  }}
+                  disabled={
+                    !profiles.find((p) => p.name === selectedSmallProfile)
+                      ?.models.length
+                  }
+                >
+                  {profiles
+                    .find((p) => p.name === selectedSmallProfile)
+                    ?.models.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.id}
+                      </option>
+                    ))}
+                </select>
+              )}
             </div>
 
             <div className="mb-4 rounded-xl border border-border divide-y divide-border">

@@ -17,7 +17,7 @@ use astrcode_core::{
     },
     types::{Cursor, SessionId, project_key_from_path, validate_session_id},
 };
-use astrcode_support::hostpaths;
+use astrcode_support::{hostpaths, perf_snapshot};
 use chrono::Utc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -314,8 +314,14 @@ impl EventStore for FileSystemSessionRepository {
         validate_session_id(session_id.as_str())
             .map_err(|e| StorageError::InvalidId(e.to_string()))?;
 
-        let dir = match (parent_session_id, source_extension) {
-            (Some(parent_id), Some(extension)) => {
+        let dir = match parent_session_id {
+            Some(parent_id) => {
+                let extension = source_extension.ok_or_else(|| {
+                    StorageError::InvalidId(
+                        "child session requires source_extension to choose subagents directory"
+                            .into(),
+                    )
+                })?;
                 let parent_dir = self.existing_session_dir(parent_id).await?;
                 let extension_dir = source_extension_dir_component(extension)?;
                 parent_dir
@@ -323,7 +329,7 @@ impl EventStore for FileSystemSessionRepository {
                     .join(extension_dir)
                     .join(session_id.as_str())
             },
-            _ => self.session_dir_from_working_dir(working_dir, session_id),
+            None => self.session_dir_from_working_dir(working_dir, session_id),
         };
         tokio::fs::create_dir_all(&dir).await?;
 
@@ -354,6 +360,8 @@ impl EventStore for FileSystemSessionRepository {
                 projection: RwLock::new(projection),
             }),
         );
+
+        perf_snapshot::capture_event("storage.create_session", &stored_event);
 
         Ok(stored_event)
     }
@@ -1208,17 +1216,9 @@ mod tests {
         let base_path = temp_dir.path().join("projects");
         let session_id = SessionId::from("session-test");
         let repo = test_repo(base_path.clone());
-        let parent_id = SessionId::from("parent");
-        repo.create_session(
-            &session_id,
-            "D:/work/project",
-            "mock",
-            Some(&parent_id),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+        repo.create_session(&session_id, "D:/work/project", "mock", None, None, None)
+            .await
+            .unwrap();
 
         let reopened = test_repo(base_path);
         let summaries = reopened.list_session_summaries().await.unwrap();
@@ -1227,13 +1227,28 @@ mod tests {
         assert_eq!(summaries[0].session_id, session_id);
         assert_eq!(summaries[0].working_dir, "D:/work/project");
         assert_eq!(summaries[0].model_id, "mock");
-        assert_eq!(
-            summaries[0]
-                .parent_session_id
-                .as_ref()
-                .map(SessionId::as_str),
-            Some("parent")
-        );
+        assert_eq!(summaries[0].parent_session_id, None);
+    }
+
+    #[tokio::test]
+    async fn child_session_without_source_extension_is_rejected() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo = test_repo(temp_dir.path().join("projects"));
+        let parent_id = SessionId::from("parent");
+        let child_id = SessionId::from("child");
+        repo.create_session(&parent_id, ".", "mock", None, None, None)
+            .await
+            .unwrap();
+
+        let error = repo
+            .create_session(&child_id, ".", "mock", Some(&parent_id), None, None)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            StorageError::InvalidId(message) if message.contains("source_extension")
+        ));
     }
 
     #[tokio::test]
