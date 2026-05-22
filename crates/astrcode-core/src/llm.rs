@@ -285,8 +285,6 @@ pub struct LlmClientConfig {
     pub max_retries: u32,
     /// 指数退避的基础延迟（毫秒）。
     pub retry_base_delay_ms: u64,
-    /// 采样温度（0.0-2.0），None 使用 API 默认值。
-    pub temperature: Option<f32>,
     /// 当前模型是否为 reasoning/thinking 模式。
     pub reasoning: bool,
     /// 是否请求 provider 分离 reasoning/thinking 到独立字段（如 MiniMax reasoning_split）。
@@ -308,7 +306,6 @@ impl Default for LlmClientConfig {
             read_timeout_secs: 90,
             max_retries: 2,
             retry_base_delay_ms: 250,
-            temperature: None,
             reasoning: false,
             reasoning_split: false,
             supports_prompt_cache_key: false,

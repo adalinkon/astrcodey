@@ -514,7 +514,6 @@ impl<A: ChatAccumulator> OpenAiProvider<A> {
             body["tools"] = tools_to_json(tools);
             body["tool_choice"] = serde_json::json!("auto");
         }
-        self.apply_temperature(&mut body);
         self.apply_prompt_cache_fields(&mut body, messages, tools);
         if self.config.reasoning_split {
             body["reasoning_split"] = serde_json::json!(true);
@@ -557,19 +556,9 @@ impl<A: ChatAccumulator> OpenAiProvider<A> {
             body["parallel_tool_calls"] = serde_json::json!(true);
             body["tools"] = responses_tools_json(tools);
         }
-        self.apply_temperature(&mut body);
         self.apply_prompt_cache_fields(&mut body, messages, tools);
 
         body
-    }
-
-    fn apply_temperature(&self, body: &mut serde_json::Value) {
-        if self.config.reasoning {
-            return;
-        }
-        if let Some(t) = self.config.temperature {
-            body["temperature"] = serde_json::json!(t);
-        }
     }
 
     fn apply_prompt_cache_fields(
@@ -1065,26 +1054,6 @@ mod tests {
         let a = p.build_request_body(&messages, &[sample_tool()]);
         let b = p.build_request_body(&messages, &[other]);
         assert_ne!(a["prompt_cache_key"], b["prompt_cache_key"]);
-    }
-
-    #[test]
-    fn reasoning_request_omits_temperature() {
-        let config = LlmClientConfig {
-            temperature: Some(0.2),
-            reasoning: true,
-            ..LlmClientConfig::default()
-        };
-        let p = StandardProvider::new(
-            config,
-            OpenAiApiMode::ChatCompletions,
-            "reasoning-model".into(),
-            Some(1024),
-            Some(8192),
-        );
-
-        let body = p.build_request_body(&[LlmMessage::user("hi")], &[]);
-
-        assert!(body.get("temperature").is_none());
     }
 
     #[test]

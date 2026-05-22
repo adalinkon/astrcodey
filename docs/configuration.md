@@ -23,7 +23,6 @@ null in runtime is default
     "llmConnectTimeoutSecs": 60,
     "llmReadTimeoutSecs": 120,
     "llmMaxRetries": 3,
-    "llmTemperature": 0.7,
     "compactAutoEnabled": true,
     "compactThresholdPercent": 83.5,
     "compactKeepRecentTurns": null,
@@ -97,7 +96,6 @@ Each model in `models` array:
 | `llmReadTimeoutSecs` | number | 120 | LLM read timeout (seconds) |
 | `llmMaxRetries` | number | 3 | Maximum retry attempts for failed requests |
 | `llmRetryBaseDelayMs` | number | 500 | Base delay for exponential backoff (milliseconds) |
-| `llmTemperature` | number | null | Sampling temperature (0.0-2.0), null uses API default |
 | `compactAutoEnabled` | boolean | true | Enable automatic context compaction |
 | `compactThresholdPercent` | number | 83.5 | Trigger auto-compact when context usage exceeds this percentage |
 | `compactMaxRetryAttempts` | number | 3 | Maximum retry attempts for compaction |
@@ -149,7 +147,7 @@ Create `.astrcode/config.json` in your project directory to override global sett
   "activeProfile": "project-specific",
   "activeModel": "custom-model",
   "runtime": {
-    "llmTemperature": 0.5
+    "llmMaxRetries": 5
   }
 }
 ```

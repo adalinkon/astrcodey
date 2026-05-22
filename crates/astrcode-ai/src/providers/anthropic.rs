@@ -150,10 +150,6 @@ impl LlmProvider for AnthropicProvider {
         if !tools.is_empty() {
             request_body["tools"] = convert_tools(&tools);
         }
-        if let Some(t) = self.config.temperature {
-            request_body["temperature"] = serde_json::json!(t);
-        }
-
         let endpoint = self.endpoint();
         let headers = vec![
             ("x-api-key".into(), self.config.api_key.clone()),

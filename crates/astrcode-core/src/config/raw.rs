@@ -130,8 +130,6 @@ pub struct RuntimeSection {
     pub llm_max_retries: Option<u32>,
     /// LLM 重试的指数退避基础延迟（毫秒）。
     pub llm_retry_base_delay_ms: Option<u64>,
-    /// LLM 采样温度（0.0-2.0）。未设置时使用 API 默认值。
-    pub llm_temperature: Option<f32>,
     // ── Compact ───────────────────────────────────────────────────────
     /// 是否启用自动压缩。
     pub compact_auto_enabled: Option<bool>,

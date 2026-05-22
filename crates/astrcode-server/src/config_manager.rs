@@ -35,7 +35,6 @@ fn build_provider_from_settings(settings: &LlmSettings) -> Arc<dyn LlmProvider> 
         read_timeout_secs: settings.read_timeout_secs,
         max_retries: settings.max_retries,
         retry_base_delay_ms: settings.retry_base_delay_ms,
-        temperature: settings.temperature,
         reasoning: settings.reasoning,
         reasoning_split: settings.reasoning_split,
         supports_prompt_cache_key: settings.supports_prompt_cache_key,

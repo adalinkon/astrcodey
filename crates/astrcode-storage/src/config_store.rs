@@ -68,11 +68,28 @@ impl ConfigStore for FileConfigStore {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
             if !path.exists() {
-                return Ok(Config::default());
+                let config = Config::default();
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Ok(json) = serde_json::to_string_pretty(&config) {
+                    let tmp = path.with_extension("json.tmp");
+                    if std::fs::write(&tmp, &json).is_ok() {
+                        let _ = std::fs::rename(&tmp, &path);
+                    }
+                }
+                return Ok(config);
             }
             let data = std::fs::read_to_string(&path)?;
             let config: Config =
                 serde_json::from_str(&data).map_err(|e| friendly_deser_error(&e, &path))?;
+            // Re-serialize to backfill any new fields added since the file was written.
+            if let Ok(json) = serde_json::to_string_pretty(&config) {
+                let tmp = path.with_extension("json.tmp");
+                if std::fs::write(&tmp, &json).is_ok() {
+                    let _ = std::fs::rename(&tmp, &path);
+                }
+            }
             Ok(config)
         })
         .await

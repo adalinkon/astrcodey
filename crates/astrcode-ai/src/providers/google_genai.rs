@@ -102,9 +102,6 @@ impl GeminiProvider {
                 "parts": [{"text": system_texts.join("\n\n")}]
             });
         }
-        if let Some(t) = self.config.temperature {
-            body["generationConfig"]["temperature"] = serde_json::json!(t);
-        }
         if !tools.is_empty() {
             body["tools"] = convert_tools_to_gemini(tools);
         }

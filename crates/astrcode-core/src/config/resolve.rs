@@ -73,7 +73,6 @@ fn resolve_llm_settings(
         retry_base_delay_ms: runtime
             .llm_retry_base_delay_ms
             .unwrap_or(super::defaults::DEFAULT_LLM_RETRY_BASE_DELAY_MS),
-        temperature: runtime.llm_temperature,
         supports_prompt_cache_key: openai_capabilities
             .and_then(|c| c.supports_prompt_cache_key)
             .unwrap_or(false),
@@ -330,34 +329,6 @@ mod tests {
         assert_eq!(effective.llm.model_id, "deepseek-chat");
         // 未配置小模型时回退到主模型
         assert_eq!(effective.small_llm.model_id, "deepseek-chat");
-    }
-
-    #[test]
-    fn test_runtime_temperature_is_resolved() {
-        let mut config = Config {
-            profiles: vec![Profile {
-                name: "deepseek".into(),
-                provider_kind: "openai".into(),
-                base_url: "https://api.deepseek.com".into(),
-                api_key: Some("sk-test".into()),
-                api_mode: Some(OpenAiApiMode::ChatCompletions),
-                openai_capabilities: None,
-                models: vec![ModelConfig {
-                    id: "deepseek-chat".into(),
-                    max_tokens: Some(8192),
-                    context_limit: Some(65536),
-                    reasoning: None,
-                    reasoning_split: None,
-                }],
-            }],
-            active_profile: "deepseek".into(),
-            active_model: "deepseek-chat".into(),
-            ..Config::default()
-        };
-        config.runtime.llm_temperature = Some(0.2);
-
-        let effective = config.into_effective().unwrap();
-        assert_eq!(effective.llm.temperature, Some(0.2));
     }
 
     #[test]
