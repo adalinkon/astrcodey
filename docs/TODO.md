@@ -8,24 +8,20 @@
 
 - [ ]  插件增加配置功能
 - [ ]  以前写过的子agent管理加入进去，减少异步agent带来的问题，优化后台任务逻辑
-- [ ]  系统提示词sessionstart固定化，保证kv缓存,需要触发 compact（手动 /compact 或自动 compact）或者来重新build
-- [ ]  优化后台任务逻辑，减少异步agent带来的问题
   
 
 ## 中优先级
 
 - [ ] 会话 Fork/Branch 功能
   - [x] 基础 Fork 实现（SessionManager::fork + HTTP 路由 + ACP/SSE 支持）
-  - [ ] 会话树可视化
   - [ ] 分支点管理
-  - [ ] 合并/变基支持
 
 
 - [ ] ACP 协议完善
 
 ## 较低优先级
 
-- [ ] 通过 hook 实现审批插件安全流程，权限系统
+- [ ] 通过 hook 实现审批插件安全流程，权限系统，实现bypass和 人工确认
   - [ ] 危险操作确认机制
   - [ ] 策略引擎集成点
   - [ ] 审计日志增强
@@ -76,3 +72,5 @@
 - [x] recap功能
 - [x] 前端状态栏实时更新（StatusItemUpdate 通过 SSE 推送）
 - [x] Memory系统
+- [x]  系统提示词sessionstart固定化，保证kv缓存,需要触发 compact（手动 /compact 或自动 compact）或者来重新build
+- [x]  优化后台任务逻辑，减少异步agent带来的问题
