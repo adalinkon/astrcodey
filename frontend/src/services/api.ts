@@ -1,4 +1,5 @@
 import { getHostBridge } from '../lib/hostBridge'
+import { isTauriEnvironment } from '../lib/tauri'
 import {
   decodeActiveSelectionResponse,
   decodeAvailableModels,
@@ -28,6 +29,16 @@ import type {
 let baseUrl = ''
 let authToken = ''
 
+let _tauriFetch: typeof window.fetch | null = null
+
+async function resolveFetch(): Promise<typeof window.fetch> {
+  if (isTauriEnvironment() && !_tauriFetch) {
+    const { fetch } = await import('@tauri-apps/plugin-http')
+    _tauriFetch = fetch as unknown as typeof window.fetch
+  }
+  return _tauriFetch ?? window.fetch
+}
+
 export function setServerPort(port: number, token?: string): void {
   baseUrl = `http://127.0.0.1:${port}`
   if (token) authToken = token
@@ -54,13 +65,14 @@ export function initBaseUrl(): void {
 }
 
 async function request(path: string, init?: RequestInit): Promise<unknown> {
+  const fetchFn = await resolveFetch()
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   }
   if (authToken) {
     headers['Authorization'] = `Bearer ${authToken}`
   }
-  const response = await fetch(`${baseUrl}${path}`, {
+  const response = await fetchFn(`${baseUrl}${path}`, {
     ...init,
     headers: {
       ...headers,
@@ -163,7 +175,8 @@ export async function deleteProject(
 
 export async function healthCheck(): Promise<boolean> {
   try {
-    const response = await fetch(`${baseUrl}/api/sessions`, {
+    const fetchFn = await resolveFetch()
+    const response = await fetchFn(`${baseUrl}/api/sessions`, {
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
     })
     return response.ok

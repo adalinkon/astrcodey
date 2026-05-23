@@ -6,7 +6,10 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use astrcode_context::context_assembler::LlmContextAssembler;
-use astrcode_core::{config::ConfigStore, extension::ExtensionHostServices, storage::EventStore};
+use astrcode_core::{
+    config::ConfigStore, extension::ExtensionHostServices, lifecycle::SessionResourceCleanup,
+    storage::EventStore,
+};
 use astrcode_extensions::{
     loader::{DiskExtensionSource, ExtensionLoadContext, ExtensionRuntime, WasmLimits},
     runner::ExtensionRunner,
@@ -185,6 +188,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
         Arc::clone(&event_store),
         Arc::clone(&config_manager),
         Arc::clone(&capabilities),
+        vec![Arc::new(TerminalCleanup)],
     ));
 
     // 7. 加载扩展。
@@ -202,12 +206,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
         tracing::warn!("Extension load error: {err}");
     }
 
-    // 8. 给扩展运行时绑定"创建子会话"的宿主能力。
-    extension_runner.bind_session_ops(Arc::new(
-        crate::session_operations::ServerSessionOperations {
-            session_manager: Arc::clone(&session_manager),
-        },
-    ));
+    // 8. 子会话操作能力绑定移至 spawn_server_system（需要 scheduler）。
 
     // 9. 返回运行时容器。
     Ok(ServerRuntime {
@@ -321,4 +320,15 @@ async fn load_extensions_into_runner(
         &[&bundled_source, &disk_source],
     )
     .await
+}
+
+// ─── SessionResourceCleanup 实现 ────────────────────────────────────────
+
+/// session 销毁/回收时清理 PTY 终端资源。
+struct TerminalCleanup;
+
+impl SessionResourceCleanup for TerminalCleanup {
+    fn cleanup(&self, session_id: &astrcode_core::types::SessionId) {
+        astrcode_tools::terminal_tool::cleanup_terminals_for_session(session_id.as_str());
+    }
 }

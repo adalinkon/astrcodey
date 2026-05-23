@@ -96,9 +96,15 @@ export type AgentSessionStatus = 'running' | 'completed' | 'failed'
 
 export interface AgentSessionLink {
   childSessionId: string
-  agentName: string
-  task: string
+  toolCallId?: string
+  agentName?: string
+  task?: string
   status: AgentSessionStatus
+  finalSessionId?: string
+  summary?: string
+  error?: string
+  phase?: Phase
+  currentTool?: string
 }
 
 export interface ConversationCursor {
@@ -192,6 +198,7 @@ export type ConversationDelta =
     }
   | { kind: 'toolCallBackgrounded'; callId: string; taskId: string }
   | { kind: 'agentSessionUpdated'; agentSession: AgentSessionLink }
+  | { kind: 'agentSessionRemoved'; childSessionId: string }
   | { kind: 'statusItemUpdate'; id: string; text: string }
   | { kind: 'extensionRegistryChanged' }
 

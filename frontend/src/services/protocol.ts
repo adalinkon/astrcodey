@@ -255,6 +255,11 @@ export function decodeConversationDelta(value: unknown): ConversationDelta {
         kind,
         agentSession: decodeAgentSessionLink(object.agentSession),
       }
+    case 'agentSessionRemoved':
+      return {
+        kind,
+        childSessionId: requiredString(object, 'childSessionId'),
+      }
     case 'statusItemUpdate':
       return {
         kind,
@@ -347,9 +352,15 @@ function decodeAgentSessionLink(value: unknown): AgentSessionLink {
   const object = decodeObject(value, 'agent session link')
   return {
     childSessionId: requiredString(object, 'childSessionId'),
-    agentName: requiredString(object, 'agentName'),
-    task: requiredString(object, 'task'),
+    toolCallId: optionalString(object, 'toolCallId'),
+    agentName: optionalString(object, 'agentName'),
+    task: optionalString(object, 'task'),
     status: decodeAgentSessionStatus(object.status),
+    finalSessionId: optionalString(object, 'finalSessionId'),
+    summary: optionalString(object, 'summary'),
+    error: optionalString(object, 'error'),
+    phase: object.phase == null ? undefined : decodePhase(object.phase),
+    currentTool: optionalString(object, 'currentTool'),
   }
 }
 

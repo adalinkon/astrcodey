@@ -19,6 +19,51 @@ fn main() {
     }
 }
 
+#[cfg(debug_assertions)]
+fn wait_for_dev_server() {
+    use std::net::{SocketAddr, TcpStream};
+
+    const DEV_ADDR: &str = "127.0.0.1:5173";
+    const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+    const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+    let addr: SocketAddr = DEV_ADDR.parse().expect("invalid dev server address");
+    let deadline = std::time::Instant::now() + MAX_WAIT;
+
+    tracing::info!("waiting for Vite dev server at {DEV_ADDR}...");
+    loop {
+        if TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).is_ok() {
+            tracing::info!("Vite dev server ready");
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            tracing::warn!("timed out waiting for Vite dev server, showing window anyway");
+            return;
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// 同步终止 sidecar 进程：先 child.kill()，再按 PID 杀进程树兜底。
+fn shutdown_sidecar(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<std::sync::Arc<commands::SidecarState>>() else {
+        return;
+    };
+    let pid = state.shutting_down();
+
+    // Windows 上 child.kill() 只杀目标进程，不杀子进程树；
+    // taskkill /T 按 PID 杀整棵进程树（shell 工具子进程等）。
+    #[cfg(target_os = "windows")]
+    if let Some(pid) = pid {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
 fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -44,11 +89,30 @@ fn run() -> anyhow::Result<()> {
         .setup(move |app| {
             coord_setup.attach_app_handle(app.handle().clone());
 
-            let coord_win = Arc::clone(&coord_setup);
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                coord_win.mark_main_window_ready();
-            });
+            #[cfg(debug_assertions)]
+            {
+                let window = app
+                    .get_webview_window("main")
+                    .expect("main window not found");
+                let coord_win = Arc::clone(&coord_setup);
+                std::thread::spawn(move || {
+                    wait_for_dev_server();
+                    let _ = window.show();
+                    coord_win.mark_main_window_ready();
+                });
+            }
+
+            #[cfg(not(debug_assertions))]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                }
+                let coord_win = Arc::clone(&coord_setup);
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    coord_win.mark_main_window_ready();
+                });
+            }
 
             Ok(())
         })
@@ -62,28 +126,15 @@ fn run() -> anyhow::Result<()> {
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application")
-        .run(move |app_handle, event| {
-            if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+        .run(move |app_handle, event| match event {
+            tauri::RunEvent::ExitRequested { .. } => {
                 coord_run.shutdown();
-                if let Some(state) =
-                    app_handle.try_state::<std::sync::Arc<commands::SidecarState>>()
-                {
-                    // Send graceful shutdown to sidecar HTTP server
-                    let port = state.port();
-                    if port > 0 {
-                        let client = reqwest::Client::builder()
-                            .timeout(std::time::Duration::from_secs(2))
-                            .build();
-                        if let Ok(client) = client {
-                            let url = format!("http://127.0.0.1:{port}/api/shutdown");
-                            tauri::async_runtime::spawn(async move {
-                                let _ = client.post(&url).send().await;
-                            });
-                        }
-                    }
-                    state.shutting_down();
-                }
-            }
+                shutdown_sidecar(&app_handle);
+            },
+            tauri::RunEvent::Exit => {
+                shutdown_sidecar(&app_handle);
+            },
+            _ => {},
         });
 
     Ok(())

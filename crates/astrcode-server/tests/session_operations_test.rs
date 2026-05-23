@@ -15,10 +15,13 @@ use astrcode_core::{
 };
 use astrcode_extensions::runner::ExtensionRunner;
 use astrcode_server::{
-    session_manager::SessionManager, session_operations::ServerSessionOperations,
+    server_event_bus::ServerEventBus, session_manager::SessionManager,
+    session_operations::ServerSessionOperations, turn_registry::TurnRegistry,
+    turn_scheduler::TurnScheduler,
 };
 use astrcode_session::SessionRuntimeServices;
 use astrcode_storage::in_memory::InMemoryEventStore;
+use astrcode_support::event_fanout::EventFanout;
 use tokio::sync::mpsc;
 
 struct StaticTextLlm {
@@ -115,8 +118,18 @@ fn build_test_ops(
         Arc::clone(&store),
         config,
         capabilities,
+        vec![],
     ));
-    Arc::new(ServerSessionOperations { session_manager })
+    let event_bus = Arc::new(ServerEventBus::new(Arc::new(EventFanout::new(1024))));
+    session_manager.bind_event_bus(event_bus);
+    let scheduler = Arc::new(TurnScheduler::new(
+        Arc::clone(&session_manager),
+        Arc::new(TurnRegistry::new()),
+    ));
+    Arc::new(ServerSessionOperations {
+        session_manager,
+        scheduler,
+    })
 }
 
 #[tokio::test]
@@ -187,27 +200,6 @@ async fn submit_turn_async_returns_backgrounded_and_completes() {
 
     let ops = build_test_ops(Arc::clone(&store), "async result");
 
-    // 注入 prompt_submit_hook：测试里直接写 UserMessage（生产环境由 actor 启动 turn）。
-    {
-        let store_for_hook = Arc::clone(&store);
-        ops.session_manager
-            .set_prompt_submit_hook(std::sync::Arc::new(move |sid, text| {
-                let store = Arc::clone(&store_for_hook);
-                tokio::spawn(async move {
-                    let msg_id = astrcode_core::types::new_message_id();
-                    let event = astrcode_core::event::Event::new(
-                        sid,
-                        None,
-                        astrcode_core::event::EventPayload::UserMessage {
-                            message_id: msg_id,
-                            text,
-                        },
-                    );
-                    let _ = store.append_event(event).await;
-                });
-            }));
-    }
-
     let handle = ops
         .create_session(
             parent_id.as_str(),
@@ -249,7 +241,7 @@ async fn submit_turn_async_returns_backgrounded_and_completes() {
     }
 
     // 给后台任务完成
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // 父 session 应有 AgentSessionCompleted
     let parent_model = store.session_read_model(&parent_id).await.unwrap();

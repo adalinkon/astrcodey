@@ -1,8 +1,12 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+};
 
 use astrcode_core::{
     event::{Event, EventPayload},
     extension::ExtensionEvent,
+    lifecycle::SessionResourceCleanup,
     storage::{EventStore, SessionReadModel, SessionSummary, StorageError},
     types::{Cursor, SessionId},
 };
@@ -10,19 +14,7 @@ use astrcode_session::{Session, SessionError, SessionRuntimeServices, SessionRun
 use astrcode_tools::registry::ToolRegistry;
 use parking_lot::Mutex;
 
-use crate::config_manager::ConfigManager;
-
-/// 会话创建后的回调类型，用于在 session 注册到 manager 时自动执行副作用（如 attach 到 event_bus）。
-pub type SessionAttachHook = Arc<dyn Fn(&Session) + Send + Sync>;
-
-/// 会话销毁后的回调类型，用于在 session 从 manager 移除时释放占位（如从 event_bus detach）。
-pub type SessionDetachHook = Arc<dyn Fn(&SessionId) + Send + Sync>;
-
-/// 子 agent 完成后向父 session 提交 prompt 的回调类型。
-///
-/// 由 actor 注入，调用方通过它把"通知文本"作为新 prompt 触发父 session 启动新 turn。
-/// 直接写 UserMessage 事件不会启动 turn，必须走 actor 的 SubmitInputForSession 路径。
-pub type PromptSubmitHook = Arc<dyn Fn(SessionId, String) + Send + Sync>;
+use crate::{config_manager::ConfigManager, server_event_bus::ServerEventBus};
 
 pub(crate) struct CreatedSession {
     pub(crate) session: Session,
@@ -47,8 +39,6 @@ pub enum SessionManagerError {
     Extension(#[from] astrcode_core::extension::ExtensionError),
     #[error("session created but no events found")]
     MissingStartEvent,
-    #[error("prompt submit hook is not set")]
-    PromptHookUnset,
 }
 
 /// Server 侧的 session 生命周期门面。
@@ -64,12 +54,8 @@ pub struct SessionManager {
     config: Arc<ConfigManager>,
     runtime_states: Mutex<HashMap<SessionId, Arc<SessionRuntimeState>>>,
     capabilities: Arc<SessionRuntimeServices>,
-    /// 可选的 attach 回调：子会话注册 runtime 后自动把 session 接入 event_bus 广播。
-    attach_hook: Mutex<Option<SessionAttachHook>>,
-    /// 可选的 detach 回调：session 销毁后释放 event_bus 占位，让同 sid 重建时能重新 attach。
-    detach_hook: Mutex<Option<SessionDetachHook>>,
-    /// 可选的 prompt 提交回调：异步子 agent 完成后用来给父 session 启动 turn。
-    prompt_submit_hook: Mutex<Option<PromptSubmitHook>>,
+    event_bus: OnceLock<Arc<ServerEventBus>>,
+    resource_cleanups: Vec<Arc<dyn SessionResourceCleanup>>,
 }
 
 impl SessionManager {
@@ -79,16 +65,23 @@ impl SessionManager {
         event_store: Arc<dyn EventStore>,
         config: Arc<ConfigManager>,
         capabilities: Arc<SessionRuntimeServices>,
+        resource_cleanups: Vec<Arc<dyn SessionResourceCleanup>>,
     ) -> Self {
         Self {
             event_store,
             config,
             runtime_states: Mutex::new(HashMap::new()),
             capabilities,
-            attach_hook: Mutex::new(None),
-            detach_hook: Mutex::new(None),
-            prompt_submit_hook: Mutex::new(None),
+            event_bus: OnceLock::new(),
+            resource_cleanups,
         }
+    }
+
+    /// 绑定事件总线。SessionManager 在 create/fork/open 返回 session 时自动 attach，
+    /// 在 delete/recycle 时自动 detach，确保 session 事件流始终与广播通道连通。
+    pub fn bind_event_bus(&self, event_bus: Arc<ServerEventBus>) {
+        // 幂等：如果已设置则静默忽略。
+        let _ = self.event_bus.set(event_bus);
     }
 
     fn get_or_create_runtime(&self, session_id: &SessionId) -> Arc<SessionRuntimeState> {
@@ -110,50 +103,15 @@ impl SessionManager {
         &self.config
     }
 
-    /// 设置 attach 回调。event_bus 创建后由调用方注入，子会话注册 runtime 时自动触发。
-    pub fn set_attach_hook(&self, hook: SessionAttachHook) {
-        *self.attach_hook.lock() = Some(hook);
-    }
-
-    /// 设置 detach 回调。session 销毁时触发，释放 event_bus 的 sid 占位。
-    pub fn set_detach_hook(&self, hook: SessionDetachHook) {
-        *self.detach_hook.lock() = Some(hook);
-    }
-
-    /// 设置 prompt 提交回调。actor 启动后注入，子 agent 完成后通过它给父 session 启动 turn。
-    pub fn set_prompt_submit_hook(&self, hook: PromptSubmitHook) {
-        *self.prompt_submit_hook.lock() = Some(hook);
-    }
-
-    /// 触发 prompt 提交回调（异步子 agent 完成后回调父 session）。
-    ///
-    /// hook 由 actor 启动时注入；调用方若在 hook 注入前调用，会得到
-    /// `Err(SessionManagerError::PromptHookUnset)`。
-    pub fn submit_prompt_to_session(
-        &self,
-        session_id: SessionId,
-        text: String,
-    ) -> Result<(), SessionManagerError> {
-        let hook = self
-            .prompt_submit_hook
-            .lock()
-            .clone()
-            .ok_or(SessionManagerError::PromptHookUnset)?;
-        hook(session_id, text);
-        Ok(())
-    }
-
-    /// 把子会话的 runtime 注册到 manager，并自动 attach 到 event_bus（如果 hook 已设置）。
+    /// 把子会话的 runtime 注册到 manager。
     ///
     /// 子会话由 `Session::spawn_child` 创建，其 runtime 不经过 `get_or_create_runtime`，
     /// 必须手动注册才能让后续 `open(child_sid)` 拿到同一个 runtime（共享广播通道）。
+    /// event_bus 的 attach 由 TurnScheduler 在 submit 时统一处理。
     pub(crate) fn register_child_session(&self, session: &Session) {
         let sid = session.id().clone();
         let runtime = session.runtime().clone();
         self.runtime_states.lock().insert(sid, runtime);
-        if let Some(hook) = self.attach_hook.lock().as_ref() {
-            hook(session);
-        }
     }
 
     /// 让所有已打开 session 的工具快照失效；下一次 turn 会按当前扩展集重建。
@@ -185,6 +143,10 @@ impl SessionManager {
         )
         .await?;
 
+        if let Some(bus) = self.event_bus.get() {
+            bus.attach(&session);
+        }
+
         let start_event = self
             .event_store
             .replay_events(&sid)
@@ -210,6 +172,9 @@ impl SessionManager {
             Arc::clone(&self.capabilities),
         )
         .await?;
+        if let Some(bus) = self.event_bus.get() {
+            bus.attach(&session);
+        }
         Ok(session)
     }
 
@@ -223,21 +188,30 @@ impl SessionManager {
         )
         .await?;
         self.event_store.delete_session(session_id).await?;
-        // 释放 event_bus 的 sid 占位，让同 sid 重建时能重新 attach。
-        if let Some(hook) = self.detach_hook.lock().as_ref() {
-            hook(session_id);
-        }
-        // 清理本 session 的 runtime（含 bg_tasks）后从 registry 移除。
+        self.cleanup_session_resources(session_id);
+        // 清理本 session 关联的持久化终端。
+        // 已通过 SessionResourceCleanup trait 注入，见 TerminalCleanup。
+        Ok(())
+    }
+
+    /// 释放 session 占用的进程内资源。
+    ///
+    /// delete 和 recycle 共享同一套清理流程，确保两条路径不会出现遗漏。
+    fn cleanup_session_resources(&self, session_id: &SessionId) {
+        // 清理 runtime（含 bg_tasks）后从 registry 移除。
         if let Some(runtime) = self.runtime_states.lock().remove(session_id) {
             runtime
                 .background_tasks()
                 .lock()
                 .cleanup_session(session_id);
         }
-        // 清理本 session 关联的持久化终端。
-        // TODO：更插件化的清理方式，避免直接依赖 tools 模块的实现细节。
-        astrcode_tools::terminal_tool::cleanup_terminals_for_session(session_id.as_str());
-        Ok(())
+        if let Some(bus) = self.event_bus.get() {
+            bus.detach(session_id);
+        }
+        // 外部资源清理（trait 注入）。
+        for cleanup in &self.resource_cleanups {
+            cleanup.cleanup(session_id);
+        }
     }
 
     // ─── 只读查询 ─────────────────────────────────────────────────────
@@ -250,6 +224,18 @@ impl SessionManager {
             .session_read_model(session_id)
             .await
             .map_err(SessionManagerError::from)
+    }
+
+    /// 返回当前 streaming 消息的瞬时快照。
+    ///
+    /// 仅在进程内有活跃 turn 时返回 `Some`；进程重启后丢失。
+    pub(crate) fn streaming_snapshot(
+        &self,
+        session_id: &SessionId,
+    ) -> Option<crate::server_event_bus::StreamingSnapshot> {
+        self.event_bus
+            .get()
+            .and_then(|bus| bus.streaming_snapshot(session_id))
     }
 
     pub(crate) async fn list_summaries(&self) -> Result<Vec<SessionSummary>, SessionManagerError> {
@@ -290,25 +276,30 @@ impl SessionManager {
             .map_err(SessionManagerError::from)
     }
 
+    /// 强制 fsync 指定会话的 durable event log。
+    pub(crate) async fn sync_durable_events(&self, session_id: &SessionId) {
+        if let Err(e) = self.event_store.sync_durable_events(session_id).await {
+            tracing::error!(session_id = %session_id, error = %e, "failed to sync durable events");
+        }
+    }
+
     pub(crate) async fn recycle_session(
         &self,
         session_id: &SessionId,
     ) -> Result<(), SessionManagerError> {
+        let model = self.event_store.session_read_model(session_id).await?;
+        Session::emit_lifecycle_for_read_model(
+            &self.capabilities,
+            session_id,
+            &model,
+            ExtensionEvent::SessionShutdown,
+        )
+        .await?;
         self.event_store
             .recycle_session(session_id)
             .await
             .map_err(SessionManagerError::from)?;
-        // ephemeral 子会话回收后清理 runtime 占位，避免 HashMap 无限膨胀。
-        // 同时释放 event_bus 的 sid 占位。
-        if let Some(runtime) = self.runtime_states.lock().remove(session_id) {
-            runtime
-                .background_tasks()
-                .lock()
-                .cleanup_session(session_id);
-        }
-        if let Some(hook) = self.detach_hook.lock().as_ref() {
-            hook(session_id);
-        }
+        self.cleanup_session_resources(session_id);
         Ok(())
     }
 
@@ -386,6 +377,10 @@ impl SessionManager {
             Arc::clone(&self.capabilities),
         )
         .await?;
+
+        if let Some(bus) = self.event_bus.get() {
+            bus.attach(&session);
+        }
 
         // 5. 写入 SessionForked 事件
         let fork_event = session

@@ -21,7 +21,8 @@
         "height": 800,
         "minWidth": 800,
         "minHeight": 600,
-        "useHttpsScheme": false
+        "useHttpsScheme": false,
+        "visible": false
       }
     ],
     "security": {

@@ -23,7 +23,7 @@ impl CommandHandler {
     pub(super) async fn recap_session(&mut self) -> Result<(), HandlerError> {
         let sid = self.ensure_session().await?;
 
-        if self.active_turns.contains_key(&sid) {
+        if self.scheduler.registry().has_active(&sid) {
             self.send_error(40900, "Cannot recap during active turn");
             return Err(HandlerError::TurnAlreadyRunning);
         }

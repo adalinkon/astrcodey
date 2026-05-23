@@ -194,10 +194,24 @@ pub struct ConversationCursorDto {
 #[serde(rename_all = "camelCase")]
 pub struct HttpAgentSessionLinkDto {
     pub child_session_id: String,
-    pub agent_name: String,
-    pub task: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
     #[serde(default)]
     pub status: AgentSessionStatusDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Phase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_tool: Option<String>,
 }
 
 /// conversation 全量快照响应。
@@ -360,6 +374,10 @@ pub enum ConversationDeltaDto {
     /// Agent 子会话状态变更（新增 / 完成 / 失败）。
     AgentSessionUpdated {
         agent_session: HttpAgentSessionLinkDto,
+    },
+    /// Agent 子会话已回收，前端应移除对应卡片。
+    AgentSessionRemoved {
+        child_session_id: String,
     },
     /// 插件状态栏项更新。
     StatusItemUpdate {

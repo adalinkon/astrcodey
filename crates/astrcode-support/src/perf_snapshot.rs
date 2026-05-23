@@ -65,6 +65,7 @@ fn payload_type(payload: &EventPayload) -> &'static str {
         EventPayload::AgentRunCompleted { .. } => "agent_run_completed",
         EventPayload::AgentSessionCompleted { .. } => "agent_session_completed",
         EventPayload::AgentSessionFailed { .. } => "agent_session_failed",
+        EventPayload::AgentSessionRecycled { .. } => "agent_session_recycled",
         EventPayload::TurnStarted => "turn_started",
         EventPayload::TurnCompleted { .. } => "turn_completed",
         EventPayload::UserMessage { .. } => "user_message",
@@ -125,6 +126,9 @@ fn payload_details(payload: &EventPayload) -> String {
             final_session_id,
             ..
         } => format!("child={child_session_id} final={final_session_id}"),
+        EventPayload::AgentSessionRecycled { child_session_id } => {
+            format!("child={child_session_id}")
+        },
         EventPayload::ToolCallStarted { call_id, tool_name }
         | EventPayload::ToolCallRequested {
             call_id, tool_name, ..

@@ -12,6 +12,7 @@ const SIDECAR_TOKEN_ENV: &str = "ASTRCODE_HTTP_TOKEN";
 struct Inner {
     port: i32,
     token: String,
+    pid: Option<u32>,
     child: Option<CommandChild>,
 }
 
@@ -34,22 +35,20 @@ impl SidecarState {
             inner: std::sync::Mutex::new(Inner {
                 port: 0,
                 token: String::new(),
+                pid: None,
                 child: None,
             }),
         }
     }
 
-    pub fn port(&self) -> i32 {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).port
-    }
-
-    pub fn shutting_down(&self) {
+    pub fn shutting_down(&self) -> Option<u32> {
         let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         guard.port = 0;
         guard.token.clear();
         if let Some(child) = guard.child.take() {
             let _ = child.kill();
         }
+        guard.pid.take()
     }
 }
 
@@ -110,6 +109,7 @@ pub async fn start_server(
 
         inner.port = port as i32;
         inner.token = token;
+        inner.pid = Some(child.pid());
         inner.child = Some(child);
         // Release the inner lock before the health check loop.
         (port, rx)
@@ -131,6 +131,7 @@ pub async fn start_server(
                     let mut inner = lock_inner(&sidecar_state);
                     inner.port = 0;
                     inner.token.clear();
+                    inner.pid = None;
                     inner.child.take();
                     break;
                 },
@@ -139,6 +140,7 @@ pub async fn start_server(
                     let mut inner = lock_inner(&sidecar_state);
                     inner.port = 0;
                     inner.token.clear();
+                    inner.pid = None;
                     inner.child.take();
                     break;
                 },

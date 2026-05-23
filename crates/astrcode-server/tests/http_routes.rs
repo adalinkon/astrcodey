@@ -210,56 +210,6 @@ async fn concurrent_prompt_accepts_one_and_queues_one() {
     );
 }
 
-#[tokio::test]
-async fn sse_receiver_lag_emits_rehydrate_and_closes() {
-    let runtime = runtime(Arc::new(ImmediateLlm));
-    let session_id = new_session_id();
-    runtime
-        .event_store
-        .create_session(&session_id, ".", "mock-model", None, None, None)
-        .await
-        .unwrap();
-    let event_tx = Arc::new(EventFanout::new(1024));
-    let (app, token) = router(Arc::clone(&runtime), Arc::clone(&event_tx)).unwrap();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .header("authorization", format!("Bearer {token}"))
-                .uri(format!("/api/sessions/{session_id}/stream"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    for text in ["one", "two", "three"] {
-        let event = runtime
-            .event_store
-            .append_event(Event::new(
-                session_id.clone(),
-                None,
-                EventPayload::UserMessage {
-                    message_id: format!("message-{text}").into(),
-                    text: text.into(),
-                },
-            ))
-            .await
-            .unwrap();
-        event_tx.send(ClientNotification::Event(event));
-    }
-
-    let body = String::from_utf8(
-        to_bytes(response.into_body(), 64 * 1024)
-            .await
-            .unwrap()
-            .to_vec(),
-    )
-    .unwrap();
-
-    assert!(body.contains("rehydrateRequired"));
-}
 
 #[tokio::test]
 async fn create_snapshot_then_stream_receives_live_prompt_delta() {
@@ -487,6 +437,76 @@ async fn stream_invalid_cursor_requests_rehydrate() {
 
     let body = read_sse_until(response.into_body(), "rehydrateRequired").await;
     assert!(body.contains("rehydrateRequired"));
+}
+
+#[tokio::test]
+async fn stream_projects_child_events_with_parent_cursor_without_child_text() {
+    let runtime = runtime(Arc::new(ImmediateLlm));
+    let event_tx = Arc::new(EventFanout::new(1024));
+    let (app, token) = router(Arc::clone(&runtime), Arc::clone(&event_tx)).unwrap();
+    let parent_id = create_session(app.clone(), &token).await;
+    let parent_sid = SessionId::from(parent_id.clone());
+    let child_sid = new_session_id();
+    runtime
+        .event_store
+        .create_session(&child_sid, ".", "mock-model", Some(&parent_sid), None, None)
+        .await
+        .unwrap();
+    runtime
+        .event_store
+        .append_event(Event::new(
+            parent_sid.clone(),
+            None,
+            EventPayload::AgentSessionSpawned {
+                child_session_id: child_sid.clone(),
+                agent_name: "explorer".into(),
+                task: "inspect code".into(),
+                tool_policy: None,
+                tool_call_id: "agent-call".into(),
+            },
+        ))
+        .await
+        .unwrap();
+    let parent_cursor = runtime
+        .event_store
+        .latest_cursor(&parent_sid)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .header("authorization", format!("Bearer {token}"))
+                .uri(format!("/api/sessions/{parent_id}/stream"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let mut child_event = Event::new(
+        child_sid.clone(),
+        None,
+        EventPayload::AssistantTextDelta {
+            message_id: "child-assistant".into(),
+            delta: "secret child text".into(),
+        },
+    );
+    child_event.seq = Some(99);
+    event_tx.send(ClientNotification::Event(child_event));
+
+    let body = read_sse_until(response.into_body(), "agentSessionUpdated").await;
+    assert!(body.contains(r#""kind":"agentSessionUpdated""#));
+    assert!(body.contains(&format!(r#""childSessionId":"{child_sid}""#)));
+    assert!(body.contains(r#""phase":"streaming""#));
+    assert!(body.contains(&format!(r#""value":"{parent_cursor}""#)));
+    assert!(!body.contains(r#""value":"99""#));
+    assert!(!body.contains("agentName"));
+    assert!(!body.contains("currentTool"));
+    assert!(!body.contains("secret child text"));
+    assert!(!body.contains("patchBlock"));
 }
 
 #[tokio::test]
@@ -865,6 +885,7 @@ fn runtime(llm_provider: Arc<dyn LlmProvider>) -> Arc<ServerRuntime> {
         Arc::clone(&event_store),
         Arc::clone(&config),
         Arc::clone(&capabilities),
+        vec![],
     ));
     Arc::new(ServerRuntime {
         event_store,

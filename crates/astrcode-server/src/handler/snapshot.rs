@@ -18,9 +18,15 @@ pub(crate) fn session_snapshot(
             .iter()
             .map(|link| AgentSessionLinkDto {
                 child_session_id: link.child_session_id.to_string(),
-                agent_name: link.agent_name.clone(),
-                task: link.task.clone(),
+                tool_call_id: link.tool_call_id.as_ref().map(ToString::to_string),
+                agent_name: Some(link.agent_name.clone()),
+                task: Some(link.task.clone()),
                 status: link.status.into(),
+                final_session_id: link.final_session_id.as_ref().map(ToString::to_string),
+                summary: link.summary.clone(),
+                error: link.error.clone(),
+                phase: link.phase,
+                current_tool: link.current_tool.clone(),
             })
             .collect(),
     }
@@ -38,6 +44,8 @@ pub(super) fn message_to_dto(message: &LlmMessage) -> MessageDto {
         .collect::<String>();
 
     // Compact summary 消息是 synthetic user message，但在客户端应显示为系统消息
+    // TODO: 这里的 compact_summary marker 检测依赖了 astrcode_context::compaction 的内部函数，
+    // 如果 marker 格式变化会导致快照静默错误。应该在传输边界定义自己的 marker 常量。
     let role = if astrcode_context::compaction::is_compact_summary_text(&content) {
         "system"
     } else {

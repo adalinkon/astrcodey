@@ -189,8 +189,18 @@ export default function Sidebar() {
           reloadConfig={async () => {
             await api.reloadConfig()
           }}
-          saveActiveSelection={async (profile, model, smallProfile, smallModel) => {
-            await api.updateActiveSelection(profile, model, smallProfile, smallModel)
+          saveActiveSelection={async (
+            profile,
+            model,
+            smallProfile,
+            smallModel
+          ) => {
+            await api.updateActiveSelection(
+              profile,
+              model,
+              smallProfile,
+              smallModel
+            )
             bumpModelRefreshKey()
           }}
           testConnection={api.testModel}

@@ -10,7 +10,7 @@ use astrcode_protocol::commands::ClientCommand;
 use tokio::sync::{mpsc, oneshot};
 
 use super::{CommandHandler, HandlerError, ManualCompactOutcome, PromptSubmission, TurnCompletion};
-use crate::{bootstrap::ServerRuntime, server_event_bus::ServerEventBus};
+use crate::{bootstrap::ServerRuntime, turn_scheduler::TurnScheduler};
 
 /// 外部访问 CommandHandler 的句柄，通过消息通道发送命令。
 #[derive(Clone)]
@@ -20,8 +20,12 @@ pub struct CommandHandle {
 
 impl CommandHandle {
     /// 启动 CommandHandler Actor，返回可克隆的句柄。
-    pub fn spawn(runtime: Arc<ServerRuntime>, event_bus: Arc<ServerEventBus>) -> Self {
-        CommandHandler::spawn_actor(runtime, event_bus)
+    pub fn spawn(
+        runtime: Arc<ServerRuntime>,
+        scheduler: Arc<TurnScheduler>,
+        event_bus: Arc<crate::server_event_bus::ServerEventBus>,
+    ) -> Self {
+        CommandHandler::spawn_actor(runtime, scheduler, event_bus)
     }
 
     /// 发送客户端命令，等待执行完成。
@@ -181,8 +185,6 @@ pub(in crate::handler) enum CommandMessage {
         text: String,
         reply: oneshot::Sender<Result<PromptSubmission, HandlerError>>,
     },
-    /// 向正在执行的 turn 注入中途消息（下一 step 可见）。
-    InjectMidTurnForSession { session_id: SessionId, text: String },
     /// 手动压缩
     CompactSession {
         session_id: SessionId,
@@ -240,7 +242,7 @@ impl CommandHandler {
     }
 
     async fn maybe_start_queued_turn(&mut self, session_id: &SessionId) {
-        if self.active_turns.contains_key(session_id) {
+        if self.scheduler.registry().has_active(session_id) {
             return;
         }
         let next_text = self
@@ -269,16 +271,17 @@ impl CommandHandler {
     /// 创建新的 Handler 实例。
     pub(super) fn new(
         runtime: Arc<ServerRuntime>,
-        event_bus: Arc<ServerEventBus>,
+        scheduler: Arc<TurnScheduler>,
+        event_bus: Arc<crate::server_event_bus::ServerEventBus>,
         actor_tx: mpsc::UnboundedSender<CommandMessage>,
     ) -> Self {
         let model_selection =
             super::model_selection::ModelSelectionController::new(runtime.config_manager.clone());
         Self {
             runtime,
-            event_bus,
             active_session_id: None,
-            active_turns: HashMap::new(),
+            scheduler,
+            event_bus,
             queued_inputs: HashMap::new(),
             compacting_sessions: std::collections::HashSet::new(),
             actor_tx,
@@ -289,31 +292,14 @@ impl CommandHandler {
     /// 启动 Actor 任务，返回外部访问句柄。
     pub fn spawn_actor(
         runtime: Arc<ServerRuntime>,
-        event_bus: Arc<ServerEventBus>,
+        scheduler: Arc<TurnScheduler>,
+        event_bus: Arc<crate::server_event_bus::ServerEventBus>,
     ) -> CommandHandle {
         let (tx, rx) = mpsc::unbounded_channel();
-        // 注入 prompt 提交回调：子 agent 完成时通过它给父 session 启动 turn。
-        // SessionManager 把回调缓存起来，session_operations 的 watcher 在子 agent
-        // 完成时调用 submit_prompt_to_session 触发，避免 watcher 直接写 UserMessage
-        // 但不启动 turn 的 bug。
-        {
-            let actor_tx = tx.clone();
-            runtime.session_manager.set_prompt_submit_hook(Arc::new(
-                move |session_id, text| {
-                    if let Err(e) = actor_tx.send(CommandMessage::InjectMidTurnForSession {
-                        session_id: session_id.clone(),
-                        text,
-                    }) {
-                        tracing::error!(%session_id, error = %e, "failed to inject child-agent mid-turn message");
-                    }
-                },
-            ));
-        }
-        let mut handler = Self::new(runtime, event_bus, tx.clone());
+        let mut handler = Self::new(runtime, scheduler, event_bus, tx.clone());
         let handle = tokio::spawn(async move {
             handler.run(rx).await;
         });
-        // 监控 Actor 任务，记录 panic
         tokio::spawn(async move {
             if let Err(e) = handle.await {
                 tracing::error!("command handler actor panicked: {e}");
@@ -343,9 +329,9 @@ impl CommandHandler {
                     _ = sleep_until(deadline) => {
                         // 空闲超时，触发自动 recap
                         recap_deadline = None;
-                        if self.active_session_id.is_some()
-                            && self.active_turns.is_empty()
-                        {
+                        if self.active_session_id.as_ref().is_some_and(|sid| {
+                            !self.scheduler.registry().has_active(sid)
+                        }) {
                             if let Err(e) = self.recap_session().await {
                                 tracing::debug!(error = %e, "auto-recap skipped");
                             }
@@ -377,7 +363,12 @@ impl CommandHandler {
 
             self.handle_message(message).await;
 
-            if starts_timer && self.active_turns.is_empty() {
+            if starts_timer
+                && !self
+                    .active_session_id
+                    .as_ref()
+                    .is_some_and(|sid| self.scheduler.registry().has_active(sid))
+            {
                 recap_deadline = Some(Instant::now() + IDLE_RECAP_DELAY);
             }
         }
@@ -397,7 +388,7 @@ impl CommandHandler {
                 text,
                 reply,
             } => {
-                if self.active_turns.contains_key(&session_id)
+                if self.scheduler.registry().has_active(&session_id)
                     || self.compacting_sessions.contains(&session_id)
                 {
                     self.enqueue_input_for_next_turn(session_id, text);
@@ -406,19 +397,6 @@ impl CommandHandler {
                     }));
                 } else {
                     let _ = reply.send(self.submit_input_for_session(session_id, text).await);
-                }
-            },
-            CommandMessage::InjectMidTurnForSession { session_id, text } => {
-                if let Err(error) = self
-                    .inject_mid_turn_message_for_session(&session_id, text.clone())
-                    .await
-                {
-                    if matches!(error, HandlerError::NoActiveTurn) {
-                        tracing::info!(%session_id, "parent turn finished, queuing child output for next turn");
-                        self.enqueue_input_for_next_turn(session_id, text);
-                    } else {
-                        tracing::warn!(%session_id, error = %error, "failed to inject mid-turn message");
-                    }
                 }
             },
             CommandMessage::CompactSession {
@@ -437,7 +415,11 @@ impl CommandHandler {
                 let _ = reply.send(result);
             },
             CommandMessage::AbortSession { session_id, reply } => {
-                let _ = reply.send(self.abort_session(&session_id).await);
+                let result = self.abort_session(&session_id).await;
+                if result.is_ok() {
+                    self.maybe_start_queued_turn(&session_id).await;
+                }
+                let _ = reply.send(result);
             },
             CommandMessage::ListCommandsForSession { session_id, reply } => {
                 let _ = reply.send(self.command_infos_for_session(&session_id).await);
@@ -449,8 +431,11 @@ impl CommandHandler {
                 completion,
             } => {
                 let sid = session_id.clone();
-                self.cleanup_agent_turn(session_id, turn_id, completion);
-                self.maybe_start_queued_turn(&sid).await;
+                let _ = turn_id;
+                // abort 完成时不 dispatch，已由 AbortSession handler 处理。
+                if !matches!(completion, TurnCompletion::Aborted) {
+                    self.maybe_start_queued_turn(&sid).await;
+                }
             },
             CommandMessage::SubmitInputWithCompletion {
                 session_id,
@@ -460,7 +445,7 @@ impl CommandHandler {
                 let _ = reply.send(self.submit_input_with_completion(session_id, text).await);
             },
             CommandMessage::RepairStaleTurn { session_id, reply } => {
-                let _ = reply.send(self.repair_stale_phase(&session_id).await);
+                let _ = reply.send(self.repair_stale_session(&session_id).await);
             },
             CommandMessage::ForkSession {
                 source_id,
