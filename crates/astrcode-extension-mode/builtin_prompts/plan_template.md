@@ -14,11 +14,11 @@
 
 - <Specific modules, files, functions, or behaviors>
 
-## Non-Goals
+## Non-Goals (optional)
 
 - <What is explicitly excluded to prevent scope creep>
 
-## Existing Code to Reuse
+## Existing Code to Reuse (optional)
 
 - <Reusable functions, modules, or patterns>
 
@@ -52,6 +52,6 @@
 2. [ ] <targeted test or check> — covers the main risk
 3. [ ] Manual verification: <describe what to manually test if applicable, or remove this item>
 
-## Assumptions
+## Assumptions (optional)
 
-- <Any assumptions made about the codebase, user requirements, or external systems that could invalidate this plan if wrong>
+- <Assumption and why you hold it. What would invalidate this plan if the assumption is wrong.>

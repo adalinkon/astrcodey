@@ -59,8 +59,9 @@ pub fn upsert_plan_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: UPSERT_PLAN_TOOL_NAME.into(),
         description: "Create or update the session plan (plan mode only). Must include all \
-                      headings: Context, Goal, Scope, Non-Goals, Existing Code to Reuse, \
-                      Implementation Steps, Verification, Dependencies and Risks, Assumptions."
+                      headings: Context, Goal, Scope, Implementation Steps, Verification, \
+                      Dependencies and Risks. Optional: Non-Goals, Existing Code to Reuse, \
+                      Assumptions."
             .into(),
         parameters: json!({
             "type": "object",

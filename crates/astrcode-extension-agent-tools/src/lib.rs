@@ -245,7 +245,7 @@ impl ToolHandler for AgentToolHandler {
                 CreateSessionRequest {
                     name: matched.name.clone(),
                     working_dir: None,
-                    system_prompt: Some(matched.body.clone()),
+                    system_prompt: Some(enhance_agent_prompt(&matched.body, working_dir)),
                     model_preference: Some(model_for_child.to_string()),
                     // TODO： A BETTER policy 设计
                     tool_policy: Some(ChildToolPolicy::Deny {
@@ -385,6 +385,25 @@ fn agent_tool_metadata()
 
 // ─── 共享工具函数 ──────────────────────────────────────────────────────
 
+/// 为子 agent 的 body 追加共享增强内容：环境信息 + 行为规范。
+fn enhance_agent_prompt(agent_body: &str, working_dir: &str) -> String {
+    let os = std::env::consts::OS;
+    let shell = astrcode_support::shell::resolve_shell().name;
+    format!(
+        "{}\n\n\
+         ---\n\n\
+         Notes:\n\
+         - Agent threads always have their cwd reset between bash calls; \
+           please only use absolute file paths.\n\
+         - In your final response, share file paths (always absolute, never \
+           relative) that are relevant to the task. Include code snippets only \
+           when the exact text is load-bearing.\n\
+         - For clear communication with the user, avoid using emojis.\n\
+         - Do not use a colon before tool calls.\n\n\
+         Environment: working directory is {working_dir}, OS is {os}, shell is {shell}.",
+        agent_body.trim(),
+    )
+}
 /// 将 Agent 列表格式化为模型可读的文本，供 system prompt 和错误消息使用。
 fn format_agents_for_model(agents: &[agent::AgentConfig]) -> String {
     if agents.is_empty() {

@@ -37,12 +37,9 @@ pub const PLAN_REQUIRED_HEADINGS: &[&str] = &[
     "Context",
     "Goal",
     "Scope",
-    "Non-Goals",
-    "Existing Code to Reuse",
     "Implementation Steps",
     "Verification",
     "Dependencies and Risks",
-    "Assumptions",
 ];
 
 /// Tools blocked in plan mode.
