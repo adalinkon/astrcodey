@@ -143,6 +143,8 @@ const markdownComponents = {
   code: CodeBlockRenderer as React.ComponentType<
     React.ComponentPropsWithoutRef<'code'>
   >,
+  img: ({ src, alt, ...rest }: React.ComponentPropsWithoutRef<'img'>) =>
+    src ? <img src={src} alt={alt} {...rest} /> : null,
 }
 
 const MarkdownContent = memo(function MarkdownContent({
