@@ -709,11 +709,10 @@ fn test_event_bus(
     runtime: &Arc<crate::bootstrap::ServerRuntime>,
     event_tx: Arc<EventFanout<ClientNotification>>,
 ) -> Arc<crate::server_event_bus::ServerEventBus> {
-    let event_bus = Arc::new(crate::server_event_bus::ServerEventBus::new(
-        runtime.event_store.clone(),
-        event_tx,
-    ));
-    runtime.session_manager.bind_event_bus(Arc::clone(&event_bus));
+    let event_bus = Arc::new(crate::server_event_bus::ServerEventBus::new(event_tx));
+    runtime
+        .session_manager
+        .bind_event_bus(Arc::clone(&event_bus));
     event_bus
 }
 
@@ -920,8 +919,11 @@ async fn create_session_configures_system_prompt() {
     let runtime = test_runtime();
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     let sid = handler.create_session(".".into()).await.unwrap();
 
@@ -960,8 +962,11 @@ async fn client_create_session_reports_start_hook_failure() {
         .unwrap();
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     let error = handler
         .handle(ClientCommand::CreateSession {
@@ -986,8 +991,11 @@ async fn submit_prompt_reuses_session_system_prompt() {
     let runtime = test_runtime();
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     let sid = handler.create_session(".".into()).await.unwrap();
     let initial_prompt = {
@@ -1022,8 +1030,11 @@ async fn submit_prompt_configures_missing_session_system_prompt() {
         .unwrap();
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     handler
         .submit_input_for_session(sid.clone(), "hello".into())
@@ -1045,8 +1056,11 @@ async fn submit_prompt_uses_one_turn_id_for_turn_events() {
     let runtime = test_runtime();
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     let sid = handler.create_session(".".into()).await.unwrap();
     handler
@@ -1296,8 +1310,11 @@ async fn submit_prompt_queues_second_running_turn_for_next_turn() {
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
     let runtime = test_runtime_with_llm(Arc::new(PendingLlm));
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     let sid = handler.create_session(".".into()).await.unwrap();
     handler
@@ -1401,8 +1418,11 @@ async fn successful_text_turn_dispatches_after_provider_response_before_turn_end
         .await
         .unwrap();
     let event_tx = Arc::new(EventFanout::new(1024));
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
     let sid = handler.create_session(".".into()).await.unwrap();
 
     let (_turn_id, completion) = handler
@@ -1433,8 +1453,11 @@ async fn stream_error_still_dispatches_turn_end() {
         .await
         .unwrap();
     let event_tx = Arc::new(EventFanout::new(1024));
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
     let sid = handler.create_session(".".into()).await.unwrap();
 
     let (_turn_id, completion) = handler
@@ -1457,8 +1480,11 @@ async fn read_before_edit_guard_survives_across_turns() {
     }));
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
     let sid = handler
         .create_session(workspace.to_string_lossy().into_owned())
         .await
@@ -1501,8 +1527,11 @@ async fn abort_stops_active_turn_and_records_completion() {
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
     let runtime = test_runtime_with_llm(Arc::new(PendingLlm));
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     let sid = handler.create_session(".".into()).await.unwrap();
     handler
@@ -1523,8 +1552,11 @@ async fn abort_stops_inner_turn_before_late_provider_events_are_persisted() {
     let runtime = test_runtime_with_llm(Arc::new(DelayedLlm {
         started: started_tx,
     }));
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     let sid = handler.create_session(".".into()).await.unwrap();
     handler
@@ -1554,8 +1586,11 @@ async fn compact_session_rejects_running_turn_without_compaction_started() {
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
     let runtime = test_runtime_with_llm(Arc::new(PendingLlm));
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     let sid = handler.create_session(".".into()).await.unwrap();
     handler
@@ -1598,8 +1633,11 @@ async fn stale_agent_finish_after_abort_is_ignored() {
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
     let runtime = test_runtime_with_llm(Arc::new(PendingLlm));
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     let sid = handler.create_session(".".into()).await.unwrap();
     let PromptSubmission::Accepted { turn_id } = handler
@@ -1639,8 +1677,11 @@ async fn compact_command_rewrites_provider_history_without_exposing_summary() {
     let runtime = test_runtime_with_settings(Arc::new(MockLlm), settings);
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     let session_id = handler.create_session(".".into()).await.unwrap();
     for text in ["one", "two", "three"] {
@@ -1689,8 +1730,11 @@ async fn slash_compact_uses_backend_command_without_user_message() {
     );
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     let session_id = handler.create_session(".".into()).await.unwrap();
     for text in ["one", "two", "three"] {
@@ -1726,8 +1770,11 @@ async fn slash_compact_uses_backend_command_without_user_message() {
 async fn unknown_slash_command_falls_through_as_regular_prompt() {
     let runtime = test_runtime();
     let event_tx = Arc::new(EventFanout::new(1024));
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
     let sid = handler.create_session(".".into()).await.unwrap();
 
     // /missing-command 不是已知斜杠命令，应作为普通 prompt 提交并启动 turn
@@ -1759,8 +1806,11 @@ async fn skill_slash_command_uses_skill_content_as_user_message() {
         .unwrap();
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
     let sid = handler
         .create_session(workspace.to_string_lossy().into_owned())
         .await
@@ -1835,8 +1885,11 @@ async fn command_list_keeps_reserved_and_extension_priority_over_skills() {
         .await
         .unwrap();
     let event_tx = Arc::new(EventFanout::new(1024));
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
     let sid = handler
         .create_session(workspace.to_string_lossy().into_owned())
         .await
@@ -1864,8 +1917,11 @@ async fn compact_command_compacts_existing_hidden_context_again() {
     let runtime = test_runtime_with_settings(Arc::new(MockLlm), settings);
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     let session_id = handler.create_session(".".into()).await.unwrap();
     for text in ["one", "two", "three", "four"] {
@@ -1936,8 +1992,11 @@ async fn auto_compact_applies_in_memory_during_turn() {
     let runtime = test_runtime_with_settings(Arc::new(MockLlm), settings);
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     let session_id = handler.create_session(".".into()).await.unwrap();
     for index in 0..3 {
@@ -2013,8 +2072,11 @@ async fn prompt_too_long_triggers_reactive_compact_and_retries_once() {
     );
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     let session_id = handler.create_session(".".into()).await.unwrap();
     for index in 0..3 {
@@ -2092,8 +2154,11 @@ async fn prompt_too_long_after_reactive_retry_returns_compact_exhausted() {
     );
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     let session_id = handler.create_session(".".into()).await.unwrap();
     append_user_assistant_pair(
@@ -2146,8 +2211,11 @@ async fn auto_compact_uses_configured_keep_recent_turns() {
     );
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     let session_id = handler.create_session(".".into()).await.unwrap();
     for index in 0..3 {
@@ -2204,8 +2272,11 @@ async fn auto_compact_breaker_skips_after_llm_compact_failure() {
     );
     let event_tx = Arc::new(EventFanout::new(1024));
     let mut event_rx = event_tx.subscribe();
-    let handler =
-        CommandHandler::spawn_actor(Arc::clone(&runtime), test_scheduler(&runtime), test_event_bus(&runtime, event_tx));
+    let handler = CommandHandler::spawn_actor(
+        Arc::clone(&runtime),
+        test_scheduler(&runtime),
+        test_event_bus(&runtime, event_tx),
+    );
 
     let session_id = handler.create_session(".".into()).await.unwrap();
     append_user_assistant_pair(

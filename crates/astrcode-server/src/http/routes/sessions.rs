@@ -11,9 +11,8 @@ use astrcode_protocol::{
         CompactSessionRequest, CompactSessionResponse, ConversationBlockDto,
         ConversationBlockStatusDto, ConversationControlStateDto, ConversationCursorDto,
         ConversationSnapshotResponseDto, CreateSessionRequest, CreateSessionResponseDto,
-        DeleteProjectResponseDto, HttpAgentSessionLinkDto, PromptRequest,
-        PromptSubmitResponse, SessionListItemDto, SessionListResponseDto,
-        SlashCommandListResponseDto,
+        DeleteProjectResponseDto, HttpAgentSessionLinkDto, PromptRequest, PromptSubmitResponse,
+        SessionListItemDto, SessionListResponseDto, SlashCommandListResponseDto,
     },
 };
 use axum::{
@@ -25,8 +24,10 @@ use axum::{
 use serde::Deserialize;
 
 use super::super::{HttpState, error_response, projection::blocks::messages_to_blocks};
-use crate::handler::{HandlerError, ManualCompactOutcome, PromptSubmission};
-use crate::server_event_bus::StreamingSnapshot;
+use crate::{
+    handler::{HandlerError, ManualCompactOutcome, PromptSubmission},
+    server_event_bus::StreamingSnapshot,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

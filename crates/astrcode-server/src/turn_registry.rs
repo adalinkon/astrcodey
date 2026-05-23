@@ -143,54 +143,52 @@ mod tests {
         let context_assembler = Arc::new(
             astrcode_context::context_assembler::LlmContextAssembler::new(Default::default()),
         );
-        Arc::new(
-            astrcode_session::SessionRuntimeServices::new(
-                Arc::clone(&llm),
-                llm,
-                extension_runner,
-                context_assembler,
-                EffectiveConfig {
-                    llm: LlmSettings {
-                        provider_kind: "mock".into(),
-                        base_url: String::new(),
-                        api_key: String::new(),
-                        api_mode: OpenAiApiMode::ChatCompletions,
-                        model_id: "mock".into(),
-                        max_tokens: 1024,
-                        context_limit: 1024,
-                        connect_timeout_secs: 1,
-                        read_timeout_secs: 1,
-                        max_retries: 0,
-                        retry_base_delay_ms: 0,
-                        supports_prompt_cache_key: false,
-                        prompt_cache_retention: None,
-                        reasoning: false,
-                        reasoning_split: false,
-                    },
-                    small_llm: LlmSettings {
-                        provider_kind: "mock".into(),
-                        base_url: String::new(),
-                        api_key: String::new(),
-                        api_mode: OpenAiApiMode::ChatCompletions,
-                        model_id: "mock".into(),
-                        max_tokens: 1024,
-                        context_limit: 1024,
-                        connect_timeout_secs: 1,
-                        read_timeout_secs: 1,
-                        max_retries: 0,
-                        retry_base_delay_ms: 0,
-                        supports_prompt_cache_key: false,
-                        prompt_cache_retention: None,
-                        reasoning: false,
-                        reasoning_split: false,
-                    },
-                    context: Default::default(),
-                    agent: Default::default(),
-                    wasm: WasmSettings::default(),
-                    extensions: ExtensionSettings::default(),
+        Arc::new(astrcode_session::SessionRuntimeServices::new(
+            Arc::clone(&llm),
+            llm,
+            extension_runner,
+            context_assembler,
+            EffectiveConfig {
+                llm: LlmSettings {
+                    provider_kind: "mock".into(),
+                    base_url: String::new(),
+                    api_key: String::new(),
+                    api_mode: OpenAiApiMode::ChatCompletions,
+                    model_id: "mock".into(),
+                    max_tokens: 1024,
+                    context_limit: 1024,
+                    connect_timeout_secs: 1,
+                    read_timeout_secs: 1,
+                    max_retries: 0,
+                    retry_base_delay_ms: 0,
+                    supports_prompt_cache_key: false,
+                    prompt_cache_retention: None,
+                    reasoning: false,
+                    reasoning_split: false,
                 },
-            ),
-        )
+                small_llm: LlmSettings {
+                    provider_kind: "mock".into(),
+                    base_url: String::new(),
+                    api_key: String::new(),
+                    api_mode: OpenAiApiMode::ChatCompletions,
+                    model_id: "mock".into(),
+                    max_tokens: 1024,
+                    context_limit: 1024,
+                    connect_timeout_secs: 1,
+                    read_timeout_secs: 1,
+                    max_retries: 0,
+                    retry_base_delay_ms: 0,
+                    supports_prompt_cache_key: false,
+                    prompt_cache_retention: None,
+                    reasoning: false,
+                    reasoning_split: false,
+                },
+                context: Default::default(),
+                agent: Default::default(),
+                wasm: WasmSettings::default(),
+                extensions: ExtensionSettings::default(),
+            },
+        ))
     }
 
     async fn make_session(sid: &str) -> Arc<Session> {
@@ -223,23 +221,16 @@ mod tests {
         let sid = SessionId::from("session-1");
         let turn_id = TurnId::from("turn-1");
         let session = make_session("session-1").await;
-        let handle = tokio::spawn(async {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await
-        })
-        .abort_handle();
+        let handle =
+            tokio::spawn(async { tokio::time::sleep(std::time::Duration::from_secs(60)).await })
+                .abort_handle();
 
         assert!(registry.register(sid.clone(), turn_id, handle, session));
-        let handle2 = tokio::spawn(async {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await
-        })
-        .abort_handle();
+        let handle2 =
+            tokio::spawn(async { tokio::time::sleep(std::time::Duration::from_secs(60)).await })
+                .abort_handle();
         let session2 = make_session("session-1b").await;
-        assert!(!registry.register(
-            sid.clone(),
-            TurnId::from("turn-2"),
-            handle2,
-            session2
-        ));
+        assert!(!registry.register(sid.clone(), TurnId::from("turn-2"), handle2, session2));
     }
 
     #[tokio::test]
@@ -248,17 +239,18 @@ mod tests {
         let sid = SessionId::from("session-1");
         let turn_id = TurnId::from("turn-1");
         let session = make_session("session-1").await;
-        let handle = tokio::spawn(async {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await
-        })
-        .abort_handle();
+        let handle =
+            tokio::spawn(async { tokio::time::sleep(std::time::Duration::from_secs(60)).await })
+                .abort_handle();
 
         registry.register(sid.clone(), turn_id.clone(), handle, session);
         assert!(registry.has_active(&sid));
 
-        assert!(registry
-            .remove_if_matches(&sid, &TurnId::from("other"))
-            .is_none());
+        assert!(
+            registry
+                .remove_if_matches(&sid, &TurnId::from("other"))
+                .is_none()
+        );
         assert!(registry.has_active(&sid));
 
         assert!(registry.remove_if_matches(&sid, &turn_id).is_some());
@@ -271,10 +263,9 @@ mod tests {
         let sid = SessionId::from("session-1");
         let turn_id = TurnId::from("turn-1");
         let session = make_session("session-1").await;
-        let handle = tokio::spawn(async {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await
-        })
-        .abort_handle();
+        let handle =
+            tokio::spawn(async { tokio::time::sleep(std::time::Duration::from_secs(60)).await })
+                .abort_handle();
 
         registry.register(sid.clone(), turn_id.clone(), handle, session);
         let (removed_turn_id, _) = registry.abort_and_remove(&sid).unwrap();

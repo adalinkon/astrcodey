@@ -20,8 +20,8 @@ use astrcode_server::{
     turn_scheduler::TurnScheduler,
 };
 use astrcode_session::SessionRuntimeServices;
-use astrcode_support::event_fanout::EventFanout;
 use astrcode_storage::in_memory::InMemoryEventStore;
+use astrcode_support::event_fanout::EventFanout;
 use tokio::sync::mpsc;
 
 struct StaticTextLlm {
@@ -119,10 +119,7 @@ fn build_test_ops(
         config,
         capabilities,
     ));
-    let event_bus = Arc::new(ServerEventBus::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        Arc::new(EventFanout::new(1024)),
-    ));
+    let event_bus = Arc::new(ServerEventBus::new(Arc::new(EventFanout::new(1024))));
     session_manager.bind_event_bus(event_bus);
     let scheduler = Arc::new(TurnScheduler::new(
         Arc::clone(&session_manager),

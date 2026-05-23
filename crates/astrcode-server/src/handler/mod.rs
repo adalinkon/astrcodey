@@ -8,10 +8,7 @@ use std::{
     sync::Arc,
 };
 
-use astrcode_core::{
-    event::Event,
-    types::*,
-};
+use astrcode_core::{event::Event, types::*};
 use astrcode_protocol::{
     commands::{ClientCommand, UiResponseValue},
     events::{ClientNotification, SessionListItem},
@@ -19,8 +16,7 @@ use astrcode_protocol::{
 use tokio::sync::mpsc;
 
 use crate::{
-    bootstrap::ServerRuntime,
-    session_manager::SessionManagerError, turn_scheduler::TurnScheduler,
+    bootstrap::ServerRuntime, session_manager::SessionManagerError, turn_scheduler::TurnScheduler,
 };
 
 mod actor;

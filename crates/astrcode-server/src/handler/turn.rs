@@ -25,8 +25,11 @@ impl CommandHandler {
         completion_tx: Option<tokio::sync::oneshot::Sender<TurnCompletion>>,
     ) -> Result<TurnId, HandlerError> {
         tracing::info!(session_id = %sid, text_len = user_text.len(), "start_turn");
-        let (turn_id, handle) = self.scheduler.submit(sid.clone(), user_text).await.map_err(
-            |e| match e {
+        let (turn_id, handle) = self
+            .scheduler
+            .submit(sid.clone(), user_text)
+            .await
+            .map_err(|e| match e {
                 crate::turn_scheduler::TurnError::TurnAlreadyRunning => {
                     self.send_error(40900, "A turn is already running");
                     HandlerError::TurnAlreadyRunning
@@ -44,8 +47,7 @@ impl CommandHandler {
                     HandlerError::SessionManager(e)
                 },
                 other => HandlerError::Other(other.to_string()),
-            },
-        )?;
+            })?;
 
         let scheduler = Arc::clone(&self.scheduler);
         let actor_tx = self.actor_tx.clone();

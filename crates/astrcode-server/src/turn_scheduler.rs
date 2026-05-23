@@ -15,8 +15,7 @@ use astrcode_core::{
 use astrcode_session::{Session, turn_handle::TurnHandle};
 use thiserror::Error;
 
-use crate::session_manager::SessionManager;
-use crate::turn_registry::TurnRegistry;
+use crate::{session_manager::SessionManager, turn_registry::TurnRegistry};
 
 #[derive(Debug, Error)]
 pub enum TurnError {
@@ -81,16 +80,13 @@ impl TurnScheduler {
             .map_err(|e| TurnError::SessionNotFound(format!("{session_id}: {e}")))?;
 
         let turn_id = new_turn_id();
-        let handle = session
-            .submit(text, turn_id.clone())
-            .await
-            .map_err(|e| {
-                // submit 失败时 session 内部可能已经写了 TurnStarted，
-                // 但 error + TurnCompleted 补写也在 session.submit 内处理。
-                // 这里只报告错误。
-                tracing::error!(session_id = %session_id, error = %e, "session.submit failed");
-                TurnError::Session(format!("submit: {e}"))
-            })?;
+        let handle = session.submit(text, turn_id.clone()).await.map_err(|e| {
+            // submit 失败时 session 内部可能已经写了 TurnStarted，
+            // 但 error + TurnCompleted 补写也在 session.submit 内处理。
+            // 这里只报告错误。
+            tracing::error!(session_id = %session_id, error = %e, "session.submit failed");
+            TurnError::Session(format!("submit: {e}"))
+        })?;
 
         let session_arc = Arc::new(session);
         if !self.registry.register(
@@ -148,12 +144,7 @@ impl TurnScheduler {
     }
 
     /// 统一发送 turn aborted 终态事件 + 清理 bg tasks + sync durable。
-    async fn emit_turn_aborted(
-        &self,
-        turn_id: &TurnId,
-        session: &Session,
-        session_id: &SessionId,
-    ) {
+    async fn emit_turn_aborted(&self, turn_id: &TurnId, session: &Session, session_id: &SessionId) {
         session
             .runtime()
             .background_tasks()
@@ -180,11 +171,7 @@ impl TurnScheduler {
     }
 
     /// 向活跃 turn 注入中途消息。
-    pub async fn inject(
-        &self,
-        session_id: &SessionId,
-        text: String,
-    ) -> Result<(), TurnError> {
+    pub async fn inject(&self, session_id: &SessionId, text: String) -> Result<(), TurnError> {
         let turn_id = self
             .registry
             .active_turn_id(session_id)
@@ -203,7 +190,6 @@ impl TurnScheduler {
             .map_err(|e| TurnError::EventEmit(format!("inject message: {e}")))?;
         Ok(())
     }
-
 
 
     /// 聚合修复：stale phase + stale background tasks + stale runs。
@@ -270,7 +256,9 @@ async fn repair_stale_phase_for_state(
                 },
             )
             .await
-            .map_err(|e| TurnError::EventEmit(format!("emit ToolCallCompleted during repair: {e}")))?;
+            .map_err(|e| {
+                TurnError::EventEmit(format!("emit ToolCallCompleted during repair: {e}"))
+            })?;
     }
 
     session

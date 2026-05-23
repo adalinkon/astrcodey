@@ -34,12 +34,11 @@ pub fn spawn_server_system(
     runtime: &Arc<ServerRuntime>,
     event_tx: Arc<EventFanout<ClientNotification>>,
 ) -> ServerSystem {
-    let event_bus = Arc::new(ServerEventBus::new(
-        runtime.event_store.clone(),
-        Arc::clone(&event_tx),
-    ));
+    let event_bus = Arc::new(ServerEventBus::new(Arc::clone(&event_tx)));
 
-    runtime.session_manager.bind_event_bus(Arc::clone(&event_bus));
+    runtime
+        .session_manager
+        .bind_event_bus(Arc::clone(&event_bus));
 
     let registry = Arc::new(TurnRegistry::new());
     let scheduler = Arc::new(TurnScheduler::new(
@@ -48,12 +47,12 @@ pub fn spawn_server_system(
     ));
 
     // 绑定子会话操作能力到扩展运行时
-    runtime.extension_runner.bind_session_ops(Arc::new(
-        ServerSessionOperations {
+    runtime
+        .extension_runner
+        .bind_session_ops(Arc::new(ServerSessionOperations {
             session_manager: Arc::clone(&runtime.session_manager),
             scheduler: Arc::clone(&scheduler),
-        },
-    ));
+        }));
 
     let handler = CommandHandle::spawn(
         Arc::clone(runtime),

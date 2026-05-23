@@ -10,11 +10,13 @@
 //! `ServerEventBus` 不写 EventStore — 持久化由 `Session::emit` / `Session::append_event`
 //! 全权负责。这避免了之前 ServerEventBus 与 Session 双写 store 的 bug。
 
-use std::{collections::HashMap, collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use astrcode_core::{
     event::EventPayload,
-    storage::EventStore,
     types::{MessageId, SessionId},
 };
 use astrcode_protocol::events::ClientNotification;
@@ -33,7 +35,6 @@ pub(crate) struct StreamingSnapshot {
 type StreamingState = parking_lot::Mutex<Option<(MessageId, String, String)>>;
 
 pub struct ServerEventBus {
-    store: Arc<dyn EventStore>,
     tx: Arc<EventFanout<ClientNotification>>,
     /// 已经 attach 过 forwarder 的 session 集合，防止同 sid 多次 attach 重复广播。
     attached: Mutex<HashSet<SessionId>>,
@@ -43,9 +44,8 @@ pub struct ServerEventBus {
 }
 
 impl ServerEventBus {
-    pub fn new(store: Arc<dyn EventStore>, tx: Arc<EventFanout<ClientNotification>>) -> Self {
+    pub fn new(tx: Arc<EventFanout<ClientNotification>>) -> Self {
         Self {
-            store,
             tx,
             attached: Mutex::new(HashSet::new()),
             streaming: Mutex::new(HashMap::new()),
@@ -98,44 +98,41 @@ impl ServerEventBus {
     /// 返回当前 streaming 消息的瞬时快照。
     pub(crate) fn streaming_snapshot(&self, session_id: &SessionId) -> Option<StreamingSnapshot> {
         self.streaming.lock().get(session_id).and_then(|state| {
-            state.lock().as_ref().map(|(id, text, reasoning)| StreamingSnapshot {
-                message_id: id.to_string(),
-                text: text.clone(),
-                reasoning_content: if reasoning.is_empty() {
-                    None
-                } else {
-                    Some(reasoning.clone())
-                },
-            })
+            state
+                .lock()
+                .as_ref()
+                .map(|(id, text, reasoning)| StreamingSnapshot {
+                    message_id: id.to_string(),
+                    text: text.clone(),
+                    reasoning_content: if reasoning.is_empty() {
+                        None
+                    } else {
+                        Some(reasoning.clone())
+                    },
+                })
         })
-    }
-
-    /// 强制 fsync 指定会话的 durable event log。
-    pub async fn sync_durable_events(&self, session_id: &SessionId) {
-        if let Err(e) = self.store.sync_durable_events(session_id).await {
-            tracing::error!(session_id = %session_id, error = %e, "failed to sync durable events");
-        }
     }
 }
 
 /// 从事件 payload 同步更新 streaming 状态。
 fn update_streaming(state: &StreamingState, payload: &EventPayload) {
+    let mut guard = state.lock();
     match payload {
         EventPayload::AssistantMessageStarted { message_id } => {
-            *state.lock() = Some((message_id.clone(), String::new(), String::new()));
+            *guard = Some((message_id.clone(), String::new(), String::new()));
         },
         EventPayload::AssistantTextDelta { delta, .. } => {
-            if let Some((_, text, _)) = state.lock().as_mut() {
+            if let Some((_, text, _)) = guard.as_mut() {
                 text.push_str(delta);
             }
         },
         EventPayload::ThinkingDelta { delta, .. } => {
-            if let Some((_, _, reasoning)) = state.lock().as_mut() {
+            if let Some((_, _, reasoning)) = guard.as_mut() {
                 reasoning.push_str(delta);
             }
         },
         EventPayload::AssistantMessageCompleted { .. } | EventPayload::TurnCompleted { .. } => {
-            *state.lock() = None;
+            *guard = None;
         },
         _ => {},
     }

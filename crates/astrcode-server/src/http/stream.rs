@@ -149,10 +149,7 @@ pub(in crate::http) async fn session_stream(
                 // 如果重放 AssistantMessageStarted 且该消息仍在流式传输，
                 // 补一个 PatchBlock 让客户端拿到已积累的文本。
                 if let EventPayload::AssistantMessageStarted { message_id } = &event.payload {
-                    if let Some(msg) = runtime
-                        .session_manager
-                        .streaming_snapshot(&replay_sid)
-                    {
+                    if let Some(msg) = runtime.session_manager.streaming_snapshot(&replay_sid) {
                         if msg.message_id == message_id.as_str() {
                             if !msg.text.is_empty() {
                                 deltas.push(ConversationDeltaDto::PatchBlock {

@@ -364,9 +364,10 @@ impl CommandHandler {
             self.handle_message(message).await;
 
             if starts_timer
-                && !self.active_session_id.as_ref().is_some_and(|sid| {
-                    self.scheduler.registry().has_active(sid)
-                })
+                && !self
+                    .active_session_id
+                    .as_ref()
+                    .is_some_and(|sid| self.scheduler.registry().has_active(sid))
             {
                 recap_deadline = Some(Instant::now() + IDLE_RECAP_DELAY);
             }
