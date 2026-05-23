@@ -226,7 +226,8 @@ impl SessionOperations for ServerSessionOperations {
                     }
                     scheduler.sync_durable_events(&watcher_caller_sid).await;
 
-                    // 回收 ephemeral session（在 notify 之前，确保 Recycled 事件紧跟 Completed/Failed）
+                    // 回收 ephemeral session（在 notify 之前，确保 Recycled 事件紧跟
+                    // Completed/Failed）
                     if recycle_on_complete {
                         Self::recycle_and_notify(
                             &session_manager,

@@ -124,7 +124,13 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
       }
       updateStickiness()
     })
-  }, [blocks, queuedMessages.length, updateStickiness, totalItemCount, virtualizer])
+  }, [
+    blocks,
+    queuedMessages.length,
+    updateStickiness,
+    totalItemCount,
+    virtualizer,
+  ])
 
   // During active streaming, continuously stick to bottom
   const isStreaming =

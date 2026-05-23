@@ -145,7 +145,10 @@ impl TurnScheduler {
         };
 
         // 如果已经是终态，直接返回成功（幂等性）
-        if matches!(state.phase, astrcode_core::event::Phase::Idle | astrcode_core::event::Phase::Error) {
+        if matches!(
+            state.phase,
+            astrcode_core::event::Phase::Idle | astrcode_core::event::Phase::Error
+        ) {
             return Ok(());
         }
 

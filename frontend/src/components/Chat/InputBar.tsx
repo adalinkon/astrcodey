@@ -329,9 +329,7 @@ export default function InputBar() {
                       className={cn(composerSubmitButton)}
                       type="button"
                       onClick={() => void submit()}
-                      disabled={
-                        !value.trim() || !activeSessionId || !canSubmit
-                      }
+                      disabled={!value.trim() || !activeSessionId || !canSubmit}
                       aria-label={isBusy ? '加入队列' : '发送消息'}
                       title={isBusy ? '加入队列' : '发送消息'}
                     >

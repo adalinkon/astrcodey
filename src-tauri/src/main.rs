@@ -47,8 +47,7 @@ fn wait_for_dev_server() {
 
 /// 同步终止 sidecar 进程：先 child.kill()，再按 PID 杀进程树兜底。
 fn shutdown_sidecar(app_handle: &tauri::AppHandle) {
-    let Some(state) = app_handle.try_state::<std::sync::Arc<commands::SidecarState>>()
-    else {
+    let Some(state) = app_handle.try_state::<std::sync::Arc<commands::SidecarState>>() else {
         return;
     };
     let pid = state.shutting_down();
@@ -127,17 +126,15 @@ fn run() -> anyhow::Result<()> {
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application")
-        .run(move |app_handle, event| {
-            match event {
-                tauri::RunEvent::ExitRequested { .. } => {
-                    coord_run.shutdown();
-                    shutdown_sidecar(&app_handle);
-                },
-                tauri::RunEvent::Exit => {
-                    shutdown_sidecar(&app_handle);
-                },
-                _ => {},
-            }
+        .run(move |app_handle, event| match event {
+            tauri::RunEvent::ExitRequested { .. } => {
+                coord_run.shutdown();
+                shutdown_sidecar(&app_handle);
+            },
+            tauri::RunEvent::Exit => {
+                shutdown_sidecar(&app_handle);
+            },
+            _ => {},
         });
 
     Ok(())

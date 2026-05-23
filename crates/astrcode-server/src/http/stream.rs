@@ -403,9 +403,7 @@ fn update_child_tracking_from_parent_event(state: &mut LiveStreamState, event: &
         | EventPayload::AgentSessionFailed {
             child_session_id, ..
         }
-        | EventPayload::AgentSessionRecycled {
-            child_session_id,
-        } => {
+        | EventPayload::AgentSessionRecycled { child_session_id } => {
             if let Some(leaf_child_id) = state.child_sessions.remove(child_session_id) {
                 state.leaf_child_sessions.remove(&leaf_child_id);
             }
