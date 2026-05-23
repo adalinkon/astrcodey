@@ -33,6 +33,10 @@ pub fn builtin_agents() -> Vec<AgentConfig> {
             include_str!("builtin_agents/explore.md"),
         ),
         (
+            "builtin://reviewer.md",
+            include_str!("builtin_agents/reviewer.md"),
+        ),
+        (
             "builtin://execute.md",
             include_str!("builtin_agents/execute.md"),
         ),

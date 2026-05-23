@@ -486,7 +486,15 @@ mod tests {
                                         [Console]::Out.WriteLine('after')"
                 .into(),
             ShellFamily::Cmd => "echo before & ping -n 11 127.0.0.1 > nul & echo after".into(),
-            ShellFamily::Posix | ShellFamily::Wsl => "echo before; sleep 10; echo after".into(),
+            ShellFamily::Posix | ShellFamily::Wsl => {
+                // 在 Windows 上的 Git Bash 等环境中，sleep 命令可能不可用或不可靠
+                // 使用 ping 作为跨平台的延迟方法
+                if cfg!(windows) {
+                    "echo before; ping -n 11 127.0.0.1 > /dev/null; echo after".into()
+                } else {
+                    "echo before; sleep 10; echo after".into()
+                }
+            }
         }
     }
 

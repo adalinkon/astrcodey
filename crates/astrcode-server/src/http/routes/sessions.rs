@@ -444,8 +444,6 @@ mod tests {
                 arguments,
                 text,
                 status,
-                task_id: _,
-                metadata: _,
                 ..
             } => {
                 assert_eq!(id, "tool-1");
