@@ -119,7 +119,10 @@ function CodeBlockRenderer({
     )
   }
 
-  const codeText = String(children).replace(/^\n/, '').replace(/\n$/, '')
+  // Trim structural whitespace from code block fences: leading/trailing
+  // newlines from blank lines after opening / before closing fence, plus stray
+  // spaces that may land on the first line from LLM output formatting.
+  const codeText = String(children).trim()
   return (
     <div className={codeBlockShell}>
       <div className={codeBlockHeader}>

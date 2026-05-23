@@ -375,6 +375,10 @@ pub enum ConversationDeltaDto {
     AgentSessionUpdated {
         agent_session: HttpAgentSessionLinkDto,
     },
+    /// Agent 子会话已回收，前端应移除对应卡片。
+    AgentSessionRemoved {
+        child_session_id: String,
+    },
     /// 插件状态栏项更新。
     StatusItemUpdate {
         id: String,

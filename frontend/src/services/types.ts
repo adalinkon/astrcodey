@@ -198,6 +198,7 @@ export type ConversationDelta =
     }
   | { kind: 'toolCallBackgrounded'; callId: string; taskId: string }
   | { kind: 'agentSessionUpdated'; agentSession: AgentSessionLink }
+  | { kind: 'agentSessionRemoved'; childSessionId: string }
   | { kind: 'statusItemUpdate'; id: string; text: string }
   | { kind: 'extensionRegistryChanged' }
 

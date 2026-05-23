@@ -767,6 +767,15 @@ export const useAppStore = create<ConversationState>((set, get) => ({
         break
       }
 
+      case 'agentSessionRemoved': {
+        set((current) => ({
+          agentSessions: current.agentSessions.filter(
+            (s) => s.childSessionId !== delta.childSessionId
+          ),
+        }))
+        break
+      }
+
       case 'statusItemUpdate': {
         set((current) => {
           const next = { ...current.statusItems }

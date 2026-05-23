@@ -255,6 +255,11 @@ export function decodeConversationDelta(value: unknown): ConversationDelta {
         kind,
         agentSession: decodeAgentSessionLink(object.agentSession),
       }
+    case 'agentSessionRemoved':
+      return {
+        kind,
+        childSessionId: requiredString(object, 'childSessionId'),
+      }
     case 'statusItemUpdate':
       return {
         kind,

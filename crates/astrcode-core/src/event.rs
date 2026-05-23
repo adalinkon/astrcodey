@@ -147,6 +147,15 @@ pub enum EventPayload {
         error: String,
     },
 
+    /// 子 Agent 会话已回收。
+    ///
+    /// 在 `recycle_session` 时追加到父会话，用于从父会话的 `agent_sessions` 投影中
+    /// 移除对应条目，使前端不再显示已回收的子 agent。
+    AgentSessionRecycled {
+        /// 初始子会话 ID。
+        child_session_id: SessionId,
+    },
+
     /// 用户轮次开始。
     TurnStarted,
 

@@ -226,6 +226,17 @@ impl SessionOperations for ServerSessionOperations {
                     }
                     scheduler.sync_durable_events(&watcher_caller_sid).await;
 
+                    // 回收 ephemeral session（在 notify 之前，确保 Recycled 事件紧跟 Completed/Failed）
+                    if recycle_on_complete {
+                        Self::recycle_and_notify(
+                            &session_manager,
+                            &scheduler,
+                            &watcher_caller_sid,
+                            &watcher_target_sid,
+                        )
+                        .await;
+                    }
+
                     // 通知父 session：通过 scheduler.submit_or_inject 启动新 turn
                     if let Some(notify_text) = notify_parent {
                         if let Err(e) = scheduler
@@ -238,18 +249,6 @@ impl SessionOperations for ServerSessionOperations {
                                 "child agent completion notification dropped",
                             );
                         }
-                    }
-                }
-
-                // 回收 ephemeral session
-                if recycle_on_complete {
-                    scheduler.cleanup(&watcher_target_sid).await;
-                    if let Err(e) = session_manager.recycle_session(&watcher_target_sid).await {
-                        tracing::warn!(
-                            session_id = %watcher_target_sid,
-                            error = %e,
-                            "failed to recycle session after async turn"
-                        );
                     }
                 }
             });
@@ -295,11 +294,13 @@ impl SessionOperations for ServerSessionOperations {
 
         self.verify_access(&caller_sid, &target_sid).await?;
 
-        self.scheduler.cleanup(&target_sid).await;
-        self.session_manager
-            .recycle_session(&target_sid)
-            .await
-            .map_err(|e| SessionApiError::Internal(e.to_string()))?;
+        Self::recycle_and_notify(
+            &self.session_manager,
+            &self.scheduler,
+            &caller_sid,
+            &target_sid,
+        )
+        .await;
 
         Ok(())
     }
@@ -430,6 +431,36 @@ impl ServerSessionOperations {
                     },
                 ))
                 .await;
+        }
+    }
+
+    /// 回收子会话并向父会话写入 AgentSessionRecycled 事件。
+    async fn recycle_and_notify(
+        session_manager: &Arc<SessionManager>,
+        scheduler: &Arc<TurnScheduler>,
+        parent_sid: &SessionId,
+        child_sid: &SessionId,
+    ) {
+        scheduler.cleanup(child_sid).await;
+        if let Err(e) = session_manager.recycle_session(child_sid).await {
+            tracing::warn!(
+                session_id = %child_sid,
+                error = %e,
+                "failed to recycle session"
+            );
+            return;
+        }
+        if let Ok(parent_session) = session_manager.open(parent_sid.clone()).await {
+            let _ = parent_session
+                .append_event(astrcode_core::event::Event::new(
+                    parent_sid.clone(),
+                    None,
+                    EventPayload::AgentSessionRecycled {
+                        child_session_id: child_sid.clone(),
+                    },
+                ))
+                .await;
+            scheduler.sync_durable_events(parent_sid).await;
         }
     }
 }

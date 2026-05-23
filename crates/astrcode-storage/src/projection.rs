@@ -112,6 +112,11 @@ pub fn reduce(event: &Event, model: &mut SessionReadModel) {
                 }
             }
         },
+        EventPayload::AgentSessionRecycled { child_session_id } => {
+            model
+                .agent_sessions
+                .retain(|l| l.child_session_id != *child_session_id);
+        },
         EventPayload::SystemPromptConfigured {
             text,
             fingerprint,

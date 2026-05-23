@@ -201,6 +201,12 @@ pub(in crate::http) fn event_to_deltas(
             }]
         },
 
+        EventPayload::AgentSessionRecycled { child_session_id } => {
+            vec![ConversationDeltaDto::AgentSessionRemoved {
+                child_session_id: child_session_id.to_string(),
+            }]
+        },
+
         // Events the client doesn't need as visible deltas
         EventPayload::SystemPromptConfigured { .. }
         | EventPayload::SessionContinuedFromCompaction { .. }
