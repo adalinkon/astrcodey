@@ -50,6 +50,15 @@ function cargoTargetDir(targetTriple, profile) {
   return path.join(REPO_ROOT, 'target', profile)
 }
 
+function killRunningSidecar() {
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/F', '/IM', `${SIDECAR_BIN}.exe`], {
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+  }
+}
+
 function runCargoBuild({ release, targetTriple }) {
   const args = ['build', '-p', 'astrcode-server', '--bin', SIDECAR_BIN]
   if (release) args.push('--release')
@@ -92,6 +101,9 @@ function copySidecar({ targetTriple, profile }) {
 const options = parseArgs(process.argv.slice(2))
 const targetTriple = cargoTargetTriple()
 const profile = cargoProfile(options.release)
+
+// Kill any running sidecar before building to avoid locked exe on Windows
+killRunningSidecar()
 
 runCargoBuild({ release: options.release, targetTriple })
 copySidecar({ targetTriple, profile })
