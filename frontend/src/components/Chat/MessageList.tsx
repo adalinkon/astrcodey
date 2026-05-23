@@ -119,12 +119,12 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
     if (!shouldAutoScroll) return
 
     requestAnimationFrame(() => {
-      if (listRef.current) {
-        listRef.current.scrollTop = listRef.current.scrollHeight
+      if (totalItemCount > 0) {
+        virtualizer.scrollToIndex(totalItemCount - 1, { align: 'end' })
       }
       updateStickiness()
     })
-  }, [blocks, queuedMessages.length, updateStickiness])
+  }, [blocks, queuedMessages.length, updateStickiness, totalItemCount, virtualizer])
 
   // During active streaming, continuously stick to bottom
   const isStreaming =
@@ -132,12 +132,12 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
   useEffect(() => {
     if (!isStreaming || !shouldStickRef.current) return
     const interval = setInterval(() => {
-      if (listRef.current && shouldStickRef.current) {
-        listRef.current.scrollTop = listRef.current.scrollHeight
+      if (totalItemCount > 0 && shouldStickRef.current) {
+        virtualizer.scrollToIndex(totalItemCount - 1, { align: 'end' })
       }
     }, 100)
     return () => clearInterval(interval)
-  }, [isStreaming])
+  }, [isStreaming, totalItemCount, virtualizer])
 
   const virtualItems = virtualizer.getVirtualItems()
 
