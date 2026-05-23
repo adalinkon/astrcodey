@@ -368,7 +368,8 @@ fn agent_tool_metadata()
              research — never assume it will infer the intent.\n- Include relevant file paths, \
              line numbers, and specific patterns so it can act immediately.\n- If the task \
              depends on a previous agent's output, summarize that output in the prompt rather \
-             than expecting the subagent to read the whole conversation.",
+             than expecting the subagent to read the whole conversation.\n Think what you want \
+             the subagent to do",
         )
         .caveat(
             "Don't duplicate work the subagent is doing — if you delegate, stop running the same \
