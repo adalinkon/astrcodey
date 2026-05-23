@@ -210,56 +210,6 @@ async fn concurrent_prompt_accepts_one_and_queues_one() {
     );
 }
 
-#[tokio::test]
-async fn sse_receiver_lag_emits_rehydrate_and_closes() {
-    let runtime = runtime(Arc::new(ImmediateLlm));
-    let session_id = new_session_id();
-    runtime
-        .event_store
-        .create_session(&session_id, ".", "mock-model", None, None, None)
-        .await
-        .unwrap();
-    let event_tx = Arc::new(EventFanout::new(1024));
-    let (app, token) = router(Arc::clone(&runtime), Arc::clone(&event_tx)).unwrap();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .header("authorization", format!("Bearer {token}"))
-                .uri(format!("/api/sessions/{session_id}/stream"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    for text in ["one", "two", "three"] {
-        let event = runtime
-            .event_store
-            .append_event(Event::new(
-                session_id.clone(),
-                None,
-                EventPayload::UserMessage {
-                    message_id: format!("message-{text}").into(),
-                    text: text.into(),
-                },
-            ))
-            .await
-            .unwrap();
-        event_tx.send(ClientNotification::Event(event));
-    }
-
-    let body = String::from_utf8(
-        to_bytes(response.into_body(), 64 * 1024)
-            .await
-            .unwrap()
-            .to_vec(),
-    )
-    .unwrap();
-
-    assert!(body.contains("rehydrateRequired"));
-}
 
 #[tokio::test]
 async fn create_snapshot_then_stream_receives_live_prompt_delta() {

@@ -53,7 +53,7 @@ impl CommandHandler {
         sid: &SessionId,
         keep_recent_turns: Option<usize>,
     ) -> Result<ManualCompactOutcome, HandlerError> {
-        if self.active_turns.contains_key(sid) {
+        if self.scheduler.registry().has_active(sid) {
             self.send_error(40900, "Cannot compact while a turn is running");
             return Err(HandlerError::CompactBlocked);
         }
@@ -175,7 +175,13 @@ impl CommandHandler {
             .latest_cursor()
             .await
             .map_err(|e| HandlerError::Other(e.to_string()))?
-            .and_then(|c| c.parse::<u64>().ok())
+            .and_then(|c| match c.parse::<u64>() {
+                Ok(seq) => Some(seq),
+                Err(_) => {
+                    tracing::warn!(cursor = %c, "cursor is not a valid u64, defaulting to 0");
+                    None
+                },
+            })
             .unwrap_or(0);
         let persisted = persist_compact_result(
             &session,

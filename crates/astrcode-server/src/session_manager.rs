@@ -4,26 +4,13 @@ use astrcode_core::{
     event::{Event, EventPayload},
     extension::ExtensionEvent,
     storage::{EventStore, SessionReadModel, SessionSummary, StorageError},
-    types::{Cursor, SessionId, TurnId},
+    types::{Cursor, SessionId},
 };
 use astrcode_session::{Session, SessionError, SessionRuntimeServices, SessionRuntimeState};
 use astrcode_tools::registry::ToolRegistry;
 use parking_lot::Mutex;
-use tokio::task::AbortHandle;
 
-use crate::config_manager::ConfigManager;
-
-/// 会话创建后的回调类型，用于在 session 注册到 manager 时自动执行副作用（如 attach 到 event_bus）。
-pub type SessionAttachHook = Arc<dyn Fn(&Session) + Send + Sync>;
-
-/// 会话销毁后的回调类型，用于在 session 从 manager 移除时释放占位（如从 event_bus detach）。
-pub type SessionDetachHook = Arc<dyn Fn(&SessionId) + Send + Sync>;
-
-/// 子 agent 完成后向父 session 提交 prompt 的回调类型。
-///
-/// 由 actor 注入，调用方通过它把"通知文本"作为新 prompt 触发父 session 启动新 turn。
-/// 直接写 UserMessage 事件不会启动 turn，必须走 actor 的 SubmitInputForSession 路径。
-pub type PromptSubmitHook = Arc<dyn Fn(SessionId, String) + Send + Sync>;
+use crate::{config_manager::ConfigManager, server_event_bus::ServerEventBus};
 
 pub(crate) struct CreatedSession {
     pub(crate) session: Session,
@@ -38,49 +25,6 @@ pub(crate) struct ForkedSession {
     pub(crate) fork_event: Event,
 }
 
-#[derive(Clone)]
-struct ActiveExecutionEntry {
-    turn_id: TurnId,
-    abort_handle: AbortHandle,
-}
-
-#[derive(Default)]
-pub struct ActiveExecutionIndex {
-    entries: Mutex<HashMap<SessionId, ActiveExecutionEntry>>,
-}
-
-impl ActiveExecutionIndex {
-    pub fn register(&self, session_id: SessionId, turn_id: TurnId, abort_handle: AbortHandle) {
-        self.entries.lock().insert(
-            session_id,
-            ActiveExecutionEntry {
-                turn_id,
-                abort_handle,
-            },
-        );
-    }
-
-    pub fn remove_if_matches(&self, session_id: &SessionId, turn_id: &TurnId) {
-        let mut entries = self.entries.lock();
-        if entries
-            .get(session_id)
-            .is_some_and(|entry| &entry.turn_id == turn_id)
-        {
-            entries.remove(session_id);
-        }
-    }
-
-    pub fn abort_and_remove(&self, session_id: &SessionId) -> Option<TurnId> {
-        let entry = self.entries.lock().remove(session_id)?;
-        entry.abort_handle.abort();
-        Some(entry.turn_id)
-    }
-
-    pub fn has_active(&self, session_id: &SessionId) -> bool {
-        self.entries.lock().contains_key(session_id)
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum SessionManagerError {
     #[error(transparent)]
@@ -91,8 +35,6 @@ pub enum SessionManagerError {
     Extension(#[from] astrcode_core::extension::ExtensionError),
     #[error("session created but no events found")]
     MissingStartEvent,
-    #[error("prompt submit hook is not set")]
-    PromptHookUnset,
 }
 
 /// Server 侧的 session 生命周期门面。
@@ -108,13 +50,7 @@ pub struct SessionManager {
     config: Arc<ConfigManager>,
     runtime_states: Mutex<HashMap<SessionId, Arc<SessionRuntimeState>>>,
     capabilities: Arc<SessionRuntimeServices>,
-    active_execution_index: ActiveExecutionIndex,
-    /// 可选的 attach 回调：子会话注册 runtime 后自动把 session 接入 event_bus 广播。
-    attach_hook: Mutex<Option<SessionAttachHook>>,
-    /// 可选的 detach 回调：session 销毁后释放 event_bus 占位，让同 sid 重建时能重新 attach。
-    detach_hook: Mutex<Option<SessionDetachHook>>,
-    /// 可选的 prompt 提交回调：异步子 agent 完成后用来给父 session 启动 turn。
-    prompt_submit_hook: Mutex<Option<PromptSubmitHook>>,
+    event_bus: Mutex<Option<Arc<ServerEventBus>>>,
 }
 
 impl SessionManager {
@@ -130,11 +66,14 @@ impl SessionManager {
             config,
             runtime_states: Mutex::new(HashMap::new()),
             capabilities,
-            attach_hook: Mutex::new(None),
-            detach_hook: Mutex::new(None),
-            prompt_submit_hook: Mutex::new(None),
-            active_execution_index: ActiveExecutionIndex::default(),
+            event_bus: Mutex::new(None),
         }
+    }
+
+    /// 绑定事件总线。SessionManager 在 create/fork/open 返回 session 时自动 attach，
+    /// 在 delete/recycle 时自动 detach，确保 session 事件流始终与广播通道连通。
+    pub fn bind_event_bus(&self, event_bus: Arc<ServerEventBus>) {
+        *self.event_bus.lock() = Some(event_bus);
     }
 
     fn get_or_create_runtime(&self, session_id: &SessionId) -> Arc<SessionRuntimeState> {
@@ -156,54 +95,15 @@ impl SessionManager {
         &self.config
     }
 
-    pub(crate) fn active_execution_index(&self) -> &ActiveExecutionIndex {
-        &self.active_execution_index
-    }
-
-    /// 设置 attach 回调。event_bus 创建后由调用方注入，子会话注册 runtime 时自动触发。
-    pub fn set_attach_hook(&self, hook: SessionAttachHook) {
-        *self.attach_hook.lock() = Some(hook);
-    }
-
-    /// 设置 detach 回调。session 销毁时触发，释放 event_bus 的 sid 占位。
-    pub fn set_detach_hook(&self, hook: SessionDetachHook) {
-        *self.detach_hook.lock() = Some(hook);
-    }
-
-    /// 设置 prompt 提交回调。actor 启动后注入，子 agent 完成后通过它给父 session 启动 turn。
-    pub fn set_prompt_submit_hook(&self, hook: PromptSubmitHook) {
-        *self.prompt_submit_hook.lock() = Some(hook);
-    }
-
-    /// 触发 prompt 提交回调（异步子 agent 完成后回调父 session）。
-    ///
-    /// hook 由 actor 启动时注入；调用方若在 hook 注入前调用，会得到
-    /// `Err(SessionManagerError::PromptHookUnset)`。
-    pub fn submit_prompt_to_session(
-        &self,
-        session_id: SessionId,
-        text: String,
-    ) -> Result<(), SessionManagerError> {
-        let hook = self
-            .prompt_submit_hook
-            .lock()
-            .clone()
-            .ok_or(SessionManagerError::PromptHookUnset)?;
-        hook(session_id, text);
-        Ok(())
-    }
-
-    /// 把子会话的 runtime 注册到 manager，并自动 attach 到 event_bus（如果 hook 已设置）。
+    /// 把子会话的 runtime 注册到 manager。
     ///
     /// 子会话由 `Session::spawn_child` 创建，其 runtime 不经过 `get_or_create_runtime`，
     /// 必须手动注册才能让后续 `open(child_sid)` 拿到同一个 runtime（共享广播通道）。
+    /// event_bus 的 attach 由 TurnScheduler 在 submit 时统一处理。
     pub(crate) fn register_child_session(&self, session: &Session) {
         let sid = session.id().clone();
         let runtime = session.runtime().clone();
         self.runtime_states.lock().insert(sid, runtime);
-        if let Some(hook) = self.attach_hook.lock().as_ref() {
-            hook(session);
-        }
     }
 
     /// 让所有已打开 session 的工具快照失效；下一次 turn 会按当前扩展集重建。
@@ -235,6 +135,10 @@ impl SessionManager {
         )
         .await?;
 
+        if let Some(ref bus) = *self.event_bus.lock() {
+            bus.attach(&session);
+        }
+
         let start_event = self
             .event_store
             .replay_events(&sid)
@@ -260,6 +164,9 @@ impl SessionManager {
             Arc::clone(&self.capabilities),
         )
         .await?;
+        if let Some(ref bus) = *self.event_bus.lock() {
+            bus.attach(&session);
+        }
         Ok(session)
     }
 
@@ -273,17 +180,15 @@ impl SessionManager {
         )
         .await?;
         self.event_store.delete_session(session_id).await?;
-        self.active_execution_index.abort_and_remove(session_id);
-        // 释放 event_bus 的 sid 占位，让同 sid 重建时能重新 attach。
-        if let Some(hook) = self.detach_hook.lock().as_ref() {
-            hook(session_id);
-        }
         // 清理本 session 的 runtime（含 bg_tasks）后从 registry 移除。
         if let Some(runtime) = self.runtime_states.lock().remove(session_id) {
             runtime
                 .background_tasks()
                 .lock()
                 .cleanup_session(session_id);
+        }
+        if let Some(ref bus) = *self.event_bus.lock() {
+            bus.detach(session_id);
         }
         // 清理本 session 关联的持久化终端。
         // TODO：更插件化的清理方式，避免直接依赖 tools 模块的实现细节。
@@ -341,6 +246,13 @@ impl SessionManager {
             .map_err(SessionManagerError::from)
     }
 
+    /// 强制 fsync 指定会话的 durable event log。
+    pub(crate) async fn sync_durable_events(&self, session_id: &SessionId) {
+        if let Err(e) = self.event_store.sync_durable_events(session_id).await {
+            tracing::error!(session_id = %session_id, error = %e, "failed to sync durable events");
+        }
+    }
+
     pub(crate) async fn recycle_session(
         &self,
         session_id: &SessionId,
@@ -349,17 +261,15 @@ impl SessionManager {
             .recycle_session(session_id)
             .await
             .map_err(SessionManagerError::from)?;
-        self.active_execution_index.abort_and_remove(session_id);
         // ephemeral 子会话回收后清理 runtime 占位，避免 HashMap 无限膨胀。
-        // 同时释放 event_bus 的 sid 占位。
         if let Some(runtime) = self.runtime_states.lock().remove(session_id) {
             runtime
                 .background_tasks()
                 .lock()
                 .cleanup_session(session_id);
         }
-        if let Some(hook) = self.detach_hook.lock().as_ref() {
-            hook(session_id);
+        if let Some(ref bus) = *self.event_bus.lock() {
+            bus.detach(session_id);
         }
         Ok(())
     }
@@ -439,6 +349,10 @@ impl SessionManager {
         )
         .await?;
 
+        if let Some(ref bus) = *self.event_bus.lock() {
+            bus.attach(&session);
+        }
+
         // 5. 写入 SessionForked 事件
         let fork_event = session
             .append_event(Event::new(
@@ -501,8 +415,6 @@ mod tests {
     use astrcode_session::session_setup::{
         SystemPromptSnapshotInput, build_system_prompt_snapshot, build_tool_registry_snapshot,
     };
-
-    use super::ActiveExecutionIndex;
 
     struct StaticToolExtension {
         id: &'static str,
@@ -594,22 +506,5 @@ mod tests {
 
         assert_eq!(shell.origin, ToolOrigin::Extension);
         assert_eq!(shell.description, "first extension shell");
-    }
-
-    #[tokio::test]
-    async fn active_execution_index_removes_only_matching_turn() {
-        let index = ActiveExecutionIndex::default();
-        let session_id = astrcode_core::types::SessionId::from("session-1");
-        let turn_id = astrcode_core::types::TurnId::from("turn-1");
-        let handle = tokio::spawn(async {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-        })
-        .abort_handle();
-
-        index.register(session_id.clone(), turn_id.clone(), handle);
-        index.remove_if_matches(&session_id, &astrcode_core::types::TurnId::from("other"));
-        assert!(index.has_active(&session_id));
-        index.remove_if_matches(&session_id, &turn_id);
-        assert!(!index.has_active(&session_id));
     }
 }

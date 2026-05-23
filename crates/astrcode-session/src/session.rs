@@ -455,6 +455,11 @@ impl Session {
             .await;
 
         // ── Runtime 准备 ────────────────────────────────────────────
+        // TODO: model_id 存在双写——runtime.model_id() 是"即时生效"缓存，
+        // ModelIdChanged 事件是"持久化事实"，两者在两次 turn 之间可能不一致。
+        // 根本解法：submit 从 caps.read_effective() 读 model_id 而非 runtime，
+        // 但需要同步调整 refresh_prompt 和 TurnRunner::new 的读取来源。
+        // 或者增加事件？
         let model_id = self.runtime.model_id();
         if let Err(e) = self.update_model_id(&model_id).await {
             tracing::warn!(session_id = %self.id, error = %e, "failed to update session model_id");
@@ -490,7 +495,7 @@ impl Session {
         let (background_result_tx, background_result_rx) =
             mpsc::unbounded_channel::<BackgroundTaskCompletion>();
         let bg_session = Arc::new(self.clone());
-        let _forwarder = spawn_background_forwarder(background_result_rx, bg_session, None);
+        let _forwarder = spawn_background_forwarder(background_result_rx, bg_session);
 
         let session_state = if prompt_changed {
             self.read_model()

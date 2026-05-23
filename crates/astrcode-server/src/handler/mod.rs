@@ -9,7 +9,7 @@ use std::{
 };
 
 use astrcode_core::{
-    event::{Event, EventPayload},
+    event::Event,
     types::*,
 };
 use astrcode_protocol::{
@@ -19,8 +19,8 @@ use astrcode_protocol::{
 use tokio::sync::mpsc;
 
 use crate::{
-    bootstrap::ServerRuntime, server_event_bus::ServerEventBus,
-    session_manager::SessionManagerError,
+    bootstrap::ServerRuntime,
+    session_manager::SessionManagerError, turn_scheduler::TurnScheduler,
 };
 
 mod actor;
@@ -38,7 +38,6 @@ use model_selection::ModelSelectionController;
 #[cfg(test)]
 use snapshot::message_to_dto;
 use snapshot::session_snapshot;
-use turn::ActiveTurn;
 
 /// 用户输入提交结果：被接受进入 Turn，或被斜杠命令处理。
 #[derive(Debug)]
@@ -77,12 +76,12 @@ pub(crate) use turn::TurnCompletion;
 /// 维护当前活跃会话和活跃回合的状态，确保同一时间只有一个回合在运行。
 pub struct CommandHandler {
     runtime: Arc<ServerRuntime>,
-    /// 事件总线，统一处理持久化和广播
-    event_bus: Arc<ServerEventBus>,
     /// 当前活跃的会话 ID
     active_session_id: Option<SessionId>,
-    /// 当前正在执行的回合，按 session 隔离
-    active_turns: HashMap<SessionId, ActiveTurn>,
+    /// 统一的 turn 生命周期服务
+    scheduler: Arc<TurnScheduler>,
+    /// 事件总线，用于发送客户端通知
+    event_bus: Arc<crate::server_event_bus::ServerEventBus>,
     /// 输入排队队列：当 session 正在执行 turn 时，后续输入排队到下一 turn。
     queued_inputs: HashMap<SessionId, VecDeque<String>>,
     /// 正在压缩的 session 集合，用于在 compact 期间排队输入。
@@ -156,15 +155,12 @@ impl CommandHandler {
 
             ClientCommand::DeleteSession { session_id } => {
                 let session_id = SessionId::from(session_id);
-                if let Some(active_turn) = self.active_turns.remove(&session_id) {
-                    self.abort_active_turn_inner(active_turn).await;
-                }
+                self.scheduler.cleanup(&session_id).await;
                 match self.runtime.session_manager.delete(&session_id).await {
                     Ok(()) => {
                         if self.active_session_id.as_ref() == Some(&session_id) {
                             self.active_session_id = None;
                         }
-                        // detach 已由 SessionManager 的 detach_hook 处理
                     },
                     Err(e) => self.send_error(40401, &format!("Session not found: {e}")),
                 }
@@ -292,7 +288,6 @@ impl CommandHandler {
             },
         };
         let sid = created.session.id().clone();
-        self.event_bus.attach(&created.session);
         self.active_session_id = Some(sid.clone());
 
         tracing::info!(session_id = %sid, "session created, dispatching SessionStart");
@@ -342,20 +337,16 @@ impl CommandHandler {
         sid: &SessionId,
         text: String,
     ) -> Result<(), HandlerError> {
-        let active_turn = self
-            .active_turns
-            .get(sid)
-            .ok_or(HandlerError::NoActiveTurn)?;
-        let turn_id = active_turn.turn_id.clone();
-        let message_id = new_message_id();
-        active_turn
-            .session
-            .emit_durable(
-                Some(&turn_id),
-                EventPayload::UserMessage { message_id, text },
-            )
+        self.scheduler
+            .inject(sid, text)
             .await
-            .map_err(|e| HandlerError::Other(format!("inject message: {e}")))?;
+            .map_err(|e| match e {
+                crate::turn_scheduler::TurnError::NoActiveTurn => HandlerError::NoActiveTurn,
+                crate::turn_scheduler::TurnError::EventEmit(msg) => {
+                    HandlerError::Other(format!("event emit error: {msg}"))
+                },
+                other => HandlerError::Other(other.to_string()),
+            })?;
         Ok(())
     }
 
@@ -414,7 +405,6 @@ impl CommandHandler {
     async fn resume_session(&mut self, session_id: SessionId) {
         match self.runtime.session_manager.open(session_id.clone()).await {
             Ok(session) => {
-                self.event_bus.attach(&session);
                 if let Err(e) = self.repair_stale_session(&session_id).await {
                     self.send_error(-32603, &e.to_string());
                     return;
@@ -491,7 +481,6 @@ impl CommandHandler {
             .map_err(|e| HandlerError::Other(format!("fork session: {e}")))?;
 
         let new_sid = forked.session.id().clone();
-        self.event_bus.attach(&forked.session);
         self.active_session_id = Some(new_sid.clone());
 
         // 初始化 runtime（工具表在新 session 上需要重建）

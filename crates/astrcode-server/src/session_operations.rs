@@ -11,16 +11,18 @@ use astrcode_core::{
         CreateSessionRequest, SessionApiError, SessionHandle, SessionOperations, SessionStatus,
         SubmitTurnRequest, SubmitTurnResult,
     },
-    types::{SessionId, new_message_id, new_turn_id},
+    types::{SessionId, new_message_id},
 };
 
 use crate::session_manager::SessionManager;
+use crate::turn_scheduler::TurnScheduler;
 
 /// 服务端 SessionOperations 实现。
 ///
 /// 每个方法是一个原子操作，不包含 agent 编排逻辑。
 pub struct ServerSessionOperations {
     pub session_manager: Arc<SessionManager>,
+    pub scheduler: Arc<TurnScheduler>,
 }
 
 #[async_trait::async_trait]
@@ -128,41 +130,34 @@ impl SessionOperations for ServerSessionOperations {
 
         self.verify_access(&caller_sid, &target_sid).await?;
 
-        let session = Arc::new(
-            self.session_manager
-                .open(target_sid.clone())
-                .await
-                .map_err(|e| SessionApiError::NotFound(e.to_string()))?,
-        );
-
         // 确保子 session runtime 就绪
+        let session = self
+            .session_manager
+            .open(target_sid.clone())
+            .await
+            .map_err(|e| SessionApiError::NotFound(e.to_string()))?;
         if let Err(e) = session.ensure_runtime_ready().await {
             return Err(SessionApiError::Internal(format!("runtime init: {e}")));
         }
 
-        let turn_id = new_turn_id();
-
-        // 纯粹的 submit——Session::submit 内部会自己写 TurnStarted + UserMessage
-        let handle = session
-            .submit(request.user_prompt.clone(), turn_id.clone())
+        // 通过 scheduler submit——统一走 TurnRegistry
+        let (turn_id, handle) = self
+            .scheduler
+            .submit(target_sid.clone(), request.user_prompt.clone())
             .await
             .map_err(|e| SessionApiError::Internal(format!("submit: {e}")))?;
-        self.session_manager.active_execution_index().register(
-            target_sid.clone(),
-            turn_id.clone(),
-            handle.abort_handle(),
-        );
+
+        // 统一 registry 清理：无论同步等待还是异步 watcher，都在 turn 完成后移除 registry entry
+        let registry = Arc::clone(self.scheduler.registry());
 
         if request.wait_for_result {
             // 同步等待
             let result = handle.wait().await;
-            self.session_manager
-                .active_execution_index()
-                .remove_if_matches(&target_sid, &turn_id);
+            self.scheduler.sync_durable_events(&target_sid).await;
+            registry.remove_if_matches(&target_sid, &turn_id);
             match result {
                 Some(r) => match r.output {
                     Ok(out) => {
-                        // 写入 AgentSessionCompleted 到父 session
                         self.emit_agent_completed(&caller_sid, &target_sid, &out.text)
                             .await;
                         Ok(SubmitTurnResult::Completed { content: out.text })
@@ -183,6 +178,7 @@ impl SessionOperations for ServerSessionOperations {
             // 异步：spawn watcher 处理完成后逻辑
             let notify_parent = request.notify_parent_on_complete.clone();
             let recycle_on_complete = request.recycle_on_complete;
+            let scheduler = Arc::clone(&self.scheduler);
             let session_manager = Arc::clone(&self.session_manager);
             let watcher_caller_sid = caller_sid.clone();
             let watcher_target_sid = target_sid.clone();
@@ -191,9 +187,8 @@ impl SessionOperations for ServerSessionOperations {
             tokio::spawn(async move {
                 let result = handle.wait().await;
                 let outcome = result.as_ref().and_then(|r| r.output.as_ref().ok());
-                session_manager
-                    .active_execution_index()
-                    .remove_if_matches(&watcher_target_sid, &watcher_turn_id);
+                scheduler.sync_durable_events(&watcher_target_sid).await;
+                registry.remove_if_matches(&watcher_target_sid, &watcher_turn_id);
 
                 // 写入 AgentSessionCompleted/Failed 到父 session
                 if let Ok(parent_session) = session_manager.open(watcher_caller_sid.clone()).await {
@@ -230,12 +225,13 @@ impl SessionOperations for ServerSessionOperations {
                                 .await;
                         },
                     }
+                    scheduler.sync_durable_events(&watcher_caller_sid).await;
 
-                    // 通知父 session：通过 manager 的 prompt 提交回调启动新 turn。
-                    // 直接写 UserMessage 不会启动 turn，必须走 actor 的 SubmitInputForSession。
+                    // 通知父 session：通过 scheduler.submit_or_inject 启动新 turn
                     if let Some(notify_text) = notify_parent {
-                        if let Err(e) = session_manager
-                            .submit_prompt_to_session(watcher_caller_sid.clone(), notify_text)
+                        if let Err(e) = scheduler
+                            .submit_or_inject(watcher_caller_sid.clone(), notify_text)
+                            .await
                         {
                             tracing::warn!(
                                 parent_session_id = %watcher_caller_sid,
@@ -248,6 +244,7 @@ impl SessionOperations for ServerSessionOperations {
 
                 // 回收 ephemeral session
                 if recycle_on_complete {
+                    scheduler.cleanup(&watcher_target_sid).await;
                     if let Err(e) = session_manager.recycle_session(&watcher_target_sid).await {
                         tracing::warn!(
                             session_id = %watcher_target_sid,
@@ -299,6 +296,7 @@ impl SessionOperations for ServerSessionOperations {
 
         self.verify_access(&caller_sid, &target_sid).await?;
 
+        self.scheduler.cleanup(&target_sid).await;
         self.session_manager
             .recycle_session(&target_sid)
             .await
@@ -317,6 +315,7 @@ impl SessionOperations for ServerSessionOperations {
 
         self.verify_access(&caller_sid, &target_sid).await?;
 
+        self.scheduler.cleanup(&target_sid).await;
         self.session_manager
             .delete(&target_sid)
             .await

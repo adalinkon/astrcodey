@@ -178,26 +178,19 @@ pub fn complete_background_task(
     manager.lock().remove(task_id);
 }
 
-/// 后台任务完成时的回调类型。
-pub type OnBackgroundComplete = Arc<dyn Fn(&SessionId, &str, &str) + Send + Sync>;
-
 /// 后台任务完成事件的统一转发器。
 ///
 /// 监听 `rx`，把每个 `BackgroundTaskCompletion` 翻译成
 /// `(ToolCallCompleted, BackgroundTaskCompleted)` 两个事件，
 /// 通过 `Session::emit` 写入（store + runtime 广播）。
 ///
-/// 完成后调用 `on_complete` 回调（如果提供），让调用方可以唤醒 agent 处理结果。
+/// 后台任务完成后的事件由 TurnScheduler 监听处理，无需回调唤醒 agent。
 pub fn spawn_background_forwarder(
     mut rx: mpsc::UnboundedReceiver<BackgroundTaskCompletion>,
     session: Arc<crate::session::Session>,
-    on_complete: Option<OnBackgroundComplete>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(completion) = rx.recv().await {
-            let session_id = completion.session_id.clone();
-            let task_id_str = completion.task_id.to_string();
-            let tool_name = completion.tool_name.clone();
             let tool_call_event = completion.to_tool_call_completed_event();
             let bg_event = completion.to_background_task_completed_event();
             if let Err(e) = session.emit_durable(None, tool_call_event.clone()).await {
@@ -205,11 +198,6 @@ pub fn spawn_background_forwarder(
                 session.emit_live(None, tool_call_event).await;
             }
             session.emit_live(None, bg_event).await;
-
-            // 通知调用方后台任务完成——用于唤醒 agent
-            if let Some(cb) = &on_complete {
-                cb(&session_id, &task_id_str, &tool_name);
-            }
         }
     })
 }
@@ -536,7 +524,7 @@ mod tests {
         );
         let mut events = session.subscribe();
         let (tx, rx) = mpsc::unbounded_channel();
-        let _forwarder = spawn_background_forwarder(rx, Arc::clone(&session), None);
+        let _forwarder = spawn_background_forwarder(rx, Arc::clone(&session));
 
         let mut metadata = std::collections::BTreeMap::new();
         metadata.insert("task_id".into(), serde_json::json!("task-1"));

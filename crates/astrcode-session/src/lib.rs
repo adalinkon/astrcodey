@@ -23,7 +23,7 @@ pub mod turn_handle;
 pub(crate) mod turn_runner;
 pub(crate) mod turn_stages;
 
-pub use background::{BackgroundTaskManager, OnBackgroundComplete, spawn_background_forwarder};
+pub use background::{BackgroundTaskManager, spawn_background_forwarder};
 pub use payload::{compact_boundary_payload, session_continued_from_compaction_payload};
 pub use session::{Session, SessionError};
 pub use session_runtime::SessionRuntimeState;

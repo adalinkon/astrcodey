@@ -44,6 +44,8 @@ pub(super) fn message_to_dto(message: &LlmMessage) -> MessageDto {
         .collect::<String>();
 
     // Compact summary 消息是 synthetic user message，但在客户端应显示为系统消息
+    // TODO: 这里的 compact_summary marker 检测依赖了 astrcode_context::compaction 的内部函数，
+    // 如果 marker 格式变化会导致快照静默错误。应该在传输边界定义自己的 marker 常量。
     let role = if astrcode_context::compaction::is_compact_summary_text(&content) {
         "system"
     } else {
