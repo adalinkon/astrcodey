@@ -118,6 +118,7 @@ fn build_test_ops(
         Arc::clone(&store),
         config,
         capabilities,
+        vec![],
     ));
     let event_bus = Arc::new(ServerEventBus::new(Arc::new(EventFanout::new(1024))));
     session_manager.bind_event_bus(event_bus);

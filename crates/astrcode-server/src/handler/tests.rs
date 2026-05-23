@@ -645,6 +645,7 @@ fn test_runtime_with_settings(
         Arc::clone(&event_store),
         Arc::clone(&config),
         Arc::clone(&capabilities),
+        vec![],
     ));
     Arc::new(ServerRuntime {
         event_store,

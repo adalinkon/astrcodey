@@ -885,6 +885,7 @@ fn runtime(llm_provider: Arc<dyn LlmProvider>) -> Arc<ServerRuntime> {
         Arc::clone(&event_store),
         Arc::clone(&config),
         Arc::clone(&capabilities),
+        vec![],
     ));
     Arc::new(ServerRuntime {
         event_store,

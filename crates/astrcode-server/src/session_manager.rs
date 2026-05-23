@@ -1,8 +1,12 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+};
 
 use astrcode_core::{
     event::{Event, EventPayload},
     extension::ExtensionEvent,
+    lifecycle::SessionResourceCleanup,
     storage::{EventStore, SessionReadModel, SessionSummary, StorageError},
     types::{Cursor, SessionId},
 };
@@ -50,7 +54,8 @@ pub struct SessionManager {
     config: Arc<ConfigManager>,
     runtime_states: Mutex<HashMap<SessionId, Arc<SessionRuntimeState>>>,
     capabilities: Arc<SessionRuntimeServices>,
-    event_bus: Mutex<Option<Arc<ServerEventBus>>>,
+    event_bus: OnceLock<Arc<ServerEventBus>>,
+    resource_cleanups: Vec<Arc<dyn SessionResourceCleanup>>,
 }
 
 impl SessionManager {
@@ -60,20 +65,23 @@ impl SessionManager {
         event_store: Arc<dyn EventStore>,
         config: Arc<ConfigManager>,
         capabilities: Arc<SessionRuntimeServices>,
+        resource_cleanups: Vec<Arc<dyn SessionResourceCleanup>>,
     ) -> Self {
         Self {
             event_store,
             config,
             runtime_states: Mutex::new(HashMap::new()),
             capabilities,
-            event_bus: Mutex::new(None),
+            event_bus: OnceLock::new(),
+            resource_cleanups,
         }
     }
 
     /// 绑定事件总线。SessionManager 在 create/fork/open 返回 session 时自动 attach，
     /// 在 delete/recycle 时自动 detach，确保 session 事件流始终与广播通道连通。
     pub fn bind_event_bus(&self, event_bus: Arc<ServerEventBus>) {
-        *self.event_bus.lock() = Some(event_bus);
+        // 幂等：如果已设置则静默忽略。
+        let _ = self.event_bus.set(event_bus);
     }
 
     fn get_or_create_runtime(&self, session_id: &SessionId) -> Arc<SessionRuntimeState> {
@@ -135,7 +143,7 @@ impl SessionManager {
         )
         .await?;
 
-        if let Some(ref bus) = *self.event_bus.lock() {
+        if let Some(bus) = self.event_bus.get() {
             bus.attach(&session);
         }
 
@@ -164,7 +172,7 @@ impl SessionManager {
             Arc::clone(&self.capabilities),
         )
         .await?;
-        if let Some(ref bus) = *self.event_bus.lock() {
+        if let Some(bus) = self.event_bus.get() {
             bus.attach(&session);
         }
         Ok(session)
@@ -180,20 +188,30 @@ impl SessionManager {
         )
         .await?;
         self.event_store.delete_session(session_id).await?;
-        // 清理本 session 的 runtime（含 bg_tasks）后从 registry 移除。
+        self.cleanup_session_resources(session_id);
+        // 清理本 session 关联的持久化终端。
+        // 已通过 SessionResourceCleanup trait 注入，见 TerminalCleanup。
+        Ok(())
+    }
+
+    /// 释放 session 占用的进程内资源。
+    ///
+    /// delete 和 recycle 共享同一套清理流程，确保两条路径不会出现遗漏。
+    fn cleanup_session_resources(&self, session_id: &SessionId) {
+        // 清理 runtime（含 bg_tasks）后从 registry 移除。
         if let Some(runtime) = self.runtime_states.lock().remove(session_id) {
             runtime
                 .background_tasks()
                 .lock()
                 .cleanup_session(session_id);
         }
-        if let Some(ref bus) = *self.event_bus.lock() {
+        if let Some(bus) = self.event_bus.get() {
             bus.detach(session_id);
         }
-        // 清理本 session 关联的持久化终端。
-        // TODO：更插件化的清理方式，避免直接依赖 tools 模块的实现细节。
-        astrcode_tools::terminal_tool::cleanup_terminals_for_session(session_id.as_str());
-        Ok(())
+        // 外部资源清理（trait 注入）。
+        for cleanup in &self.resource_cleanups {
+            cleanup.cleanup(session_id);
+        }
     }
 
     // ─── 只读查询 ─────────────────────────────────────────────────────
@@ -216,8 +234,7 @@ impl SessionManager {
         session_id: &SessionId,
     ) -> Option<crate::server_event_bus::StreamingSnapshot> {
         self.event_bus
-            .lock()
-            .as_ref()
+            .get()
             .and_then(|bus| bus.streaming_snapshot(session_id))
     }
 
@@ -270,20 +287,19 @@ impl SessionManager {
         &self,
         session_id: &SessionId,
     ) -> Result<(), SessionManagerError> {
+        let model = self.event_store.session_read_model(session_id).await?;
+        Session::emit_lifecycle_for_read_model(
+            &self.capabilities,
+            session_id,
+            &model,
+            ExtensionEvent::SessionShutdown,
+        )
+        .await?;
         self.event_store
             .recycle_session(session_id)
             .await
             .map_err(SessionManagerError::from)?;
-        // ephemeral 子会话回收后清理 runtime 占位，避免 HashMap 无限膨胀。
-        if let Some(runtime) = self.runtime_states.lock().remove(session_id) {
-            runtime
-                .background_tasks()
-                .lock()
-                .cleanup_session(session_id);
-        }
-        if let Some(ref bus) = *self.event_bus.lock() {
-            bus.detach(session_id);
-        }
+        self.cleanup_session_resources(session_id);
         Ok(())
     }
 
@@ -362,7 +378,7 @@ impl SessionManager {
         )
         .await?;
 
-        if let Some(ref bus) = *self.event_bus.lock() {
+        if let Some(bus) = self.event_bus.get() {
             bus.attach(&session);
         }
 
