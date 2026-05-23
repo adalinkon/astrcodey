@@ -428,13 +428,11 @@ impl Session {
                 },
                 _ => {
                     // 缓存未命中：全量重建并缓存稳定前缀
-                    let prompt = astrcode_context::prompt_engine::build_system_prompt(
-                        &prompt_input,
-                    );
+                    let prompt =
+                        astrcode_context::prompt_engine::build_system_prompt(&prompt_input);
                     let fp = hex_fingerprint(prompt.as_bytes());
-                    let stable = astrcode_context::prompt_engine::build_stable_prefix(
-                        &prompt_input,
-                    );
+                    let stable =
+                        astrcode_context::prompt_engine::build_stable_prefix(&prompt_input);
                     runtime.set_cached_stable_prefix(stable, stable_fp);
                     (prompt, fp)
                 },

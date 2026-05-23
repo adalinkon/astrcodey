@@ -1,7 +1,6 @@
 //! Session 生命周期与对话快照路由。
 
 use astrcode_core::{
-    event::Phase,
     storage::{SessionReadModel, SessionSummary},
     types::SessionId,
 };
@@ -9,10 +8,10 @@ use astrcode_protocol::{
     commands::ClientCommand,
     http::{
         CompactSessionRequest, CompactSessionResponse, ConversationBlockDto,
-        ConversationBlockStatusDto, ConversationControlStateDto, ConversationCursorDto,
-        ConversationSnapshotResponseDto, CreateSessionRequest, CreateSessionResponseDto,
-        DeleteProjectResponseDto, HttpAgentSessionLinkDto, PromptRequest, PromptSubmitResponse,
-        SessionListItemDto, SessionListResponseDto, SlashCommandListResponseDto,
+        ConversationBlockStatusDto, ConversationCursorDto, ConversationSnapshotResponseDto,
+        CreateSessionRequest, CreateSessionResponseDto, DeleteProjectResponseDto,
+        HttpAgentSessionLinkDto, PromptRequest, PromptSubmitResponse, SessionListItemDto,
+        SessionListResponseDto, SlashCommandListResponseDto,
     },
 };
 use axum::{
@@ -23,7 +22,10 @@ use axum::{
 };
 use serde::Deserialize;
 
-use super::super::{HttpState, error_response, projection::blocks::messages_to_blocks};
+use super::super::{
+    HttpState, error_response,
+    projection::{blocks::messages_to_blocks, live::control_from_phase},
+};
 use crate::{
     handler::{HandlerError, ManualCompactOutcome, PromptSubmission},
     server_event_bus::StreamingSnapshot,
@@ -313,7 +315,6 @@ fn conversation_to_dto(
     session: SessionReadModel,
     streaming: Option<&StreamingSnapshot>,
 ) -> ConversationSnapshotResponseDto {
-    let can_submit_prompt = matches!(session.phase, Phase::Idle | Phase::Error);
     let title = session
         .first_user_message()
         .unwrap_or_else(|| session_title(&session.working_dir));
@@ -355,15 +356,7 @@ fn conversation_to_dto(
             value: session.cursor(),
         },
         phase: session.phase,
-        control: ConversationControlStateDto {
-            phase: session.phase,
-            can_submit_prompt,
-            can_request_compact: can_submit_prompt && !session.messages.is_empty(),
-            compact_pending: false,
-            compacting: matches!(session.phase, Phase::Compacting),
-            current_mode_id: None,
-            active_turn_id: None,
-        },
+        control: control_from_phase(session.phase, !session.messages.is_empty()),
         blocks,
         agent_sessions: session
             .agent_sessions

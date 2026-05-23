@@ -1,5 +1,7 @@
 //! Model 列表 / 当前激活 / 连通性测试路由。
 
+use std::sync::Arc;
+
 use astrcode_protocol::http::{
     AvailableModelDto, CurrentModelResponseDto, ModelListResponseDto, ModelTestResponseDto,
 };
@@ -38,29 +40,30 @@ pub(in crate::http) async fn list_models(State(state): State<HttpState>) -> Resp
     Json(ModelListResponseDto { models }).into_response()
 }
 
-pub(in crate::http) async fn test_model(State(state): State<HttpState>) -> Response {
+async fn run_model_test(
+    provider: &Arc<dyn astrcode_core::llm::LlmProvider>,
+) -> ModelTestResponseDto {
     let start = std::time::Instant::now();
-    match state
-        .runtime
-        .config_manager
-        .read_llm_provider()
+    match provider
         .generate(vec![astrcode_core::llm::LlmMessage::user("Hi")], vec![])
         .await
     {
         Ok(mut rx) => {
             while rx.recv().await.is_some() {}
-            Json(ModelTestResponseDto {
+            ModelTestResponseDto {
                 success: true,
                 message: format!("ok ({}ms)", start.elapsed().as_millis()),
-            })
-            .into_response()
+            }
         },
-        Err(error) => Json(ModelTestResponseDto {
+        Err(error) => ModelTestResponseDto {
             success: false,
             message: error.to_string(),
-        })
-        .into_response(),
+        },
     }
+}
+
+pub(in crate::http) async fn test_model(State(state): State<HttpState>) -> Response {
+    Json(run_model_test(&state.runtime.config_manager.read_llm_provider()).await).into_response()
 }
 
 pub(in crate::http) async fn get_small_current_model(State(state): State<HttpState>) -> Response {
@@ -79,26 +82,6 @@ pub(in crate::http) async fn get_small_current_model(State(state): State<HttpSta
 }
 
 pub(in crate::http) async fn test_small_model(State(state): State<HttpState>) -> Response {
-    let start = std::time::Instant::now();
-    match state
-        .runtime
-        .config_manager
-        .read_small_llm_provider()
-        .generate(vec![astrcode_core::llm::LlmMessage::user("Hi")], vec![])
-        .await
-    {
-        Ok(mut rx) => {
-            while rx.recv().await.is_some() {}
-            Json(ModelTestResponseDto {
-                success: true,
-                message: format!("ok ({}ms)", start.elapsed().as_millis()),
-            })
-            .into_response()
-        },
-        Err(error) => Json(ModelTestResponseDto {
-            success: false,
-            message: error.to_string(),
-        })
-        .into_response(),
-    }
+    Json(run_model_test(&state.runtime.config_manager.read_small_llm_provider()).await)
+        .into_response()
 }
