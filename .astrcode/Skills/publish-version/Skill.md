@@ -23,17 +23,19 @@ git tag --sort=-v:refname | head -1
 
 | # | 位置 | 检查命令 | 说明 |
 |---|------|----------|------|
-| 1 | 所有 crate Cargo.toml（21个） | `grep '^version' crates/*/Cargo.toml` | workspace 下的所有 crate |
-| 2 | src-tauri/Cargo.toml | `grep '^version' src-tauri/Cargo.toml` | Tauri 桌面应用的 Rust 依赖，**容易遗漏** |
-| 3 | src-tauri/tauri.conf.json | `grep '"version"' src-tauri/tauri.conf.json` | 决定桌面安装包的文件名版本（如 `AstrCode_0.1.7_x64-setup.exe`） |
-| 4 | frontend/package.json | `grep '"version"' frontend/package.json` | 前端 npm 包版本 |
-| 5 | npm/astrcode/package.json | `grep '"version"' npm/astrcode/package.json` | npm 主包模板，CI 中 `prepare-npm-packages.sh` 用 `$VERSION` 注入，但本地模板也需同步 |
-| 6 | npm/astrcode/package.json 依赖 | `grep 'whatevertogo/astrcode-' npm/astrcode/package.json` | 6 个平台依赖的版本号也需要更新 |
+| 1 | workspace 下的所有 crate（数量视仓库而定） | `grep -R --include='Cargo.toml' '^version' crates` | 递归查找 workspace 中的所有 `Cargo.toml` 中的 `version` 字段 |
+| 2 | `src-tauri/Cargo.toml` | `grep '^version' src-tauri/Cargo.toml` | Tauri 桌面应用的 Rust 依赖，**容易遗漏** |
+| 3 | `src-tauri/tauri.conf.json` | `grep '"version"' src-tauri/tauri.conf.json` | 决定桌面安装包的文件名版本（如 `AstrCode_0.1.7_x64-setup.exe`） |
+| 4 | `frontend/package.json` | `grep '"version"' frontend/package.json` | 前端 npm 包版本 |
+| 5 | `npm/astrcode/package.json` | `grep '"version"' npm/astrcode/package.json` | npm 主包模板，CI 中 `prepare-npm-packages.sh` 用 `$VERSION` 注入，但本地模板也需同步 |
+| 6 | `npm/astrcode/package.json` 中的平台依赖 | `grep '"@whatevertogo/astrcode-' npm/astrcode/package.json` | 平台相关包（以 `@whatevertogo/astrcode-` 为前缀）的版本号也需要更新 |
 
-**如果发现不一致，先统一更新再继续。** 更新命令（把 `OLD` 替换为当前版本，`NEW` 替换为目标版本）：
+**如果发现不一致，先统一更新再继续。** 以下是常用的示例脚本（把 `OLD` 替换为当前版本，`NEW` 替换为目标版本）。
+
+注意：下面的 `sed -i` 写法假定使用 GNU sed（Linux）。在 macOS (BSD sed) 上请使用 `sed -i '' -e 's/.../.../'` 或改用 `perl -pi -e` 以确保兼容性。
 
 ```bash
-# 1. 所有 crate Cargo.toml
+# 1. 所有 crate Cargo.toml：对每个 Cargo.toml，只替换首个匹配的 version 行
 for toml in $(find crates -name "Cargo.toml"); do
   sed -i "0,/^version = \"OLD\"/{s/^version = \"OLD\"/version = \"NEW\"/}" "$toml"
 done
@@ -47,10 +49,13 @@ sed -i 's/"version": "OLD"/"version": "NEW"/' src-tauri/tauri.conf.json
 # 4. frontend/package.json
 sed -i 's/"version": "OLD"/"version": "NEW"/' frontend/package.json
 
-# 5 & 6. npm/astrcode/package.json（主版本 + 6个平台依赖）
+# 5 & 6. npm/astrcode/package.json（主版本 + 平台依赖）
 sed -i 's/"version": "OLD"/"version": "NEW"/g' npm/astrcode/package.json
+# 替换以 @whatevertogo/astrcode- 前缀的依赖版本（视 package.json 结构，可使用更可靠的 jq/perl 操作）
 sed -i 's/"@whatevertogo\/astrcode-\(.*\)": "OLD"/"@whatevertogo\/astrcode-\1": "NEW"/g' npm/astrcode/package.json
 ```
+
+> 可选更安全做法：使用 `jq` 或 `node` 脚本直接解析并更新 `package.json`，以避免误替换。
 
 ### 3. 编译验证
 
