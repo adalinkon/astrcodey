@@ -516,21 +516,19 @@ impl ExtensionRunner {
     /// 返回每个扩展的 notify 结果（仅记录错误，不中断）。
     pub async fn notify_config_changed(&self) -> Vec<String> {
         let current_configs = self.extension_configs.read().clone();
-        let records = self.records.read().await;
+        let mut records = self.records.write().await;
         let mut errors = Vec::new();
 
-        for record in records.iter() {
+        for record in records.iter_mut() {
             let new_config = current_configs
                 .get(&record.id)
                 .cloned()
                 .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
-            // 只在配置真正变化时通知
             if record.config == new_config {
                 continue;
             }
 
-            // 在 extension 列表中查找对应的 Arc
             let ext = {
                 let extensions = self.extensions.read().await;
                 extensions
@@ -548,6 +546,8 @@ impl ExtensionRunner {
                         "config changed handler failed for {}: {e}",
                         record.id
                     ));
+                } else {
+                    record.config = new_config;
                 }
             }
         }
