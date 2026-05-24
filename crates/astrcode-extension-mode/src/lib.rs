@@ -241,6 +241,9 @@ impl CommandHandler for ModeSlashCommandHandler {
         }
 
         state.current_mode = target_mode.to_string();
+        if target_mode == "plan" {
+            state.user_initiated = true;
+        }
         store::save_mode_state(&mode_root, &state).map_err(ExtensionError::Internal)?;
 
         Ok(ExtensionCommandResult::display(

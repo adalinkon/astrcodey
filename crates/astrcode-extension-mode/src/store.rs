@@ -14,6 +14,11 @@ pub(crate) struct ModeState {
     /// Set when a transition just happened; cleared after injection.
     #[serde(default, alias = "pendingTransitionContext")]
     pub pending_transition_context: Option<String>,
+    /// True if the user entered plan mode (slash command / keybinding).
+    /// False if the LLM entered plan mode via `switchMode` tool call.
+    /// Controls whether exiting plan mode requires user approval.
+    #[serde(default)]
+    pub user_initiated: bool,
 }
 
 impl ModeState {
@@ -22,6 +27,7 @@ impl ModeState {
             current_mode: "code".into(),
             previous_mode: None,
             pending_transition_context: None,
+            user_initiated: false,
         }
     }
 }
@@ -119,6 +125,7 @@ mod tests {
             current_mode: "plan".into(),
             previous_mode: Some("code".into()),
             pending_transition_context: Some("entered plan".into()),
+            user_initiated: false,
         };
         save_mode_state(&root, &state).unwrap();
         let loaded = load_mode_state(&root).unwrap();

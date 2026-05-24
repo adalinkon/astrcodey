@@ -26,16 +26,11 @@ pub const UPSERT_PLAN_TOOL_NAME: &str = "upsertSessionPlan";
 pub fn switch_mode_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: SWITCH_MODE_TOOL_NAME.into(),
-        description: ("Switch the agent running mode. Available modes:\n- \"code\" (default): \
-                       full execution with all tools.\n- \"plan\": read-only planning mode — \
-                       explore the codebase and produce a structured plan before \
-                       implementation.\n\nEnter plan mode when the task matches ANY of these:\n• \
-                       Implementing a new feature\n• Multiple valid approaches exist and you \
-                       need to pick one\n• The user wants you to plan\n• Planning will be \
-                       helpful for the task\n• Before a multi-step change, pause and ask: am I \
-                       guessing about scope, dependencies, or where the code lives? If yes, plan \
-                       first.\n\nIn plan mode: explore the codebase (use agents) → write a plan \
-                       with `upsertSessionPlan` → switch back to code mode to implement.")
+        description: ("Switch agent mode: \"code\" (default, full execution) or \"plan\" \
+                       (read-only planning).\n\nEnter plan mode for: new features, ambiguous \
+                       scope, or multi-step changes.\n\nSet `requireApproval: true` when the \
+                       user explicitly asked for a plan. The plan will then require user review \
+                       before implementation. Default: false (proceed directly after planning).")
             .into(),
         parameters: json!({
             "type": "object",
@@ -45,6 +40,12 @@ pub fn switch_mode_tool_definition() -> ToolDefinition {
                     "type": "string",
                     "enum": ["code", "plan"],
                     "description": "Target mode."
+                },
+                "requireApproval": {
+                    "type": "boolean",
+                    "description": "Set to true when the user explicitly asked for a plan. \
+                                    When true, the plan must be presented to the user for review \
+                                    before implementation begins. Default: false."
                 }
             },
             "required": ["mode"]
@@ -84,6 +85,8 @@ pub fn upsert_plan_tool_definition() -> ToolDefinition {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SwitchModeArgs {
     mode: String,
+    #[serde(default)]
+    require_approval: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,14 +96,22 @@ struct UpsertPlanArgs {
 }
 
 /// Transition context messages for mode entry/exit.
-fn transition_context(from: &ModeId, to: &ModeId) -> Option<String> {
+fn transition_context(from: &ModeId, to: &ModeId, user_initiated: bool) -> Option<String> {
     match (from.as_str(), to.as_str()) {
         ("code", "plan") => Some(format!(
-            "{}\n\n{}",
+            "{}\n\nCritical: You must ensure the plan follows the template format below \
+             exactly\n\n{}",
             crate::prompts::plan_entry_prompt().trim(),
             crate::prompts::plan_template().trim(),
         )),
-        ("plan", "code") => Some(crate::prompts::plan_exit_prompt().trim().to_string()),
+        ("plan", "code") if user_initiated => {
+            Some(crate::prompts::plan_exit_prompt().trim().to_string())
+        },
+        ("plan", "code") => Some(
+            "The session has exited plan mode and is now back in code mode.\n\nProceed with \
+             implementing the plan directly. No user approval is needed."
+                .to_string(),
+        ),
         _ => None,
     }
 }
@@ -175,7 +186,12 @@ pub fn handle_switch_mode(
 
     state.previous_mode = Some(state.current_mode.clone());
     state.current_mode = target_id.as_str().to_string();
-    let context = transition_context(&current_id, &target_id);
+
+    if target_id.as_str() == "plan" {
+        state.user_initiated = args.require_approval;
+    }
+
+    let context = transition_context(&current_id, &target_id, state.user_initiated);
 
     state.pending_transition_context = context;
     store::save_mode_state(mode_root, &state)?;
