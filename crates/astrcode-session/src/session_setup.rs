@@ -6,11 +6,11 @@
 
 use std::collections::HashMap;
 
-use astrcode_context::prompt_engine::{PromptEngine, PromptFiles};
+use astrcode_context::prompt_engine::{build_system_prompt, PromptFiles};
 use astrcode_core::{
     config::ModelSelection,
     extension::{ChildToolPolicy, ExtensionError, PromptBuildContext},
-    prompt::{ExtensionPromptBlock, ExtensionSection, PromptProvider, SystemPromptInput},
+    prompt::{ExtensionPromptBlock, ExtensionSection, SystemPromptInput},
     tool::{ToolDefinition, ToolPromptMetadata},
 };
 use astrcode_extensions::runner::ExtensionRunner;
@@ -185,11 +185,7 @@ pub async fn build_system_prompt_snapshot(
         extra_instructions,
     };
 
-    let system_prompt = PromptEngine::new()
-        .assemble(prompt_input)
-        .await
-        .system_prompt
-        .unwrap_or_default();
+    let system_prompt = build_system_prompt(&prompt_input);
     let fingerprint = hex_fingerprint(system_prompt.as_bytes());
     Ok((system_prompt, fingerprint))
 }

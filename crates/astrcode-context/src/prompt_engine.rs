@@ -28,10 +28,7 @@ use std::{
 
 use astrcode_core::{
     llm::LlmMessage,
-    prompt::{
-        ExtensionPromptBlock, ExtensionSection, PromptPlan, PromptProvider, PromptSectionGroup,
-        SystemPromptInput,
-    },
+    prompt::{ExtensionPromptBlock, ExtensionSection, PromptSectionGroup, SystemPromptInput},
     tool::{ToolDefinition, ToolOrigin, ToolPromptMetadata, ToolPromptTag},
 };
 use astrcode_support::hostpaths::astrcode_dir;
@@ -136,15 +133,6 @@ impl PromptEngine {
 impl Default for PromptEngine {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// 兼容旧的 `PromptProvider` trait（bootstrap 中仍在使用）。
-#[async_trait::async_trait]
-impl PromptProvider for PromptEngine {
-    async fn assemble(&self, input: SystemPromptInput) -> PromptPlan {
-        let system_prompt = build_system_prompt(&input);
-        PromptPlan::from_system_prompt(system_prompt)
     }
 }
 
@@ -612,7 +600,7 @@ fn tool_summary_section(input: &SystemPromptInput) -> Option<String> {
         "- Interactive REPLs or debuggers → `terminal`".to_string(),
         "Planning & Discovery:".to_string(),
         "- Track progress → `todoWrite`".to_string(),
-        "- Switch to planning mode → `switchMode`".to_string(),
+        "- Switch to other mode → `switchMode`".to_string(),
         "- Load a skill → `Skill`".to_string(),
         "- Find external MCP tools → `tool_search_tool`".to_string(),
         "- Delegate multi-step tasks → `agent`".to_string(),
@@ -1032,12 +1020,6 @@ mod tests {
             extra_instructions: None,
             tool_prompt_metadata: std::collections::HashMap::new(),
         }
-    }
-
-    #[tokio::test]
-    async fn assemble_returns_usable_prompt_plan() {
-        let plan = PromptEngine::new().assemble(input()).await;
-        assert!(plan.system_prompt.is_some());
     }
 
     #[test]
