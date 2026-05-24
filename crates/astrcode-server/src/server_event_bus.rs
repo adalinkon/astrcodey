@@ -103,16 +103,21 @@ impl ServerEventBus {
         );
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
-                // 先发送事件给前端，避免后续操作延迟通知
+                // 先更新 streaming 状态
                 update_streaming(&state, &event.payload);
-                tx.send(ClientNotification::Event(event.clone()));
 
-                // 处理后台任务完成事件，触发继续处理（异步，不阻塞事件发送）
-                if matches!(event.payload, EventPayload::BackgroundTaskCompleted { .. }) {
+                // 先判断是否需要异步处理（避免后续克隆 event）
+                let needs_task_step = matches!(event.payload, EventPayload::BackgroundTaskCompleted { .. });
+                let needs_turn_completed = matches!(event.payload, EventPayload::TurnCompleted { .. });
+
+                // 发送 event（消耗所有权，避免克隆）
+                tx.send(ClientNotification::Event(event));
+
+                // 异步处理（如果需要）
+                if needs_task_step {
                     if let Some(ref scheduler) = scheduler {
                         let scheduler = Arc::clone(scheduler);
                         let sid = session_id.clone();
-                        // 使用 spawn 避免阻塞事件发送
                         tokio::spawn(async move {
                             if let Err(e) = scheduler.notify_step(sid.clone(), "task").await {
                                 tracing::warn!(
@@ -125,8 +130,7 @@ impl ServerEventBus {
                     }
                 }
 
-                // 处理 turn 完成事件，检查是否有队列中的待处理消息
-                if matches!(event.payload, EventPayload::TurnCompleted { .. }) {
+                if needs_turn_completed {
                     if let Some(ref scheduler) = scheduler {
                         let scheduler = Arc::clone(scheduler);
                         let sid = session_id.clone();
