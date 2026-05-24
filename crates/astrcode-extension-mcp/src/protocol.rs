@@ -2,7 +2,7 @@ use astrcode_protocol::framing::JsonRpcError;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+pub(crate) const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct JsonRpcResponse {
@@ -11,6 +11,12 @@ pub(crate) struct JsonRpcResponse {
     pub(crate) result: Option<Value>,
     #[serde(default)]
     pub(crate) error: Option<JsonRpcError>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct InitializeResult {
+    #[serde(default, rename = "protocolVersion")]
+    pub(crate) protocol_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -87,6 +93,10 @@ pub(crate) fn call_tool_request(id: u64, name: &str, arguments: Value) -> Value 
 
 pub(crate) fn parse_list_tools(result: Value) -> Result<Vec<McpTool>, serde_json::Error> {
     serde_json::from_value::<ListToolsResult>(result).map(|result| result.tools)
+}
+
+pub(crate) fn parse_initialize(result: Value) -> Result<InitializeResult, serde_json::Error> {
+    serde_json::from_value(result)
 }
 
 pub(crate) fn parse_call_tool(result: Value) -> Result<CallToolResult, serde_json::Error> {

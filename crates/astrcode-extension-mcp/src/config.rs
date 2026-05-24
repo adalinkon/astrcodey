@@ -16,6 +16,12 @@ fn project_config_path(workspace: &str) -> PathBuf {
     PathBuf::from(workspace).join(".astrcode").join("mcp.json")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McpTransport {
+    Stdio,
+    Http,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct McpConfig {
     pub(crate) servers: Vec<McpServerConfig>,
@@ -25,10 +31,13 @@ pub(crate) struct McpConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct McpServerConfig {
     pub(crate) name: String,
+    pub(crate) transport: McpTransport,
     pub(crate) command: String,
     pub(crate) args: Vec<String>,
     pub(crate) env: BTreeMap<String, String>,
     pub(crate) cwd: Option<PathBuf>,
+    pub(crate) url: Option<String>,
+    pub(crate) headers: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,13 +48,18 @@ struct RawMcpConfig {
 
 #[derive(Debug, Deserialize)]
 struct RawMcpServerConfig {
-    command: String,
+    command: Option<String>,
     #[serde(default)]
     args: Vec<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
     #[serde(default)]
     cwd: Option<String>,
+    #[serde(default, alias = "type")]
+    r#type: Option<String>,
+    url: Option<String>,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
 }
 
 pub(crate) fn load_config(working_dir: &str) -> McpConfig {
@@ -157,13 +171,75 @@ fn validate_server(
         diagnostics.push("skip MCP server with empty name".into());
         return None;
     }
-    if raw.command.trim().is_empty() {
-        diagnostics.push(format!("skip MCP server {name}: command is required"));
-        return None;
-    }
 
-    let cwd = match raw.cwd {
-        Some(cwd) if cwd.trim().is_empty() => None,
+    let transport = match raw.r#type.as_deref() {
+        None | Some("stdio") => McpTransport::Stdio,
+        Some("http") => McpTransport::Http,
+        Some(other) => {
+            diagnostics.push(format!(
+                "skip MCP server {name}: unknown type '{other}', expected 'stdio' or 'http'"
+            ));
+            return None;
+        },
+    };
+
+    match transport {
+        McpTransport::Stdio => {
+            let command = match raw.command.filter(|cmd| !cmd.trim().is_empty()) {
+                Some(cmd) => cmd,
+                None => {
+                    diagnostics.push(format!(
+                        "skip MCP server {name}: command is required for stdio transport"
+                    ));
+                    return None;
+                },
+            };
+            let cwd = resolve_cwd(raw.cwd, &name, base_dir, scope, working_dir, diagnostics);
+            Some(McpServerConfig {
+                name,
+                transport,
+                command,
+                args: raw.args,
+                env: raw.env,
+                cwd,
+                url: None,
+                headers: raw.headers,
+            })
+        },
+        McpTransport::Http => {
+            let url = match raw.url.filter(|u| !u.trim().is_empty()) {
+                Some(url) => url,
+                None => {
+                    diagnostics.push(format!(
+                        "skip MCP server {name}: url is required for http transport"
+                    ));
+                    return None;
+                },
+            };
+            Some(McpServerConfig {
+                name,
+                transport,
+                command: String::new(),
+                args: Vec::new(),
+                env: raw.env,
+                cwd: None,
+                url: Some(url),
+                headers: raw.headers,
+            })
+        },
+    }
+}
+
+fn resolve_cwd(
+    raw_cwd: Option<String>,
+    name: &str,
+    base_dir: &Path,
+    scope: ConfigScope,
+    working_dir: &str,
+    diagnostics: &mut Vec<String>,
+) -> Option<PathBuf> {
+    let cwd = match raw_cwd {
+        Some(cwd) if cwd.trim().is_empty() => return None,
         Some(cwd) => {
             let resolved = hostpaths::resolve_path(base_dir, Path::new(&cwd));
             if matches!(scope, ConfigScope::Project)
@@ -180,14 +256,7 @@ fn validate_server(
         },
         None => None,
     };
-
-    Some(McpServerConfig {
-        name,
-        command: raw.command,
-        args: raw.args,
-        env: raw.env,
-        cwd,
-    })
+    cwd
 }
 
 #[cfg(test)]
@@ -298,6 +367,129 @@ mod tests {
         assert_eq!(config.servers.len(), 1);
         assert_eq!(config.servers[0].name, "ok");
         assert!(config.diagnostics[0].contains("command is required"));
+    }
+
+    // ── HTTP transport tests ───────────────────────────────────────────
+
+    #[test]
+    fn parses_http_server_config() {
+        let root = unique_temp_dir("http");
+        fs::create_dir_all(&root).unwrap();
+        let global = root.join("global.json");
+        fs::write(
+            &global,
+            r#"{"mcpServers":{"web":{"type":"http","url":"https://example.com/mcp","headers":{"Authorization":"Bearer xyz"}}}}"#,
+        )
+        .unwrap();
+
+        let config = load_config_from_paths(
+            &global,
+            &root.join("project.json"),
+            &root.to_string_lossy(),
+            false,
+        );
+
+        assert_eq!(config.servers.len(), 1);
+        assert_eq!(config.servers[0].name, "web");
+        assert_eq!(config.servers[0].transport, McpTransport::Http);
+        assert_eq!(
+            config.servers[0].url,
+            Some("https://example.com/mcp".into())
+        );
+        assert_eq!(
+            config.servers[0].headers.get("Authorization"),
+            Some(&"Bearer xyz".to_string())
+        );
+    }
+
+    #[test]
+    fn http_server_without_url_is_skipped() {
+        let root = unique_temp_dir("http-no-url");
+        fs::create_dir_all(&root).unwrap();
+        let global = root.join("global.json");
+        fs::write(&global, r#"{"mcpServers":{"bad":{"type":"http"}}}"#).unwrap();
+
+        let config = load_config_from_paths(
+            &global,
+            &root.join("project.json"),
+            &root.to_string_lossy(),
+            false,
+        );
+
+        assert!(config.servers.is_empty());
+        assert!(config.diagnostics[0].contains("url is required"));
+    }
+
+    #[test]
+    fn http_server_with_unknown_type_is_skipped() {
+        let root = unique_temp_dir("bad-type");
+        fs::create_dir_all(&root).unwrap();
+        let global = root.join("global.json");
+        fs::write(
+            &global,
+            r#"{"mcpServers":{"bad":{"type":"grpc","url":"http://x"}}}"#,
+        )
+        .unwrap();
+
+        let config = load_config_from_paths(
+            &global,
+            &root.join("project.json"),
+            &root.to_string_lossy(),
+            false,
+        );
+
+        assert!(config.servers.is_empty());
+        assert!(config.diagnostics[0].contains("unknown type"));
+    }
+
+    #[test]
+    fn mixed_stdio_and_http_servers() {
+        let root = unique_temp_dir("mixed");
+        fs::create_dir_all(&root).unwrap();
+        let global = root.join("global.json");
+        fs::write(
+            &global,
+            r#"{"mcpServers":{"local":{"command":"node"},"remote":{"type":"http","url":"https://example.com/mcp"}}}"#,
+        )
+        .unwrap();
+
+        let config = load_config_from_paths(
+            &global,
+            &root.join("project.json"),
+            &root.to_string_lossy(),
+            false,
+        );
+
+        assert_eq!(config.servers.len(), 2);
+        let local = config.servers.iter().find(|s| s.name == "local").unwrap();
+        assert_eq!(local.transport, McpTransport::Stdio);
+        assert_eq!(local.command, "node");
+        let remote = config.servers.iter().find(|s| s.name == "remote").unwrap();
+        assert_eq!(remote.transport, McpTransport::Http);
+        assert_eq!(remote.url, Some("https://example.com/mcp".into()));
+    }
+
+    #[test]
+    fn stdio_default_when_type_missing() {
+        let root = unique_temp_dir("default-type");
+        fs::create_dir_all(&root).unwrap();
+        let global = root.join("global.json");
+        fs::write(
+            &global,
+            r#"{"mcpServers":{"old":{"command":"python","args":["-m","mcp_server"]}}}"#,
+        )
+        .unwrap();
+
+        let config = load_config_from_paths(
+            &global,
+            &root.join("project.json"),
+            &root.to_string_lossy(),
+            false,
+        );
+
+        assert_eq!(config.servers.len(), 1);
+        assert_eq!(config.servers[0].transport, McpTransport::Stdio);
+        assert_eq!(config.servers[0].command, "python");
     }
 
     fn unique_temp_dir(name: &str) -> PathBuf {

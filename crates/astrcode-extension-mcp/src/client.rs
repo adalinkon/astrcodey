@@ -1,5 +1,6 @@
 use std::{process::Stdio, sync::Arc, time::Duration};
 
+use async_trait::async_trait;
 use serde_json::Value;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -16,6 +17,63 @@ use crate::{
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 const STDERR_TAIL_BYTES: usize = 8192;
+
+// ─── McpClient trait ────────────────────────────────────────────────────
+
+/// Transport-agnostic MCP client.
+///
+/// Both stdio (subprocess) and http transports implement this trait,
+/// so callers are decoupled from the transport details.
+#[async_trait]
+pub(crate) trait McpClient: Send + Sync {
+    async fn list_tools(&self) -> Result<Vec<McpTool>, McpClientError>;
+    async fn call_tool(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+    ) -> Result<CallToolResult, McpClientError>;
+}
+
+// ─── Client factory ────────────────────────────────────────────────────
+
+pub(crate) enum McpClientKind {
+    Stdio(StdioMcpClient),
+    Http(crate::http_client::HttpMcpClient),
+}
+
+impl McpClientKind {
+    pub(crate) fn from_config(server: &McpServerConfig) -> Self {
+        match server.transport {
+            crate::config::McpTransport::Stdio => {
+                McpClientKind::Stdio(StdioMcpClient::new(server.clone()))
+            },
+            crate::config::McpTransport::Http => {
+                McpClientKind::Http(crate::http_client::HttpMcpClient::new(server.clone()))
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl McpClient for McpClientKind {
+    async fn list_tools(&self) -> Result<Vec<McpTool>, McpClientError> {
+        match self {
+            McpClientKind::Stdio(inner) => inner.list_tools().await,
+            McpClientKind::Http(inner) => inner.list_tools().await,
+        }
+    }
+
+    async fn call_tool(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+    ) -> Result<CallToolResult, McpClientError> {
+        match self {
+            McpClientKind::Stdio(inner) => inner.call_tool(tool_name, arguments).await,
+            McpClientKind::Http(inner) => inner.call_tool(tool_name, arguments).await,
+        }
+    }
+}
 
 pub(crate) struct StdioMcpClient {
     server: McpServerConfig,
@@ -77,6 +135,21 @@ impl StdioMcpClient {
     }
 }
 
+#[async_trait]
+impl McpClient for StdioMcpClient {
+    async fn list_tools(&self) -> Result<Vec<McpTool>, McpClientError> {
+        Self::list_tools(self).await
+    }
+
+    async fn call_tool(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+    ) -> Result<CallToolResult, McpClientError> {
+        Self::call_tool(self, tool_name, arguments).await
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum McpClientError {
     #[error("spawn MCP server '{server}': {source}")]
@@ -120,6 +193,10 @@ pub(crate) enum McpClientError {
     },
     #[error("parse MCP result: {0}")]
     Result(serde_json::Error),
+    #[error("HTTP request failed: {message}")]
+    Http { message: String },
+    #[error("HTTP request to {url} timed out")]
+    HttpTimeout { url: String },
 }
 
 struct StdioTransport {
@@ -412,10 +489,13 @@ mod tests {
         FakeServer {
             config: McpServerConfig {
                 name: "fake".into(),
+                transport: crate::config::McpTransport::Stdio,
                 command: exe.to_string_lossy().to_string(),
                 args: Vec::new(),
                 env,
                 cwd: None,
+                url: None,
+                headers: BTreeMap::new(),
             },
             _temp: temp,
         }

@@ -22,7 +22,7 @@ use astrcode_core::{
 use serde_json::{Value, json};
 
 use crate::{
-    client::StdioMcpClient,
+    client::{McpClient, McpClientKind},
     config::McpServerConfig,
     names::build_tool_name,
     protocol::{CallToolResult, McpTool},
@@ -31,6 +31,7 @@ use crate::{
 
 mod client;
 mod config;
+mod http_client;
 mod names;
 mod protocol;
 mod search;
@@ -186,7 +187,7 @@ impl ToolHandler for McpToolHandler {
         };
 
         let (server, original_tool) = cached;
-        match StdioMcpClient::new(server.clone())
+        match McpClientKind::from_config(server)
             .call_tool(original_tool, arguments)
             .await
         {
@@ -322,7 +323,7 @@ async fn discover_mcp_tools(working_dir: &str) -> DiscoveredMcpTools {
     let results: Vec<(String, Result<Vec<McpTool>, _>)> =
         futures::future::join_all(servers.iter().map(|server| async {
             let name = server.name.clone();
-            let result = StdioMcpClient::new(server.clone()).list_tools().await;
+            let result = McpClientKind::from_config(server).list_tools().await;
             (name, result)
         }))
         .await;
