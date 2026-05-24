@@ -1,6 +1,6 @@
 [package]
 name = "astrcode-core"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Core shared types and traits for the astrcode AI coding agent platform"
 
