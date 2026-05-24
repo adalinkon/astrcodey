@@ -173,7 +173,7 @@ fn write_run_info_at(path: &Path, port: u16, auth_token: &str) {
     {
         use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(0o600);
-        if let Err(e) = std::fs::set_permissions(&path, perms) {
+        if let Err(e) = std::fs::set_permissions(path, perms) {
             tracing::warn!(path = %path.display(), error = %e, "failed to chmod 600 run.json");
         }
     }
