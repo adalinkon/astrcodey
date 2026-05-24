@@ -106,7 +106,8 @@ impl ToolPipeline {
                 let blocked_result = ToolResult {
                     call_id: tc.call_id.clone(),
                     content: format!(
-                        "Tool '{}' has not been loaded for this request. Use `tool_search_tool` to fetch its schema before calling it.",
+                        "Tool '{}' has not been loaded for this request. Use `tool_search_tool` \
+                         to fetch its schema before calling it.",
                         tc.name
                     ),
                     is_error: true,

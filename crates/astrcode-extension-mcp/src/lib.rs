@@ -288,10 +288,9 @@ fn mcp_tool_metadata() -> std::collections::HashMap<String, astrcode_core::tool:
 
 fn tool_search_metadata() -> ToolPromptMetadata {
     ToolPromptMetadata::new(
-        "Call `tool_search_tool` only when builtin tools are \
-         insufficient and you need an external MCP tool's schema.And you must use \
-         tool_search_tool before calling any `mcp__...` tool to get the correct schema, as \
-         argument names may vary between tools.",
+        "Call `tool_search_tool` only when builtin tools are insufficient and you need an \
+         external MCP tool's schema.And you must use tool_search_tool before calling any \
+         `mcp__...` tool to get the correct schema, as argument names may vary between tools.",
     )
     .caveat(
         "After `tool_search_tool` returns, call the concrete `mcp__...` tool directly with the \
