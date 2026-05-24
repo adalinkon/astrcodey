@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use astrcode_core::{lifecycle::SessionResourceCleanup, types::SessionId};
 use astrcode_protocol::events::ClientNotification;
 use astrcode_support::event_fanout::EventFanout;
 
@@ -11,6 +12,22 @@ use crate::{
     session_operations::ServerSessionOperations, turn_registry::TurnRegistry,
     turn_scheduler::TurnScheduler,
 };
+
+/// 包装 TurnScheduler 以适配 SessionResourceCleanup trait
+struct TurnSchedulerCleanup {
+    scheduler: Arc<TurnScheduler>,
+}
+
+impl SessionResourceCleanup for TurnSchedulerCleanup {
+    fn cleanup(&self, session_id: &SessionId) {
+        let scheduler = Arc::clone(&self.scheduler);
+        let sid = session_id.clone();
+        // 使用 tokio::spawn 调用 async cleanup
+        tokio::spawn(async move {
+            scheduler.cleanup(&sid).await;
+        });
+    }
+}
 
 /// Server 核心系统句柄。
 ///
@@ -61,6 +78,12 @@ pub fn spawn_server_system(
             session_manager: Arc::clone(&runtime.session_manager),
             scheduler: Arc::clone(&scheduler),
         }));
+
+    // 注册 TurnScheduler 到 session 资源清理链
+    // 确保 session delete/recycle 时清理待处理消息队列
+    runtime.session_manager.add_resource_cleanup(Arc::new(TurnSchedulerCleanup {
+        scheduler: Arc::clone(&scheduler),
+    }));
 
     let handler = CommandHandle::spawn(
         Arc::clone(runtime),

@@ -9,7 +9,6 @@ use axum::{
     http::{Method, header},
     middleware,
     routing::{delete, get, post},
-    serve::ListenerExt,
 };
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
@@ -126,11 +125,21 @@ pub async fn run_http_server(
     let runtime_for_shutdown = Arc::clone(&runtime);
     let (app, auth_token) = router(Arc::clone(&runtime), event_tx)?;
     tracing::info!("Auth token: {}", masked_token(&auth_token));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    // 先创建 socket 并设置 SO_REUSEADDR，避免异常退出后端口被占用
+    let socket = socket2::Socket::new(
+        socket2::Domain::for_address(addr),
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )?;
+    socket.set_reuse_address(true)?;
+    #[cfg(unix)]
+    socket.set_reuse_port(true)?;
+    socket.set_nodelay(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(1024)?;
+    let listener = tokio::net::TcpListener::from_std(socket.into())?;
     let local_addr = listener.local_addr()?;
-    let listener = listener.tap_io(|stream| {
-        let _ = stream.set_nodelay(true);
-    });
     let local_port = local_addr.port();
     write_run_info(local_port, &auth_token);
     tracing::info!("HTTP server ready at http://{local_addr}");

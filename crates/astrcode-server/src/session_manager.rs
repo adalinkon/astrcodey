@@ -55,7 +55,7 @@ pub struct SessionManager {
     runtime_states: Mutex<HashMap<SessionId, Arc<SessionRuntimeState>>>,
     capabilities: Arc<SessionRuntimeServices>,
     event_bus: OnceLock<Arc<ServerEventBus>>,
-    resource_cleanups: Vec<Arc<dyn SessionResourceCleanup>>,
+    resource_cleanups: Mutex<Vec<Arc<dyn SessionResourceCleanup>>>,
 }
 
 impl SessionManager {
@@ -73,7 +73,7 @@ impl SessionManager {
             runtime_states: Mutex::new(HashMap::new()),
             capabilities,
             event_bus: OnceLock::new(),
-            resource_cleanups,
+            resource_cleanups: Mutex::new(resource_cleanups),
         }
     }
 
@@ -82,6 +82,11 @@ impl SessionManager {
     pub fn bind_event_bus(&self, event_bus: Arc<ServerEventBus>) {
         // 幂等：如果已设置则静默忽略。
         let _ = self.event_bus.set(event_bus);
+    }
+
+    /// 添加资源清理回调。
+    pub fn add_resource_cleanup(&self, cleanup: Arc<dyn SessionResourceCleanup>) {
+        self.resource_cleanups.lock().push(cleanup);
     }
 
     fn get_or_create_runtime(&self, session_id: &SessionId) -> Arc<SessionRuntimeState> {
@@ -209,7 +214,7 @@ impl SessionManager {
             bus.detach(session_id);
         }
         // 外部资源清理（trait 注入）。
-        for cleanup in &self.resource_cleanups {
+        for cleanup in self.resource_cleanups.lock().iter() {
             cleanup.cleanup(session_id);
         }
     }

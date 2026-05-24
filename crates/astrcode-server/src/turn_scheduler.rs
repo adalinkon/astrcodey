@@ -290,11 +290,16 @@ impl TurnScheduler {
 
     /// 清理 session 相关资源（delete/recycle 时由调用方在 session_manager 操作前调用）。
     ///
-    /// Abort 活跃 turn + 清理 background tasks。
+    /// Abort 活跃 turn + 清理 background tasks + 清理待处理消息队列。
     /// event_bus 的 detach 由 SessionManager::delete/recycle 自动处理。
     pub async fn cleanup(&self, session_id: &SessionId) {
         if let Some((turn_id, session)) = self.registry.abort_and_remove(session_id) {
             self.emit_turn_aborted(&turn_id, &session, session_id).await;
+        }
+        // 清理待处理消息队列，避免内存泄漏
+        let removed = self.pending_queues.lock().remove(session_id);
+        if removed.is_some() {
+            tracing::info!(session_id = %session_id, "cleaned up pending message queue");
         }
     }
 
