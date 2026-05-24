@@ -337,8 +337,7 @@ impl StdioTransport {
 #[cfg(windows)]
 fn hide_command_window(command: &mut Command) {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    command.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
+    command.creation_flags(CREATE_NO_WINDOW);
 }
 
 #[cfg(not(windows))]
