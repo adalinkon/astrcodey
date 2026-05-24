@@ -182,3 +182,41 @@ The configuration system validates:
 - Environment variables can be resolved
 
 Invalid configurations will prevent AstrCode from starting with a descriptive error message.
+
+## Extension Settings (New in v0.1.4)
+
+You can configure individual extensions via the top-level `extensions` field. This allows extensions to receive structured configuration without requiring separate files.
+
+```json
+{
+  "version": "1",
+  "extensions": {
+    "astrcode.memory": {
+      "maxContexts": 10,
+      "autoExtract": true
+    },
+    "astrcode.mcp": {
+      "mcpServers": {
+        "filesystem": {
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed"]
+        }
+      }
+    },
+    "astrcode.mode": {
+      "defaultMode": "code"
+    }
+  }
+}
+```
+
+Each extension receives its configuration via `ExtensionCtx::config` during `start()` and `on_config_changed()`.
+
+### Hot Reload
+
+Extension configuration supports hot reload:
+1. Modify `config.json`
+2. Save the file
+3. Extensions receive `on_config_changed()` callback
+
+Project-level `.astrcode/config.json` can also override extension settings using the same merge rules as other config fields.
