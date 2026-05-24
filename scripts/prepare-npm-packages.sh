@@ -17,17 +17,17 @@ OUTPUT_DIR="${2:?Usage: prepare-npm-packages.sh <artifacts-dir> <output-dir>}"
 VERSION="${VERSION:?VERSION env var required}"
 
 declare -A PACKAGES=(
-  ["cli-linux-x64"]="astrcode-x86_64-linux.tar.gz:astrcode:linux:x64"
-  ["cli-linux-arm64"]="astrcode-aarch64-linux.tar.gz:astrcode:linux:arm64"
-  ["cli-darwin-x64"]="astrcode-x86_64-macos.tar.gz:astrcode:darwin:x64"
-  ["cli-darwin-arm64"]="astrcode-aarch64-macos.tar.gz:astrcode:darwin:arm64"
-  ["cli-win32-x64"]="astrcode-x86_64-windows.zip:astrcode.exe:win32:x64"
-  ["cli-win32-arm64"]="astrcode-aarch64-windows.zip:astrcode.exe:win32:arm64"
+  ["astrcode-linux-x64"]="astrcode-x86_64-linux.tar.gz:astrcode:linux:x64"
+  ["astrcode-linux-arm64"]="astrcode-aarch64-linux.tar.gz:astrcode:linux:arm64"
+  ["astrcode-darwin-x64"]="astrcode-x86_64-macos.tar.gz:astrcode:darwin:x64"
+  ["astrcode-darwin-arm64"]="astrcode-aarch64-macos.tar.gz:astrcode:darwin:arm64"
+  ["astrcode-win32-x64"]="astrcode-x86_64-windows.zip:astrcode.exe:win32:x64"
+  ["astrcode-win32-arm64"]="astrcode-aarch64-windows.zip:astrcode.exe:win32:arm64"
 )
 
 for pkg_name in "${!PACKAGES[@]}"; do
   IFS=':' read -r archive binary os cpu <<< "${PACKAGES[$pkg_name]}"
-  pkg_dir="${OUTPUT_DIR}/@astrcode/${pkg_name}"
+  pkg_dir="${OUTPUT_DIR}/@whatevertogo/${pkg_name}"
   mkdir -p "$pkg_dir"
 
   # Extract binary
@@ -46,7 +46,7 @@ for pkg_name in "${!PACKAGES[@]}"; do
   # Write package.json
   cat > "$pkg_dir/package.json" <<EOF
 {
-  "name": "@astrcode/${pkg_name}",
+  "name": "@whatevertogo/${pkg_name}",
   "version": "${VERSION}",
   "description": "astrcode CLI binary for ${os}-${cpu}",
   "license": "MIT",
@@ -55,16 +55,16 @@ for pkg_name in "${!PACKAGES[@]}"; do
   "files": ["${binary}"]
 }
 EOF
-  echo "Prepared @astrcode/${pkg_name} (${archive})"
+  echo "Prepared @whatevertogo/${pkg_name} (${archive})"
 done
 
 # Update main package version
-mkdir -p "${OUTPUT_DIR}/astrcode"
+mkdir -p "${OUTPUT_DIR}/@whatevertogo/astrcode"
 jq --arg v "$VERSION" '.version = $v | .optionalDependencies |= with_entries(.value = $v)' \
-  npm/astrcode/package.json > "${OUTPUT_DIR}/astrcode/package.json.tmp"
-mv "${OUTPUT_DIR}/astrcode/package.json.tmp" "${OUTPUT_DIR}/astrcode/package.json"
-cp npm/astrcode/install.js "${OUTPUT_DIR}/astrcode/"
-mkdir -p "${OUTPUT_DIR}/astrcode/bin"
-cp npm/astrcode/bin/astrcode "${OUTPUT_DIR}/astrcode/bin/"
+  npm/astrcode/package.json > "${OUTPUT_DIR}/@whatevertogo/astrcode/package.json.tmp"
+mv "${OUTPUT_DIR}/@whatevertogo/astrcode/package.json.tmp" "${OUTPUT_DIR}/@whatevertogo/astrcode/package.json"
+cp npm/astrcode/install.js "${OUTPUT_DIR}/@whatevertogo/astrcode/"
+mkdir -p "${OUTPUT_DIR}/@whatevertogo/astrcode/bin"
+cp npm/astrcode/bin/astrcode "${OUTPUT_DIR}/@whatevertogo/astrcode/bin/"
 
 echo "All npm packages prepared in ${OUTPUT_DIR}"

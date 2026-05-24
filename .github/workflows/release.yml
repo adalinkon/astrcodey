@@ -235,7 +235,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          for pkg_dir in npm-dist/@astrcode/*/; do
+          for pkg_dir in npm-dist/@whatevertogo/*/; do
             if [ -f "$pkg_dir/package.json" ]; then
               echo "Publishing $(basename $pkg_dir)..."
               cd "$pkg_dir"
@@ -247,7 +247,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          cd npm-dist/astrcode
+          cd npm-dist/@whatevertogo/astrcode
           npm publish --access public || true
 
   # ── GitHub Release ────────────────────────────────────────────────

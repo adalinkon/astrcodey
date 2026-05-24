@@ -5,12 +5,12 @@ const { existsSync, mkdirSync, copyFileSync, chmodSync } = require('fs');
 const { join } = require('path');
 
 const PLATFORM_MAP = {
-  'linux-x64': '@astrcode/cli-linux-x64',
-  'linux-arm64': '@astrcode/cli-linux-arm64',
-  'darwin-x64': '@astrcode/cli-darwin-x64',
-  'darwin-arm64': '@astrcode/cli-darwin-arm64',
-  'win32-x64': '@astrcode/cli-win32-x64',
-  'win32-arm64': '@astrcode/cli-win32-arm64',
+  'linux-x64': '@whatevertogo/astrcode-linux-x64',
+  'linux-arm64': '@whatevertogo/astrcode-linux-arm64',
+  'darwin-x64': '@whatevertogo/astrcode-darwin-x64',
+  'darwin-arm64': '@whatevertogo/astrcode-darwin-arm64',
+  'win32-x64': '@whatevertogo/astrcode-win32-x64',
+  'win32-arm64': '@whatevertogo/astrcode-win32-arm64',
 };
 
 const platform = process.platform;
