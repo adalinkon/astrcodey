@@ -9,9 +9,9 @@ use std::{
 };
 
 use astrcode_core::{
-    event::{EventPayload, Phase},
+    event::{Event, EventPayload, Phase},
     llm::{LlmContent, LlmRole},
-    storage::SessionReadModel,
+    storage::{AgentSessionStatus, SessionReadModel},
     tool::ToolResult,
     types::*,
 };
@@ -263,12 +263,16 @@ impl TurnScheduler {
 
     /// 中止活跃 turn。
     ///
-    /// 1. 从 registry abort + remove
-    /// 2. 清理 background tasks
-    /// 3. 写终态事件
+    /// 1. 级联停止并回收所有运行中的子（Agent）会话（深度优先）
+    /// 2. 从 registry abort + remove
+    /// 3. 清理 background tasks
+    /// 4. 写终态事件
     ///
     /// 幂等性：多次调用同一 session 的 abort 是安全的，后续调用会静默成功。
     pub async fn abort(&self, session_id: &SessionId) -> Result<(), TurnError> {
+        // 先停止并回收所有子会话，确保子会话的进程内资源和持久化状态被正确清理
+        self.cascade_abort_children(session_id).await;
+
         // 快路径：registry 中有活跃 turn
         if let Some((turn_id, session)) = self.registry.abort_and_remove(session_id) {
             self.emit_turn_aborted(&turn_id, &session, session_id).await;
@@ -347,6 +351,102 @@ impl TurnScheduler {
             )
             .await;
         self.session_manager.sync_durable_events(session_id).await;
+    }
+
+    /// 级联停止并回收所有运行中的子（Agent）会话。
+    ///
+    /// 深度优先遍历：先停止并回收最深层的子孙会话，再逐层向上。
+    /// 每个子会话的操作序列：
+    /// 1. 递归级联到子会话的子会话
+    /// 2. 停止子会话的活跃 turn（如果有）
+    /// 3. 回收子会话的持久化存储与进程内资源
+    /// 4. 向父会话写入 AgentSessionFailed + AgentSessionRecycled 事件
+    async fn cascade_abort_children(&self, parent_sid: &SessionId) {
+        // ── Phase 1: 遍历收集所有需要停止的子会话 ──
+        // 使用显式栈替代递归，避免 async 递归的 Pin 装箱。
+        // to_abort: (child_sid, parent_sid)
+        let mut to_abort: Vec<(SessionId, SessionId)> = Vec::new();
+        let mut stack: Vec<SessionId> = vec![parent_sid.clone()];
+
+        while let Some(sid) = stack.pop() {
+            let state = match self.session_manager.read_model(&sid).await {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            for link in &state.agent_sessions {
+                if link.status == AgentSessionStatus::Running {
+                    let child_sid = link.child_session_id.clone();
+                    to_abort.push((child_sid.clone(), sid.clone()));
+                    stack.push(child_sid);
+                }
+            }
+        }
+
+        if to_abort.is_empty() {
+            return;
+        }
+
+        // ── Phase 2: 反序处理（深层子会话优先于浅层）──
+        // DFS push 的顺序是 root → child → grandchild，
+        // 反转后得到 grandchild → child → root，确保"先子后父"的拓扑顺序。
+        for (child_sid, parent_sid) in to_abort.into_iter().rev() {
+            // 2a. 停止活跃 turn + 清理 pending queue
+            self.cleanup(&child_sid).await;
+
+            // 2b. 回收子会话的持久化存储与进程内资源
+            if let Err(e) = self.session_manager.recycle_session(&child_sid).await {
+                tracing::warn!(
+                    session_id = %child_sid,
+                    error = %e,
+                    "cascade abort: failed to recycle child session; continuing to write fail events"
+                );
+            }
+
+            // 2c. 向父会话写入 AgentSessionFailed
+            if let Ok(parent_session) = self.session_manager.open(parent_sid.clone()).await {
+                if let Err(e) = parent_session
+                    .append_event(Event::new(
+                        parent_sid.clone(),
+                        None,
+                        EventPayload::AgentSessionFailed {
+                            child_session_id: child_sid.clone(),
+                            final_session_id: child_sid.clone(),
+                            error: "aborted".into(),
+                        },
+                    ))
+                    .await
+                {
+                    tracing::warn!(
+                        parent_sid = %parent_sid,
+                        child_sid = %child_sid,
+                        error = %e,
+                        "cascade abort: failed to write AgentSessionFailed"
+                    );
+                }
+
+                // 2d. 向父会话写入 AgentSessionRecycled
+                if let Err(e) = parent_session
+                    .append_event(Event::new(
+                        parent_sid.clone(),
+                        None,
+                        EventPayload::AgentSessionRecycled {
+                            child_session_id: child_sid.clone(),
+                        },
+                    ))
+                    .await
+                {
+                    tracing::warn!(
+                        parent_sid = %parent_sid,
+                        child_sid = %child_sid,
+                        error = %e,
+                        "cascade abort: failed to write AgentSessionRecycled"
+                    );
+                }
+
+                self.session_manager.sync_durable_events(&parent_sid).await;
+            }
+        }
     }
 
     /// 向活跃 turn 注入中途消息。

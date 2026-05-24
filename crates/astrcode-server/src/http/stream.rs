@@ -238,6 +238,11 @@ pub(in crate::http) async fn session_stream(
                             notification_to_sse_items(&mut state, notification)
                                 .await
                                 .into();
+                        // Non-blocking drain: if more notifications are already
+                        // buffered in the channel, process them now so they are
+                        // sent in the same HTTP chunk as the first one.
+                        drain_pending_notifications(&mut state, &mut items).await;
+
                         if items.is_empty() {
                             continue;
                         }
@@ -278,6 +283,23 @@ async fn state_cursor(runtime: &ServerRuntime, session_id: &SessionId) -> String
             );
             "0".to_string()
         },
+    }
+}
+
+/// Non-blocking drain: if more notifications are already buffered in the
+/// channel, process them now so they are batched into the same HTTP chunk.
+async fn drain_pending_notifications(
+    state: &mut LiveStreamState,
+    items: &mut std::collections::VecDeque<SseItem>,
+) {
+    loop {
+        match state.rx.try_recv() {
+            Ok(notification) => {
+                let more = notification_to_sse_items(state, notification).await;
+                items.extend(more);
+            },
+            Err(_) => break,
+        }
     }
 }
 
