@@ -1,6 +1,6 @@
 [package]
 name = "astrcode-log"
-version = "0.1.9"
+version = "0.2.0"
 edition = "2021"
 description = "Logging for astrcode: file rotation, stderr output, env-filter support"
 
