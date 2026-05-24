@@ -678,7 +678,6 @@ impl EventStore for FileSystemSessionRepository {
 }
 
 /// 判断目录是否位于 subagents 子树下。
-/// TODO: 更好的办法？
 fn is_subagent_dir(dir: &Path) -> bool {
     dir.ancestors()
         .any(|a| a.file_name().is_some_and(|n| n == "subagents"))
