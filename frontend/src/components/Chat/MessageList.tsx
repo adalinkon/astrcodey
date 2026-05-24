@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useMemo } from 'react'
+import { memo, useCallback, useEffect, useRef, useMemo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { ConversationBlock } from '../../services/types'
 import { cn } from '../../lib/utils'
@@ -20,7 +20,7 @@ function isAssistantLike(block: ConversationBlock): boolean {
   return block.kind === 'assistant' || block.kind === 'toolCall'
 }
 
-function BlockRenderer({
+const BlockRenderer = memo(function BlockRenderer({
   block,
   prevBlock,
 }: {
@@ -55,7 +55,7 @@ function BlockRenderer({
       ) : null}
     </div>
   )
-}
+})
 
 const BLOCK_GAP_PX = 40 // matches Tailwind gap-10 (2.5rem ≈ 40px)
 
@@ -64,7 +64,6 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
   const shouldStickRef = useRef(true)
   const prevLengthRef = useRef(0)
   const queuedMessages = useAppStore((s) => s.queuedMessages)
-  const phase = useAppStore((s) => s.phase)
 
   // All items: blocks + queued messages
   const allItems = useMemo(() => {
@@ -138,19 +137,6 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
     totalItemCount,
     virtualizer,
   ])
-
-  // During active streaming, continuously stick to bottom
-  const isStreaming =
-    phase === 'streaming' || phase === 'thinking' || phase === 'calling_tool'
-  useEffect(() => {
-    if (!isStreaming || !shouldStickRef.current) return
-    const interval = setInterval(() => {
-      if (totalItemCount > 0 && shouldStickRef.current) {
-        virtualizer.scrollToIndex(totalItemCount - 1, { align: 'end' })
-      }
-    }, 100)
-    return () => clearInterval(interval)
-  }, [isStreaming, totalItemCount, virtualizer])
 
   const virtualItems = virtualizer.getVirtualItems()
 
