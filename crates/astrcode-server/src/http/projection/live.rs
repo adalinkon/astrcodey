@@ -86,14 +86,29 @@ pub(in crate::http) fn event_to_deltas(
                 .map(|block| ConversationDeltaDto::AppendBlock { block })
                 .into_iter()
                 .collect();
-            deltas.push(ConversationDeltaDto::SessionContinued {
-                parent_session_id: event.session_id.to_string(),
-                new_session_id: continued_session_id.to_string(),
-                parent_cursor: ConversationCursorDto {
-                    value: event.seq.unwrap_or_default().to_string(),
-                },
-            });
+            if continued_session_id != &event.session_id {
+                deltas.push(ConversationDeltaDto::SessionContinued {
+                    parent_session_id: event.session_id.to_string(),
+                    new_session_id: continued_session_id.to_string(),
+                    parent_cursor: ConversationCursorDto {
+                        value: event.seq.unwrap_or_default().to_string(),
+                    },
+                });
+            }
             deltas
+        },
+        EventPayload::SessionContinuedFromCompaction {
+            parent_session_id,
+            parent_cursor,
+            ..
+        } if parent_session_id == &event.session_id => {
+            vec![ConversationDeltaDto::SessionContinued {
+                parent_session_id: parent_session_id.to_string(),
+                new_session_id: event.session_id.to_string(),
+                parent_cursor: ConversationCursorDto {
+                    value: parent_cursor.to_string(),
+                },
+            }]
         },
 
         // Phase transitions
@@ -121,6 +136,18 @@ pub(in crate::http) fn event_to_deltas(
         EventPayload::TurnCompleted { .. } | EventPayload::AgentRunCompleted { .. } => {
             vec![ConversationDeltaDto::UpdateControlState {
                 control: control_from_phase(Phase::Idle, has_messages),
+            }]
+        },
+        EventPayload::CompactionCompleted { .. }
+        | EventPayload::CompactionSkipped { .. }
+        | EventPayload::CompactionFailed { .. } => {
+            let resume_phase = if event.turn_id.is_some() {
+                Phase::Thinking
+            } else {
+                Phase::Idle
+            };
+            vec![ConversationDeltaDto::UpdateControlState {
+                control: control_from_phase(resume_phase, has_messages),
             }]
         },
         EventPayload::ThinkingDelta { message_id, delta } => {
@@ -398,5 +425,92 @@ mod tests {
             },
             other => panic!("unexpected delta: {other:?}"),
         }
+    }
+
+    #[test]
+    fn in_turn_compact_completion_restores_thinking_control_state() {
+        let event = Event::new(
+            "session-1".into(),
+            Some("turn-1".into()),
+            EventPayload::CompactionCompleted {
+                messages_removed: 2,
+            },
+        );
+
+        let deltas = event_to_deltas(&event, true);
+
+        assert!(matches!(
+            deltas.as_slice(),
+            [ConversationDeltaDto::UpdateControlState { control }]
+                if control.phase == Phase::Thinking && !control.compacting
+        ));
+    }
+
+    #[test]
+    fn manual_compact_completion_restores_idle_control_state() {
+        let event = Event::new(
+            "session-1".into(),
+            None,
+            EventPayload::CompactionCompleted {
+                messages_removed: 2,
+            },
+        );
+
+        let deltas = event_to_deltas(&event, true);
+
+        assert!(matches!(
+            deltas.as_slice(),
+            [ConversationDeltaDto::UpdateControlState { control }]
+                if control.phase == Phase::Idle && control.can_submit_prompt
+        ));
+    }
+
+    #[test]
+    fn same_session_compact_refreshes_only_after_continuation_is_persisted() {
+        let mut boundary = Event::new(
+            "session-1".into(),
+            None,
+            EventPayload::CompactBoundaryCreated {
+                trigger: "auto_threshold".into(),
+                pre_tokens: 100,
+                post_tokens: 20,
+                summary: "summary".into(),
+                transcript_path: None,
+                continued_session_id: "session-1".into(),
+                base_event_seq: 3,
+                strategy: astrcode_core::extension::CompactStrategy::Auto,
+            },
+        );
+        boundary.seq = Some(4);
+
+        let boundary_deltas = event_to_deltas(&boundary, true);
+        assert!(matches!(
+            boundary_deltas.as_slice(),
+            [ConversationDeltaDto::AppendBlock {
+                block: ConversationBlockDto::CompactSummary { .. }
+            }]
+        ));
+
+        let continuation = Event::new(
+            "session-1".into(),
+            None,
+            EventPayload::SessionContinuedFromCompaction {
+                parent_session_id: "session-1".into(),
+                parent_cursor: "4".into(),
+                summary: "summary".into(),
+                transcript_path: None,
+                context_messages: Vec::new(),
+                retained_messages: Vec::new(),
+            },
+        );
+        let continuation_deltas = event_to_deltas(&continuation, true);
+        assert!(matches!(
+            continuation_deltas.as_slice(),
+            [ConversationDeltaDto::SessionContinued {
+                parent_session_id,
+                new_session_id,
+                ..
+            }] if parent_session_id == "session-1" && new_session_id == "session-1"
+        ));
     }
 }

@@ -52,7 +52,7 @@ pub async fn drive_agent(
 ) -> (Result<TurnOutput, TurnError>, bool) {
     let session = Arc::clone(&agent.session);
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    let agent_future = agent.process_prompt(user_text, Some(event_tx));
+    let agent_future = agent.process_prompt(user_text, turn_id, Some(event_tx));
     tokio::pin!(agent_future);
 
     let mut emitted_error = false;
@@ -189,6 +189,7 @@ impl TurnRunner {
     pub(crate) async fn process_prompt(
         &mut self,
         user_text: &str,
+        turn_id: &TurnId,
         event_tx: Option<mpsc::UnboundedSender<AgentSignal>>,
     ) -> Result<TurnOutput, TurnError> {
         let all_tools = self.tools.list_definitions_with_prompt_metadata();
@@ -222,7 +223,7 @@ impl TurnRunner {
                 .await?;
 
             let prepared = self
-                .prepare_stage(&extension_runner, &mut state, &event_tx)
+                .prepare_stage(&extension_runner, &mut state, turn_id)
                 .await?;
             let visible_tools = state.visible_tools();
             let outcome = match self
@@ -233,7 +234,7 @@ impl TurnRunner {
                 Err(TurnError::Llm(LlmError::PromptTooLong(_))) if !state.reactive_compact_used => {
                     state.reactive_compact_used = true;
                     if !self
-                        .run_reactive_compaction(&extension_runner, &mut state, &event_tx)
+                        .run_reactive_compaction(&extension_runner, &mut state, turn_id)
                         .await?
                     {
                         return end_turn_with_error_typed(
@@ -366,7 +367,7 @@ impl TurnRunner {
         &mut self,
         extension_runner: &astrcode_extensions::runner::ExtensionRunner,
         state: &mut TurnState,
-        event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
+        turn_id: &TurnId,
     ) -> Result<PreparedProviderRequest, TurnError> {
         self.refresh_system_prompt(state).await?;
 
@@ -424,7 +425,7 @@ impl TurnRunner {
                 state,
                 &mut compaction.result,
                 context_assembler.settings(),
-                event_tx,
+                turn_id,
                 CompactionStageMeta {
                     base_event_seq: base_event_seq.unwrap_or_default(),
                     trigger: CompactTrigger::AutoThreshold,
@@ -455,10 +456,12 @@ impl TurnRunner {
         state: &TurnState,
         compaction: &mut CompactResult,
         settings: &astrcode_context::ContextSettings,
-        event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
+        turn_id: &TurnId,
         meta: CompactionStageMeta,
     ) {
-        send_event(event_tx.as_ref(), EventPayload::CompactionStarted);
+        self.session
+            .emit_live(Some(turn_id), EventPayload::CompactionStarted)
+            .await;
         let visible_tools = state.visible_tools();
         crate::post_compact::enrich_post_compact_context(
             compaction,
@@ -512,21 +515,25 @@ impl TurnRunner {
                         .lock()
                         .record_compact_success();
                 }
-                send_event(
-                    event_tx.as_ref(),
-                    EventPayload::CompactionCompleted {
-                        messages_removed: persisted.messages_removed,
-                    },
-                );
+                self.session
+                    .emit_live(
+                        Some(turn_id),
+                        EventPayload::CompactionCompleted {
+                            messages_removed: persisted.messages_removed,
+                        },
+                    )
+                    .await;
             },
             Err(e) => {
                 tracing::warn!(error = %e, "auto-compact persist skipped");
-                send_event(
-                    event_tx.as_ref(),
-                    EventPayload::CompactionSkipped {
-                        reason: e.to_string(),
-                    },
-                );
+                self.session
+                    .emit_live(
+                        Some(turn_id),
+                        EventPayload::CompactionSkipped {
+                            reason: e.to_string(),
+                        },
+                    )
+                    .await;
             },
         }
     }
@@ -535,7 +542,7 @@ impl TurnRunner {
         &mut self,
         extension_runner: &astrcode_extensions::runner::ExtensionRunner,
         state: &mut TurnState,
-        event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
+        turn_id: &TurnId,
     ) -> Result<bool, TurnError> {
         self.refresh_system_prompt(state).await?;
 
@@ -587,7 +594,7 @@ impl TurnRunner {
             state,
             &mut compaction.result,
             context_assembler.settings(),
-            event_tx,
+            turn_id,
             CompactionStageMeta {
                 base_event_seq,
                 trigger: CompactTrigger::ReactivePromptTooLong,
