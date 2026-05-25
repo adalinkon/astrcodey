@@ -185,9 +185,19 @@ impl SessionOperations for ServerSessionOperations {
 
             tokio::spawn(async move {
                 let result = handle.wait().await;
-                let outcome = result.as_ref().and_then(|r| r.output.as_ref().ok());
                 scheduler.sync_durable_events(&watcher_target_sid).await;
-                registry.remove_if_matches(&watcher_target_sid, &watcher_turn_id);
+
+                // 检查是否已被 abort cascade 抢先处理。cascade_abort_children 在
+                // cleanup 中调 registry.abort_and_remove，会先于此处删除 registry entry。
+                // 若 entry 已不存在，说明 cascade 已回收子 session 并写入终态事件，跳过。
+                if registry
+                    .remove_if_matches(&watcher_target_sid, &watcher_turn_id)
+                    .is_none()
+                {
+                    return;
+                }
+
+                let outcome = result.as_ref().and_then(|r| r.output.as_ref().ok());
 
                 // 写入 AgentSessionCompleted/Failed 到父 session
                 if let Ok(parent_session) = session_manager.open(watcher_caller_sid.clone()).await {
