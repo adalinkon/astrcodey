@@ -52,7 +52,7 @@ pub async fn drive_agent(
 ) -> (Result<TurnOutput, TurnError>, bool) {
     let session = Arc::clone(&agent.session);
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    let agent_future = agent.process_prompt(user_text, Some(event_tx));
+    let agent_future = agent.process_prompt(user_text, turn_id, Some(event_tx));
     tokio::pin!(agent_future);
 
     let mut emitted_error = false;
@@ -97,8 +97,8 @@ async fn dispatch_agent_event(session: &Session, turn_id: &TurnId, payload: Even
 /// AgentTurn — 一个临时的回合处理器。
 ///
 /// 字段语义：
-/// - `session`: 持有运行 turn 所需的全部依赖（store / runtime / caps / event_tx）。 `caps()`
-///   提供按需拉取的 LLM provider / extension runner / context assembler。
+/// - `session`: 持有运行 turn 所需的 store / runtime / caps / event_tx。
+/// - `llm`: turn 启动时选定的主 provider，与 `shared.model_id` 属于同一次模型绑定快照。
 /// - `system_prompt`: 当前 turn 起始时的 system prompt。turn 内若 session 的 prompt
 ///   被外部刷新（例如扩展注册新 skill），下一轮 LLM 调用前会从 `session.current_system_prompt`
 ///   重新读取。
@@ -109,6 +109,7 @@ async fn dispatch_agent_event(session: &Session, turn_id: &TurnId, payload: Even
 pub struct TurnRunner {
     session: Arc<Session>,
     shared: SharedTurnContext,
+    llm: Arc<dyn astrcode_core::llm::LlmProvider>,
     system_prompt: String,
     extra_system_prompt: Option<String>,
     initial_history: Vec<LlmMessage>,
@@ -126,16 +127,14 @@ struct CompactionStageMeta {
 }
 
 impl TurnRunner {
-    /// 创建一个新的 TurnRunner 实例。
-    ///
-    /// `session_state` 由调用方提前读取并传入，避免重复 I/O。
-    pub fn new(
+    pub(crate) fn new_with_llm(
         session: Arc<Session>,
         session_state: &astrcode_core::storage::SessionReadModel,
         background_result_tx: Option<
             mpsc::UnboundedSender<crate::background::BackgroundTaskCompletion>,
         >,
         session_store_dir: Option<std::path::PathBuf>,
+        llm: Arc<dyn astrcode_core::llm::LlmProvider>,
     ) -> Result<Self, TurnError> {
         let shared = SharedTurnContext {
             session_id: session.id().clone(),
@@ -177,6 +176,7 @@ impl TurnRunner {
         Ok(Self {
             session,
             shared,
+            llm,
             system_prompt,
             extra_system_prompt: session_state.extra_system_prompt.clone(),
             initial_history,
@@ -189,6 +189,7 @@ impl TurnRunner {
     pub(crate) async fn process_prompt(
         &mut self,
         user_text: &str,
+        turn_id: &TurnId,
         event_tx: Option<mpsc::UnboundedSender<AgentSignal>>,
     ) -> Result<TurnOutput, TurnError> {
         let all_tools = self.tools.list_definitions_with_prompt_metadata();
@@ -222,7 +223,7 @@ impl TurnRunner {
                 .await?;
 
             let prepared = self
-                .prepare_stage(&extension_runner, &mut state, &event_tx)
+                .prepare_stage(&extension_runner, &mut state, turn_id)
                 .await?;
             let visible_tools = state.visible_tools();
             let outcome = match self
@@ -233,7 +234,7 @@ impl TurnRunner {
                 Err(TurnError::Llm(LlmError::PromptTooLong(_))) if !state.reactive_compact_used => {
                     state.reactive_compact_used = true;
                     if !self
-                        .run_reactive_compaction(&extension_runner, &mut state, &event_tx)
+                        .run_reactive_compaction(&extension_runner, &mut state, turn_id)
                         .await?
                     {
                         return end_turn_with_error_typed(
@@ -366,32 +367,17 @@ impl TurnRunner {
         &mut self,
         extension_runner: &astrcode_extensions::runner::ExtensionRunner,
         state: &mut TurnState,
-        event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
+        turn_id: &TurnId,
     ) -> Result<PreparedProviderRequest, TurnError> {
         self.refresh_system_prompt(state).await?;
 
-        // 从 session-owned provider 读取，turn 期间不会因其他 session 切换模型而改变。
-        let llm = self.session.runtime().llm();
+        let llm = Arc::clone(&self.llm);
         let context_assembler = Arc::clone(self.session.caps().context_assembler());
 
-        let custom_instructions = collect_compact_instructions(
-            extension_runner,
-            CompactHookContext {
-                session_id: self.shared.session_id.as_str(),
-                working_dir: &self.shared.working_dir,
-                model_id: &self.shared.model_id,
-                trigger: CompactTrigger::AutoThreshold,
-                message_count: state.messages.len(),
-            },
-        )
-        .await
-        .unwrap_or_default();
-
-        let (system_messages, visible_messages): (Vec<_>, Vec<_>) = state
-            .messages
-            .iter()
-            .cloned()
-            .partition(|message| message.role == LlmRole::System);
+        let custom_instructions = self
+            .compact_instructions(extension_runner, state, CompactTrigger::AutoThreshold)
+            .await;
+        let (system_messages, visible_messages) = split_system_messages(state);
         let input = ContextPrepareInput {
             messages: visible_messages,
             system_prompt: Some(&self.system_prompt),
@@ -424,7 +410,7 @@ impl TurnRunner {
                 state,
                 &mut compaction.result,
                 context_assembler.settings(),
-                event_tx,
+                turn_id,
                 CompactionStageMeta {
                     base_event_seq: base_event_seq.unwrap_or_default(),
                     trigger: CompactTrigger::AutoThreshold,
@@ -455,10 +441,12 @@ impl TurnRunner {
         state: &TurnState,
         compaction: &mut CompactResult,
         settings: &astrcode_context::ContextSettings,
-        event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
+        turn_id: &TurnId,
         meta: CompactionStageMeta,
     ) {
-        send_event(event_tx.as_ref(), EventPayload::CompactionStarted);
+        self.session
+            .emit_live(Some(turn_id), EventPayload::CompactionStarted)
+            .await;
         let visible_tools = state.visible_tools();
         crate::post_compact::enrich_post_compact_context(
             compaction,
@@ -471,13 +459,7 @@ impl TurnRunner {
             self.shared.session_store_dir.clone(),
         )
         .await;
-        let hook_ctx = CompactHookContext {
-            session_id: self.shared.session_id.as_str(),
-            working_dir: &self.shared.working_dir,
-            model_id: &self.shared.model_id,
-            trigger: meta.trigger,
-            message_count: state.messages.len(),
-        };
+        let hook_ctx = self.compact_hook_context(state, meta.trigger);
         if let Err(e) = dispatch_post_compact(extension_runner, hook_ctx, compaction).await {
             tracing::warn!(error = %e, "PostCompact extension dispatch failed");
         }
@@ -512,21 +494,25 @@ impl TurnRunner {
                         .lock()
                         .record_compact_success();
                 }
-                send_event(
-                    event_tx.as_ref(),
-                    EventPayload::CompactionCompleted {
-                        messages_removed: persisted.messages_removed,
-                    },
-                );
+                self.session
+                    .emit_live(
+                        Some(turn_id),
+                        EventPayload::CompactionCompleted {
+                            messages_removed: persisted.messages_removed,
+                        },
+                    )
+                    .await;
             },
             Err(e) => {
                 tracing::warn!(error = %e, "auto-compact persist skipped");
-                send_event(
-                    event_tx.as_ref(),
-                    EventPayload::CompactionSkipped {
-                        reason: e.to_string(),
-                    },
-                );
+                self.session
+                    .emit_live(
+                        Some(turn_id),
+                        EventPayload::CompactionSkipped {
+                            reason: e.to_string(),
+                        },
+                    )
+                    .await;
             },
         }
     }
@@ -535,30 +521,20 @@ impl TurnRunner {
         &mut self,
         extension_runner: &astrcode_extensions::runner::ExtensionRunner,
         state: &mut TurnState,
-        event_tx: &Option<mpsc::UnboundedSender<AgentSignal>>,
+        turn_id: &TurnId,
     ) -> Result<bool, TurnError> {
         self.refresh_system_prompt(state).await?;
 
-        let llm = self.session.runtime().llm();
+        let llm = Arc::clone(&self.llm);
         let context_assembler = Arc::clone(self.session.caps().context_assembler());
-        let custom_instructions = collect_compact_instructions(
-            extension_runner,
-            CompactHookContext {
-                session_id: self.shared.session_id.as_str(),
-                working_dir: &self.shared.working_dir,
-                model_id: &self.shared.model_id,
-                trigger: CompactTrigger::ReactivePromptTooLong,
-                message_count: state.messages.len(),
-            },
-        )
-        .await
-        .unwrap_or_default();
-
-        let (system_messages, visible_messages): (Vec<_>, Vec<_>) = state
-            .messages
-            .iter()
-            .cloned()
-            .partition(|message| message.role == LlmRole::System);
+        let custom_instructions = self
+            .compact_instructions(
+                extension_runner,
+                state,
+                CompactTrigger::ReactivePromptTooLong,
+            )
+            .await;
+        let (system_messages, visible_messages) = split_system_messages(state);
         let input = ContextPrepareInput {
             messages: visible_messages,
             system_prompt: Some(&self.system_prompt),
@@ -587,7 +563,7 @@ impl TurnRunner {
             state,
             &mut compaction.result,
             context_assembler.settings(),
-            event_tx,
+            turn_id,
             CompactionStageMeta {
                 base_event_seq,
                 trigger: CompactTrigger::ReactivePromptTooLong,
@@ -598,6 +574,31 @@ impl TurnRunner {
         .await;
         state.messages = [system_messages, prepared.messages].concat();
         Ok(true)
+    }
+
+    fn compact_hook_context<'a>(
+        &'a self,
+        state: &TurnState,
+        trigger: CompactTrigger,
+    ) -> CompactHookContext<'a> {
+        CompactHookContext {
+            session_id: self.shared.session_id.as_str(),
+            working_dir: &self.shared.working_dir,
+            model_id: &self.shared.model_id,
+            trigger,
+            message_count: state.messages.len(),
+        }
+    }
+
+    async fn compact_instructions(
+        &self,
+        extension_runner: &astrcode_extensions::runner::ExtensionRunner,
+        state: &TurnState,
+        trigger: CompactTrigger,
+    ) -> Vec<String> {
+        collect_compact_instructions(extension_runner, self.compact_hook_context(state, trigger))
+            .await
+            .unwrap_or_default()
     }
 
     async fn read_base_event_seq(&self) -> Result<u64, TurnError> {
@@ -879,4 +880,12 @@ fn assistant_tool_call_message(
         name: None,
         reasoning_content,
     }
+}
+
+fn split_system_messages(state: &TurnState) -> (Vec<LlmMessage>, Vec<LlmMessage>) {
+    state
+        .messages
+        .iter()
+        .cloned()
+        .partition(|message| message.role == LlmRole::System)
 }

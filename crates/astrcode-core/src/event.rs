@@ -276,7 +276,7 @@ pub enum EventPayload {
 
     /// 上下文压缩已完成。
     ///
-    /// 持久化事件，记录压缩操作的结果，用于通知 TUI 更新状态和自动触发队列中的输入。
+    /// 这是 live 状态事件；压缩结果由 durable compact boundary 记录。
     CompactionCompleted {
         /// 被移除的消息数量。
         messages_removed: usize,

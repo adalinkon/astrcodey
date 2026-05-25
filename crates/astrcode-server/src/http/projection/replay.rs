@@ -22,13 +22,15 @@ pub(in crate::http) fn event_to_replay_deltas(
             .map(|block| ConversationDeltaDto::AppendBlock { block })
             .into_iter()
             .collect();
-        deltas.push(ConversationDeltaDto::SessionContinued {
-            parent_session_id: event.session_id.to_string(),
-            new_session_id: continued_session_id.to_string(),
-            parent_cursor: ConversationCursorDto {
-                value: event.seq.unwrap_or_default().to_string(),
-            },
-        });
+        if continued_session_id != &event.session_id {
+            deltas.push(ConversationDeltaDto::SessionContinued {
+                parent_session_id: event.session_id.to_string(),
+                new_session_id: continued_session_id.to_string(),
+                parent_cursor: ConversationCursorDto {
+                    value: event.seq.unwrap_or_default().to_string(),
+                },
+            });
+        }
         return deltas;
     }
 
@@ -108,25 +110,13 @@ mod tests {
         boundary.seq = Some(7);
 
         let deltas = event_to_replay_deltas(&boundary, true);
-        assert_eq!(deltas.len(), 2);
+        assert_eq!(deltas.len(), 1);
         assert!(matches!(
             &deltas[0],
             ConversationDeltaDto::AppendBlock {
                 block: ConversationBlockDto::CompactSummary { .. }
             }
         ));
-        match &deltas[1] {
-            ConversationDeltaDto::SessionContinued {
-                parent_session_id,
-                new_session_id,
-                parent_cursor,
-            } => {
-                assert_eq!(parent_session_id, "session-1");
-                assert_eq!(new_session_id, "session-1");
-                assert_eq!(parent_cursor.value, "7");
-            },
-            other => panic!("unexpected replay delta: {other:?}"),
-        }
 
         let continued = Event::new(
             "session-1".into(),

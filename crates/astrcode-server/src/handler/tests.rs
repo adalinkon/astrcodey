@@ -1954,6 +1954,16 @@ async fn slash_compact_uses_backend_command_without_user_message() {
             .iter()
             .all(|message| message_to_dto(message).content != "/compact")
     );
+
+    let following = handler
+        .submit_input_for_session(session_id.clone(), "after compact".into())
+        .await
+        .unwrap();
+    assert!(
+        matches!(following, PromptSubmission::Accepted { .. }),
+        "a completed slash compact must not leave later prompts queued"
+    );
+    assert_eq!(wait_for_turn_completed(&mut event_rx).await, "stop");
 }
 
 #[tokio::test]

@@ -58,9 +58,6 @@ impl CommandHandler {
             return Err(HandlerError::CompactBlocked);
         }
 
-        // 标记 session 为 compacting 状态，让输入自动排队
-        self.compacting_sessions.insert(sid.clone());
-
         let session = self
             .runtime
             .session_manager
@@ -68,6 +65,37 @@ impl CommandHandler {
             .await
             .map_err(HandlerError::SessionManager)?;
 
+        session
+            .emit_live(None, EventPayload::CompactionStarted)
+            .await;
+
+        let outcome = self
+            .run_manual_compaction(&session, sid, keep_recent_turns)
+            .await;
+        let terminal_event = match &outcome {
+            Ok((ManualCompactOutcome::Compacted { .. }, messages_removed)) => {
+                EventPayload::CompactionCompleted {
+                    messages_removed: *messages_removed,
+                }
+            },
+            Ok((ManualCompactOutcome::Skipped { message }, _)) => EventPayload::CompactionSkipped {
+                reason: message.clone(),
+            },
+            Err(error) => EventPayload::CompactionFailed {
+                reason: error.to_string(),
+            },
+        };
+        session.emit_live(None, terminal_event).await;
+
+        outcome.map(|(result, _)| result)
+    }
+
+    async fn run_manual_compaction(
+        &mut self,
+        session: &astrcode_session::Session,
+        sid: &SessionId,
+        keep_recent_turns: Option<usize>,
+    ) -> Result<(ManualCompactOutcome, usize), HandlerError> {
         let state = session.read_model().await.map_err(HandlerError::Session)?;
         // Session runtime 已持有当前 session 的工具表快照；空时按需刷新。
         let tool_registry = {
@@ -131,9 +159,12 @@ impl CommandHandler {
         {
             Ok(compaction) => compaction.result,
             Err(CompactSkipReason::Empty | CompactSkipReason::NothingToCompact) => {
-                return Ok(ManualCompactOutcome::Skipped {
-                    message: "Nothing to compact".into(),
-                });
+                return Ok((
+                    ManualCompactOutcome::Skipped {
+                        message: "Nothing to compact".into(),
+                    },
+                    0,
+                ));
             },
         };
         let session_store_dir = session.session_store_dir().await;
@@ -159,11 +190,6 @@ impl CommandHandler {
             HandlerError::InvalidRequest("Cannot compact session without system prompt".into())
         })?;
 
-        // Manual compact has no agent loop, so emit CompactionStarted here.
-        session
-            .emit_live(None, EventPayload::CompactionStarted)
-            .await;
-
         let fp = hex_fingerprint(system_prompt.as_bytes());
         let trigger = compact_trigger_name(CompactTrigger::ManualCommand);
         let base_event_seq = session
@@ -179,7 +205,7 @@ impl CommandHandler {
             })
             .unwrap_or(0);
         let persisted = persist_compact_result(
-            &session,
+            session,
             &compaction,
             trigger,
             &system_prompt,
@@ -197,16 +223,6 @@ impl CommandHandler {
         // persist_compact_result 已通过 session.append_event → runtime.fanout 发送事件，
         // 无需在此再次 broadcast_event（避免双发）
 
-        // 发送 CompactionCompleted 事件
-        session
-            .emit_live(
-                None,
-                EventPayload::CompactionCompleted {
-                    messages_removed: persisted.messages_removed,
-                },
-            )
-            .await;
-
         let state = session.read_model().await.map_err(HandlerError::Session)?;
         self.event_bus
             .send_notification(ClientNotification::SessionResumed {
@@ -214,8 +230,11 @@ impl CommandHandler {
                 snapshot: session_snapshot(&state),
             });
 
-        Ok(ManualCompactOutcome::Compacted {
-            session_id: sid.clone(),
-        })
+        Ok((
+            ManualCompactOutcome::Compacted {
+                session_id: sid.clone(),
+            },
+            persisted.messages_removed,
+        ))
     }
 }
