@@ -32,48 +32,43 @@ async fn loader_returns_empty_result_for_none_working_dir() {
     assert!(result.errors.is_empty());
 }
 
-/// 测试事件和模式的判别值能够正确往返转换
+/// 测试 s6r 事件名和模式名能正确解析为 Rust 类型。
+/// s6r 协议使用字符串而非整数判别符，此测试确保名称映射完整。
 #[test]
-fn discriminants_roundtrip() {
+fn s6r_event_and_mode_names_roundtrip() {
     use astrcode_extension_sdk::extension::{ExtensionEvent, HookMode};
-    use astrcode_extensions::wasm_api;
+    use astrcode_extension_sdk::s6r::{event_from_name, mode_from_name};
 
-    // 事件判别值往返测试
-    for event in [
-        ExtensionEvent::SessionStart,
-        ExtensionEvent::SessionResume,
-        ExtensionEvent::SessionShutdown,
-        ExtensionEvent::TurnStart,
-        ExtensionEvent::TurnEnd,
-        ExtensionEvent::PreToolUse,
-        ExtensionEvent::PostToolUse,
-        ExtensionEvent::BeforeProviderRequest,
-        ExtensionEvent::AfterProviderResponse,
-        ExtensionEvent::UserPromptSubmit,
-    ] {
-        let d = wasm_api::event_discriminant(event.clone());
-        let back = wasm_api::event_from_discriminant(d);
-        assert_eq!(back, Some(event));
+    let cases: &[(&str, ExtensionEvent)] = &[
+        ("session_start",           ExtensionEvent::SessionStart),
+        ("session_resume",          ExtensionEvent::SessionResume),
+        ("session_shutdown",        ExtensionEvent::SessionShutdown),
+        ("turn_start",              ExtensionEvent::TurnStart),
+        ("turn_end",                ExtensionEvent::TurnEnd),
+        ("pre_tool_use",            ExtensionEvent::PreToolUse),
+        ("post_tool_use",           ExtensionEvent::PostToolUse),
+        ("before_provider_request", ExtensionEvent::BeforeProviderRequest),
+        ("after_provider_response", ExtensionEvent::AfterProviderResponse),
+        ("user_prompt_submit",      ExtensionEvent::UserPromptSubmit),
+        ("prompt_build",            ExtensionEvent::PromptBuild),
+        ("pre_compact",             ExtensionEvent::PreCompact),
+        ("post_compact",            ExtensionEvent::PostCompact),
+    ];
+    for (name, expected) in cases {
+        assert_eq!(event_from_name(name), Some(expected.clone()), "event name: {name}");
     }
+    assert!(event_from_name("nonexistent_event").is_none());
 
-    // 模式判别值往返测试
-    for mode in [
-        HookMode::Blocking,
-        HookMode::NonBlocking,
-        HookMode::Advisory,
-    ] {
-        let d = wasm_api::mode_discriminant(mode);
-        let back = wasm_api::mode_from_discriminant(d);
-        assert_eq!(back, Some(mode));
-    }
+    assert_eq!(mode_from_name("blocking"),     Some(HookMode::Blocking));
+    assert_eq!(mode_from_name("non_blocking"),  Some(HookMode::NonBlocking));
+    assert_eq!(mode_from_name("advisory"),     Some(HookMode::Advisory));
+    assert!(mode_from_name("unknown_mode").is_none());
 }
 
-/// 测试清单解析丢弃未声明的 legacy 字段，仅保留显式定义的 metadata。
+/// 测试 extension.json 清单解析丢弃未知字段。
 ///
-/// 历史上 manifest 还携带过 `subscriptions` / `tools` / `slash_commands` 字段；
-/// 现在这些字段已迁移到 `extension_init` 中通过 host imports 注册。serde 默认
-/// 忽略多余字段，所以老格式仍能反序列化（不报错），但这些字段不再有任何 runtime
-/// 效果。
+/// extension.json 只需 `library` 字段；tools/commands/hooks 由 WASM 的
+/// `extension_manifest()` 通过 s6r 协议声明。serde 默认忽略多余字段。
 #[test]
 fn manifest_ignores_legacy_capability_fields() {
     let manifest: ExtensionManifest = serde_json::from_value(serde_json::json!({

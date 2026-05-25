@@ -7,8 +7,8 @@ description = "Stable authoring surface for AstrCode extensions"
 [dependencies]
 astrcode-core = { path = "../astrcode-core" }
 async-trait = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-

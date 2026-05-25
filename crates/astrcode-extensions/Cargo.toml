@@ -20,4 +20,5 @@ wasmtime = { version = "43", default-features = false, features = ["cranelift", 
 
 [dev-dependencies]
 wasm-encoder = "0.245"
+wat = "1"
 tempfile = { workspace = true }

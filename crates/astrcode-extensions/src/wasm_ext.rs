@@ -1,10 +1,27 @@
-//! WASM 扩展适配器 — 将 wasmtime 实例包装为 Extension trait 实现。
+//! WASM 扩展适配器（s6r 协议）。
 //!
-//! 加载 `.wasm` 文件，调用 `extension_init()` 让插件注册能力，
-//! 然后通过 handler adapter 将宿主的 handler trait 调用翻译为
-//! WASM guest 函数调用。
+//! 加载 `.wasm` 文件，调用 `extension_manifest()` 获取声明式注册信息，
+//! 再通过统一的 `extension_call()` 入口处理所有工具/命令/hook 调用。
+//!
+//! ## 内存所有权规则
+//!
+//! - 请求内存：宿主调用 guest 的 `alloc` 分配，写入后传给 `extension_call`，
+//!   调用返回后由宿主调用 guest 的 `dealloc` 释放。
+//! - 响应内存：guest 内部分配（`extension_call` / `extension_manifest` 返回 packed ptr），
+//!   宿主读取 JSON 字符串后调用 `dealloc` 释放。
+//!
+//! ## 并发模型
+//!
+//! `WasmInner` 由 `parking_lot::Mutex` 保护。wasmtime `Store` 是 `!Send`，
+//! 所有 guest 调用通过 `spawn_blocking` 在 blocking 线程池执行，
+//! runtime worker 线程不被阻塞。
 
-use std::sync::Arc;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use astrcode_extension_sdk::{
     extension::{
@@ -16,125 +33,148 @@ use astrcode_extension_sdk::{
         PromptBuildContext, PromptBuildHandler, PromptContributions, ProviderContext,
         ProviderEvent, ProviderHandler, ProviderResult, Registrar, SlashCommand, ToolHandler,
     },
-    tool::{ToolDefinition, ToolResult, tool_metadata},
+    s6r::{self, CallRequest, CallResponse, Manifest},
+    tool::{ExecutionMode, ToolDefinition, ToolOrigin, ToolResult, tool_metadata},
 };
 use parking_lot::Mutex;
 use serde_json::json;
 
-use crate::wasm_api::{
-    self, GUEST_EFFECT_APPEND_MESSAGES, GUEST_EFFECT_COMPACT_CONTRIBUTIONS, GUEST_EFFECT_ERROR,
-    GUEST_EFFECT_MODIFIED_INPUT, GUEST_EFFECT_OK, GUEST_EFFECT_PROMPT_CONTRIBUTIONS,
-    GUEST_EFFECT_REPLACE_MESSAGES, GUEST_EFFECT_TOOL_OUTCOME, HostState,
-};
+use crate::wasm_api::{self, HostState};
 
-// ─── Shared WASM runtime state ──────────────────────────────────────────
+// ─── 请求 ID 生成 ────────────────────────────────────────────────────────
 
-/// 持有 wasmtime 运行时状态。所有字段需要同时访问（Store 必须 &mut 才能调用函数）。
+fn new_req_id() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    format!("req-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+// ─── WasmInner ──────────────────────────────────────────────────────────
+
+/// 持有 wasmtime 运行时状态。
+///
+/// s6r 协议下只需要三个函数引用：内存分配/释放 + 统一调用入口。
 struct WasmInner {
-    store: wasmtime::Store<HostState>,
-    memory: wasmtime::Memory,
-    alloc_fn: wasmtime::TypedFunc<i32, i32>,
-    handle_tool_fn: Option<wasmtime::TypedFunc<(i32, i32), i32>>,
-    handle_command_fn: Option<wasmtime::TypedFunc<(i32, i32), i32>>,
-    handle_event_fn: Option<wasmtime::TypedFunc<(i32, i32), i32>>,
+    store:      wasmtime::Store<HostState>,
+    memory:     wasmtime::Memory,
+    alloc_fn:   wasmtime::TypedFunc<i32, i32>,
+    /// guest 导出的 `dealloc(ptr, len)`，宿主用于释放 guest 分配的内存。
+    dealloc_fn: wasmtime::TypedFunc<(i32, i32), ()>,
+    /// guest 导出的 `extension_call(req_ptr, req_len) -> i64`。
+    call_fn:    wasmtime::TypedFunc<(i32, i32), i64>,
 }
 
 type SharedInner = Arc<Mutex<WasmInner>>;
 
-/// 在 blocking 池里调用 WASM guest 函数。
+// ─── guest 调用核心 ──────────────────────────────────────────────────────
+
+/// 将 `CallRequest` 序列化后发送给 guest，返回解析好的 `CallResponse`。
 ///
-/// `parking_lot::Mutex::lock()` + `wasmtime::Store::call()` 都是同步阻塞调用，
-/// wasmtime 执行任意 guest 代码可能持续数十毫秒到数秒。如果直接在 tokio
-/// runtime 的 worker 线程上 `mutex.lock()`，会让该 worker 完全无法处理其他
-/// async task——多个 hook 共享同一个 `WasmExtension` 时还会串行起来。
-///
-/// 用 `spawn_blocking` 把整段同步工作搬到 blocking 线程池，runtime 的 worker
-/// 线程可以继续处理其他 task；同 inner 上的并发调用在 blocking 池里串行（受
-/// `Mutex` 保护，wasmtime Store 不能并发使用），但不会拖累 async runtime。
+/// 在 `spawn_blocking` 中执行，因为 wasmtime 是同步的。
 async fn call_guest(
     inner: &SharedInner,
-    func: wasmtime::TypedFunc<(i32, i32), i32>,
-    request_json: String,
-) -> Result<(i8, String), ExtensionError> {
+    request: CallRequest,
+) -> Result<CallResponse, ExtensionError> {
     let inner = Arc::clone(inner);
-    tokio::task::spawn_blocking(move || call_guest_blocking(&inner, &func, &request_json))
+    let json = serde_json::to_string(&request)
+        .map_err(|e| ExtensionError::Internal(format!("serialize CallRequest: {e}")))?;
+    tokio::task::spawn_blocking(move || call_guest_blocking(&inner, &json))
         .await
         .map_err(|e| ExtensionError::Internal(format!("wasm join error: {e}")))?
 }
 
 fn call_guest_blocking(
     inner: &Mutex<WasmInner>,
-    func: &wasmtime::TypedFunc<(i32, i32), i32>,
     request_json: &str,
-) -> Result<(i8, String), ExtensionError> {
+) -> Result<CallResponse, ExtensionError> {
     let mut guard = inner.lock();
-    let request_bytes = request_json.as_bytes();
 
+    // 每次调用独立重置 fuel，init 消耗不影响后续调用额度。
     let fuel_budget = guard.store.data().fuel_budget;
     guard
         .store
         .set_fuel(fuel_budget)
         .map_err(|e| ExtensionError::Internal(format!("set_fuel: {e}")))?;
 
-    let memory = guard.memory;
-    let alloc_fn = guard.alloc_fn.clone();
+    let memory     = guard.memory;
+    let alloc_fn   = guard.alloc_fn.clone();
+    let dealloc_fn = guard.dealloc_fn.clone();
+    let call_fn    = guard.call_fn.clone();
 
-    let (ptr, len) = wasm_api::write_to_guest(&mut guard.store, &memory, &alloc_fn, request_bytes)
-        .map_err(ExtensionError::Internal)?;
+    // 1. 写请求到 guest 内存（通过 guest 的 alloc 分配）
+    let (req_ptr, req_len) =
+        wasm_api::write_to_guest(&mut guard.store, &memory, &alloc_fn, request_json.as_bytes())
+            .map_err(ExtensionError::Internal)?;
 
-    let status = func
-        .call(&mut guard.store, (ptr as i32, len as i32))
+    // 2. 调用 extension_call，返回 packed (resp_ptr << 32 | resp_len)
+    let packed = call_fn
+        .call(&mut guard.store, (req_ptr as i32, req_len as i32))
         .map_err(|e| {
-            if guard.store.get_fuel().is_ok_and(|remaining| remaining == 0) {
+            if guard.store.get_fuel().is_ok_and(|f| f == 0) {
                 ExtensionError::Timeout((fuel_budget / 1_000_000).max(1) * 1000)
             } else {
                 ExtensionError::Internal(format!("wasm trap: {e}"))
             }
         })?;
 
-    let response = wasm_api::take_response(&guard.store, &memory);
-    guard.store.data_mut().response_ptr = 0;
-    guard.store.data_mut().response_len = 0;
+    // 3. 释放请求内存（无论调用成功与否都要释放）
+    let _ = dealloc_fn.call(&mut guard.store, (req_ptr as i32, req_len as i32));
 
-    Ok((status as i8, response))
+    // 4. 解析响应 packed ptr
+    if packed == 0 {
+        return Err(ExtensionError::Internal("extension_call returned null ptr".into()));
+    }
+    let resp_ptr = ((packed >> 32) & 0xFFFF_FFFF) as u32;
+    let resp_len = (packed & 0xFFFF_FFFF) as u32;
+
+    // 5. 从 guest 内存读取响应 JSON（共享借用，owned String 产生后借用结束）
+    let resp_json =
+        wasm_api::read_str_from_memory(&guard.store, &memory, resp_ptr, resp_len)
+            .map_err(ExtensionError::Internal)?;
+
+    // 6. 释放响应内存（需要 &mut guard.store，上一步借用已结束）
+    let _ = dealloc_fn.call(&mut guard.store, (resp_ptr as i32, resp_len as i32));
+
+    // 7. 反序列化 CallResponse
+    serde_json::from_str::<CallResponse>(&resp_json)
+        .map_err(|e| ExtensionError::Internal(format!("parse CallResponse: {e}")))
 }
 
-/// 调用 WASM guest 的 handle_event 函数。
-/// 无 handle_event_fn 导出时返回 (GUEST_EFFECT_OK, "")。
-async fn call_wasm_event(
-    inner: &SharedInner,
-    event: &str,
-    context: serde_json::Value,
-) -> Result<(i8, String), ExtensionError> {
-    let func = {
-        // 子作用域：MutexGuard 在 await 之前 drop。parking_lot::MutexGuard 不是 Send，
-        // 显式 `drop()` 不够——必须用 scope 让编译器看到它已经离开了 future state。
-        let guard = inner.lock();
-        guard.handle_event_fn.clone()
-    };
-    let Some(func) = func else {
-        return Ok((GUEST_EFFECT_OK, String::new()));
-    };
-    let request = json!({ "event": event, "context": context });
-    call_guest(inner, func, request.to_string()).await
+/// 从 packed i64 读取 manifest JSON，并释放 guest 内存。
+fn read_manifest(
+    store: &mut wasmtime::Store<HostState>,
+    memory: &wasmtime::Memory,
+    dealloc_fn: &wasmtime::TypedFunc<(i32, i32), ()>,
+    packed: i64,
+) -> Result<Manifest, String> {
+    if packed == 0 {
+        return Err("extension_manifest returned null ptr".into());
+    }
+    let ptr = ((packed >> 32) & 0xFFFF_FFFF) as u32;
+    let len = (packed & 0xFFFF_FFFF) as u32;
+
+    // 读取（共享借用）
+    let json = wasm_api::read_str_from_memory(store, memory, ptr, len)?;
+
+    // 释放（可变借用，上面借用已结束）
+    let _ = dealloc_fn.call(&mut *store, (ptr as i32, len as i32));
+
+    serde_json::from_str::<Manifest>(&json)
+        .map_err(|e| format!("parse Manifest JSON: {e}"))
 }
 
 // ─── WasmExtension ──────────────────────────────────────────────────────
 
-/// 加载后的 WASM 扩展。
 pub struct WasmExtension {
-    id: String,
-    capabilities: Vec<ExtensionCapability>,
-    inner: SharedInner,
-    tools: Vec<ToolDefinition>,
-    commands: Vec<SlashCommand>,
+    id:            String,
+    capabilities:  Vec<ExtensionCapability>,
+    inner:         SharedInner,
+    tools:         Vec<ToolDefinition>,
+    commands:      Vec<SlashCommand>,
     subscriptions: Vec<(ExtensionEvent, HookMode)>,
 }
 
 impl WasmExtension {
-    /// 从 `.wasm` 文件加载扩展。
-    ///
-    /// `fuel` 和 `memory_bytes` 来自配置系统，控制 guest 每次调用的指令预算和内存上限。
+    /// 从 `.wasm` 文件加载扩展（s6r 协议）。
     pub fn load(
         path: &std::path::Path,
         id: String,
@@ -142,6 +182,7 @@ impl WasmExtension {
         fuel: u64,
         memory_bytes: usize,
     ) -> Result<Arc<Self>, String> {
+        // ── wasmtime 初始化 ──────────────────────────────────────────────
         let mut config = wasmtime::Config::new();
         config.consume_fuel(true);
         let engine =
@@ -153,46 +194,100 @@ impl WasmExtension {
 
         let host_state = HostState::new().with_limits(fuel, memory_bytes);
         let mut store = wasmtime::Store::new(&engine, host_state);
-        // ResourceLimiter 通过 Store::limiter 注入，控制 memory/table 增长。
-        store.limiter(|state: &mut HostState| -> &mut dyn wasmtime::ResourceLimiter { state });
+        store.limiter(|s: &mut HostState| -> &mut dyn wasmtime::ResourceLimiter { s });
+
         let instance = linker
             .instantiate(&mut store, &module)
             .map_err(|e| format!("instantiate wasm: {e}"))?;
 
+        // ── 必须导出的函数 ───────────────────────────────────────────────
         let memory = instance
             .get_memory(&mut store, "memory")
-            .ok_or_else(|| "wasm module must export 'memory'".to_string())?;
+            .ok_or("wasm module must export 'memory'")?;
 
         let alloc_fn = instance
             .get_typed_func::<i32, i32>(&mut store, "alloc")
-            .map_err(|e| format!("wasm module must export 'alloc': {e}"))?;
+            .map_err(|e| format!("must export 'alloc': {e}"))?;
 
-        let handle_tool_fn = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "handle_tool")
-            .ok();
-        let handle_command_fn = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "handle_command")
-            .ok();
-        let handle_event_fn = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "handle_event")
-            .ok();
+        let dealloc_fn = instance
+            .get_typed_func::<(i32, i32), ()>(&mut store, "dealloc")
+            .map_err(|e| format!("must export 'dealloc': {e}"))?;
 
-        if let Ok(init_fn) = instance.get_typed_func::<(), ()>(&mut store, "extension_init") {
-            // 每次调用（包括 init）独立计费——set_fuel 重置到完整 budget。
-            // 这意味着 init 的 fuel 消耗不影响后续 call_guest 的可用额度。
-            let fuel_budget = store.data().fuel_budget;
-            store
-                .set_fuel(fuel_budget)
-                .map_err(|e| format!("set_fuel: {e}"))?;
-            init_fn
-                .call(&mut store, ())
-                .map_err(|e| format!("extension_init trap: {e}"))?;
+        let call_fn = instance
+            .get_typed_func::<(i32, i32), i64>(&mut store, "extension_call")
+            .map_err(|e| format!("must export 'extension_call': {e}"))?;
+
+        let manifest_fn = instance
+            .get_typed_func::<(), i64>(&mut store, "extension_manifest")
+            .map_err(|e| format!("must export 'extension_manifest': {e}"))?;
+
+        // ── 调用 extension_manifest() 获取声明 ──────────────────────────
+        store.set_fuel(fuel).map_err(|e| format!("set_fuel: {e}"))?;
+        let packed = manifest_fn
+            .call(&mut store, ())
+            .map_err(|e| format!("extension_manifest trap: {e}"))?;
+
+        let manifest = read_manifest(&mut store, &memory, &dealloc_fn, packed)?;
+
+        // 校验 s6r 协议版本
+        if manifest.s6r != s6r::S6R_VERSION {
+            return Err(format!(
+                "unsupported s6r version '{}', expected '{}'",
+                manifest.s6r,
+                s6r::S6R_VERSION,
+            ));
         }
 
-        let state = store.data();
-        let tools = state.tools.clone();
-        let commands = state.commands.clone();
-        let subscriptions = state.subscriptions.clone();
+        // ── 从 manifest 构建注册信息 ─────────────────────────────────────
+        let tools: Vec<ToolDefinition> = manifest
+            .tools
+            .iter()
+            .map(|t| ToolDefinition {
+                name:           t.name.clone(),
+                description:    t.description.clone(),
+                parameters:     t.parameters.clone(),
+                origin:         ToolOrigin::Extension,
+                execution_mode: if t.mode == "parallel" {
+                    ExecutionMode::Parallel
+                } else {
+                    ExecutionMode::Sequential
+                },
+            })
+            .collect();
+
+        let commands: Vec<SlashCommand> = manifest
+            .commands
+            .iter()
+            .map(|c| SlashCommand {
+                name:        c.name.clone(),
+                description: c.description.clone(),
+                args_schema: None,
+            })
+            .collect();
+
+        let subscriptions: Vec<(ExtensionEvent, HookMode)> = manifest
+            .hooks
+            .iter()
+            .filter_map(|h| {
+                let event = s6r::event_from_name(&h.on)?;
+                let mode  = s6r::mode_from_name(&h.mode)?;
+                Some((event, mode))
+            })
+            .collect();
+
+        let unknown_hooks: Vec<&str> = manifest
+            .hooks
+            .iter()
+            .filter(|h| s6r::event_from_name(&h.on).is_none())
+            .map(|h| h.on.as_str())
+            .collect();
+        if !unknown_hooks.is_empty() {
+            tracing::warn!(
+                extension_id = %id,
+                ?unknown_hooks,
+                "s6r manifest contains unknown hook event names, they will be ignored"
+            );
+        }
 
         Ok(Arc::new(Self {
             id,
@@ -201,9 +296,8 @@ impl WasmExtension {
                 store,
                 memory,
                 alloc_fn,
-                handle_tool_fn,
-                handle_command_fn,
-                handle_event_fn,
+                dealloc_fn,
+                call_fn,
             })),
             tools,
             commands,
@@ -212,7 +306,7 @@ impl WasmExtension {
     }
 }
 
-// ─── Extension trait impl ───────────────────────────────────────────────
+// ─── Extension trait ────────────────────────────────────────────────────
 
 #[async_trait::async_trait]
 impl Extension for WasmExtension {
@@ -224,114 +318,74 @@ impl Extension for WasmExtension {
         &self.capabilities
     }
 
-    // WASM extensions currently only declare handlers through the existing
-    // register ABI. Runtime start/stop hooks intentionally stay as the
-    // Extension trait defaults until the guest ABI grows matching exports.
-
     fn register(&self, reg: &mut Registrar) {
-        let inner = Arc::clone(&self.inner);
-
-        let has_tool_handler = inner.lock().handle_tool_fn.is_some();
-        let has_command_handler = inner.lock().handle_command_fn.is_some();
-        let has_event_handler = inner.lock().handle_event_fn.is_some();
-
         for tool_def in &self.tools {
-            if !has_tool_handler {
-                tracing::warn!(
-                    extension_id = %self.id,
-                    tool_name = %tool_def.name,
-                    "tool registered but handle_tool not exported, skipping"
-                );
-                continue;
-            }
             reg.tool(
                 tool_def.clone(),
                 Arc::new(WasmToolHandler {
-                    inner: Arc::clone(&inner),
+                    inner:        Arc::clone(&self.inner),
                     extension_id: self.id.clone(),
                 }),
             );
         }
 
         for cmd in &self.commands {
-            if !has_command_handler {
-                continue;
-            }
             reg.command(
                 cmd.clone(),
                 Arc::new(WasmCommandHandler {
-                    inner: Arc::clone(&inner),
-                    extension_id: self.id.clone(),
-                }),
+                            inner: Arc::clone(&self.inner),
+                        }),
             );
         }
 
         for (event, mode) in &self.subscriptions {
-            if !has_event_handler {
-                continue;
-            }
+            let inner = Arc::clone(&self.inner);
             match event {
                 ExtensionEvent::PreToolUse => {
-                    reg.on_pre_tool_use(
-                        *mode,
-                        0,
-                        Arc::new(WasmPreToolUseHandler {
-                            inner: Arc::clone(&inner),
-                        }),
-                    );
+                    reg.on_pre_tool_use(*mode, 0, Arc::new(WasmPreToolUseHandler { inner }));
                 },
                 ExtensionEvent::PostToolUse => {
-                    reg.on_post_tool_use(
+                    reg.on_post_tool_use(*mode, 0, Arc::new(WasmPostToolUseHandler { inner }));
+                },
+                ExtensionEvent::BeforeProviderRequest => {
+                    reg.on_provider(
+                        ProviderEvent::BeforeRequest,
                         *mode,
                         0,
-                        Arc::new(WasmPostToolUseHandler {
-                            inner: Arc::clone(&inner),
-                        }),
+                        Arc::new(WasmProviderHandler { inner }),
                     );
                 },
-                ExtensionEvent::BeforeProviderRequest | ExtensionEvent::AfterProviderResponse => {
+                ExtensionEvent::AfterProviderResponse => {
                     reg.on_provider(
-                        if event == &ExtensionEvent::BeforeProviderRequest {
-                            ProviderEvent::BeforeRequest
-                        } else {
-                            ProviderEvent::AfterResponse
-                        },
+                        ProviderEvent::AfterResponse,
                         *mode,
                         0,
-                        Arc::new(WasmProviderHandler {
-                            inner: Arc::clone(&inner),
-                        }),
+                        Arc::new(WasmProviderHandler { inner }),
                     );
                 },
                 ExtensionEvent::PromptBuild => {
-                    reg.on_prompt_build(
-                        0,
-                        Arc::new(WasmPromptBuildHandler {
-                            inner: Arc::clone(&inner),
-                        }),
-                    );
+                    reg.on_prompt_build(0, Arc::new(WasmPromptBuildHandler { inner }));
                 },
-                ExtensionEvent::PreCompact | ExtensionEvent::PostCompact => {
+                ExtensionEvent::PreCompact => {
                     reg.on_compact(
-                        if event == &ExtensionEvent::PreCompact {
-                            CompactEvent::PreCompact
-                        } else {
-                            CompactEvent::PostCompact
-                        },
+                        CompactEvent::PreCompact,
                         0,
-                        Arc::new(WasmCompactHandler {
-                            inner: Arc::clone(&inner),
-                        }),
+                        Arc::new(WasmCompactHandler { inner }),
                     );
                 },
-                _ => {
+                ExtensionEvent::PostCompact => {
+                    reg.on_compact(
+                        CompactEvent::PostCompact,
+                        0,
+                        Arc::new(WasmCompactHandler { inner }),
+                    );
+                },
+                other => {
                     reg.on_event(
-                        event.clone(),
+                        other.clone(),
                         *mode,
                         0,
-                        Arc::new(WasmLifecycleHandler {
-                            inner: Arc::clone(&inner),
-                        }),
+                        Arc::new(WasmLifecycleHandler { inner }),
                     );
                 },
             }
@@ -339,10 +393,223 @@ impl Extension for WasmExtension {
     }
 }
 
-// ─── Handler Adapters ───────────────────────────────────────────────────
+// ─── context builders ────────────────────────────────────────────────────
+
+fn build_pre_tool_use_context(ctx: &PreToolUseContext) -> serde_json::Value {
+    json!({
+        "session_id":      ctx.session_id,
+        "working_dir":     ctx.working_dir,
+        "model":           ctx.model,
+        "tool_name":       ctx.tool_name,
+        "tool_input":      ctx.tool_input,
+        "available_tools": ctx.available_tools,
+    })
+}
+
+fn build_post_tool_use_context(ctx: &PostToolUseContext) -> serde_json::Value {
+    json!({
+        "session_id":  ctx.session_id,
+        "working_dir": ctx.working_dir,
+        "model":       ctx.model,
+        "tool_name":   ctx.tool_name,
+        "tool_input":  ctx.tool_input,
+        "tool_result": ctx.tool_result,
+        "is_error":    ctx.is_error,
+    })
+}
+
+fn build_provider_context(ctx: &ProviderContext) -> serde_json::Value {
+    json!({
+        "session_id":  ctx.session_id,
+        "working_dir": ctx.working_dir,
+        "model":       ctx.model,
+        "messages":    ctx.messages,
+    })
+}
+
+fn build_prompt_build_context(ctx: &PromptBuildContext) -> serde_json::Value {
+    json!({
+        "session_id":  ctx.session_id,
+        "working_dir": ctx.working_dir,
+        "model":       ctx.model,
+    })
+}
+
+fn build_compact_context(ctx: &CompactContext) -> serde_json::Value {
+    json!({
+        "session_id":    ctx.session_id,
+        "working_dir":   ctx.working_dir,
+        "model":         ctx.model,
+        "trigger":       ctx.trigger,
+        "message_count": ctx.message_count,
+        "pre_tokens":    ctx.pre_tokens,
+        "post_tokens":   ctx.post_tokens,
+        "summary":       ctx.summary,
+    })
+}
+
+fn build_lifecycle_context(ctx: &LifecycleContext) -> serde_json::Value {
+    json!({
+        "session_id":  ctx.session_id,
+        "working_dir": ctx.working_dir,
+        "model":       ctx.model,
+    })
+}
+
+// ─── result parsers ──────────────────────────────────────────────────────
+
+fn parse_tool_result(
+    resp: &CallResponse,
+    _extension_id: &str,
+) -> Result<ToolResult, ExtensionError> {
+    if !resp.ok {
+        let msg = resp.error.clone().unwrap_or_default();
+        return Ok(ToolResult::text(msg, true, Default::default()));
+    }
+    match resp.effect() {
+        "tool_outcome" => {
+            let raw = resp
+                .data_value("outcome")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let outcome: ExtensionToolOutcome = serde_json::from_value(raw)
+                .map_err(|e| ExtensionError::Internal(format!("parse tool_outcome: {e}")))?;
+            let outcome_json = serde_json::to_value(&outcome)
+                .map_err(|e| ExtensionError::Internal(format!("serialize outcome: {e}")))?;
+            Ok(ToolResult::text(
+                String::new(),
+                false,
+                tool_metadata([(EXTENSION_TOOL_OUTCOME_KEY, outcome_json)]),
+            ))
+        },
+        _ => {
+            // effect = "ok" 或其他未知值：从 data.content 取文本，默认空串。
+            let content = resp
+                .data_value("content")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            Ok(ToolResult::text(content, false, Default::default()))
+        },
+    }
+}
+
+fn parse_command_result(resp: &CallResponse) -> Result<ExtensionCommandResult, ExtensionError> {
+    if !resp.ok {
+        return Err(ExtensionError::Internal(
+            resp.error.clone().unwrap_or_default(),
+        ));
+    }
+    let data = resp.data.clone().unwrap_or(serde_json::json!({}));
+    serde_json::from_value(data)
+        .map_err(|e| ExtensionError::Internal(format!("parse command result: {e}")))
+}
+
+fn parse_pre_tool_use_result(resp: &CallResponse) -> Result<PreToolUseResult, ExtensionError> {
+    if !resp.ok {
+        return Ok(PreToolUseResult::Allow);
+    }
+    match resp.effect() {
+        "block" => Ok(PreToolUseResult::Block {
+            reason: resp.data_str("reason").to_string(),
+        }),
+        "modified_input" => {
+            let tool_input = resp
+                .data_value("tool_input")
+                .cloned()
+                .ok_or_else(|| {
+                    ExtensionError::Internal(
+                        "effect=modified_input but data.tool_input is missing".into(),
+                    )
+                })?;
+            Ok(PreToolUseResult::ModifyInput { tool_input })
+        },
+        _ => Ok(PreToolUseResult::Allow),
+    }
+}
+
+fn parse_post_tool_use_result(resp: &CallResponse) -> Result<PostToolUseResult, ExtensionError> {
+    if !resp.ok {
+        return Ok(PostToolUseResult::Allow);
+    }
+    match resp.effect() {
+        "block" => Ok(PostToolUseResult::Block {
+            reason: resp.data_str("reason").to_string(),
+        }),
+        "tool_outcome" => Ok(PostToolUseResult::ModifyResult {
+            content: resp.data_str("content").to_string(),
+        }),
+        _ => Ok(PostToolUseResult::Allow),
+    }
+}
+
+fn parse_provider_result(resp: &CallResponse) -> Result<ProviderResult, ExtensionError> {
+    if !resp.ok {
+        return Ok(ProviderResult::Allow);
+    }
+    match resp.effect() {
+        "block" => Ok(ProviderResult::Block {
+            reason: resp.data_str("reason").to_string(),
+        }),
+        "replace_messages" => {
+            let messages_val = resp.data_value("messages").cloned().ok_or_else(|| {
+                ExtensionError::Internal(
+                    "effect=replace_messages but data.messages is missing".into(),
+                )
+            })?;
+            Ok(ProviderResult::ReplaceMessages {
+                messages: serde_json::from_value(messages_val)
+                    .map_err(|e| ExtensionError::Internal(format!("parse messages: {e}")))?,
+            })
+        },
+        "append_messages" => {
+            let messages_val = resp.data_value("messages").cloned().ok_or_else(|| {
+                ExtensionError::Internal(
+                    "effect=append_messages but data.messages is missing".into(),
+                )
+            })?;
+            Ok(ProviderResult::AppendMessages {
+                messages: serde_json::from_value(messages_val)
+                    .map_err(|e| ExtensionError::Internal(format!("parse messages: {e}")))?,
+            })
+        },
+        _ => Ok(ProviderResult::Allow),
+    }
+}
+
+fn parse_prompt_build_result(resp: &CallResponse) -> Result<PromptContributions, ExtensionError> {
+    if !resp.ok || resp.effect() != "prompt_contributions" {
+        return Ok(PromptContributions::default());
+    }
+    let data = resp.data.clone().unwrap_or_default();
+    serde_json::from_value(data)
+        .map_err(|e| ExtensionError::Internal(format!("parse PromptContributions: {e}")))
+}
+
+fn parse_compact_result(resp: &CallResponse) -> Result<CompactResult, ExtensionError> {
+    if !resp.ok || resp.effect() != "compact_contributions" {
+        return Ok(CompactResult::Allow);
+    }
+    let data = resp.data.clone().unwrap_or_default();
+    let contributions: CompactContributions = serde_json::from_value(data)
+        .map_err(|e| ExtensionError::Internal(format!("parse CompactContributions: {e}")))?;
+    Ok(CompactResult::Contributions(contributions))
+}
+
+fn parse_lifecycle_result(resp: &CallResponse) -> Result<HookResult, ExtensionError> {
+    if resp.ok {
+        Ok(HookResult::Allow)
+    } else {
+        Ok(HookResult::Block {
+            reason: resp.error.clone().unwrap_or_default(),
+        })
+    }
+}
+
+// ─── Tool handler ────────────────────────────────────────────────────────
 
 struct WasmToolHandler {
-    inner: SharedInner,
+    inner:        SharedInner,
     extension_id: String,
 }
 
@@ -355,61 +622,26 @@ impl ToolHandler for WasmToolHandler {
         working_dir: &str,
         ctx: &astrcode_extension_sdk::tool::ToolExecutionContext,
     ) -> Result<ToolResult, ExtensionError> {
-        // 把 MutexGuard 限制在子作用域里，确保 await 之前已经 drop——
-        // parking_lot::MutexGuard 不是 Send，即便手动 drop 编译器仍可能把
-        // future 推断为 !Send，子作用域是最稳妥的写法。
-        let func = {
-            let inner = self.inner.lock();
-            let Some(func) = &inner.handle_tool_fn else {
-                return Err(ExtensionError::NotFound(tool_name.into()));
-            };
-            func.clone()
+        let req = CallRequest::Tool {
+            id:    new_req_id(),
+            name:  tool_name.to_string(),
+            input: json!({
+                "tool_name":    tool_name,
+                "arguments":    arguments,
+                "working_dir":  working_dir,
+                "session_id":   ctx.session_id,
+                "tool_call_id": ctx.tool_call_id,
+            }),
         };
-
-        let request = json!({
-            "tool_name": tool_name,
-            "arguments": arguments,
-            "working_dir": working_dir,
-            "session_id": ctx.session_id,
-            "tool_call_id": ctx.tool_call_id,
-        });
-
-        let (status, response) = call_guest(&self.inner, func, request.to_string()).await?;
-
-        match status {
-            GUEST_EFFECT_OK => {
-                let content = if response.is_empty() {
-                    String::new()
-                } else {
-                    serde_json::from_str::<serde_json::Value>(&response)
-                        .map(|v| v["content"].as_str().unwrap_or(&response).to_string())
-                        .unwrap_or(response)
-                };
-                Ok(ToolResult::text(content, false, Default::default()))
-            },
-            GUEST_EFFECT_ERROR => Ok(ToolResult::text(response.clone(), true, Default::default())),
-            GUEST_EFFECT_TOOL_OUTCOME => {
-                let outcome: ExtensionToolOutcome = serde_json::from_str(&response)
-                    .map_err(|e| ExtensionError::Internal(format!("parse outcome: {e}")))?;
-                let outcome_json = serde_json::to_value(&outcome)
-                    .map_err(|e| ExtensionError::Internal(format!("serialize outcome: {e}")))?;
-                Ok(ToolResult::text(
-                    String::new(),
-                    false,
-                    tool_metadata([(EXTENSION_TOOL_OUTCOME_KEY, outcome_json)]),
-                ))
-            },
-            other => Err(ExtensionError::Internal(format!(
-                "extension {} tool handler unknown status: {other}",
-                self.extension_id
-            ))),
-        }
+        let resp = call_guest(&self.inner, req).await?;
+        parse_tool_result(&resp, &self.extension_id)
     }
 }
 
+// ─── Command handler ─────────────────────────────────────────────────────
+
 struct WasmCommandHandler {
     inner: SharedInner,
-    extension_id: String,
 }
 
 #[async_trait::async_trait]
@@ -421,232 +653,112 @@ impl CommandHandler for WasmCommandHandler {
         working_dir: &str,
         ctx: &CommandContext,
     ) -> Result<ExtensionCommandResult, ExtensionError> {
-        let func = {
-            let inner = self.inner.lock();
-            let Some(func) = &inner.handle_command_fn else {
-                return Err(ExtensionError::NotFound(command_name.into()));
-            };
-            func.clone()
+        let req = CallRequest::Command {
+            id:    new_req_id(),
+            name:  command_name.to_string(),
+            input: json!({
+                "command_name": command_name,
+                "arguments":    arguments,
+                "working_dir":  working_dir,
+                "session_id":   ctx.session_id,
+                "model":        ctx.model,
+            }),
         };
-
-        let request = json!({
-            "command_name": command_name,
-            "arguments": arguments,
-            "working_dir": working_dir,
-            "session_id": ctx.session_id,
-            "model": ctx.model,
-        });
-
-        let (status, response) = call_guest(&self.inner, func, request.to_string()).await?;
-
-        match status {
-            GUEST_EFFECT_OK => serde_json::from_str(&response)
-                .map_err(|e| ExtensionError::Internal(format!("parse command result: {e}"))),
-            GUEST_EFFECT_ERROR => Err(ExtensionError::Internal(response)),
-            other => Err(ExtensionError::Internal(format!(
-                "extension {} command handler unknown status: {other}",
-                self.extension_id
-            ))),
-        }
+        let resp = call_guest(&self.inner, req).await?;
+        parse_command_result(&resp)
     }
 }
 
-// ─── Event context builders & result parsers ────────────────────────────
+// ─── Hook handlers ───────────────────────────────────────────────────────
 
-fn build_pre_tool_use_context(ctx: &PreToolUseContext) -> serde_json::Value {
-    json!({
-        "session_id": ctx.session_id, "working_dir": ctx.working_dir,
-        "model": ctx.model, "tool_name": ctx.tool_name,
-        "tool_input": ctx.tool_input, "available_tools": ctx.available_tools,
-    })
-}
-
-fn parse_pre_tool_use_result(
-    effect: i8,
-    content: String,
-) -> Result<PreToolUseResult, ExtensionError> {
-    match effect {
-        GUEST_EFFECT_ERROR => Ok(PreToolUseResult::Block { reason: content }),
-        GUEST_EFFECT_MODIFIED_INPUT => Ok(PreToolUseResult::ModifyInput {
-            tool_input: serde_json::from_str(&content)
-                .map_err(|e| ExtensionError::Internal(format!("invalid ModifiedInput: {e}")))?,
-        }),
-        _ => Ok(PreToolUseResult::Allow),
-    }
-}
-
-fn build_post_tool_use_context(ctx: &PostToolUseContext) -> serde_json::Value {
-    json!({
-        "session_id": ctx.session_id, "working_dir": ctx.working_dir,
-        "model": ctx.model, "tool_name": ctx.tool_name,
-        "tool_input": ctx.tool_input, "tool_result": ctx.tool_result,
-        "is_error": ctx.is_error,
-    })
-}
-
-fn parse_post_tool_use_result(
-    effect: i8,
-    content: String,
-) -> Result<PostToolUseResult, ExtensionError> {
-    match effect {
-        GUEST_EFFECT_ERROR => Ok(PostToolUseResult::Block { reason: content }),
-        GUEST_EFFECT_TOOL_OUTCOME => Ok(PostToolUseResult::ModifyResult { content }),
-        _ => Ok(PostToolUseResult::Allow),
-    }
-}
-
-fn build_provider_context(ctx: &ProviderContext) -> serde_json::Value {
-    json!({
-        "session_id": ctx.session_id, "working_dir": ctx.working_dir,
-        "model": ctx.model, "messages": ctx.messages,
-    })
-}
-
-fn parse_provider_result(effect: i8, content: String) -> Result<ProviderResult, ExtensionError> {
-    match effect {
-        GUEST_EFFECT_ERROR => Ok(ProviderResult::Block { reason: content }),
-        GUEST_EFFECT_REPLACE_MESSAGES => Ok(ProviderResult::ReplaceMessages {
-            messages: serde_json::from_str(&content)
-                .map_err(|e| ExtensionError::Internal(format!("invalid ReplaceMessages: {e}")))?,
-        }),
-        GUEST_EFFECT_APPEND_MESSAGES => Ok(ProviderResult::AppendMessages {
-            messages: serde_json::from_str(&content)
-                .map_err(|e| ExtensionError::Internal(format!("invalid AppendMessages: {e}")))?,
-        }),
-        _ => Ok(ProviderResult::Allow),
-    }
-}
-
-fn build_prompt_build_context(ctx: &PromptBuildContext) -> serde_json::Value {
-    json!({
-        "session_id": ctx.session_id, "working_dir": ctx.working_dir,
-        "model": ctx.model,
-    })
-}
-
-fn parse_prompt_build_result(
-    effect: i8,
-    content: String,
-) -> Result<PromptContributions, ExtensionError> {
-    if effect == GUEST_EFFECT_PROMPT_CONTRIBUTIONS {
-        serde_json::from_str(&content)
-            .map_err(|e| ExtensionError::Internal(format!("invalid PromptContributions: {e}")))
-    } else {
-        Ok(PromptContributions::default())
-    }
-}
-
-fn build_compact_context(ctx: &CompactContext) -> serde_json::Value {
-    json!({
-        "session_id": ctx.session_id, "working_dir": ctx.working_dir,
-        "model": ctx.model, "trigger": ctx.trigger,
-        "message_count": ctx.message_count,
-        "pre_tokens": ctx.pre_tokens, "post_tokens": ctx.post_tokens,
-        "summary": ctx.summary,
-    })
-}
-
-fn parse_compact_result(effect: i8, content: String) -> Result<CompactResult, ExtensionError> {
-    if effect == GUEST_EFFECT_COMPACT_CONTRIBUTIONS {
-        let contributions = serde_json::from_str::<CompactContributions>(&content)
-            .map_err(|e| ExtensionError::Internal(format!("invalid CompactContributions: {e}")))?;
-        Ok(CompactResult::Contributions(contributions))
-    } else {
-        Ok(CompactResult::Allow)
-    }
-}
-
-fn build_lifecycle_context(ctx: &LifecycleContext) -> serde_json::Value {
-    json!({
-        "session_id": ctx.session_id, "working_dir": ctx.working_dir,
-        "model": ctx.model,
-    })
-}
-
-fn parse_lifecycle_result(effect: i8, content: String) -> Result<HookResult, ExtensionError> {
-    if effect == GUEST_EFFECT_ERROR {
-        Ok(HookResult::Block { reason: content })
-    } else {
-        Ok(HookResult::Allow)
-    }
-}
-
-// ─── Event Handler Adapters ─────────────────────────────────────────────
-
-struct WasmPreToolUseHandler {
-    inner: SharedInner,
-}
+struct WasmPreToolUseHandler { inner: SharedInner }
 
 #[async_trait::async_trait]
 impl PreToolUseHandler for WasmPreToolUseHandler {
     async fn handle(&self, ctx: PreToolUseContext) -> Result<PreToolUseResult, ExtensionError> {
-        let context = build_pre_tool_use_context(&ctx);
-        let (effect, content) = call_wasm_event(&self.inner, "PreToolUse", context).await?;
-        parse_pre_tool_use_result(effect, content)
+        let req = CallRequest::Hook {
+            id:    new_req_id(),
+            on:    "pre_tool_use".into(),
+            input: build_pre_tool_use_context(&ctx),
+        };
+        let resp = call_guest(&self.inner, req).await?;
+        parse_pre_tool_use_result(&resp)
     }
 }
 
-struct WasmPostToolUseHandler {
-    inner: SharedInner,
-}
+struct WasmPostToolUseHandler { inner: SharedInner }
 
 #[async_trait::async_trait]
 impl PostToolUseHandler for WasmPostToolUseHandler {
     async fn handle(&self, ctx: PostToolUseContext) -> Result<PostToolUseResult, ExtensionError> {
-        let context = build_post_tool_use_context(&ctx);
-        let (effect, content) = call_wasm_event(&self.inner, "PostToolUse", context).await?;
-        parse_post_tool_use_result(effect, content)
+        let req = CallRequest::Hook {
+            id:    new_req_id(),
+            on:    "post_tool_use".into(),
+            input: build_post_tool_use_context(&ctx),
+        };
+        let resp = call_guest(&self.inner, req).await?;
+        parse_post_tool_use_result(&resp)
     }
 }
 
-struct WasmProviderHandler {
-    inner: SharedInner,
-}
+struct WasmProviderHandler { inner: SharedInner }
 
 #[async_trait::async_trait]
 impl ProviderHandler for WasmProviderHandler {
     async fn handle(&self, ctx: ProviderContext) -> Result<ProviderResult, ExtensionError> {
-        let context = build_provider_context(&ctx);
-        let (effect, content) = call_wasm_event(&self.inner, "Provider", context).await?;
-        parse_provider_result(effect, content)
+        // ProviderContext 没有携带事件类型，宿主在分发时已经保证正确的处理器，
+        // guest 可从 input 区分（如需要）。
+        let req = CallRequest::Hook {
+            id:    new_req_id(),
+            on:    "before_provider_request".into(),
+            input: build_provider_context(&ctx),
+        };
+        let resp = call_guest(&self.inner, req).await?;
+        parse_provider_result(&resp)
     }
 }
 
-struct WasmPromptBuildHandler {
-    inner: SharedInner,
-}
+struct WasmPromptBuildHandler { inner: SharedInner }
 
 #[async_trait::async_trait]
 impl PromptBuildHandler for WasmPromptBuildHandler {
     async fn handle(&self, ctx: PromptBuildContext) -> Result<PromptContributions, ExtensionError> {
-        let context = build_prompt_build_context(&ctx);
-        let (effect, content) = call_wasm_event(&self.inner, "PromptBuild", context).await?;
-        parse_prompt_build_result(effect, content)
+        let req = CallRequest::Hook {
+            id:    new_req_id(),
+            on:    "prompt_build".into(),
+            input: build_prompt_build_context(&ctx),
+        };
+        let resp = call_guest(&self.inner, req).await?;
+        parse_prompt_build_result(&resp)
     }
 }
 
-struct WasmCompactHandler {
-    inner: SharedInner,
-}
+struct WasmCompactHandler { inner: SharedInner }
 
 #[async_trait::async_trait]
 impl CompactHandler for WasmCompactHandler {
     async fn handle(&self, ctx: CompactContext) -> Result<CompactResult, ExtensionError> {
-        let context = build_compact_context(&ctx);
-        let (effect, content) = call_wasm_event(&self.inner, "Compact", context).await?;
-        parse_compact_result(effect, content)
+        let req = CallRequest::Hook {
+            id:    new_req_id(),
+            on:    "pre_compact".into(),
+            input: build_compact_context(&ctx),
+        };
+        let resp = call_guest(&self.inner, req).await?;
+        parse_compact_result(&resp)
     }
 }
 
-struct WasmLifecycleHandler {
-    inner: SharedInner,
-}
+struct WasmLifecycleHandler { inner: SharedInner }
 
 #[async_trait::async_trait]
 impl LifecycleHandler for WasmLifecycleHandler {
     async fn handle(&self, ctx: LifecycleContext) -> Result<HookResult, ExtensionError> {
-        let context = build_lifecycle_context(&ctx);
-        let (effect, content) = call_wasm_event(&self.inner, "Lifecycle", context).await?;
-        parse_lifecycle_result(effect, content)
+        let req = CallRequest::Hook {
+            id:    new_req_id(),
+            on:    "lifecycle".into(),
+            input: build_lifecycle_context(&ctx),
+        };
+        let resp = call_guest(&self.inner, req).await?;
+        parse_lifecycle_result(&resp)
     }
 }
