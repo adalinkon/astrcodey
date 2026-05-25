@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use astrcode_core::{
     event::EventPayload,
-    types::{SessionId, new_message_id},
+    types::SessionId,
 };
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, watch};
@@ -53,8 +53,9 @@ pub struct ChildTurnConfig {
 
 /// 子 agent turn 的唯一生命周期所有者。
 ///
-/// 内部 spawn 一个后台任务等待 turn 完成。完成后仅通过 `outcome_tx`
-/// （`watch::Sender`）通知结果，不直接写事件。
+/// 内部 spawn 一个后台任务等待 turn 完成，完成后直接写
+/// `AgentSessionCompleted` / `AgentSessionFailed` 到父 session，
+/// 并通过 `completed_tx` 发信号供 server 层处理回收和通知。
 ///
 /// **first-write-wins**：所有路径统一通过 `try_set_outcome` 写入，
 /// `send_if_modified` 保证只有第一次写入生效。
@@ -94,7 +95,6 @@ impl ChildTurnGuard {
         let parent_sid = config.parent_session_id.clone();
         let child_sid = config.child_session_id.clone();
         let final_sid = config.child_session_id.clone();
-        let notify_on_complete = config.notify_on_complete.clone();
 
         tokio::spawn(async move {
             let result = handle.wait().await;
@@ -117,9 +117,8 @@ impl ChildTurnGuard {
             };
             try_set_outcome(&outcome_tx_for_task, outcome.clone());
 
-            let notify = notify_on_complete;
-
-            // 直接写终态事件到父 session
+            // 直接写终态事件到父 session。notify 消息由 server 层
+            // process_child_completions 统一处理，不在此写入。
             match outcome {
                 ChildOutcome::Completed { summary } => {
                     let _ = parent_session
@@ -132,18 +131,6 @@ impl ChildTurnGuard {
                             },
                         )
                         .await;
-                    // 写入通知消息到父 session
-                    if let Some(notify_text) = notify {
-                        let _ = parent_session
-                            .emit_durable(
-                                None,
-                                EventPayload::UserMessage {
-                                    message_id: new_message_id(),
-                                    text: notify_text,
-                                },
-                            )
-                            .await;
-                    }
                 },
                 ChildOutcome::Failed { error } => {
                     let _ = parent_session
@@ -203,6 +190,11 @@ impl ChildTurnGuard {
         try_set_outcome(&self.outcome_tx, ChildOutcome::Aborted);
     }
 
+    /// 将 outcome 强制设为 TimedOut。仅当 outcome 尚未设置时生效。
+    pub fn force_timeout(&self) {
+        try_set_outcome(&self.outcome_tx, ChildOutcome::TimedOut);
+    }
+
     pub fn child_session_id(&self) -> &SessionId {
         &self.config.child_session_id
     }
@@ -243,7 +235,8 @@ impl ChildTurnManager {
 
     /// 收集已完成且尚未处理的子 turn，同时从内部集合中移除。
     ///
-    /// `collect` 即 `remove`——调用方负责写终态事件。
+    /// `collect` 即 `remove`——终态事件已由 guard 后台任务写入，
+    /// 调用方负责处理回收和通知。
     pub fn collect_completed(&self) -> Vec<Arc<ChildTurnGuard>> {
         let mut guards = self.guards.lock();
         let (done, pending): (Vec<_>, Vec<_>) = guards

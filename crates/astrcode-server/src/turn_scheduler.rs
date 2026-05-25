@@ -419,6 +419,8 @@ impl TurnScheduler {
                     timeout_ms = timeout.as_millis(),
                     "cascade abort: child turn timed out"
                 );
+                // 写入 TimedOut 确保后续 outcome() 调用立即返回（如 finalize_aborted_children）
+                guard.force_timeout();
             }
         }
 
@@ -437,15 +439,6 @@ impl TurnScheduler {
         for guard in guards.iter().rev() {
             let child_sid = guard.child_session_id();
             let parent_sid = guard.parent_session_id();
-
-            scheduler.cleanup(child_sid).await;
-            if let Err(e) = session_manager.recycle_session(child_sid).await {
-                tracing::warn!(
-                    session_id = %child_sid,
-                    error = %e,
-                    "cascade abort: failed to recycle child session"
-                );
-            }
 
             let error = match guard.outcome().await {
                 ChildOutcome::TimedOut => "abort timed out",
@@ -490,6 +483,9 @@ impl TurnScheduler {
                     guard.child_session_id(),
                 )
                 .await;
+            } else {
+                // 非回收策略：仅清理 registry entry（已完成 turn 无需 abort）
+                self.registry().remove(guard.child_session_id());
             }
             if let Some(notify_text) = guard.notify_text() {
                 if let Err(e) = self
