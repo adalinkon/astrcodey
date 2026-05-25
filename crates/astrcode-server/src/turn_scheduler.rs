@@ -25,8 +25,7 @@ use parking_lot::Mutex;
 use thiserror::Error;
 
 use crate::{
-    session_manager::SessionManager,
-    session_operations::ServerSessionOperations,
+    session_manager::SessionManager, session_operations::ServerSessionOperations,
     turn_registry::TurnRegistry,
 };
 
@@ -479,7 +478,7 @@ impl TurnScheduler {
             Err(e) => {
                 tracing::warn!(%parent_sid, error = %e, "process_child_completions: failed to open parent");
                 return;
-            }
+            },
         };
         let completed = parent_session.drain_completed_guards();
         for guard in completed {

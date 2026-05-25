@@ -36,7 +36,7 @@ impl SessionOperations for ServerSessionOperations {
             .open(parent_sid.clone())
             .await
             .map_err(|e| SessionApiError::NotFound(format!("parent: {e}")))?;
-        
+
         // 嵌套深度验证
         let depth = self.session_depth(&parent_sid).await?;
         let max_depth = self
@@ -207,7 +207,8 @@ impl SessionOperations for ServerSessionOperations {
                 .map_err(|e| SessionApiError::Internal(format!("open parent: {e}")))?;
             let parent_session = Arc::new(parent_session);
             let completed_tx = parent_session.runtime().completed_tx();
-            let guard = ChildTurnGuard::spawn(handle, config, Arc::clone(&parent_session), completed_tx);
+            let guard =
+                ChildTurnGuard::spawn(handle, config, Arc::clone(&parent_session), completed_tx);
             parent_session
                 .runtime()
                 .child_turn_manager()

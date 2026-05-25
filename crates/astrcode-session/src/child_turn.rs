@@ -54,7 +54,7 @@ pub struct ChildTurnConfig {
 /// 子 agent turn 的唯一生命周期所有者。
 ///
 /// 内部 spawn 一个后台任务等待 turn 完成。完成后仅通过 `outcome_tx`
-///（`watch::Sender`）通知结果，不直接写事件。
+/// （`watch::Sender`）通知结果，不直接写事件。
 ///
 /// **first-write-wins**：所有路径统一通过 `try_set_outcome` 写入，
 /// `send_if_modified` 保证只有第一次写入生效。
@@ -193,7 +193,7 @@ impl ChildTurnGuard {
                     "ChildTurnGuard outcome channel closed before outcome set; treating as Aborted"
                 );
                 ChildOutcome::Aborted
-            }
+            },
         }
     }
 
