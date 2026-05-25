@@ -552,15 +552,6 @@ export const useAppStore = create<ConversationState>((set, get) => ({
       return false
     }
 
-    // Optimistically show the user message immediately
-    const pendingId = `pending-${Date.now()}`
-    set((current) => ({
-      blocks: [
-        ...current.blocks,
-        { kind: 'user' as const, id: pendingId, text },
-      ],
-    }))
-
     const compactCommand = isCompactCommand(text)
     if (compactCommand) {
       set({ compactSubmitting: true, phase: 'compacting' })
@@ -610,15 +601,8 @@ export const useAppStore = create<ConversationState>((set, get) => ({
     switch (delta.kind) {
       case 'appendBlock':
         set((current) => {
-          let blocks = current.blocks
-          // Replace any pending optimistic user block with the real one from SSE
-          if (delta.block.kind === 'user') {
-            blocks = blocks.filter(
-              (b) => !(b.kind === 'user' && b.id.startsWith('pending-'))
-            )
-          }
           return {
-            blocks: upsertBlock(blocks, delta.block),
+            blocks: upsertBlock(current.blocks, delta.block),
             queuedMessages:
               delta.block.kind === 'user' && current.queuedMessages.length > 0
                 ? current.queuedMessages.slice(1)
