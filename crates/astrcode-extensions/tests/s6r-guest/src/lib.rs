@@ -5,7 +5,10 @@
 //! - tool `add`：接收 `{ "a": i64, "b": i64 }`，返回 `"a + b = {result}"`
 //! - tool `ask_llm`：调用 `host_invoke("small_llm.chat", ...)`，返回 LLM 响应
 //! - hook `pre_tool_use` (blocking)：阻止包含 `rm -rf` 的 bash 命令
-//! - command `/demo`：返回 display 消息
+//! - hook `turn_end` (non_blocking)：返回 continuation 链，第二步调用 `small_llm.chat`
+//! - tool `pipeline_status`：读取 continuation 管线执行结果（E2E 用）
+
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -65,6 +68,13 @@ enum CallRequest {
 }
 
 #[derive(Serialize)]
+struct CallContinuationHook {
+    call: &'static str,
+    on: &'static str,
+    input: Value,
+}
+
+#[derive(Serialize)]
 struct CallResponse {
     id: String,
     ok: bool,
@@ -74,6 +84,8 @@ struct CallResponse {
     data: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    continuations: Vec<CallContinuationHook>,
 }
 
 impl CallResponse {
@@ -84,6 +96,18 @@ impl CallResponse {
             effect: Some("ok"),
             data: None,
             error: None,
+            continuations: Vec::new(),
+        }
+    }
+
+    fn with_continuations(id: String, continuations: Vec<CallContinuationHook>) -> Self {
+        Self {
+            id,
+            ok: true,
+            effect: Some("ok"),
+            data: None,
+            error: None,
+            continuations,
         }
     }
 
@@ -94,6 +118,7 @@ impl CallResponse {
             effect: Some(effect),
             data: Some(data),
             error: None,
+            continuations: Vec::new(),
         }
     }
 
@@ -104,9 +129,13 @@ impl CallResponse {
             effect: None,
             data: None,
             error: Some(msg.into()),
+            continuations: Vec::new(),
         }
     }
 }
+
+static PIPELINE_STEPS: AtomicU32 = AtomicU32::new(0);
+static PIPELINE_LLM_OK: AtomicBool = AtomicBool::new(false);
 
 // ─── host import: host_invoke ────────────────────────────────────────────
 
@@ -213,15 +242,29 @@ pub extern "C" fn extension_manifest() -> i64 {
                     "required": ["prompt"]
                 }),
             },
+            ManifestTool {
+                name: "pipeline_status",
+                description: "Report turn_end continuation pipeline status",
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
         ],
         commands: vec![ManifestCommand {
             name: "demo",
             description: "Run a demo command",
         }],
-        hooks: vec![ManifestHook {
-            on: "pre_tool_use",
-            mode: "blocking",
-        }],
+        hooks: vec![
+            ManifestHook {
+                on: "pre_tool_use",
+                mode: "blocking",
+            },
+            ManifestHook {
+                on: "turn_end",
+                mode: "non_blocking",
+            },
+        ],
     };
     write_packed(serde_json::to_string(&manifest).unwrap())
 }
@@ -298,6 +341,17 @@ fn handle_tool(id: String, name: String, input: Value) -> CallResponse {
                 None => CallResponse::err(id, "host_invoke returned null".to_string()),
             }
         }
+        "pipeline_status" => {
+            let steps = PIPELINE_STEPS.load(Ordering::SeqCst);
+            let llm_ok = PIPELINE_LLM_OK.load(Ordering::SeqCst);
+            CallResponse::with_effect(
+                id,
+                "ok",
+                serde_json::json!({
+                    "content": format!("steps={steps} llm_ok={llm_ok}")
+                }),
+            )
+        }
         _ => CallResponse::err(id, format!("unknown tool: {name}")),
     }
 }
@@ -317,8 +371,61 @@ fn handle_hook(id: String, on: String, input: Value) -> CallResponse {
                 }
             }
             CallResponse::ok(id)
-        }
+        },
+        "turn_end" => CallResponse::with_continuations(
+            id,
+            vec![CallContinuationHook {
+                call: "hook",
+                on: "pipeline_step",
+                input: serde_json::json!({ "step": 1 }),
+            }],
+        ),
+        "pipeline_step" => handle_pipeline_step(id, input),
         _ => CallResponse::ok(id),
+    }
+}
+
+fn handle_pipeline_step(id: String, input: Value) -> CallResponse {
+    let step = input["step"].as_u64().unwrap_or(0);
+    match step {
+        1 => {
+            PIPELINE_STEPS.store(1, Ordering::SeqCst);
+            CallResponse::with_continuations(
+                id,
+                vec![CallContinuationHook {
+                    call: "hook",
+                    on: "pipeline_step",
+                    input: serde_json::json!({ "step": 2 }),
+                }],
+            )
+        },
+        2 => {
+            PIPELINE_STEPS.store(2, Ordering::SeqCst);
+            let llm_input = serde_json::json!({
+                "messages": [{ "role": "user", "content": "continuation pipeline" }],
+                "max_tokens": 64
+            })
+            .to_string();
+            match call_host_invoke("small_llm.chat", &llm_input) {
+                Some(resp_json) => {
+                    let resp: Value = serde_json::from_str(&resp_json).unwrap_or_default();
+                    if resp["ok"].as_bool().unwrap_or(false) {
+                        PIPELINE_LLM_OK.store(true, Ordering::SeqCst);
+                        CallResponse::ok(id)
+                    } else {
+                        CallResponse::err(
+                            id,
+                            resp["error"]
+                                .as_str()
+                                .unwrap_or("small_llm.chat failed")
+                                .to_string(),
+                        )
+                    }
+                },
+                None => CallResponse::err(id, "host_invoke returned null".to_string()),
+            }
+        },
+        _ => CallResponse::err(id, format!("unknown pipeline step: {step}")),
     }
 }
 

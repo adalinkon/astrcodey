@@ -67,9 +67,38 @@ struct WasmInner {
 
 type SharedInner = Arc<Mutex<WasmInner>>;
 
+/// 单次 hook/tool 链上允许的最大 continuation 深度。
+const MAX_CONTINUATION_DEPTH: u32 = 16;
+
 // ─── guest 调用核心 ──────────────────────────────────────────────────────
 
-/// 将 `CallRequest` 序列化后发送给 guest，返回解析好的 `CallResponse`。
+/// 将 `CallRequest` 序列化后发送给 guest，并在响应含 `continuations` 时顺序执行 follow-up。
+async fn call_guest_with_continuations(
+    inner: &SharedInner,
+    request: CallRequest,
+) -> Result<CallResponse, ExtensionError> {
+    let mut stack = vec![(request, 0u32)];
+    let mut first_response: Option<CallResponse> = None;
+
+    while let Some((req, depth)) = stack.pop() {
+        if depth > MAX_CONTINUATION_DEPTH {
+            return Err(ExtensionError::Internal(format!(
+                "wasm continuation depth exceeded (max {MAX_CONTINUATION_DEPTH})"
+            )));
+        }
+        let resp = call_guest(inner, req).await?;
+        if first_response.is_none() {
+            first_response = Some(resp.clone());
+        }
+        for cont in resp.continuations.iter().rev() {
+            stack.push((cont.clone().into_request(new_req_id()), depth + 1));
+        }
+    }
+
+    first_response.ok_or_else(|| ExtensionError::Internal("empty wasm call chain".into()))
+}
+
+/// 将 `CallRequest` 序列化后发送给 guest，返回解析好的 `CallResponse`（不处理 continuations）。
 ///
 /// 在 `spawn_blocking` 中执行，因为 wasmtime 是同步的。
 async fn call_guest(
@@ -676,7 +705,7 @@ impl ToolHandler for WasmToolHandler {
                 "tool_call_id": ctx.tool_call_id,
             }),
         };
-        let resp = call_guest(&self.inner, req).await?;
+        let resp = call_guest_with_continuations(&self.inner, req).await?;
         parse_tool_result(&resp, &self.extension_id)
     }
 }
@@ -707,7 +736,7 @@ impl CommandHandler for WasmCommandHandler {
                 "model":        ctx.model,
             }),
         };
-        let resp = call_guest(&self.inner, req).await?;
+        let resp = call_guest_with_continuations(&self.inner, req).await?;
         parse_command_result(&resp)
     }
 }
@@ -724,7 +753,7 @@ impl PreToolUseHandler for WasmPreToolUseHandler {
             on:    "pre_tool_use".into(),
             input: build_pre_tool_use_context(&ctx),
         };
-        let resp = call_guest(&self.inner, req).await?;
+        let resp = call_guest_with_continuations(&self.inner, req).await?;
         parse_pre_tool_use_result(&resp)
     }
 }
@@ -739,7 +768,7 @@ impl PostToolUseHandler for WasmPostToolUseHandler {
             on:    "post_tool_use".into(),
             input: build_post_tool_use_context(&ctx),
         };
-        let resp = call_guest(&self.inner, req).await?;
+        let resp = call_guest_with_continuations(&self.inner, req).await?;
         parse_post_tool_use_result(&resp)
     }
 }
@@ -754,7 +783,7 @@ impl ProviderHandler for WasmProviderHandler {
             on:    self.on.clone(),
             input: build_provider_context(&ctx),
         };
-        let resp = call_guest(&self.inner, req).await?;
+        let resp = call_guest_with_continuations(&self.inner, req).await?;
         parse_provider_result(&resp)
     }
 }
@@ -769,7 +798,7 @@ impl PromptBuildHandler for WasmPromptBuildHandler {
             on:    "prompt_build".into(),
             input: build_prompt_build_context(&ctx),
         };
-        let resp = call_guest(&self.inner, req).await?;
+        let resp = call_guest_with_continuations(&self.inner, req).await?;
         parse_prompt_build_result(&resp)
     }
 }
@@ -784,7 +813,7 @@ impl CompactHandler for WasmCompactHandler {
             on:    self.on.clone(),
             input: build_compact_context(&ctx),
         };
-        let resp = call_guest(&self.inner, req).await?;
+        let resp = call_guest_with_continuations(&self.inner, req).await?;
         parse_compact_result(&resp)
     }
 }
@@ -799,7 +828,7 @@ impl LifecycleHandler for WasmLifecycleHandler {
             on:    self.on.clone(),
             input: build_lifecycle_context(&ctx),
         };
-        let resp = call_guest(&self.inner, req).await?;
+        let resp = call_guest_with_continuations(&self.inner, req).await?;
         parse_lifecycle_result(&resp)
     }
 }

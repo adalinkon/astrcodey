@@ -6,13 +6,17 @@
 //! 3. 通过 Extension trait 注册工具/hooks/commands
 //! 4. 执行各个工具和 hook，验证返回值
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
+use astrcode_core::extension::ExtensionEvent;
 use astrcode_extension_sdk::{
     config::ModelSelection,
-    extension::{Extension, HookMode, PreToolUseContext, PreToolUseResult, Registrar},
+    extension::{
+        Extension, HookMode, LifecycleContext, PreToolUseContext, PreToolUseResult, Registrar,
+    },
     tool::ToolExecutionContext,
 };
+use astrcode_extensions::runner::ExtensionRunner;
 use astrcode_extensions::wasm_api::HostInvoker;
 use astrcode_extensions::wasm_ext::WasmExtension;
 
@@ -67,11 +71,15 @@ async fn e2e_manifest_registers_tools_and_hooks() {
     ext.register(&mut reg);
 
     let tools = reg.tools();
-    assert_eq!(tools.len(), 3);
+    assert_eq!(tools.len(), 4);
     let names: Vec<_> = tools.iter().map(|(d, _)| d.name.as_str()).collect();
     assert!(names.contains(&"greet"), "greet tool not found: {names:?}");
     assert!(names.contains(&"add"), "add tool not found: {names:?}");
     assert!(names.contains(&"ask_llm"), "ask_llm tool not found: {names:?}");
+    assert!(
+        names.contains(&"pipeline_status"),
+        "pipeline_status tool not found: {names:?}"
+    );
 
     let hooks = reg.pre_tool_use();
     assert_eq!(hooks.len(), 1);
@@ -279,4 +287,60 @@ async fn e2e_ask_llm_without_invoker_returns_error() {
 
     assert!(result.is_error);
     assert!(result.content.contains("host_invoke returned null"));
+}
+
+fn lifecycle_ctx() -> LifecycleContext {
+    LifecycleContext {
+        session_id: "e2e-session".into(),
+        working_dir: "/tmp".into(),
+        model: ModelSelection::simple("test"),
+        extension_event_sink: None,
+        last_exchange: None,
+    }
+}
+
+#[tokio::test]
+async fn e2e_turn_end_continuations_invoke_small_llm() {
+    let ext = load_guest_with_invoker(Some(mock_invoker()));
+    let runner = Arc::new(ExtensionRunner::new(Duration::from_secs(30)));
+    runner.register(ext).await.unwrap();
+
+    runner
+        .emit_lifecycle(ExtensionEvent::TurnEnd, lifecycle_ctx())
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    let tool = runner
+        .collect_tool_adapters_typed("/tmp")
+        .await
+        .into_iter()
+        .find(|t| t.definition().name == "pipeline_status")
+        .expect("pipeline_status tool");
+
+    let result = tool
+        .execute(
+            serde_json::json!({}),
+            &ToolExecutionContext {
+                session_id: "e2e-session".into(),
+                working_dir: "/tmp".into(),
+                tool_call_id: None,
+                event_tx: None,
+                capabilities: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        result.content.contains("steps=2"),
+        "expected pipeline step 2, got: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("llm_ok=true"),
+        "expected small_llm via continuation, got: {}",
+        result.content
+    );
 }

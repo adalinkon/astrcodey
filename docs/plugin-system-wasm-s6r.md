@@ -221,7 +221,28 @@ dealloc(ptr: i32, len: i32)
 
 `ok: false` 时 `effect` 和 `data` 省略。
 
-### 5.4 Effect 枚举
+### 5.5 Continuations（宿主调度 follow-up）
+
+guest 可在成功响应中附带 `continuations`：宿主在当前调用返回后**顺序**执行后续 `extension_call`（链深度上限 16）。适用于 NonBlocking hook 触发的多段管线（如 TurnEnd → 召回 → 小模型提取）。
+
+```json
+{
+  "id": "req-turn-end",
+  "ok": true,
+  "effect": "ok",
+  "continuations": [
+    {
+      "call": "hook",
+      "on": "pipeline_step",
+      "input": { "step": 1 }
+    }
+  ]
+}
+```
+
+follow-up 形状与 [`CallRequest`](#四callrequest) 相同，但不带 `id`（宿主生成）。支持 `hook` 与 `tool` 两种 `call`。
+
+### 5.6 Effect 枚举
 
 | effect | 替代的旧常量 | 含义 | data 字段 |
 |--------|------------|------|----------|

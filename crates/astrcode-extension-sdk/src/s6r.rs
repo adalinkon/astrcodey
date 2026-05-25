@@ -116,6 +116,35 @@ impl CallRequest {
     }
 }
 
+// ─── CallContinuation ────────────────────────────────────────────────────
+
+/// 宿主在收到 [`CallResponse`] 后异步调度的后续 `extension_call`。
+///
+/// 不含 `id`，由宿主生成。用于 NonBlocking hook 等多段管线，避免单次 guest 调用过长。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "call", rename_all = "snake_case")]
+pub enum CallContinuation {
+    Hook {
+        on: String,
+        #[serde(default)]
+        input: Value,
+    },
+    Tool {
+        name: String,
+        #[serde(default)]
+        input: Value,
+    },
+}
+
+impl CallContinuation {
+    pub fn into_request(self, id: String) -> CallRequest {
+        match self {
+            Self::Hook { on, input } => CallRequest::Hook { id, on, input },
+            Self::Tool { name, input } => CallRequest::Tool { id, name, input },
+        }
+    }
+}
+
 // ─── CallResponse ─────────────────────────────────────────────────────────
 
 /// `extension_call()` 返回的响应。
@@ -136,7 +165,7 @@ impl CallRequest {
 /// | `"compact_contributions"` | Compact 贡献 | `CompactContributions` |
 /// | `"replace_messages"` | Provider 替换消息 | `{ "messages": array }` |
 /// | `"append_messages"` | Provider 追加消息 | `{ "messages": array }` |
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallResponse {
     /// 关联的请求 ID。
     pub id: String,
@@ -147,6 +176,9 @@ pub struct CallResponse {
     pub data: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// 宿主在当前调用完成后继续调度的 follow-up（见 [`CallContinuation`]）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub continuations: Vec<CallContinuation>,
 }
 
 impl CallResponse {
@@ -227,5 +259,36 @@ pub fn event_to_name(event: &ExtensionEvent) -> &'static str {
         ExtensionEvent::PreCompact => "pre_compact",
         ExtensionEvent::PostCompact => "post_compact",
         ExtensionEvent::PostRecap => "post_recap",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn call_response_deserializes_continuations() {
+        let raw = json!({
+            "id": "req-1",
+            "ok": true,
+            "continuations": [
+                { "call": "hook", "on": "pipeline_step", "input": { "step": 1 } },
+                { "call": "tool", "name": "notify", "input": {} }
+            ]
+        });
+        let resp: CallResponse = serde_json::from_value(raw).unwrap();
+        assert_eq!(resp.continuations.len(), 2);
+        assert!(matches!(&resp.continuations[0], CallContinuation::Hook { on, .. } if on == "pipeline_step"));
+    }
+
+    #[test]
+    fn call_continuation_into_request() {
+        let cont = CallContinuation::Hook {
+            on: "pipeline_step".into(),
+            input: json!({ "step": 2 }),
+        };
+        let req = cont.into_request("req-2".into());
+        assert_eq!(req.id(), "req-2");
     }
 }
