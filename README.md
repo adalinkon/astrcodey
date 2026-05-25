@@ -389,7 +389,10 @@ The extension system (`astrcode-extensions`) is a core architectural pillar, not
 - **Native extension loading** — disk-loaded `.dll`/`.so` extensions via `libloading` + FFI, supporting global (`~/.astrcode/extensions/`) and project-level (`.astrcode/extensions/`) directories
 - **WASM extension runtime** — wasmtime-based sandboxed extension execution with a host-guest protocol for tool registration and event handling
 - **Extension runtime** — session spawning with depth limits, tool registration queue, priority-based dispatch
-- **Lifecycle hooks** — `PreToolUse` / `PostToolUse`, `BeforeProviderRequest` / `AfterProviderResponse`, `PreCompact` / `PostCompact`, `PromptBuild`, `TurnStart` / `TurnEnd`, `UserPromptSubmit`
+- **Lifecycle hooks** — `SessionStart` / `SessionResume` / `SessionShutdown`, `TurnStart` / `TurnEnd` / `TurnAborted`, `PreToolUse` / `PostToolUse` / `PostToolUseFailure`, `BeforeProviderRequest` / `AfterProviderResponse`, `PreCompact` / `PostCompact`, `PromptBuild`, `UserPromptSubmit`
+- **Extension runtime APIs** — `Extension::start()` (receives `ExtensionCtx` with `startup_working_dir` and `event_sink`), `Extension::stop()` (with `StopReason`), `Extension::health()` (health probe), `Extension::on_config_changed()` (hot config reload)
+- **Active health checks** — `ExtensionRunner::check_health()` provides an on-demand sampling API; polling strategy is decided by the host
+- **Startup event channel** — `bind_startup_event_channel()` binds a process-level event channel so extensions can emit custom events during `start()`
 
 ### ACP Adapter
 
@@ -465,7 +468,7 @@ Extensions can register additional slash commands and keybindings at runtime.
 
 Pre-built binaries are available for Linux, macOS, and Windows (x86_64 + aarch64) via GitHub Releases on every version tag. A weekly automated release pipeline publishes patch bumps every Monday.
 
-**NPM Package**: [`astrcode`](https://www.npmjs.com/package/astrcode)
+**NPM Package**: [`@whatevertogo/astrcode`](https://www.npmjs.com/package/@whatevertogo/astrcode)
 
 ## Acknowledgments
 
