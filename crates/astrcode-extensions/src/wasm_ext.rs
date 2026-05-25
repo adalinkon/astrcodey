@@ -33,7 +33,7 @@ use astrcode_extension_sdk::{
         PromptBuildContext, PromptBuildHandler, PromptContributions, ProviderContext,
         ProviderEvent, ProviderHandler, ProviderResult, Registrar, SlashCommand, ToolHandler,
     },
-    s6r::{self, CallRequest, CallResponse, Manifest},
+    s6r::{self, CallRequest, CallResponse, Manifest, event_to_name},
     tool::{ExecutionMode, ToolDefinition, ToolOrigin, ToolResult, tool_metadata},
 };
 use parking_lot::Mutex;
@@ -175,10 +175,11 @@ pub struct WasmExtension {
 
 impl WasmExtension {
     /// 从 `.wasm` 文件加载扩展（s6r 协议）。
+    ///
+    /// `id` 和 `capabilities` 从 guest 的 `extension_manifest()` 返回值中读取，
+    /// 不再由调用方传入。
     pub fn load(
         path: &std::path::Path,
-        id: String,
-        capabilities: Vec<ExtensionCapability>,
         fuel: u64,
         memory_bytes: usize,
     ) -> Result<Arc<Self>, String> {
@@ -237,6 +238,17 @@ impl WasmExtension {
                 s6r::S6R_VERSION,
             ));
         }
+
+        let id = manifest.id.clone();
+        if id.trim().is_empty() {
+            return Err("s6r manifest id is empty".into());
+        }
+
+        let capabilities: Vec<ExtensionCapability> = manifest
+            .capabilities
+            .iter()
+            .filter_map(|c| parse_capability(c))
+            .collect();
 
         // ── 从 manifest 构建注册信息 ─────────────────────────────────────
         let tools: Vec<ToolDefinition> = manifest
@@ -352,7 +364,7 @@ impl Extension for WasmExtension {
                         ProviderEvent::BeforeRequest,
                         *mode,
                         0,
-                        Arc::new(WasmProviderHandler { inner }),
+                        Arc::new(WasmProviderHandler { inner, on: "before_provider_request".into() }),
                     );
                 },
                 ExtensionEvent::AfterProviderResponse => {
@@ -360,7 +372,7 @@ impl Extension for WasmExtension {
                         ProviderEvent::AfterResponse,
                         *mode,
                         0,
-                        Arc::new(WasmProviderHandler { inner }),
+                        Arc::new(WasmProviderHandler { inner, on: "after_provider_response".into() }),
                     );
                 },
                 ExtensionEvent::PromptBuild => {
@@ -370,26 +382,46 @@ impl Extension for WasmExtension {
                     reg.on_compact(
                         CompactEvent::PreCompact,
                         0,
-                        Arc::new(WasmCompactHandler { inner }),
+                        Arc::new(WasmCompactHandler { inner, on: "pre_compact".into() }),
                     );
                 },
                 ExtensionEvent::PostCompact => {
                     reg.on_compact(
                         CompactEvent::PostCompact,
                         0,
-                        Arc::new(WasmCompactHandler { inner }),
+                        Arc::new(WasmCompactHandler { inner, on: "post_compact".into() }),
                     );
                 },
                 other => {
+                    let on = event_to_name(&other).to_string();
                     reg.on_event(
                         other.clone(),
                         *mode,
                         0,
-                        Arc::new(WasmLifecycleHandler { inner }),
+                        Arc::new(WasmLifecycleHandler { inner, on }),
                     );
                 },
             }
         }
+    }
+}
+
+// ─── Capability parser ──────────────────────────────────────────────────
+
+fn parse_capability(name: &str) -> Option<ExtensionCapability> {
+    match name {
+        "session_state" => Some(ExtensionCapability::SessionState),
+        "session_control" => Some(ExtensionCapability::SessionControl),
+        "small_model" => Some(ExtensionCapability::SmallModel),
+        "session_history" => Some(ExtensionCapability::SessionHistory),
+        "emit_events" => Some(ExtensionCapability::EmitEvents),
+        "workspace_read" => Some(ExtensionCapability::WorkspaceRead),
+        "process_spawn" => Some(ExtensionCapability::ProcessSpawn),
+        "network_client" => Some(ExtensionCapability::NetworkClient),
+        _ => {
+            tracing::warn!(capability = %name, "unknown s6r capability string, ignoring");
+            None
+        },
     }
 }
 
@@ -701,16 +733,14 @@ impl PostToolUseHandler for WasmPostToolUseHandler {
     }
 }
 
-struct WasmProviderHandler { inner: SharedInner }
+struct WasmProviderHandler { inner: SharedInner, on: String }
 
 #[async_trait::async_trait]
 impl ProviderHandler for WasmProviderHandler {
     async fn handle(&self, ctx: ProviderContext) -> Result<ProviderResult, ExtensionError> {
-        // ProviderContext 没有携带事件类型，宿主在分发时已经保证正确的处理器，
-        // guest 可从 input 区分（如需要）。
         let req = CallRequest::Hook {
             id:    new_req_id(),
-            on:    "before_provider_request".into(),
+            on:    self.on.clone(),
             input: build_provider_context(&ctx),
         };
         let resp = call_guest(&self.inner, req).await?;
@@ -733,14 +763,14 @@ impl PromptBuildHandler for WasmPromptBuildHandler {
     }
 }
 
-struct WasmCompactHandler { inner: SharedInner }
+struct WasmCompactHandler { inner: SharedInner, on: String }
 
 #[async_trait::async_trait]
 impl CompactHandler for WasmCompactHandler {
     async fn handle(&self, ctx: CompactContext) -> Result<CompactResult, ExtensionError> {
         let req = CallRequest::Hook {
             id:    new_req_id(),
-            on:    "pre_compact".into(),
+            on:    self.on.clone(),
             input: build_compact_context(&ctx),
         };
         let resp = call_guest(&self.inner, req).await?;
@@ -748,14 +778,14 @@ impl CompactHandler for WasmCompactHandler {
     }
 }
 
-struct WasmLifecycleHandler { inner: SharedInner }
+struct WasmLifecycleHandler { inner: SharedInner, on: String }
 
 #[async_trait::async_trait]
 impl LifecycleHandler for WasmLifecycleHandler {
     async fn handle(&self, ctx: LifecycleContext) -> Result<HookResult, ExtensionError> {
         let req = CallRequest::Hook {
             id:    new_req_id(),
-            on:    "lifecycle".into(),
+            on:    self.on.clone(),
             input: build_lifecycle_context(&ctx),
         };
         let resp = call_guest(&self.inner, req).await?;

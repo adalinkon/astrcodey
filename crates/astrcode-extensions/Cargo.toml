@@ -17,6 +17,7 @@ tracing = { workspace = true }
 dirs = { workspace = true }
 parking_lot = { workspace = true }
 wasmtime = { version = "43", default-features = false, features = ["cranelift", "runtime"] }
+wasmtime-wasi = "43"
 
 [dev-dependencies]
 wasm-encoder = "0.245"

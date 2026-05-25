@@ -234,7 +234,10 @@ impl ExtensionLoader {
         Ok(paths)
     }
 
-    /// 加载单个扩展：读取并验证清单，加载 WASM 模块。
+    /// 加载单个扩展：读取 extension.json 获取 library 路径，加载 WASM 模块。
+    ///
+    /// s6r 协议下 `id` 和 `capabilities` 由 WASM 模块的 `extension_manifest()` 返回，
+    /// `extension.json` 只需要 `library` 字段。
     async fn load_extension(
         ext_dir: &Path,
         limits: &WasmLimits,
@@ -243,21 +246,24 @@ impl ExtensionLoader {
         let manifest_bytes = tokio::fs::read(&manifest_path)
             .await
             .map_err(|e| format!("read manifest: {e}"))?;
-        let manifest: astrcode_extension_sdk::extension::ExtensionManifest =
+        let entry: serde_json::Value =
             serde_json::from_slice(&manifest_bytes).map_err(|e| format!("parse manifest: {e}"))?;
-        astrcode_extension_sdk::manifest::validate_manifest(&manifest)
-            .map_err(|e| e.to_string())?;
+        let library = entry["library"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if library.is_empty() {
+            return Err(format!(
+                "{}: extension.json missing 'library' field",
+                ext_dir.display()
+            ));
+        }
 
-        let lib_path = ext_dir.join(&manifest.library);
-        crate::wasm_ext::WasmExtension::load(
-            &lib_path,
-            manifest.id.clone(),
-            manifest.capabilities.clone(),
-            limits.fuel,
-            limits.memory_bytes,
-        )
-        .map(|ext| ext as Arc<dyn Extension>)
-        .map_err(|e| format!("load wasm {}: {e}", lib_path.display()))
+        let lib_path = ext_dir.join(&library);
+        crate::wasm_ext::WasmExtension::load(&lib_path, limits.fuel, limits.memory_bytes)
+            .map(|ext| ext as Arc<dyn Extension>)
+            .map_err(|e| format!("load wasm {}: {e}", lib_path.display()))
     }
 }
 

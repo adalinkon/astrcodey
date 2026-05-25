@@ -5,5 +5,5 @@
 
 pub use crate::s6r::{
     CallRequest, CallResponse, Manifest, ManifestCommand, ManifestHook, ManifestTool,
-    S6R_VERSION, event_from_name, mode_from_name,
+    S6R_VERSION, event_from_name, event_to_name, mode_from_name,
 };

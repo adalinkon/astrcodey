@@ -205,3 +205,27 @@ pub fn mode_from_name(name: &str) -> Option<HookMode> {
         _ => None,
     }
 }
+
+/// `ExtensionEvent` → s6r 事件名字符串。
+pub fn event_to_name(event: &ExtensionEvent) -> &'static str {
+    match event {
+        ExtensionEvent::SessionStart => "session_start",
+        ExtensionEvent::SessionResume => "session_resume",
+        ExtensionEvent::SessionShutdown => "session_shutdown",
+        ExtensionEvent::TurnStart => "turn_start",
+        ExtensionEvent::TurnEnd => "turn_end",
+        ExtensionEvent::TurnAborted => "turn_aborted",
+        ExtensionEvent::StepStart => "step_start",
+        ExtensionEvent::StepEnd => "step_end",
+        ExtensionEvent::PreToolUse => "pre_tool_use",
+        ExtensionEvent::PostToolUse => "post_tool_use",
+        ExtensionEvent::PostToolUseFailure => "post_tool_use_failure",
+        ExtensionEvent::BeforeProviderRequest => "before_provider_request",
+        ExtensionEvent::AfterProviderResponse => "after_provider_response",
+        ExtensionEvent::UserPromptSubmit => "user_prompt_submit",
+        ExtensionEvent::PromptBuild => "prompt_build",
+        ExtensionEvent::PreCompact => "pre_compact",
+        ExtensionEvent::PostCompact => "post_compact",
+        ExtensionEvent::PostRecap => "post_recap",
+    }
+}

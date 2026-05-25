@@ -1,11 +1,13 @@
 //! WASM 扩展协议 — 宿主状态、内存读写、host import 注册。
 //!
-//! s6r 协议下宿主仅提供两个 import：`host_log` 和 `host_emit`。
+//! s6r 协议下宿主提供 WASI 支持（`wasi_snapshot_preview1`）和两个自定义 import：
+//! `host_log` 和 `host_emit`。
 //! 工具/命令/hook 注册改由 guest 的 `extension_manifest()` 以 JSON 完成，
 //! 不再需要 `host_register_tool` / `host_register_command` / `host_subscribe` /
 //! `host_set_response` 等命令式副作用 import。
 
 use wasmtime::{Caller, Linker, ResourceLimiter};
+use wasmtime_wasi::WasiCtxBuilder;
 
 // ─── WASM resource limits ────────────────────────────────────────────────
 
@@ -23,6 +25,8 @@ pub struct HostState {
     pub fuel_budget: u64,
     /// 线性内存增长上限（字节）。
     pub memory_limit: usize,
+    /// WASI preview1 上下文，支持 wasm32-wasip1 编译的 guest 插件。
+    wasi_ctx: wasmtime_wasi::p1::WasiP1Ctx,
 }
 
 impl HostState {
@@ -30,6 +34,7 @@ impl HostState {
         Self {
             fuel_budget: DEFAULT_WASM_FUEL,
             memory_limit: DEFAULT_WASM_MEMORY_BYTES,
+            wasi_ctx: WasiCtxBuilder::new().build_p1(),
         }
     }
 
@@ -161,9 +166,15 @@ fn host_log(mut caller: Caller<'_, HostState>, level: i32, msg_ptr: i32, msg_len
 
 // ─── Linker builder ──────────────────────────────────────────────────────
 
-/// 创建 s6r Linker：只注册 `host_log` 和 `host_emit`。
+/// 创建 s6r Linker：注册 WASI 支持和自定义 `host_log` / `host_emit`。
 pub fn create_linker(engine: &wasmtime::Engine) -> Result<Linker<HostState>, String> {
     let mut linker = Linker::new(engine);
+
+    // WASI preview1 支持 — wasm32-wasip1 编译的 guest 需要
+    // TODO: 更优雅的方式注册 WASI
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |state: &mut HostState| &mut state.wasi_ctx)
+        .map_err(|e| format!("add wasi to linker: {e}"))?;
+
     linker
         .func_wrap("env", "host_log", host_log)
         .map_err(|e| format!("register host_log: {e}"))?;
