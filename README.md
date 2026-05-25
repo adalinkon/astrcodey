@@ -10,7 +10,7 @@
 
 A Rust-built AI coding agent platform.
 
-AstrCode is a full-stack AI coding assistant built from scratch in ~55k lines of Rust across 21 crates, plus a React + TypeScript web frontend (~4.8k lines). It features an agent loop with tool execution, a streaming SSE-based multi-provider LLM layer (Anthropic, OpenAI, Google GenAI), an extension/hook system (with native extension loading via FFI and WASM extension support), context window management with auto-compaction, an eval framework for automated benchmarking, and multiple interfaces: a terminal UI (TUI), a web frontend, a Tauri desktop app, an HTTP/SSE API, and an ACP (Agent Client Protocol) adapter.
+AstrCode is a full-stack AI coding assistant built from scratch in ~57k lines of Rust across 20 crates, plus a React + TypeScript web frontend (~4.8k lines). It features an agent loop with tool execution, a streaming SSE-based multi-provider LLM layer (Anthropic, OpenAI, Google GenAI), an extension/hook system (with native extension loading via FFI and WASM extension support, background pre-warm, health checks, and a startup event channel), a persistent MCP process pool (reusing long-lived connections across turns), context window management with auto-compaction, an eval framework for automated benchmarking, and multiple interfaces: a terminal UI (TUI), a web frontend, a Tauri desktop app, an HTTP/SSE API, and an ACP (Agent Client Protocol) adapter.
 
 ## Table of Contents
 
@@ -109,7 +109,9 @@ export DEEPSEEK_API_KEY="sk-..."
 
 ### MCP Server Configuration
 
-`~/.astrcode/mcp.json` is used to register external MCP tool servers:
+`~/.astrcode/mcp.json` registers external MCP tool servers. Both stdio (subprocess) and HTTP transports are supported:
+
+**Stdio example:**
 
 ```json
 {
@@ -118,11 +120,20 @@ export DEEPSEEK_API_KEY="sk-..."
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"],
       "env": {}
-    },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..." }
+    }
+  }
+}
+```
+
+**HTTP example:**
+
+```json
+{
+  "mcpServers": {
+    "web-reader": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
     }
   }
 }
@@ -132,16 +143,15 @@ Field descriptions:
 
 | Field | Required | Description |
 |---|---|---|
-| `command` | Yes | Command to start the MCP server |
+| `command` | Yes (stdio) | Command to start the MCP server |
 | `args` | No | Command line arguments array |
 | `env` | No | Environment variables to pass to the process |
 | `cwd` | No | Working directory (validated to be within workspace in project-level config) |
+| `type` | No | Transport type: `"stdio"` (default) or `"http"` |
+| `url` | Yes (http) | MCP server HTTP endpoint |
+| `headers` | No | Custom HTTP headers for the MCP endpoint |
 
-Project-level MCP configuration (`<workspace>/.astrcode/mcp.json`) overrides global configuration, but requires an environment variable to enable:
-
-```bash
-export ASTRCODE_ENABLE_PROJECT_MCP=1
-```
+MCP servers start at extension initialization and persist across turns via a long-lived process pool. Global servers (`~/.astrcode/mcp.json`) are pre-warmed at startup; project-level servers (`<workspace>/.astrcode/mcp.json`) are pre-warmed in the background when a session is created or resumed. The first turn only blocks if the background pre-warm has not yet completed.
 
 ### Extension Configuration
 
@@ -341,7 +351,7 @@ The Tauri desktop app (`src-tauri/`) wraps the web frontend in a native window a
 The agent loop (`astrcode-session`) follows a phased pipeline pattern:
 
 1. **Prepare context** — token budget check, auto-compact if needed
-2. **Build provider request** — hook dispatch, message assembly, MCP tool discovery
+2. **Build provider request** — hook dispatch, message assembly, collect tools (MCP tools served from pre-warmed cache; deferred tools activated via `tool_search_tool`)
 3. **Stream LLM response** — SSE parsing, UTF-8 safe decoding, event accumulation
 4. **Execute tools** — parallel batch execution with pre/post hooks, result persistence
 5. **Loop or return** — tool calls loop back; text-only responses terminate
@@ -374,7 +384,7 @@ Tools run in parallel batches (up to 5 concurrent). The pipeline:
 
 1. **Prepare** — parse JSON args (with repair for malformed LLM output), check visibility, dispatch `PreToolUse` hooks
 2. **Execute** — parallel batch via `JoinSet`, sequential tools flush the batch first
-3. **Commit** — dispatch `PostToolUse` hooks, persist large results, enforce message budget, emit events
+3. **Commit** — dispatch `PostToolUse` / `PostToolUseFailure` hooks, persist large results, enforce message budget, emit events
 
 Large tool results are automatically persisted to disk and replaced with preview summaries to stay within the message character budget. Each tool declares an `ExecutionMode`: read-only tools (find/grep/read) are marked Parallel, writing tools (edit/write/shell) are marked Sequential.
 
