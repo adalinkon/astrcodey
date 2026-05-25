@@ -6,10 +6,7 @@
 
 use std::sync::Arc;
 
-use astrcode_core::{
-    event::EventPayload,
-    types::SessionId,
-};
+use astrcode_core::{event::EventPayload, types::SessionId};
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, watch};
 
