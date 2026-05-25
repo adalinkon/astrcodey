@@ -233,10 +233,10 @@ cargo run -- exec "explain the agent loop architecture"
 cargo run -- server
 
 # Web frontend (dev server)
-cd frontend && npm install && npm run dev
+cd frontend && npm ci && npm run dev
 
 # Tauri desktop app (dev mode)
-cd frontend && npm install && npm run tauri:dev
+cd frontend && npm ci && npm run tauri:dev
 
 # Eval framework (requires dev-mode feature)
 cargo run --features dev-mode -- eval

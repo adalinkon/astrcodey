@@ -233,10 +233,10 @@ cargo run -- exec "解释一下 agent loop 的架构"
 cargo run -- server
 
 # Web 前端（开发服务器）
-cd frontend && npm install && npm run dev
+cd frontend && npm ci && npm run dev
 
 # Tauri 桌面应用（开发模式）
-cd frontend && npm install && npm run tauri:dev
+cd frontend && npm ci && npm run tauri:dev
 
 # 评测框架（需要 dev-mode feature）
 cargo run --features dev-mode -- eval
