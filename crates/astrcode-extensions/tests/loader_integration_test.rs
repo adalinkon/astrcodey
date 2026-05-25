@@ -36,39 +36,51 @@ async fn loader_returns_empty_result_for_none_working_dir() {
 /// s6r 协议使用字符串而非整数判别符，此测试确保名称映射完整。
 #[test]
 fn s6r_event_and_mode_names_roundtrip() {
-    use astrcode_extension_sdk::extension::{ExtensionEvent, HookMode};
-    use astrcode_extension_sdk::s6r::{event_from_name, mode_from_name};
+    use astrcode_extension_sdk::{
+        extension::{ExtensionEvent, HookMode},
+        s6r::{event_from_name, mode_from_name},
+    };
 
     let cases: &[(&str, ExtensionEvent)] = &[
-        ("session_start",           ExtensionEvent::SessionStart),
-        ("session_resume",          ExtensionEvent::SessionResume),
-        ("session_shutdown",        ExtensionEvent::SessionShutdown),
-        ("turn_start",              ExtensionEvent::TurnStart),
-        ("turn_end",                ExtensionEvent::TurnEnd),
-        ("pre_tool_use",            ExtensionEvent::PreToolUse),
-        ("post_tool_use",           ExtensionEvent::PostToolUse),
-        ("before_provider_request", ExtensionEvent::BeforeProviderRequest),
-        ("after_provider_response", ExtensionEvent::AfterProviderResponse),
-        ("user_prompt_submit",      ExtensionEvent::UserPromptSubmit),
-        ("prompt_build",            ExtensionEvent::PromptBuild),
-        ("pre_compact",             ExtensionEvent::PreCompact),
-        ("post_compact",            ExtensionEvent::PostCompact),
+        ("session_start", ExtensionEvent::SessionStart),
+        ("session_resume", ExtensionEvent::SessionResume),
+        ("session_shutdown", ExtensionEvent::SessionShutdown),
+        ("turn_start", ExtensionEvent::TurnStart),
+        ("turn_end", ExtensionEvent::TurnEnd),
+        ("pre_tool_use", ExtensionEvent::PreToolUse),
+        ("post_tool_use", ExtensionEvent::PostToolUse),
+        (
+            "before_provider_request",
+            ExtensionEvent::BeforeProviderRequest,
+        ),
+        (
+            "after_provider_response",
+            ExtensionEvent::AfterProviderResponse,
+        ),
+        ("user_prompt_submit", ExtensionEvent::UserPromptSubmit),
+        ("prompt_build", ExtensionEvent::PromptBuild),
+        ("pre_compact", ExtensionEvent::PreCompact),
+        ("post_compact", ExtensionEvent::PostCompact),
     ];
     for (name, expected) in cases {
-        assert_eq!(event_from_name(name), Some(expected.clone()), "event name: {name}");
+        assert_eq!(
+            event_from_name(name),
+            Some(expected.clone()),
+            "event name: {name}"
+        );
     }
     assert!(event_from_name("nonexistent_event").is_none());
 
-    assert_eq!(mode_from_name("blocking"),     Some(HookMode::Blocking));
-    assert_eq!(mode_from_name("non_blocking"),  Some(HookMode::NonBlocking));
-    assert_eq!(mode_from_name("advisory"),     Some(HookMode::Advisory));
+    assert_eq!(mode_from_name("blocking"), Some(HookMode::Blocking));
+    assert_eq!(mode_from_name("non_blocking"), Some(HookMode::NonBlocking));
+    assert_eq!(mode_from_name("advisory"), Some(HookMode::Advisory));
     assert!(mode_from_name("unknown_mode").is_none());
 }
 
 /// 测试 extension.json 清单解析丢弃未知字段。
 ///
-/// extension.json 只需 `library` 字段；tools/commands/hooks 由 WASM 的
-/// `extension_manifest()` 通过 s6r 协议声明。serde 默认忽略多余字段。
+/// **Loader 仅使用 `library`**：tools/commands/hooks/capabilities 由 WASM
+/// `extension_manifest()` 声明；serde 仍解析其它字段但不参与加载。磁盘路径仅 WASM。
 #[test]
 fn manifest_ignores_legacy_capability_fields() {
     let manifest: ExtensionManifest = serde_json::from_value(serde_json::json!({

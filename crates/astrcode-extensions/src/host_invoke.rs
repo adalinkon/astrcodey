@@ -62,23 +62,39 @@ pub fn err(error: impl std::fmt::Display) -> String {
 }
 
 /// 构建 `small_llm.chat` 宿主后端。加载 WASM 后由 [`HostState::finish_manifest`] 绑定。
+///
+/// LLM 调用在 Tokio runtime 上异步执行；同步闭包仅通过 channel 等待结果，
+/// 避免在 `spawn_blocking` / WASM 专用线程上对 runtime 使用 `block_on`。
 pub fn build_small_llm_invoker(small_llm: Arc<dyn LlmProvider>) -> HostInvoker {
     let handle = tokio::runtime::Handle::current();
     Arc::new(move |cap: &str, input: &str| -> String {
         match cap {
             "small_llm.chat" => {
                 let provider = Arc::clone(&small_llm);
-                let result = handle.block_on(async {
-                    tokio::time::timeout(HOST_INVOKE_TIMEOUT, invoke_small_llm(&*provider, input))
-                        .await
-                        .map_err(|_| "small_llm.chat timed out".to_string())?
+                let input = input.to_string();
+                let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                handle.spawn(async move {
+                    let result = tokio::time::timeout(
+                        HOST_INVOKE_TIMEOUT,
+                        invoke_small_llm(&*provider, &input),
+                    )
+                    .await
+                    .map_err(|_| "small_llm.chat timed out".to_string());
+                    let _ = tx.send(result);
                 });
-                match result {
-                    Ok(content) => ok(serde_json::json!({
+                let wait_budget = HOST_INVOKE_TIMEOUT + Duration::from_secs(2);
+                match rx.recv_timeout(wait_budget) {
+                    Ok(Ok(content)) => ok(serde_json::json!({
                         "content": content,
                         "model": "small_llm"
                     })),
-                    Err(e) => err(e),
+                    Ok(Err(e)) => err(e),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        err("small_llm.chat timed out waiting for runtime")
+                    },
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        err("small_llm.chat runtime task dropped")
+                    },
                 }
             },
             _ => err(format!("unknown capability: {cap}")),

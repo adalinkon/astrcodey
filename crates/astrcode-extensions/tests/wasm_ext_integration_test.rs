@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use astrcode_core::event::EventPayload;
 use astrcode_extension_sdk::{
     config::ModelSelection,
     extension::{Extension, PreToolUseContext, PreToolUseResult, Registrar},
@@ -13,6 +14,7 @@ use astrcode_extension_sdk::{
 };
 use astrcode_extensions::wasm_ext::WasmExtension;
 use tempfile::NamedTempFile;
+use tokio::sync::mpsc;
 
 // ─── WAT 模块构建器 ──────────────────────────────────────────────────────────
 
@@ -372,6 +374,117 @@ async fn s6r_wrong_protocol_version_rejected() {
     let result = WasmExtension::load(tmp.path(), 10_000_000, 64 * 1024 * 1024, None);
     let err = result.err().expect("should reject unknown s6r version");
     assert!(err.contains("unsupported s6r version"), "error was: {err}");
+}
+
+#[tokio::test]
+async fn s6r_manifest_registers_extension_events() {
+    let bytes = S6rModuleBuilder::new()
+        .manifest(serde_json::json!({
+            "s6r": S6R_VERSION, "id": "test-ext", "version": "0.1.0",
+            "capabilities": ["emit_events"],
+            "extension_events": [{
+                "event_type": "wasm.test",
+                "schema_version": 1,
+                "max_payload_bytes": 4096
+            }],
+            "tools": [{ "name": "emitTool", "description": "emit", "parameters": {} }],
+            "commands": [], "hooks": []
+        }))
+        .build();
+
+    let ext = load_wasm(&bytes);
+    let mut reg = Registrar::new();
+    ext.register(&mut reg);
+    let decls = reg.extension_event_decls();
+    assert_eq!(decls.len(), 1);
+    assert_eq!(decls[0].event_type, "wasm.test");
+}
+
+#[tokio::test]
+async fn s6r_host_emit_delivers_extension_event() {
+    let emit_json = r#"{"event_type":"wasm.test","schema_version":1,"payload":{"k":1}}"#;
+    let emit_bytes = emit_json.as_bytes();
+    let emit_len = emit_bytes.len();
+    let emit_escaped = escape_wat_bytes(emit_bytes);
+
+    let response_json = serde_json::json!({
+        "id": "req-0", "ok": true, "effect": "ok",
+        "data": { "content": "emitted" }
+    });
+    let response_bytes = serde_json::to_string(&response_json).unwrap();
+    let response_len = response_bytes.len();
+    let response_offset = 256 + emit_len + 8;
+    let response_escaped = escape_wat_bytes(response_bytes.as_bytes());
+
+    let manifest = serde_json::json!({
+        "s6r": S6R_VERSION, "id": "emit-ext", "version": "0.1.0",
+        "capabilities": ["emit_events"],
+        "extension_events": [{
+            "event_type": "wasm.test",
+            "schema_version": 1,
+            "max_payload_bytes": 4096
+        }],
+        "tools": [{ "name": "emitTool", "description": "emit", "parameters": {} }],
+        "commands": [], "hooks": []
+    });
+    let manifest_json = serde_json::to_string(&manifest).unwrap();
+    let manifest_bytes = manifest_json.as_bytes();
+    let manifest_len = manifest_bytes.len();
+    let manifest_offset = response_offset + response_len + 64;
+    let manifest_escaped = escape_wat_bytes(manifest_bytes);
+
+    let wat = format!(
+        r#"(module
+  (import "env" "host_log" (func (param i32 i32 i32)))
+  (import "env" "host_emit" (func $host_emit (param i32 i32) (result i64)))
+  (memory (export "memory") 2)
+  (global $bump (mut i32) (i32.const {bump_start}))
+  (data (i32.const 256) "{emit_escaped}")
+  (data (i32.const {response_offset}) "{response_escaped}")
+  (data (i32.const {manifest_offset}) "{manifest_escaped}")
+  (func (export "alloc") (param $n i32) (result i32)
+    (local $p i32)
+    (local.set $p (global.get $bump))
+    (global.set $bump (i32.add (global.get $bump) (local.get $n)))
+    (local.get $p))
+  (func (export "dealloc") (param i32) (param i32))
+  (func (export "extension_manifest") (result i64)
+    (i64.or
+      (i64.shl (i64.extend_i32_u (i32.const {manifest_offset})) (i64.const 32))
+      (i64.extend_i32_u (i32.const {manifest_len}))))
+  (func (export "extension_call") (param i32) (param i32) (result i64)
+    (drop (call $host_emit (i32.const 256) (i32.const {emit_len})))
+    (i64.or
+      (i64.shl (i64.extend_i32_u (i32.const {response_offset})) (i64.const 32))
+      (i64.extend_i32_u (i32.const {response_len})))))"#,
+        bump_start = manifest_offset + manifest_len + 64,
+    );
+
+    let bytes = wat::parse_str(&wat).expect("valid emit WAT");
+    let ext = load_wasm(&bytes);
+    let mut reg = Registrar::new();
+    ext.register(&mut reg);
+    let (_, handler) = &reg.tools()[0];
+
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let mut ctx = tool_execution_ctx();
+    ctx.event_tx = Some(event_tx);
+
+    let result = handler
+        .execute("emitTool", serde_json::json!({}), "/tmp", &ctx)
+        .await
+        .unwrap();
+    assert_eq!(result.content, "emitted");
+
+    let payload = event_rx.try_recv().expect("host_emit should deliver event");
+    assert!(matches!(
+        payload,
+        EventPayload::ExtensionEvent {
+            extension_id,
+            event_type,
+            ..
+        } if extension_id == "emit-ext" && event_type == "wasm.test"
+    ));
 }
 
 #[tokio::test]

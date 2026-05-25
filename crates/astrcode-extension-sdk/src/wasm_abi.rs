@@ -4,6 +4,6 @@
 //! 协议的字符串 effect 取代，不再需要。
 
 pub use crate::s6r::{
-    CallRequest, CallResponse, Manifest, ManifestCommand, ManifestHook, ManifestTool,
-    S6R_VERSION, event_from_name, event_to_name, mode_from_name,
+    CallRequest, CallResponse, Manifest, ManifestCommand, ManifestHook, ManifestTool, S6R_VERSION,
+    event_from_name, event_to_name, mode_from_name,
 };

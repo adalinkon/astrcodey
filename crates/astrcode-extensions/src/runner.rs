@@ -14,11 +14,12 @@ use std::{
 use astrcode_core::event::EventPayload;
 use astrcode_extension_sdk::{
     extension::*,
-    tool::{ExecutionMode, Tool, ToolDefinition, ToolError, ToolExecutionContext, ToolResult},
+    tool::{
+        ExecutionMode, SessionOperations, Tool, ToolDefinition, ToolError, ToolExecutionContext,
+        ToolResult,
+    },
 };
 use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc};
-
-use astrcode_extension_sdk::tool::SessionOperations;
 
 /// 将生命周期事件分发到所有已注册的扩展。
 ///
@@ -121,34 +122,14 @@ impl ExtensionEventSink for BoundExtensionEventSink {
         schema_version: u32,
         payload: serde_json::Value,
     ) -> Result<(), ExtensionError> {
-        let decl = self.declarations.get(event_type).ok_or_else(|| {
-            ExtensionError::Internal(format!("undeclared extension event type: {event_type}"))
-        })?;
-
-        if schema_version > decl.schema_version {
-            return Err(ExtensionError::Internal(format!(
-                "schema_version {schema_version} exceeds declared {} for {event_type}",
-                decl.schema_version
-            )));
-        }
-
-        let serialized =
-            serde_json::to_string(&payload).map_err(|e| ExtensionError::Internal(e.to_string()))?;
-        if serialized.len() > decl.max_payload_bytes {
-            return Err(ExtensionError::Internal(format!(
-                "payload exceeds {} bytes for {event_type}",
-                decl.max_payload_bytes
-            )));
-        }
-
-        self.event_tx
-            .send(EventPayload::ExtensionEvent {
-                extension_id: self.extension_id.clone(),
-                event_type: event_type.to_owned(),
-                schema_version,
-                payload,
-            })
-            .map_err(|_| ExtensionError::Internal("event channel closed".into()))
+        crate::host_emit::emit_for_sink(
+            &self.extension_id,
+            &self.declarations,
+            &self.event_tx,
+            event_type,
+            schema_version,
+            payload,
+        )
     }
 }
 
@@ -1225,6 +1206,8 @@ impl Tool for HandlerTool {
             .contains(&ExtensionCapability::SessionControl)
         {
             ctx.capabilities.session_ops = None;
+        }
+        if !self.capabilities.contains(&ExtensionCapability::SmallModel) {
             ctx.capabilities.small_model_id = None;
         }
         ctx.capabilities.extension_event_sink = if self
@@ -1359,6 +1342,13 @@ mod tests {
 
     struct StateProbeTool;
 
+    struct SmallModelProbeExtension {
+        small_model_allowed: bool,
+        session_control_allowed: bool,
+    }
+
+    struct SmallModelProbeTool;
+
     #[async_trait::async_trait]
     impl Extension for StateProbeExtension {
         fn id(&self) -> &str {
@@ -1398,6 +1388,55 @@ mod tests {
         ) -> Result<ToolResult, ExtensionError> {
             Ok(ToolResult::text(
                 ctx.capabilities.session_store_dir.is_some().to_string(),
+                false,
+                Default::default(),
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Extension for SmallModelProbeExtension {
+        fn id(&self) -> &str {
+            "small-model-probe"
+        }
+
+        fn capabilities(&self) -> &[ExtensionCapability] {
+            match (self.small_model_allowed, self.session_control_allowed) {
+                (true, true) => &[
+                    ExtensionCapability::SmallModel,
+                    ExtensionCapability::SessionControl,
+                ],
+                (true, false) => &[ExtensionCapability::SmallModel],
+                (false, true) => &[ExtensionCapability::SessionControl],
+                (false, false) => &[],
+            }
+        }
+
+        fn register(&self, reg: &mut Registrar) {
+            reg.tool(
+                ToolDefinition {
+                    name: "smallModelProbe".into(),
+                    description: String::new(),
+                    parameters: json!({"type": "object"}),
+                    origin: ToolOrigin::Extension,
+                    execution_mode: ExecutionMode::Sequential,
+                },
+                Arc::new(SmallModelProbeTool),
+            );
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ToolHandler for SmallModelProbeTool {
+        async fn execute(
+            &self,
+            _tool_name: &str,
+            _arguments: serde_json::Value,
+            _working_dir: &str,
+            ctx: &ToolExecutionContext,
+        ) -> Result<ToolResult, ExtensionError> {
+            Ok(ToolResult::text(
+                ctx.capabilities.small_model_id.is_some().to_string(),
                 false,
                 Default::default(),
             ))
@@ -1607,6 +1646,43 @@ mod tests {
                 event_tx: None,
                 capabilities: ToolCapabilities {
                     session_store_dir: Some("D:/session".into()),
+                    ..Default::default()
+                },
+            };
+
+            let result = tool.execute(json!({}), &ctx).await.unwrap();
+            assert_eq!(result.content, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn extension_tool_receives_small_model_only_when_declared() {
+        for (small_model_allowed, session_control_allowed, expected) in [
+            (false, false, "false"),
+            (true, false, "true"),
+            (false, true, "false"),
+        ] {
+            let runner = ExtensionRunner::new(Duration::from_secs(1));
+            runner
+                .register(Arc::new(SmallModelProbeExtension {
+                    small_model_allowed,
+                    session_control_allowed,
+                }))
+                .await
+                .unwrap();
+            let tool = runner
+                .collect_tool_adapters_typed("D:/workspace")
+                .await
+                .into_iter()
+                .next()
+                .unwrap();
+            let ctx = ToolExecutionContext {
+                session_id: "session".into(),
+                working_dir: "D:/workspace".into(),
+                tool_call_id: None,
+                event_tx: None,
+                capabilities: ToolCapabilities {
+                    small_model_id: Some("small-model".into()),
                     ..Default::default()
                 },
             };

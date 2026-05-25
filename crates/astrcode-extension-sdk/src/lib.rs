@@ -45,8 +45,8 @@ pub mod types {
 
 pub mod builder;
 pub mod manifest;
-pub mod session;
 pub mod s6r;
+pub mod session;
 pub mod wasm_abi;
 
 /// Namespaced persistence locations for session-scoped extension data.

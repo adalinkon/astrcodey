@@ -42,6 +42,33 @@ pub struct Manifest {
     /// 订阅的 hook 列表。
     #[serde(default)]
     pub hooks: Vec<ManifestHook>,
+    /// 可发出的自定义 extension event 声明（供 `host_emit` 校验）。
+    #[serde(default)]
+    pub extension_events: Vec<ManifestExtensionEvent>,
+}
+
+/// manifest 中单个 extension event 的声明。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManifestExtensionEvent {
+    pub event_type: String,
+    #[serde(default = "default_event_schema_version")]
+    pub schema_version: u32,
+    #[serde(default = "default_event_durable")]
+    pub durable: bool,
+    #[serde(default = "default_max_payload_bytes")]
+    pub max_payload_bytes: usize,
+}
+
+fn default_event_schema_version() -> u32 {
+    1
+}
+
+fn default_event_durable() -> bool {
+    true
+}
+
+fn default_max_payload_bytes() -> usize {
+    64 * 1024
 }
 
 /// manifest 中单个工具的声明。
@@ -264,8 +291,9 @@ pub fn event_to_name(event: &ExtensionEvent) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn call_response_deserializes_continuations() {
@@ -279,7 +307,9 @@ mod tests {
         });
         let resp: CallResponse = serde_json::from_value(raw).unwrap();
         assert_eq!(resp.continuations.len(), 2);
-        assert!(matches!(&resp.continuations[0], CallContinuation::Hook { on, .. } if on == "pipeline_step"));
+        assert!(
+            matches!(&resp.continuations[0], CallContinuation::Hook { on, .. } if on == "pipeline_step")
+        );
     }
 
     #[test]

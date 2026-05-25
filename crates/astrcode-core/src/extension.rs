@@ -433,14 +433,12 @@ pub enum ExtensionEvent {
 
 // ─── Extension Manifest ──────────────────────────────────────────────────
 
-/// 从扩展的 `extension.json` 解析的清单文件。
+/// 磁盘扩展目录中的 `extension.json` 契约（发现阶段元数据）。
 ///
-/// 用于「发现」阶段：loader 读 manifest 拿到 `id` / `library`，加载 WASM 模块后，
-/// 模块通过 `extension_init` 走 host imports（`host_register_tool` /
-/// `host_register_command` / `host_subscribe`）声明真正的能力。manifest 只承担
-/// 元数据展示职责（`name` / `version` / `description`），不再重复声明能力——
-/// 之前的 `subscriptions` / `tools` / `slash_commands` 字段已删，避免「manifest 写
-/// 一份、register 时再写一份」两份事实漂移。
+/// **当前 loader 行为（s6r）**：仅 **`library`**（WASM 相对路径）为必填且参与加载；
+/// 扩展的真实 `id`、能力、工具与 hook 均由 guest 的 `extension_manifest()` 返回。
+/// 本结构中的 `id` / `name` / `capabilities` 等字段可被 serde 解析，供 UI、诊断或
+/// 未来校验使用，但**不会**替代 WASM manifest。磁盘路径仅支持 `.wasm`，无 native dlopen。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtensionManifest {
     /// 扩展唯一标识符。

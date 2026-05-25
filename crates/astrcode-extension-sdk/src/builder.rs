@@ -2,8 +2,10 @@
 
 use std::{future::Future, sync::Arc};
 
-use crate::extension::{ExtensionError, ToolHandler};
-use crate::tool::{ExecutionMode, ToolDefinition, ToolExecutionContext, ToolOrigin, ToolResult};
+use crate::{
+    extension::{ExtensionError, ToolHandler},
+    tool::{ExecutionMode, ToolDefinition, ToolExecutionContext, ToolOrigin, ToolResult},
+};
 
 // ─── handler_fn ──────────────────────────────────────────────────────────
 
@@ -23,10 +25,7 @@ use crate::tool::{ExecutionMode, ToolDefinition, ToolExecutionContext, ToolOrigi
 /// ```
 pub fn handler_fn<F, Fut>(f: F) -> Arc<dyn ToolHandler>
 where
-    F: Fn(&str, serde_json::Value, &str, &ToolExecutionContext) -> Fut
-        + Send
-        + Sync
-        + 'static,
+    F: Fn(&str, serde_json::Value, &str, &ToolExecutionContext) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<ToolResult, ExtensionError>> + Send + 'static,
 {
     Arc::new(FnToolHandler { f })
@@ -39,10 +38,7 @@ struct FnToolHandler<F> {
 #[async_trait::async_trait]
 impl<F, Fut> ToolHandler for FnToolHandler<F>
 where
-    F: Fn(&str, serde_json::Value, &str, &ToolExecutionContext) -> Fut
-        + Send
-        + Sync
-        + 'static,
+    F: Fn(&str, serde_json::Value, &str, &ToolExecutionContext) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<ToolResult, ExtensionError>> + Send + 'static,
 {
     async fn execute(
@@ -116,9 +112,10 @@ impl ToolDefinitionBuilder {
 
 #[cfg(test)]
 mod tests {
+    use astrcode_core::types::SessionId;
+
     use super::*;
     use crate::tool::ToolCapabilities;
-    use astrcode_core::types::SessionId;
 
     #[test]
     fn tool_builder_sets_defaults() {
@@ -132,7 +129,11 @@ mod tests {
     #[tokio::test]
     async fn handler_fn_dispatches_to_closure() {
         let handler = handler_fn(|_name, _args, _dir, _ctx| async move {
-            Ok(ToolResult::text("ok".to_string(), false, Default::default()))
+            Ok(ToolResult::text(
+                "ok".to_string(),
+                false,
+                Default::default(),
+            ))
         });
         let ctx = ToolExecutionContext {
             session_id: SessionId::new("test"),

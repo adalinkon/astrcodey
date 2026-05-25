@@ -14,8 +14,7 @@ use std::{
 use astrcode_extension_sdk::extension::{Extension, StopReason};
 use astrcode_support::hostpaths;
 
-use crate::runner::ExtensionRunner;
-use crate::wasm_api::HostInvoker;
+use crate::{runner::ExtensionRunner, wasm_api::HostInvoker};
 
 /// 从磁盘加载所有扩展的结果。
 #[derive(Default)]
@@ -131,8 +130,12 @@ impl DiskExtensionSource {
 #[async_trait::async_trait]
 impl ExtensionSource for DiskExtensionSource {
     async fn load(&self, ctx: &ExtensionLoadContext) -> LoadExtensionsResult {
-        let mut result =
-            ExtensionLoader::load_all(ctx.working_dir.as_deref(), &ctx.wasm_limits, ctx.invoker.clone()).await;
+        let mut result = ExtensionLoader::load_all(
+            ctx.working_dir.as_deref(),
+            &ctx.wasm_limits,
+            ctx.invoker.clone(),
+        )
+        .await;
         result.extensions.retain(|extension| {
             self.extension_states
                 .get(extension.id())
@@ -259,11 +262,7 @@ impl ExtensionLoader {
             .map_err(|e| format!("read manifest: {e}"))?;
         let entry: serde_json::Value =
             serde_json::from_slice(&manifest_bytes).map_err(|e| format!("parse manifest: {e}"))?;
-        let library = entry["library"]
-            .as_str()
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        let library = entry["library"].as_str().unwrap_or("").trim().to_string();
         if library.is_empty() {
             return Err(format!(
                 "{}: extension.json missing 'library' field",

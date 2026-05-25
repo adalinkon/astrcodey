@@ -16,9 +16,9 @@ use astrcode_extension_sdk::{
     },
     tool::ToolExecutionContext,
 };
-use astrcode_extensions::runner::ExtensionRunner;
-use astrcode_extensions::wasm_api::HostInvoker;
-use astrcode_extensions::wasm_ext::WasmExtension;
+use astrcode_extensions::{
+    runner::ExtensionRunner, wasm_api::HostInvoker, wasm_ext::WasmExtension,
+};
 
 /// guest 插件的 WASM 文件路径（由 cargo build --target wasm32-wasip1 生成）。
 fn guest_wasm_path() -> std::path::PathBuf {
@@ -33,7 +33,11 @@ fn guest_wasm_path() -> std::path::PathBuf {
 
 fn load_guest() -> Arc<WasmExtension> {
     let wasm_path = guest_wasm_path();
-    assert!(wasm_path.exists(), "guest WASM not found at {:?}", wasm_path);
+    assert!(
+        wasm_path.exists(),
+        "guest WASM not found at {:?}",
+        wasm_path
+    );
     WasmExtension::load(&wasm_path, 10_000_000, 64 * 1024 * 1024, None).unwrap()
 }
 
@@ -75,7 +79,10 @@ async fn e2e_manifest_registers_tools_and_hooks() {
     let names: Vec<_> = tools.iter().map(|(d, _)| d.name.as_str()).collect();
     assert!(names.contains(&"greet"), "greet tool not found: {names:?}");
     assert!(names.contains(&"add"), "add tool not found: {names:?}");
-    assert!(names.contains(&"ask_llm"), "ask_llm tool not found: {names:?}");
+    assert!(
+        names.contains(&"ask_llm"),
+        "ask_llm tool not found: {names:?}"
+    );
     assert!(
         names.contains(&"pipeline_status"),
         "pipeline_status tool not found: {names:?}"
@@ -119,7 +126,12 @@ async fn e2e_add_tool_computes_sum() {
     let (_, handler) = reg.tools().iter().find(|(d, _)| d.name == "add").unwrap();
 
     let result = handler
-        .execute("add", serde_json::json!({ "a": 3, "b": 7 }), "/tmp", &tool_ctx())
+        .execute(
+            "add",
+            serde_json::json!({ "a": 3, "b": 7 }),
+            "/tmp",
+            &tool_ctx(),
+        )
         .await
         .unwrap();
 
@@ -161,7 +173,7 @@ async fn e2e_pre_tool_use_blocks_dangerous_command() {
     match result {
         PreToolUseResult::Block { reason } => {
             assert!(reason.contains("rm -rf"));
-        }
+        },
         other => panic!("expected Block, got {other:?}"),
     }
 }
@@ -213,7 +225,7 @@ async fn e2e_command_demo_returns_display() {
     match result {
         astrcode_extension_sdk::extension::ExtensionCommandResult::Display { content, .. } => {
             assert_eq!(content, "s6r guest demo works!");
-        }
+        },
         other => panic!("expected Display, got {other:?}"),
     }
 }
@@ -222,7 +234,11 @@ async fn e2e_command_demo_returns_display() {
 
 fn load_guest_with_invoker(invoker: Option<HostInvoker>) -> Arc<WasmExtension> {
     let wasm_path = guest_wasm_path();
-    assert!(wasm_path.exists(), "guest WASM not found at {:?}", wasm_path);
+    assert!(
+        wasm_path.exists(),
+        "guest WASM not found at {:?}",
+        wasm_path
+    );
     WasmExtension::load(&wasm_path, 10_000_000, 64 * 1024 * 1024, invoker).unwrap()
 }
 
@@ -230,8 +246,7 @@ fn mock_invoker() -> HostInvoker {
     Arc::new(|cap: &str, input: &str| -> String {
         match cap {
             "small_llm.chat" => {
-                let _req: serde_json::Value =
-                    serde_json::from_str(input).unwrap_or_default();
+                let _req: serde_json::Value = serde_json::from_str(input).unwrap_or_default();
                 serde_json::json!({
                     "ok": true,
                     "output": { "content": "mock-llm-response", "model": "mock-model" }
@@ -252,7 +267,11 @@ async fn e2e_ask_llm_calls_host_invoke() {
     let ext = load_guest_with_invoker(Some(mock_invoker()));
     let mut reg = Registrar::new();
     ext.register(&mut reg);
-    let (_, handler) = reg.tools().iter().find(|(d, _)| d.name == "ask_llm").unwrap();
+    let (_, handler) = reg
+        .tools()
+        .iter()
+        .find(|(d, _)| d.name == "ask_llm")
+        .unwrap();
 
     let result = handler
         .execute(
@@ -264,7 +283,11 @@ async fn e2e_ask_llm_calls_host_invoke() {
         .await
         .unwrap();
 
-    assert!(!result.is_error, "is_error: {}, content: {}", result.is_error, result.content);
+    assert!(
+        !result.is_error,
+        "is_error: {}, content: {}",
+        result.is_error, result.content
+    );
     assert_eq!(result.content, "mock-llm-response");
 }
 
@@ -273,7 +296,11 @@ async fn e2e_ask_llm_without_invoker_returns_error() {
     let ext = load_guest_with_invoker(None);
     let mut reg = Registrar::new();
     ext.register(&mut reg);
-    let (_, handler) = reg.tools().iter().find(|(d, _)| d.name == "ask_llm").unwrap();
+    let (_, handler) = reg
+        .tools()
+        .iter()
+        .find(|(d, _)| d.name == "ask_llm")
+        .unwrap();
 
     let result = handler
         .execute(
