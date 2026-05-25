@@ -198,9 +198,8 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
         Arc::clone(&event_store),
         Some(capabilities.small_llm()),
     ));
-    let load_errors =
-        load_extensions_into_runner(&extension_runner, &capabilities, &cwd, Some(host_services))
-            .await;
+    extension_runner.bind_host_services(host_services);
+    let load_errors = load_extensions_into_runner(&extension_runner, &capabilities, &cwd).await;
     for err in &load_errors {
         tracing::warn!("Extension load error: {err}");
     }
@@ -282,11 +281,11 @@ impl ServerRuntime {
             Arc::clone(&self.event_store),
             Some(small_llm),
         ));
+        self.extension_runner.bind_host_services(host_services);
         let load_errors = load_extensions_into_runner(
             &self.extension_runner,
             &self.capabilities,
             &self.startup_working_dir,
-            Some(host_services),
         )
         .await;
         self.session_manager.invalidate_tool_registries();
@@ -299,7 +298,6 @@ async fn load_extensions_into_runner(
     runner: &Arc<ExtensionRunner>,
     capabilities: &SessionRuntimeServices,
     cwd: &std::path::Path,
-    host_services: Option<Arc<ExtensionHostServices>>,
 ) -> Vec<String> {
     let effective = capabilities.read_effective();
 
@@ -314,7 +312,6 @@ async fn load_extensions_into_runner(
 
     let bundled_source = astrcode_bundled_extensions::BundledExtensionSource::new(
         effective.extensions.extension_states.clone(),
-        host_services,
     );
     let disk_source = DiskExtensionSource::new(effective.extensions.extension_states.clone());
     ExtensionRuntime::sync_sources(

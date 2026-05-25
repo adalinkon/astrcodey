@@ -167,7 +167,7 @@ Mode 扩展已从内置逻辑迁移为完整插件：通过 `Registrar` 注册 `
 
 ### 当前状态
 
-内部插件实现（MCP client / Skill / Agent-Tool / Todo / Mode），支持通过 FFI 加载原生扩展和 WASM 扩展运行时（基于 wasmtime 的沙箱化执行）。
+内部插件实现（MCP client / Skill / Agent-Tool / Todo / Mode）统一依赖扩展 SDK；外置扩展通过基于 wasmtime 的 WASM 沙箱运行时加载，并使用 manifest 声明宿主能力。
 
 ---
 

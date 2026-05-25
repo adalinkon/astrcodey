@@ -132,7 +132,10 @@ fn fresh_read_file(working_dir: &Path, requested_path: &str) -> Option<PostCompa
 
 fn latest_plan_note(session_store_dir: Option<&Path>) -> Option<PostCompactNote> {
     let session_dir = session_store_dir?;
-    let plans_dir = session_dir.join("plan");
+    let plans_dir = session_dir
+        .join("extension_data")
+        .join("astrcode-mode")
+        .join("plan");
     let mut plans = fs::read_dir(&plans_dir)
         .ok()?
         .filter_map(Result::ok)
@@ -407,7 +410,10 @@ mod tests {
         std::env::set_var("ASTRCODE_TEST_HOME", &home);
         let session_id = "session-post-compact-notes";
         let session_dir = temp.join("session-store");
-        let plans = session_dir.join("plan");
+        let plans = session_dir
+            .join("extension_data")
+            .join("astrcode-mode")
+            .join("plan");
         fs::create_dir_all(&plans).unwrap();
         fs::write(plans.join("work.md"), "plan body").unwrap();
         let messages = vec![

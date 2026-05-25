@@ -5,6 +5,5 @@
 
 pub mod loader;
 pub mod runner;
-pub mod runtime;
 pub mod wasm_api;
 pub mod wasm_ext;

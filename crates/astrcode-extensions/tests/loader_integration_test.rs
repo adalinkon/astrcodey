@@ -3,7 +3,7 @@
 //! 测试扩展加载器在不存在的目录、空目录等边界条件下的行为，
 //! 以及扩展运行时的工具注册和取出功能，判别值的往返转换。
 
-use astrcode_core::extension::ExtensionManifest;
+use astrcode_extension_sdk::extension::{ExtensionCapability, ExtensionManifest};
 use astrcode_extensions::loader::{ExtensionLoader, WasmLimits};
 
 /// 测试加载器在不存在的路径下返回空结果且不报错
@@ -35,7 +35,7 @@ async fn loader_returns_empty_result_for_none_working_dir() {
 /// 测试事件和模式的判别值能够正确往返转换
 #[test]
 fn discriminants_roundtrip() {
-    use astrcode_core::extension::{ExtensionEvent, HookMode};
+    use astrcode_extension_sdk::extension::{ExtensionEvent, HookMode};
     use astrcode_extensions::wasm_api;
 
     // 事件判别值往返测试
@@ -91,4 +91,23 @@ fn manifest_ignores_legacy_capability_fields() {
 
     assert_eq!(manifest.id, "legacy-test");
     assert_eq!(manifest.library, "legacy-test.wasm");
+}
+
+#[test]
+fn manifest_declares_requested_host_capabilities() {
+    let manifest: ExtensionManifest = serde_json::from_value(serde_json::json!({
+        "id": "stateful-test",
+        "name": "Stateful Test",
+        "library": "stateful-test.wasm",
+        "capabilities": ["session_state", "emit_events"]
+    }))
+    .expect("manifest should parse capabilities");
+
+    assert_eq!(
+        manifest.capabilities,
+        vec![
+            ExtensionCapability::SessionState,
+            ExtensionCapability::EmitEvents
+        ]
+    );
 }

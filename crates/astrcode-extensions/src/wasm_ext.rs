@@ -6,10 +6,10 @@
 
 use std::sync::Arc;
 
-use astrcode_core::{
+use astrcode_extension_sdk::{
     extension::{
         CommandContext, CommandHandler, CompactContext, CompactContributions, CompactEvent,
-        CompactHandler, CompactResult, EXTENSION_TOOL_OUTCOME_KEY, Extension,
+        CompactHandler, CompactResult, EXTENSION_TOOL_OUTCOME_KEY, Extension, ExtensionCapability,
         ExtensionCommandResult, ExtensionError, ExtensionEvent, ExtensionToolOutcome, HookMode,
         HookResult, LifecycleContext, LifecycleHandler, PostToolUseContext, PostToolUseHandler,
         PostToolUseResult, PreToolUseContext, PreToolUseHandler, PreToolUseResult,
@@ -124,6 +124,7 @@ async fn call_wasm_event(
 /// 加载后的 WASM 扩展。
 pub struct WasmExtension {
     id: String,
+    capabilities: Vec<ExtensionCapability>,
     inner: SharedInner,
     tools: Vec<ToolDefinition>,
     commands: Vec<SlashCommand>,
@@ -137,6 +138,7 @@ impl WasmExtension {
     pub fn load(
         path: &std::path::Path,
         id: String,
+        capabilities: Vec<ExtensionCapability>,
         fuel: u64,
         memory_bytes: usize,
     ) -> Result<Arc<Self>, String> {
@@ -194,6 +196,7 @@ impl WasmExtension {
 
         Ok(Arc::new(Self {
             id,
+            capabilities,
             inner: Arc::new(Mutex::new(WasmInner {
                 store,
                 memory,
@@ -215,6 +218,10 @@ impl WasmExtension {
 impl Extension for WasmExtension {
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn capabilities(&self) -> &[ExtensionCapability] {
+        &self.capabilities
     }
 
     // WASM extensions currently only declare handlers through the existing
@@ -346,7 +353,7 @@ impl ToolHandler for WasmToolHandler {
         tool_name: &str,
         arguments: serde_json::Value,
         working_dir: &str,
-        ctx: &astrcode_core::tool::ToolExecutionContext,
+        ctx: &astrcode_extension_sdk::tool::ToolExecutionContext,
     ) -> Result<ToolResult, ExtensionError> {
         // 把 MutexGuard 限制在子作用域里，确保 await 之前已经 drop——
         // parking_lot::MutexGuard 不是 Send，即便手动 drop 编译器仍可能把

@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use astrcode_core::{
+use astrcode_extension_sdk::{
     extension::{Extension, HookMode, PreToolUseContext, PreToolUseResult, Registrar},
     tool::{ExecutionMode, ToolExecutionContext},
 };
@@ -342,7 +342,14 @@ fn align_up(v: u32, align: u32) -> u32 {
 fn load_wasm(bytes: &[u8]) -> Arc<WasmExtension> {
     let mut tmp = NamedTempFile::new().unwrap();
     std::io::Write::write_all(&mut tmp, bytes).unwrap();
-    WasmExtension::load(tmp.path(), "test-ext".into(), 10_000_000, 64 * 1024 * 1024).unwrap()
+    WasmExtension::load(
+        tmp.path(),
+        "test-ext".into(),
+        Vec::new(),
+        10_000_000,
+        64 * 1024 * 1024,
+    )
+    .unwrap()
 }
 
 fn tool_execution_ctx() -> ToolExecutionContext {
@@ -359,7 +366,7 @@ fn pre_tool_use_ctx() -> PreToolUseContext {
     PreToolUseContext {
         session_id: "test-session".into(),
         working_dir: "/tmp".into(),
-        model: astrcode_core::config::ModelSelection::simple("test-model"),
+        model: astrcode_extension_sdk::config::ModelSelection::simple("test-model"),
         tool_name: "shell".into(),
         tool_input: serde_json::json!({}),
         available_tools: vec![],

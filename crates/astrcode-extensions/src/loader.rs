@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use astrcode_core::extension::{Extension, StopReason};
+use astrcode_extension_sdk::extension::{Extension, StopReason};
 use astrcode_support::hostpaths;
 
 use crate::runner::ExtensionRunner;
@@ -243,35 +243,21 @@ impl ExtensionLoader {
         let manifest_bytes = tokio::fs::read(&manifest_path)
             .await
             .map_err(|e| format!("read manifest: {e}"))?;
-        let manifest: astrcode_core::extension::ExtensionManifest =
+        let manifest: astrcode_extension_sdk::extension::ExtensionManifest =
             serde_json::from_slice(&manifest_bytes).map_err(|e| format!("parse manifest: {e}"))?;
-        Self::validate_manifest(&manifest)?;
+        astrcode_extension_sdk::manifest::validate_manifest(&manifest)
+            .map_err(|e| e.to_string())?;
 
         let lib_path = ext_dir.join(&manifest.library);
         crate::wasm_ext::WasmExtension::load(
             &lib_path,
             manifest.id.clone(),
+            manifest.capabilities.clone(),
             limits.fuel,
             limits.memory_bytes,
         )
         .map(|ext| ext as Arc<dyn Extension>)
         .map_err(|e| format!("load wasm {}: {e}", lib_path.display()))
-    }
-
-    /// 验证扩展清单的必填字段。
-    fn validate_manifest(
-        manifest: &astrcode_core::extension::ExtensionManifest,
-    ) -> Result<(), String> {
-        if manifest.id.trim().is_empty() {
-            return Err("manifest id is required".into());
-        }
-        if manifest.name.trim().is_empty() {
-            return Err(format!("manifest {} name is required", manifest.id));
-        }
-        if manifest.library.trim().is_empty() {
-            return Err(format!("manifest {} library is required", manifest.id));
-        }
-        Ok(())
     }
 }
 

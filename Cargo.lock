@@ -195,11 +195,11 @@ dependencies = [
 name = "astrcode-bundled-extensions"
 version = "0.2.2"
 dependencies = [
- "astrcode-core",
  "astrcode-extension-agent-tools",
  "astrcode-extension-mcp",
  "astrcode-extension-memory",
  "astrcode-extension-mode",
+ "astrcode-extension-sdk",
  "astrcode-extension-skill",
  "astrcode-extension-todo-tool",
  "astrcode-extensions",
@@ -322,7 +322,7 @@ dependencies = [
 name = "astrcode-extension-agent-tools"
 version = "0.2.2"
 dependencies = [
- "astrcode-core",
+ "astrcode-extension-sdk",
  "astrcode-support",
  "async-trait",
  "serde",
@@ -335,7 +335,7 @@ dependencies = [
 name = "astrcode-extension-mcp"
 version = "0.2.2"
 dependencies = [
- "astrcode-core",
+ "astrcode-extension-sdk",
  "astrcode-protocol",
  "astrcode-support",
  "async-trait",
@@ -353,7 +353,7 @@ dependencies = [
 name = "astrcode-extension-memory"
 version = "0.2.2"
 dependencies = [
- "astrcode-core",
+ "astrcode-extension-sdk",
  "astrcode-support",
  "async-trait",
  "chrono",
@@ -368,7 +368,7 @@ dependencies = [
 name = "astrcode-extension-mode"
 version = "0.2.2"
 dependencies = [
- "astrcode-core",
+ "astrcode-extension-sdk",
  "astrcode-support",
  "async-trait",
  "serde",
@@ -377,10 +377,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "astrcode-extension-skill"
+name = "astrcode-extension-sdk"
 version = "0.2.2"
 dependencies = [
  "astrcode-core",
+ "async-trait",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "astrcode-extension-skill"
+version = "0.2.2"
+dependencies = [
+ "astrcode-extension-sdk",
  "astrcode-support",
  "async-trait",
  "serde",
@@ -394,7 +404,7 @@ dependencies = [
 name = "astrcode-extension-todo-tool"
 version = "0.2.2"
 dependencies = [
- "astrcode-core",
+ "astrcode-extension-sdk",
  "astrcode-support",
  "async-trait",
  "chrono",
@@ -407,6 +417,7 @@ name = "astrcode-extensions"
 version = "0.2.2"
 dependencies = [
  "astrcode-core",
+ "astrcode-extension-sdk",
  "astrcode-support",
  "async-trait",
  "dirs",

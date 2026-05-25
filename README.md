@@ -10,7 +10,7 @@
 
 A Rust-built AI coding agent platform.
 
-AstrCode is a full-stack AI coding assistant built from scratch in ~57k lines of Rust across 20 crates, plus a React + TypeScript web frontend (~4.8k lines). It features an agent loop with tool execution, a streaming SSE-based multi-provider LLM layer (Anthropic, OpenAI, Google GenAI), an extension/hook system (with native extension loading via FFI and WASM extension support, background pre-warm, health checks, and a startup event channel), a persistent MCP process pool (reusing long-lived connections across turns), context window management with auto-compaction, an eval framework for automated benchmarking, and multiple interfaces: a terminal UI (TUI), a web frontend, a Tauri desktop app, an HTTP/SSE API, and an ACP (Agent Client Protocol) adapter.
+AstrCode is a full-stack AI coding assistant built from scratch in ~57k lines of Rust across 21 crates, plus a React + TypeScript web frontend (~4.8k lines). It features an agent loop with tool execution, a streaming SSE-based multi-provider LLM layer (Anthropic, OpenAI, Google GenAI), an SDK-based extension/hook system with sandboxed WASM extensions, background pre-warm, health checks, and a startup event channel, a persistent MCP process pool (reusing long-lived connections across turns), context window management with auto-compaction, an eval framework for automated benchmarking, and multiple interfaces: a terminal TUI, Web frontend, Tauri desktop app, HTTP/SSE API, and ACP (Agent Client Protocol) adapter.
 
 ## Table of Contents
 
@@ -284,7 +284,7 @@ For detailed configuration documentation, see [Configuration Guide](docs/configu
     │ astrcode-ai│ │astrcode-  │ │ astrcode-    │
     │            │ │extensions │ │ tools        │
     │ Anthropic  │ │Hook system│ │File/shell/   │
-    │ OpenAI     │ │Native FFI │ │task tools    │
+    │ OpenAI     │ │Ext SDK    │ │task tools    │
     │ Google     │ │WASM ext   │ │              │
     │ SSE+retry  │ │           │ │              │
     └────────┬───┘ └─────┬─────┘ └──────────────┘
@@ -317,7 +317,8 @@ For detailed configuration documentation, see [Configuration Guide](docs/configu
 | `astrcode-storage` | 3.7k | JSONL event log, session snapshots, config persistence, file locking |
 | `astrcode-ai` | 3.6k | Multi-provider LLM layer (Anthropic, OpenAI, Google GenAI), SSE streaming, retry |
 | `astrcode-context` | 3.5k | Token estimation, context window budgeting, auto-compact, prompt engine |
-| `astrcode-extensions` | 2.8k | Extension lifecycle, hook dispatch, native FFI loading, WASM extension runtime |
+| `astrcode-extension-sdk` | - | Public extension API, capability declarations, and namespaced state entry points |
+| `astrcode-extensions` | 2.8k | Extension lifecycle, capability gating, hook dispatch, WASM extension runtime |
 | `astrcode-extension-mcp` | ~2.4k | MCP protocol client — persistent process pool, background pre-warm, inflight merge, health check |
 | `astrcode-protocol` | 1.2k | JSON-RPC 2.0 wire types, commands, events, HTTP DTOs |
 | `astrcode-extension-mode` | 1.2k | Agent running mode switching (Code / Plan), plan artifact, exit gate, keybinding & status item registration |
@@ -393,14 +394,16 @@ Large tool results are automatically persisted to disk and replaced with preview
 The extension system (`astrcode-extensions`) is a core architectural pillar, not an afterthought:
 
 - **Extension trait** — each extension declares hook subscriptions, contributes tools and slash commands, handles lifecycle events
+- **Extension SDK** — bundled extensions and extension authors depend on `astrcode-extension-sdk` rather than coupling to host-internal `astrcode-core`
+- **Capability declarations** — extensions request host access through `Extension::capabilities()` or WASM `extension.json.capabilities`; the runtime only injects declared capabilities such as `session_state`, `session_control`, `small_model`, `session_history`, and `emit_events`
+- **Namespaced session state** — session-scoped extension state is stored under `<session>/extension_data/<extension-id>/`, keeping the session root owned by the host
 - **Hook modes** — `Blocking` (can modify input/output), `NonBlocking` (fire-and-forget), `Advisory` (observe-only)
 - **Keybinding registration** — extensions register keyboard shortcuts (e.g. `Shift+Tab` for mode toggle) via `Registrar::keybinding()`
 - **Status bar items** — extensions contribute status bar entries (e.g. current mode indicator) with runtime updates via `StatusItemUpdate` notifications
-- **Native extension loading** — disk-loaded `.dll`/`.so` extensions via `libloading` + FFI, supporting global (`~/.astrcode/extensions/`) and project-level (`.astrcode/extensions/`) directories
 - **WASM extension runtime** — wasmtime-based sandboxed extension execution with a host-guest protocol for tool registration and event handling
 - **Extension runtime** — session spawning with depth limits, tool registration queue, priority-based dispatch
 - **Lifecycle hooks** — `SessionStart` / `SessionResume` / `SessionShutdown`, `TurnStart` / `TurnEnd` / `TurnAborted`, `PreToolUse` / `PostToolUse` / `PostToolUseFailure`, `BeforeProviderRequest` / `AfterProviderResponse`, `PreCompact` / `PostCompact`, `PromptBuild`, `UserPromptSubmit`
-- **Extension runtime APIs** — `Extension::start()` (receives `ExtensionCtx` with `startup_working_dir` and `event_sink`), `Extension::stop()` (with `StopReason`), `Extension::health()` (health probe), `Extension::on_config_changed()` (hot config reload)
+- **Extension runtime APIs** — `Extension::start()` (receives `ExtensionCtx` with `startup_working_dir`, `event_sink`, and capability-scoped host services), `Extension::stop()` (with `StopReason`), `Extension::health()` (health probe), `Extension::on_config_changed()` (hot config reload)
 - **Active health checks** — `ExtensionRunner::check_health()` provides an on-demand sampling API; polling strategy is decided by the host
 - **Startup event channel** — `bind_startup_event_channel()` binds a process-level event channel so extensions can emit custom events during `start()`
 

@@ -10,6 +10,7 @@ members = [
     "crates/astrcode-context",
     "crates/astrcode-session",
     "crates/astrcode-extensions",
+    "crates/astrcode-extension-sdk",
     "crates/astrcode-bundled-extensions",
     "crates/astrcode-server",
     "crates/astrcode-protocol",

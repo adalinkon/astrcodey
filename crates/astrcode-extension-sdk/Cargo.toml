@@ -1,0 +1,14 @@
+[package]
+name = "astrcode-extension-sdk"
+version = "0.2.2"
+edition = "2021"
+description = "Stable authoring surface for AstrCode extensions"
+
+[dependencies]
+astrcode-core = { path = "../astrcode-core" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+

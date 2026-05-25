@@ -8,7 +8,7 @@ description = "Claude-style skill discovery and Skill tool extension"
 crate-type = ["rlib"]
 
 [dependencies]
-astrcode-core = { path = "../astrcode-core" }
+astrcode-extension-sdk = { path = "../astrcode-extension-sdk" }
 astrcode-support = { path = "../astrcode-support" }
 async-trait = { workspace = true }
 serde = { workspace = true }

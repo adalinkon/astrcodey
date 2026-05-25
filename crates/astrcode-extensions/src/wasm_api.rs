@@ -5,118 +5,24 @@
 //! - 插件在 `extension_init()` 中调用这些 import 注册工具/命令/事件订阅
 //! - 宿主调用插件的 `handle_tool` / `handle_command` / `handle_event` 时， 通过线性内存传递 JSON
 //!   请求，插件通过 `host_set_response` 返回结果
+//!
+//! ABI 常量（判别值和 effect code）定义在 `astrcode_extension_sdk::wasm_abi`，
+//! 此处 re-export 以保持兼容。
 
-use astrcode_core::{
-    extension::{ExtensionEvent, HookMode, SlashCommand},
+// Re-export ABI constants from SDK so host-side code can use them via crate::wasm_api.
+pub use astrcode_extension_sdk::wasm_abi::{
+    event_discriminant, event_from_discriminant, execution_mode_discriminant,
+    execution_mode_from_discriminant, mode_discriminant, mode_from_discriminant,
+    GUEST_EFFECT_APPEND_MESSAGES, GUEST_EFFECT_COMPACT_CONTRIBUTIONS, GUEST_EFFECT_ERROR,
+    GUEST_EFFECT_MODIFIED_INPUT, GUEST_EFFECT_OK, GUEST_EFFECT_PROMPT_CONTRIBUTIONS,
+    GUEST_EFFECT_REPLACE_MESSAGES, GUEST_EFFECT_TOOL_OUTCOME,
+};
+
+use astrcode_extension_sdk::{
+    extension::{SlashCommand, ExtensionEvent, HookMode},
     tool::{ExecutionMode, ToolDefinition, ToolOrigin},
 };
 use wasmtime::{Caller, Linker, ResourceLimiter};
-
-// ─── Discriminant helpers ───────────────────────────────────────────────
-
-pub const fn event_discriminant(event: ExtensionEvent) -> u8 {
-    match event {
-        ExtensionEvent::SessionStart => 0,
-        ExtensionEvent::SessionShutdown => 1,
-        ExtensionEvent::TurnStart => 2,
-        ExtensionEvent::TurnEnd => 3,
-        ExtensionEvent::PreToolUse => 4,
-        ExtensionEvent::PostToolUse => 5,
-        ExtensionEvent::BeforeProviderRequest => 6,
-        ExtensionEvent::AfterProviderResponse => 7,
-        ExtensionEvent::UserPromptSubmit => 8,
-        ExtensionEvent::PromptBuild => 9,
-        ExtensionEvent::PreCompact => 10,
-        ExtensionEvent::PostCompact => 11,
-        ExtensionEvent::TurnAborted => 12,
-        ExtensionEvent::PostToolUseFailure => 13,
-        ExtensionEvent::StepStart => 14,
-        ExtensionEvent::StepEnd => 15,
-        ExtensionEvent::PostRecap => 16,
-        // 保持既有 WASM ABI 判别值稳定；新事件只追加。
-        ExtensionEvent::SessionResume => 17,
-    }
-}
-
-pub fn event_from_discriminant(d: u8) -> Option<ExtensionEvent> {
-    match d {
-        0 => Some(ExtensionEvent::SessionStart),
-        1 => Some(ExtensionEvent::SessionShutdown),
-        2 => Some(ExtensionEvent::TurnStart),
-        3 => Some(ExtensionEvent::TurnEnd),
-        4 => Some(ExtensionEvent::PreToolUse),
-        5 => Some(ExtensionEvent::PostToolUse),
-        6 => Some(ExtensionEvent::BeforeProviderRequest),
-        7 => Some(ExtensionEvent::AfterProviderResponse),
-        8 => Some(ExtensionEvent::UserPromptSubmit),
-        9 => Some(ExtensionEvent::PromptBuild),
-        10 => Some(ExtensionEvent::PreCompact),
-        11 => Some(ExtensionEvent::PostCompact),
-        12 => Some(ExtensionEvent::TurnAborted),
-        13 => Some(ExtensionEvent::PostToolUseFailure),
-        14 => Some(ExtensionEvent::StepStart),
-        15 => Some(ExtensionEvent::StepEnd),
-        16 => Some(ExtensionEvent::PostRecap),
-        17 => Some(ExtensionEvent::SessionResume),
-        _ => None,
-    }
-}
-
-pub const fn mode_discriminant(mode: HookMode) -> u8 {
-    match mode {
-        HookMode::Blocking => 0,
-        HookMode::NonBlocking => 1,
-        HookMode::Advisory => 2,
-    }
-}
-
-pub fn mode_from_discriminant(d: u8) -> Option<HookMode> {
-    match d {
-        0 => Some(HookMode::Blocking),
-        1 => Some(HookMode::NonBlocking),
-        2 => Some(HookMode::Advisory),
-        _ => None,
-    }
-}
-
-// ─── Tool execution mode discriminants ───────────────────────────────────
-
-pub const fn execution_mode_discriminant(mode: ExecutionMode) -> u8 {
-    match mode {
-        ExecutionMode::Sequential => 0,
-        ExecutionMode::Parallel => 1,
-    }
-}
-
-/// 把 guest 传过来的判别值转成 `ExecutionMode`。
-///
-/// 未知值默认回退到 `Sequential` ——这是更安全的选择：并发执行可能与共享文件
-/// 状态、subprocess 等冲突。明确想要 `Parallel` 的扩展必须传 `1`。
-pub fn execution_mode_from_discriminant(d: u8) -> ExecutionMode {
-    match d {
-        1 => ExecutionMode::Parallel,
-        _ => ExecutionMode::Sequential,
-    }
-}
-
-// ─── Guest response effect codes ─────────────────────────────────────────
-
-/// WASM guest `handle_event` / `handle_tool` 返回的 effect code。
-pub const GUEST_EFFECT_OK: i8 = 0;
-/// 操作失败，content 为错误信息。
-pub const GUEST_EFFECT_ERROR: i8 = 1;
-/// 工具执行结果包含 `RunSession` outcome。
-pub const GUEST_EFFECT_TOOL_OUTCOME: i8 = 2;
-/// `PreToolUse` 返回 `ModifiedInput`，content 为新 tool_input JSON。
-pub const GUEST_EFFECT_MODIFIED_INPUT: i8 = 3;
-/// `PromptBuild` 返回贡献，content 为 `PromptContributions` JSON。
-pub const GUEST_EFFECT_PROMPT_CONTRIBUTIONS: i8 = 4;
-/// `Compact` 返回贡献，content 为 `CompactContributions` JSON。
-pub const GUEST_EFFECT_COMPACT_CONTRIBUTIONS: i8 = 5;
-/// `Provider` 返回 `ReplaceMessages`，content 为 messages JSON。
-pub const GUEST_EFFECT_REPLACE_MESSAGES: i8 = 6;
-/// `Provider` 返回 `AppendMessages`，content 为 messages JSON。
-pub const GUEST_EFFECT_APPEND_MESSAGES: i8 = 7;
 
 // ─── WASM resource limits ────────────────────────────────────────────────
 
@@ -172,9 +78,6 @@ impl Default for HostState {
 }
 
 impl ResourceLimiter for HostState {
-    // 只做总量上限限制：desired 是增长后的绝对大小，只要不超 limit 就放行。
-    // current（当前大小）和 maximum（wasm 模块自声明上限）不参与判断——
-    // 我们用自己的 memory_limit 作为唯一硬上限。
     fn memory_growing(
         &mut self,
         _current: usize,
