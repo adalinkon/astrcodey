@@ -321,7 +321,8 @@ async fn ssot_tool_only_turn_emits_assistant_shell_before_tool_requests() {
                     )
                 })
         }),
-        "tool-only turn must durable assistant shell then ToolCallRequested so projection merges tool_calls"
+        "tool-only turn must durable assistant shell then ToolCallRequested so projection merges \
+         tool_calls"
     );
 }
 

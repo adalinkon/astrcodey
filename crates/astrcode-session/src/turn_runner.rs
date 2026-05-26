@@ -211,12 +211,7 @@ impl TurnRunner {
                 {
                     state.mark_reactive_compact_used();
                     if !self
-                        .run_reactive_compaction(
-                            &extension_runner,
-                            &state,
-                            turn_id,
-                            publisher,
-                        )
+                        .run_reactive_compaction(&extension_runner, &state, turn_id, publisher)
                         .await?
                     {
                         return end_turn_with_error_typed(
@@ -667,14 +662,16 @@ impl TurnRunner {
             ProviderResult::ReplaceMessages { messages } => {
                 tracing::debug!(
                     message_count = messages.len(),
-                    "BeforeProviderRequest ReplaceMessages applies only to this LLM request (not durable)"
+                    "BeforeProviderRequest ReplaceMessages applies only to this LLM request (not \
+                     durable)"
                 );
                 Ok(provider_visible_messages(messages))
             },
             ProviderResult::AppendMessages { messages } => {
                 tracing::debug!(
                     message_count = messages.len(),
-                    "BeforeProviderRequest AppendMessages applies only to this LLM request (not durable)"
+                    "BeforeProviderRequest AppendMessages applies only to this LLM request (not \
+                     durable)"
                 );
                 let mut combined = send_messages;
                 combined.extend(messages);

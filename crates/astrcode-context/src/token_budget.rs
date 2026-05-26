@@ -62,17 +62,12 @@ pub fn estimate_turn_growth(messages: &[LlmMessage], baseline: usize) -> usize {
         return baseline;
     }
 
-    let latest = *turns.last().unwrap_or(&baseline);
-    let ema = turns
-        .into_iter()
-        .fold(None, |ema: Option<f64>, tokens| {
-            Some(match ema {
-                Some(current) => current * 0.6 + (tokens as f64) * 0.4,
-                None => tokens as f64,
-            })
-        })
-        .unwrap_or(baseline as f64)
-        .round() as usize;
+    let latest = turns[turns.len() - 1];
+    let mut ema = latest as f64;
+    for tokens in turns.into_iter().skip(1) {
+        ema = ema * 0.6 + tokens as f64 * 0.4;
+    }
+    let ema = ema.round() as usize;
 
     baseline.max(latest.max(ema))
 }

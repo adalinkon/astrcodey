@@ -10,7 +10,15 @@
 ///
 /// 用于把工具调用参数、命令行、用户输入等折叠成可放进单行 UI 的预览。
 pub fn compact_inline(text: &str, max_chars: usize) -> String {
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut compact = String::new();
+    let mut words = text.split_whitespace();
+    if let Some(first) = words.next() {
+        compact.push_str(first);
+        for word in words {
+            compact.push(' ');
+            compact.push_str(word);
+        }
+    }
     if compact.chars().count() <= max_chars {
         return compact;
     }
