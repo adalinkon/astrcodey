@@ -109,7 +109,7 @@ fn error_tool_result(
              the identical call."
                 .to_string(),
         ),
-        ToolError::Blocked(reason) => (
+        ToolError::Blocked { reason } => (
             format!("`{tool_name}` was blocked: {reason}"),
             "A hook policy prevented this. Read the reason and adjust your approach instead of \
              retrying."
@@ -613,7 +613,9 @@ mod tests {
         let result = error_tool_result(
             "call-3".into(),
             "shell",
-            ToolError::Blocked("policy reason".into()),
+            ToolError::Blocked {
+                reason: "policy reason".into(),
+            },
             std::time::Duration::from_millis(10),
         );
         assert!(result.content.contains("blocked"));

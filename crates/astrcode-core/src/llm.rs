@@ -172,6 +172,15 @@ impl LlmMessage {
         self
     }
 
+    /// 将各 content 块经 [`LlmContent::to_display_text`] 转换后用 `separator` 拼接。
+    pub fn joined_display_text(&self, separator: &str) -> String {
+        self.content
+            .iter()
+            .map(LlmContent::to_display_text)
+            .collect::<Vec<_>>()
+            .join(separator)
+    }
+
     /// 判断该消息在去掉展示元数据后是否仍应发送给 provider。
     pub fn has_provider_visible_content(&self) -> bool {
         if self.content.iter().any(|content| match content {

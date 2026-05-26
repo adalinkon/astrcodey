@@ -357,18 +357,6 @@ mod tests {
         LlmMessage::tool("read", call_id, "old content", false)
     }
 
-    fn message_text(message: &LlmMessage) -> String {
-        message
-            .content
-            .iter()
-            .map(|content| match content {
-                LlmContent::Text { text } => text.as_str(),
-                _ => "",
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     #[tokio::test]
     async fn post_compact_rereads_recent_files_from_disk() {
         let temp = tempfile_dir("post-compact-reread");
@@ -396,7 +384,11 @@ mod tests {
         )
         .await;
 
-        let restored = message_text(compaction.context_messages.last().unwrap());
+        let restored = compaction
+            .context_messages
+            .last()
+            .unwrap()
+            .joined_display_text("\n");
         assert!(restored.contains("source.rs"));
         assert!(restored.contains("fresh disk content"));
         assert!(!restored.contains("old content"));
@@ -460,7 +452,11 @@ mod tests {
         compaction.append_post_compact_context(files, notes, &settings);
         std::env::remove_var("ASTRCODE_TEST_HOME");
 
-        let restored = message_text(compaction.context_messages.last().unwrap());
+        let restored = compaction
+            .context_messages
+            .last()
+            .unwrap()
+            .joined_display_text("\n");
         assert!(restored.contains("Plan File"));
         assert!(restored.contains("plan body"));
         assert!(restored.contains("Loaded Skill Content"));

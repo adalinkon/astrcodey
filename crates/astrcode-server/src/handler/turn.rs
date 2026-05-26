@@ -5,8 +5,8 @@ use std::sync::Arc;
 use astrcode_core::types::*;
 use tokio::sync::mpsc;
 
-use super::{CommandHandler, CommandMessage, HandlerError, errors::turn_error_for_client};
-use crate::turn_scheduler::{TurnError, TurnScheduler};
+use super::{CommandHandler, CommandMessage, HandlerError, errors::turn_schedule_error_for_client};
+use crate::turn_scheduler::{TurnScheduleError, TurnScheduler};
 
 /// Turn 完成结果，通过 oneshot 通道发送。
 #[derive(Debug, Clone)]
@@ -30,7 +30,7 @@ impl CommandHandler {
             .submit(sid.clone(), user_text)
             .await
             .map_err(|e| {
-                let (code, err) = turn_error_for_client(e);
+                let (code, err) = turn_schedule_error_for_client(e);
                 if code == 40900 {
                     self.send_error(code, "A turn is already running");
                 }
@@ -63,7 +63,7 @@ impl CommandHandler {
     ) -> Result<(), HandlerError> {
         match self.scheduler.abort(session_id).await {
             Ok(()) => Ok(()),
-            Err(TurnError::NoActiveTurn) => {
+            Err(TurnScheduleError::NoActiveTurn) => {
                 self.send_error(40400, "No active turn");
                 Err(HandlerError::NoActiveTurn)
             },

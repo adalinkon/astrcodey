@@ -3,7 +3,7 @@
 use astrcode_core::types::{SessionId, TurnId};
 use astrcode_session::turn_handle::TurnHandle;
 
-use super::{SubmitOutcome, TurnError, TurnScheduler};
+use super::{SubmitOutcome, TurnScheduleError, TurnScheduler};
 
 impl TurnScheduler {
     /// 通知需要处理，在**下一 turn** 触发。
@@ -11,7 +11,7 @@ impl TurnScheduler {
         &self,
         session_id: SessionId,
         text: String,
-    ) -> Result<SubmitOutcome, TurnError> {
+    ) -> Result<SubmitOutcome, TurnScheduleError> {
         if !self.registry.has_active(&session_id) {
             let (turn_id, handle) = self.submit(session_id, text).await?;
             return Ok(SubmitOutcome::Started { turn_id, handle });

@@ -155,18 +155,6 @@ fn is_compact_summary_request(messages: &[LlmMessage]) -> bool {
     })
 }
 
-fn message_text(message: &LlmMessage) -> String {
-    message
-        .content
-        .iter()
-        .filter_map(|content| match content {
-            LlmContent::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 async fn seed_history(session: &Session, pairs: usize) {
     for index in 0..pairs {
         session
@@ -354,7 +342,7 @@ async fn persist_compact_result_rejects_stale_cursor() {
     assert!(
         provider_messages
             .iter()
-            .any(|m| message_text(m).contains("old user 0")),
+            .any(|m| m.joined_display_text("\n").contains("old user 0")),
         "history remains intact after conflict"
     );
 }
@@ -406,13 +394,13 @@ async fn auto_compact_persist_conflict_keeps_ssot_and_provider_history() {
     assert!(
         main_messages
             .iter()
-            .any(|m| message_text(m).contains("old user 0")),
+            .any(|m| m.joined_display_text("\n").contains("old user 0")),
         "provider request should retain pre-compact history"
     );
     assert!(
         main_messages
             .iter()
-            .any(|m| message_text(m).contains("current turn")),
+            .any(|m| m.joined_display_text("\n").contains("current turn")),
         "provider request should include the active user turn"
     );
 
@@ -431,13 +419,13 @@ async fn auto_compact_persist_conflict_keeps_ssot_and_provider_history() {
         provider_messages
             .iter()
             .filter(|m| m.role == LlmRole::User)
-            .any(|m| message_text(m).contains("old user 2")),
+            .any(|m| m.joined_display_text("\n").contains("old user 2")),
         "seeded history should remain in projection"
     );
     assert!(
         provider_messages
             .iter()
-            .any(|m| message_text(m).contains("turn after conflict")),
+            .any(|m| m.joined_display_text("\n").contains("turn after conflict")),
         "turn should still complete normally"
     );
 
@@ -455,7 +443,7 @@ async fn auto_compact_persist_conflict_keeps_ssot_and_provider_history() {
     assert!(
         after_follow_up
             .iter()
-            .any(|m| message_text(m).contains("follow up ok")),
+            .any(|m| m.joined_display_text("\n").contains("follow up ok")),
         "user can continue with a normal follow-up turn"
     );
 }

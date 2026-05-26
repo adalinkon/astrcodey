@@ -179,7 +179,7 @@ async fn ssot_tool_loop_projection_matches_provider_messages() {
     assert!(
         messages
             .iter()
-            .any(|m| m.role == LlmRole::Assistant && message_text(m).contains("final answer")),
+            .any(|m| m.role == LlmRole::Assistant && m.joined_display_text("\n").contains("final answer")),
         "expected final assistant text in projection"
     );
 }
@@ -365,16 +365,4 @@ async fn ssot_mid_turn_inject_visible_on_next_prepare() {
         }),
         "injected user message must appear in read_model without TurnState drain"
     );
-}
-
-fn message_text(message: &LlmMessage) -> String {
-    message
-        .content
-        .iter()
-        .filter_map(|content| match content {
-            LlmContent::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("")
 }
