@@ -6,11 +6,14 @@
 
 use std::sync::Arc;
 
-use astrcode_core::{event::EventPayload, types::SessionId};
+use astrcode_core::types::SessionId;
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, watch};
 
-use crate::turn_handle::TurnHandle;
+use crate::{
+    payload::{agent_session_completed_payload, agent_session_failed_payload},
+    turn_handle::TurnHandle,
+};
 
 /// 子 agent 的完成结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,8 +53,10 @@ pub struct ChildTurnConfig {
 
 /// 子 agent turn 的唯一生命周期所有者。
 ///
-/// 内部 spawn 一个后台任务等待 turn 完成，完成后直接写
-/// `AgentSessionCompleted` / `AgentSessionFailed` 到父 session，
+/// 内部 spawn 一个后台任务等待 turn 完成，完成后通过
+/// [`crate::payload::agent_session_completed_payload`] /
+/// [`crate::payload::agent_session_failed_payload`] 写终态到父 session
+/// （`child_session_id` 与 `final_session_id` 当前相同，见该模块注释），
 /// 并通过 `completed_tx` 发信号供 server 层处理回收和通知。
 ///
 /// **first-write-wins**：所有路径统一通过 `try_set_outcome` 写入，
@@ -91,7 +96,6 @@ impl ChildTurnGuard {
         let abort_handle = handle.abort_handle();
         let parent_sid = config.parent_session_id.clone();
         let child_sid = config.child_session_id.clone();
-        let final_sid = config.child_session_id.clone();
 
         tokio::spawn(async move {
             let result = handle.wait().await;
@@ -108,6 +112,12 @@ impl ChildTurnGuard {
                     // handle.abort() 被调用。后台任务自己也写 Aborted——
                     // 外部 abort() 和这里没有顺序保证，谁先写谁赢。
                     try_set_outcome(&outcome_tx_for_task, ChildOutcome::Aborted);
+                    let _ = parent_session
+                        .emit_durable(
+                            None,
+                            agent_session_failed_payload(child_sid.clone(), "aborted".into()),
+                        )
+                        .await;
                     let _ = completed_tx.send(parent_sid);
                     return;
                 },
@@ -119,30 +129,30 @@ impl ChildTurnGuard {
             match outcome {
                 ChildOutcome::Completed { summary } => {
                     let _ = parent_session
-                        .emit_durable(
-                            None,
-                            EventPayload::AgentSessionCompleted {
-                                child_session_id: child_sid.clone(),
-                                final_session_id: final_sid.clone(),
-                                summary,
-                            },
-                        )
+                        .emit_durable(None, agent_session_completed_payload(child_sid, summary))
                         .await;
                 },
                 ChildOutcome::Failed { error } => {
                     let _ = parent_session
+                        .emit_durable(None, agent_session_failed_payload(child_sid, error))
+                        .await;
+                },
+                ChildOutcome::Aborted => {
+                    let _ = parent_session
                         .emit_durable(
                             None,
-                            EventPayload::AgentSessionFailed {
-                                child_session_id: child_sid,
-                                final_session_id: final_sid,
-                                error,
-                            },
+                            agent_session_failed_payload(child_sid, "aborted".into()),
                         )
                         .await;
                 },
-                ChildOutcome::Aborted => {},
-                ChildOutcome::TimedOut => unreachable!("TimedOut only set by external timeout"),
+                ChildOutcome::TimedOut => {
+                    let _ = parent_session
+                        .emit_durable(
+                            None,
+                            agent_session_failed_payload(child_sid, "timed out".into()),
+                        )
+                        .await;
+                },
             }
 
             let _ = completed_tx.send(parent_sid);
@@ -269,4 +279,61 @@ impl Default for ChildTurnManager {
 
 fn one_line_summary(text: &str) -> String {
     astrcode_support::text::compact_inline(text, 159)
+}
+
+#[cfg(test)]
+mod tests {
+    use astrcode_core::event::EventPayload;
+
+    use super::*;
+
+    #[test]
+    fn try_set_outcome_is_first_write_wins() {
+        let (tx, rx) = watch::channel(None);
+        try_set_outcome(
+            &tx,
+            ChildOutcome::Completed {
+                summary: "first".into(),
+            },
+        );
+        try_set_outcome(
+            &tx,
+            ChildOutcome::Failed {
+                error: "second".into(),
+            },
+        );
+        assert_eq!(
+            rx.borrow().clone(),
+            Some(ChildOutcome::Completed {
+                summary: "first".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn terminal_payload_uses_matching_child_and_final_session_ids() {
+        let child = SessionId::from("child-session");
+        match crate::payload::agent_session_completed_payload(child.clone(), "done".into()) {
+            EventPayload::AgentSessionCompleted {
+                child_session_id,
+                final_session_id,
+                ..
+            } => {
+                assert_eq!(child_session_id, child);
+                assert_eq!(final_session_id, child);
+            },
+            _ => panic!("expected AgentSessionCompleted"),
+        }
+        match crate::payload::agent_session_failed_payload(child.clone(), "err".into()) {
+            EventPayload::AgentSessionFailed {
+                child_session_id,
+                final_session_id,
+                ..
+            } => {
+                assert_eq!(child_session_id, child);
+                assert_eq!(final_session_id, child);
+            },
+            _ => panic!("expected AgentSessionFailed"),
+        }
+    }
 }

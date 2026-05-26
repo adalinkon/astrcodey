@@ -49,24 +49,24 @@ pub async fn consume_llm_stream(
             LlmEvent::ContentDelta { delta } => {
                 ensure_assistant_message_started(publisher, &message_id, &mut message_started)
                     .await;
+                current_text.push_str(&delta);
                 publisher
                     .live(EventPayload::AssistantTextDelta {
                         message_id: message_id.clone(),
-                        delta: delta.clone(),
+                        delta,
                     })
                     .await;
-                current_text.push_str(&delta);
             },
             LlmEvent::ThinkingDelta { delta } => {
                 ensure_assistant_message_started(publisher, &message_id, &mut message_started)
                     .await;
+                reasoning_content.push_str(&delta);
                 publisher
                     .live(EventPayload::ThinkingDelta {
                         message_id: message_id.clone(),
-                        delta: delta.clone(),
+                        delta,
                     })
                     .await;
-                reasoning_content.push_str(&delta);
             },
             LlmEvent::ToolCallStart {
                 call_id,
@@ -79,8 +79,8 @@ pub async fn consume_llm_stream(
                         name,
                         "duplicate ToolCallStart with same call_id, replacing previous entry"
                     );
-                    existing.name = name.clone();
-                    existing.arguments = arguments.clone();
+                    existing.name = name;
+                    existing.arguments = arguments;
                 } else {
                     publisher
                         .live(EventPayload::ToolCallStarted {

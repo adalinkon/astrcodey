@@ -289,7 +289,7 @@ impl TurnRunner {
                             .durable(EventPayload::AssistantMessageCompleted {
                                 message_id,
                                 text: visible_text.to_string(),
-                                reasoning_content: reasoning_content.clone(),
+                                reasoning_content,
                             })
                             .await?;
                     }

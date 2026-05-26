@@ -843,27 +843,27 @@ impl FileSystemSessionRepository {
             return Ok(None);
         };
 
-        let (working_dir, model_id, parent_session_id, source_extension) =
-            match &first_event.payload {
-                EventPayload::SessionStarted {
-                    working_dir,
-                    model_id,
-                    parent_session_id,
-                    tool_policy: _,
-                    source_extension,
-                } => (
-                    working_dir.clone(),
-                    model_id.clone(),
-                    parent_session_id.clone(),
-                    source_extension.clone(),
-                ),
-                _ => return Ok(None),
-            };
+        let Event {
+            timestamp: first_timestamp,
+            payload,
+            ..
+        } = first_event;
+
+        let (working_dir, model_id, parent_session_id, source_extension) = match payload {
+            EventPayload::SessionStarted {
+                working_dir,
+                model_id,
+                parent_session_id,
+                tool_policy: _,
+                source_extension,
+            } => (working_dir, model_id, parent_session_id, source_extension),
+            _ => return Ok(None),
+        };
 
         let updated_at = last_event
             .as_ref()
             .map(|e| e.timestamp.to_rfc3339())
-            .unwrap_or_else(|| first_event.timestamp.to_rfc3339());
+            .unwrap_or_else(|| first_timestamp.to_rfc3339());
         let latest_cursor = last_event
             .and_then(|e| e.seq.map(|s| s.to_string()))
             .unwrap_or_else(|| "0".into());
@@ -873,7 +873,7 @@ impl FileSystemSessionRepository {
             working_dir,
             model_id,
             parent_session_id,
-            created_at: first_event.timestamp.to_rfc3339(),
+            created_at: first_timestamp.to_rfc3339(),
             updated_at,
             phase: astrcode_core::event::Phase::default(),
             latest_cursor,

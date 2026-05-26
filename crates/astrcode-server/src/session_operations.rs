@@ -57,12 +57,8 @@ impl SessionOperations for ServerSessionOperations {
             .await
             .map_err(|e| SessionApiError::Internal(e.to_string()))?;
 
-        let working_dir = request
-            .working_dir
-            .unwrap_or_else(|| parent_model.working_dir.clone());
-        let model_id = request
-            .model_preference
-            .unwrap_or_else(|| parent_model.model_id.clone());
+        let working_dir = request.working_dir.unwrap_or(parent_model.working_dir);
+        let model_id = request.model_preference.unwrap_or(parent_model.model_id);
 
         let child = parent_session
             .spawn_child(
@@ -139,7 +135,7 @@ impl SessionOperations for ServerSessionOperations {
 
         let (turn_id, handle) = self
             .scheduler
-            .submit(target_sid.clone(), request.user_prompt.clone())
+            .submit(target_sid.clone(), request.user_prompt)
             .await
             .map_err(|e| SessionApiError::Internal(format!("submit: {e}")))?;
 
@@ -197,7 +193,7 @@ impl SessionOperations for ServerSessionOperations {
                 child_session_id: target_sid.clone(),
                 parent_session_id: caller_sid.clone(),
                 cleanup,
-                notify_on_complete: request.notify_parent_on_complete.clone(),
+                notify_on_complete: request.notify_parent_on_complete,
             };
 
             let parent_session = self
@@ -376,11 +372,10 @@ impl ServerSessionOperations {
                 .append_event(astrcode_core::event::Event::new(
                     parent_sid.clone(),
                     None,
-                    EventPayload::AgentSessionCompleted {
-                        child_session_id: child_sid.clone(),
-                        final_session_id: child_sid.clone(),
-                        summary: one_line_summary(summary),
-                    },
+                    astrcode_session::payload::agent_session_completed_payload(
+                        child_sid.clone(),
+                        one_line_summary(summary),
+                    ),
                 ))
                 .await
             {
@@ -406,11 +401,10 @@ impl ServerSessionOperations {
                 .append_event(astrcode_core::event::Event::new(
                     parent_sid.clone(),
                     None,
-                    EventPayload::AgentSessionFailed {
-                        child_session_id: child_sid.clone(),
-                        final_session_id: child_sid.clone(),
-                        error: error.to_string(),
-                    },
+                    astrcode_session::payload::agent_session_failed_payload(
+                        child_sid.clone(),
+                        error.to_string(),
+                    ),
                 ))
                 .await
             {

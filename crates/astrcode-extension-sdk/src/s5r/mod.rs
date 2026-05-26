@@ -1,8 +1,4 @@
-//! s5r 对称 peer 协议 — WASM 扩展与宿主之间的线缆契约。
-//!
-//! 协议版本 [`S5R_VERSION`] = `"1.0"`。传输层使用单一 `peer_exchange` 交换
-//! [`WireMessage`] JSON；握手后 guest 通过 `astrcode.*` 能力 invoke 宿主，
-//! 宿主通过 `handler.invoke` 调用 guest 注册的 handler。
+//! 扩展线缆协议共享类型 — s5r Peer 线协议（stdio 长度前缀帧 + JSON）。
 
 pub mod capabilities;
 pub mod effects;
@@ -14,9 +10,8 @@ pub use capabilities::{
 };
 pub use effects::{CallContinuation, HandlerResult};
 pub use messages::{
-    CAP_HANDLER_INVOKE, CapabilityDescriptor, ErrorPayload, EventMsg, EventPhase,
+    CAP_HANDLER_INVOKE, CancelMsg, CapabilityDescriptor, ErrorPayload, EventMsg, EventPhase,
     HandlerDescriptor, InitializeMsg, InitializeOutput, InvokeMsg, PeerInfo, ResultKind, ResultMsg,
-    S5R_STACK, S5R_VERSION, WireMessage,
+    S5R_STACK, S5R_VERSION, WIRE_CODEC_JSON, WIRE_CODEC_METADATA_KEY, WireMessage,
+    encode_wire_message, event_from_name, event_to_name, mode_from_name, parse_wire_message,
 };
-// Re-export event/mode helpers (same mapping as former s6r).
-pub use messages::{event_from_name, event_to_name, mode_from_name};

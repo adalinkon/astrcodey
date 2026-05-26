@@ -21,15 +21,31 @@ const HOST_INVOKE_TIMEOUT: Duration = Duration::from_secs(30);
 /// `workspace.read` 默认最大读取字节数（1 MiB）。
 const DEFAULT_WORKSPACE_READ_MAX_BYTES: u64 = 1024 * 1024;
 
-fn block_on_async<F: std::future::Future>(future: F) -> F::Output {
+fn block_on_async<F: std::future::Future + Send + 'static>(future: F) -> F::Output
+where
+    F::Output: Send + 'static,
+{
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    static BLOCK_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let rt = RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .expect("host router tokio runtime")
     });
-    rt.block_on(future)
+
+    // 从 tokio 异步任务里直接 block_on 会占满 test/runtime worker，嵌套 host invoke 会死锁。
+    if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::spawn(move || {
+            let _guard = BLOCK_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            rt.block_on(future)
+        })
+        .join()
+        .expect("block_on_async worker thread panicked")
+    } else {
+        let _guard = BLOCK_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        rt.block_on(future)
+    }
 }
 
 /// 单次 guest→host invoke 的运行时上下文。
@@ -44,8 +60,8 @@ pub struct InvokeContext {
     pub cancel_token: Option<CancellationToken>,
     pub event_declarations: HashMap<String, ExtensionEventDecl>,
     pub declared_capabilities: Vec<ExtensionCapability>,
-    /// 当前调用是否在 WASM guest 专用线程上（同步 host import）。
-    pub on_wasm_peer_thread: bool,
+    /// 当前调用是否在 peer 专用 I/O 线程上（同步 host import；IPC 子进程共用）。
+    pub on_peer_io_thread: bool,
 }
 
 const MAX_READ_EVENTS_LIMIT: usize = 500;
@@ -112,7 +128,7 @@ impl HostRouter {
         }
     }
 
-    /// 同步 invoke（WASM guest 线程调用）。流式能力在内部收集后一次性返回。
+    /// 同步 invoke（IPC guest 线程调用）。流式能力在内部收集后一次性返回。
     pub fn invoke_sync(
         &self,
         cap: &str,
@@ -178,6 +194,7 @@ impl HostRouter {
                     id: request_id.clone(),
                     phase: EventPhase::Started,
                     data: Value::Null,
+                    output: Value::Null,
                     error: None,
                 })];
                 match self.invoke_small_llm(&input, true, ctx) {
@@ -188,6 +205,7 @@ impl HostRouter {
                                     id: request_id.clone(),
                                     phase: EventPhase::Delta,
                                     data: chunk.clone(),
+                                    output: Value::Null,
                                     error: None,
                                 }));
                             }
@@ -195,7 +213,8 @@ impl HostRouter {
                         events.push(WireMessage::Event(EventMsg {
                             id: request_id,
                             phase: EventPhase::Completed,
-                            data: output,
+                            data: output.clone(),
+                            output,
                             error: None,
                         }));
                         Ok(events)
@@ -205,6 +224,7 @@ impl HostRouter {
                             id: request_id,
                             phase: EventPhase::Failed,
                             data: Value::Null,
+                            output: Value::Null,
                             error: Some(e),
                         }));
                         Ok(events)
@@ -370,23 +390,23 @@ impl HostRouter {
         input: &Value,
         ctx: &InvokeContext,
     ) -> Result<Value, ErrorPayload> {
+        let mut wait_for_result = input["wait_for_result"].as_bool().unwrap_or(true);
+        if ctx.on_peer_io_thread && wait_for_result {
+            return Err(ErrorPayload::new(
+                "invalid_request",
+                "wait_for_result cannot be used from peer synchronous host invokes (deadlock \
+                 risk); set wait_for_result to false",
+            ));
+        }
+        if ctx.on_peer_io_thread {
+            wait_for_result = false;
+        }
         let ops = ctx.session_ops.as_ref().ok_or_else(|| {
             ErrorPayload::new(
                 "backend_unavailable",
                 "session_ops not available in context",
             )
         })?;
-        let mut wait_for_result = input["wait_for_result"].as_bool().unwrap_or(true);
-        if ctx.on_wasm_peer_thread && wait_for_result {
-            return Err(ErrorPayload::new(
-                "invalid_request",
-                "wait_for_result cannot be used from WASM guest synchronous host invokes \
-                 (deadlock risk); set wait_for_result to false",
-            ));
-        }
-        if ctx.on_wasm_peer_thread {
-            wait_for_result = false;
-        }
         let req = SubmitTurnRequest {
             target_session_id: input["target_session_id"]
                 .as_str()
@@ -594,12 +614,16 @@ fn descriptors_for_capability(cap: ExtensionCapability) -> Vec<CapabilityDescrip
                 "properties": { "messages": { "type": "array" } }
             }),
             output_schema: object_schema.clone(),
+            supports_stream: true,
+            cancelable: true,
         }],
         ExtensionCapability::SessionHistory => vec![CapabilityDescriptor {
             name: "astrcode.session.read_events".into(),
             description: "Read session event log".into(),
             input_schema: object_schema.clone(),
             output_schema: object_schema.clone(),
+            supports_stream: false,
+            cancelable: false,
         }],
         ExtensionCapability::SessionControl => vec![
             CapabilityDescriptor {
@@ -607,18 +631,24 @@ fn descriptors_for_capability(cap: ExtensionCapability) -> Vec<CapabilityDescrip
                 description: "Create a child session".into(),
                 input_schema: object_schema.clone(),
                 output_schema: object_schema.clone(),
+                supports_stream: false,
+                cancelable: false,
             },
             CapabilityDescriptor {
                 name: "astrcode.session.control.submit_turn".into(),
                 description: "Submit a turn to a session".into(),
                 input_schema: object_schema.clone(),
                 output_schema: object_schema.clone(),
+                supports_stream: false,
+                cancelable: false,
             },
             CapabilityDescriptor {
                 name: "astrcode.session.control.dispose".into(),
                 description: "Dispose a session".into(),
                 input_schema: object_schema.clone(),
                 output_schema: object_schema.clone(),
+                supports_stream: false,
+                cancelable: false,
             },
         ],
         ExtensionCapability::SessionState => vec![
@@ -627,12 +657,16 @@ fn descriptors_for_capability(cap: ExtensionCapability) -> Vec<CapabilityDescrip
                 description: "Read extension namespaced state".into(),
                 input_schema: object_schema.clone(),
                 output_schema: object_schema.clone(),
+                supports_stream: false,
+                cancelable: false,
             },
             CapabilityDescriptor {
                 name: "astrcode.session.state.write".into(),
                 description: "Write extension namespaced state".into(),
                 input_schema: object_schema.clone(),
                 output_schema: object_schema.clone(),
+                supports_stream: false,
+                cancelable: false,
             },
         ],
         ExtensionCapability::EmitEvents => vec![CapabilityDescriptor {
@@ -640,12 +674,16 @@ fn descriptors_for_capability(cap: ExtensionCapability) -> Vec<CapabilityDescrip
             description: "Emit a declared extension event".into(),
             input_schema: object_schema.clone(),
             output_schema: object_schema.clone(),
+            supports_stream: false,
+            cancelable: false,
         }],
         ExtensionCapability::WorkspaceRead => vec![CapabilityDescriptor {
             name: "astrcode.workspace.read".into(),
             description: "Read a file under the session working directory".into(),
             input_schema: object_schema.clone(),
             output_schema: object_schema.clone(),
+            supports_stream: false,
+            cancelable: false,
         }],
         ExtensionCapability::ProcessSpawn | ExtensionCapability::NetworkClient => vec![],
     }
@@ -716,7 +754,7 @@ fn safe_filename(key: &str) -> String {
         .collect()
 }
 
-/// 供 runner 内 `ExtensionEventSink` 与 WASM 路径复用。
+/// 供 runner 内 `ExtensionEventSink` 与 IPC 路径复用。
 pub fn emit_for_sink(
     extension_id: &str,
     declarations: &HashMap<String, ExtensionEventDecl>,
@@ -807,6 +845,30 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err.code, "cancelled");
+    }
+
+    #[test]
+    fn invoke_session_submit_rejects_wait_for_result_on_peer_io_thread() {
+        let router = HostRouter::from_backends(HostBackends::default());
+        let ctx = InvokeContext {
+            declared_capabilities: vec![ExtensionCapability::SessionControl],
+            session_id: Some("parent".into()),
+            on_peer_io_thread: true,
+            ..Default::default()
+        };
+        let err = router
+            .invoke_sync(
+                "astrcode.session.control.submit_turn",
+                &json!({
+                    "target_session_id": "child",
+                    "user_prompt": "hello",
+                    "wait_for_result": true
+                })
+                .to_string(),
+                &ctx,
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_request");
     }
 
     #[test]
