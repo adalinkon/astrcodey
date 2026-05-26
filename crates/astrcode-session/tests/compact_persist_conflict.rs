@@ -31,7 +31,7 @@ use astrcode_session::{
 };
 use astrcode_storage::in_memory::InMemoryEventStore;
 use astrcode_support::hash::hex_fingerprint;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
 
 const VALID_COMPACT_SUMMARY: &str = r#"<summary>
 1. Primary Request and Intent:
@@ -231,12 +231,14 @@ async fn compact_boundary_event_count(store: &dyn EventStore, session_id: &Sessi
         .count()
 }
 
-/// 在 compact LLM 调用阻塞期间插入事件，使 `base_event_seq` 过期。
+/// 在 compact LLM 调用期间注入 durable 事件，使 `base_event_seq` 过期。
+///
+/// 事件在 mock 内部、LLM 返回前注入，避免测试侧与 mock 之间的 Notify/oneshot 竞态。
 struct RaceOnCompactLlm {
-    calls: AtomicUsize,
+    main_calls: AtomicUsize,
     main_requests: Arc<std::sync::Mutex<Vec<Vec<LlmMessage>>>>,
-    compact_started: Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
-    race_continue: Arc<Notify>,
+    session_to_race: Arc<std::sync::Mutex<Option<Arc<Session>>>>,
+    race_message: String,
 }
 
 #[async_trait::async_trait]
@@ -246,17 +248,25 @@ impl LlmProvider for RaceOnCompactLlm {
         messages: Vec<LlmMessage>,
         _tools: Vec<ToolDefinition>,
     ) -> Result<mpsc::UnboundedReceiver<LlmEvent>, LlmError> {
-        let call = self.calls.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = mpsc::unbounded_channel();
 
         if is_compact_summary_request(&messages) {
-            let compact_started = Arc::clone(&self.compact_started);
-            let race_continue = Arc::clone(&self.race_continue);
+            let session_to_race = Arc::clone(&self.session_to_race);
+            let race_message = self.race_message.clone();
             tokio::spawn(async move {
-                if let Some(started) = compact_started.lock().unwrap().take() {
-                    let _ = started.send(());
+                let session = session_to_race.lock().unwrap().clone();
+                if let Some(session) = session {
+                    session
+                        .emit_durable(
+                            None,
+                            EventPayload::UserMessage {
+                                message_id: new_message_id(),
+                                text: race_message,
+                            },
+                        )
+                        .await
+                        .expect("race event during compact llm");
                 }
-                race_continue.notified().await;
                 let _ = tx.send(LlmEvent::ContentDelta {
                     delta: VALID_COMPACT_SUMMARY.into(),
                 });
@@ -267,7 +277,8 @@ impl LlmProvider for RaceOnCompactLlm {
             return Ok(rx);
         }
 
-        if call == 1 {
+        let main_call = self.main_calls.fetch_add(1, Ordering::SeqCst);
+        if main_call == 0 {
             self.main_requests.lock().unwrap().push(messages);
             let _ = tx.send(LlmEvent::ContentDelta {
                 delta: "turn after conflict".into(),
@@ -288,7 +299,7 @@ impl LlmProvider for RaceOnCompactLlm {
 
     fn model_limits(&self) -> ModelLimits {
         ModelLimits {
-            max_input_tokens: 100,
+            max_input_tokens: 200_000,
             max_output_tokens: 1024,
         }
     }
@@ -350,43 +361,30 @@ async fn persist_compact_result_rejects_stale_cursor() {
 
 #[tokio::test]
 async fn auto_compact_persist_conflict_keeps_ssot_and_provider_history() {
-    let (compact_started_tx, compact_started_rx) = tokio::sync::oneshot::channel();
-    let race_continue = Arc::new(Notify::new());
     let main_requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let session_to_race = Arc::new(std::sync::Mutex::new(None));
     let llm = Arc::new(RaceOnCompactLlm {
-        calls: AtomicUsize::new(0),
+        main_calls: AtomicUsize::new(0),
         main_requests: Arc::clone(&main_requests),
-        compact_started: Arc::new(std::sync::Mutex::new(Some(compact_started_tx))),
-        race_continue: Arc::clone(&race_continue),
+        session_to_race: Arc::clone(&session_to_race),
+        race_message: "concurrent race during compact".into(),
     });
 
     let (session, store) = spawn_session(
-        llm,
+        Arc::clone(&llm) as Arc<dyn LlmProvider>,
         ContextSettings {
+            auto_compact_enabled: true,
             compact_threshold_percent: 0.0,
+            predictive_compact_enabled: false,
+            compact_max_retry_attempts: 1,
             ..Default::default()
         },
     )
     .await;
     let session = Arc::new(session);
+    *session_to_race.lock().unwrap() = Some(Arc::clone(&session));
     configure_system_prompt(&session).await;
     seed_history(&session, 3).await;
-
-    let session_for_race = Arc::clone(&session);
-    let race_task = tokio::spawn(async move {
-        compact_started_rx.await.expect("compact llm should start");
-        session_for_race
-            .emit_durable(
-                None,
-                EventPayload::UserMessage {
-                    message_id: new_message_id(),
-                    text: "concurrent race during compact".into(),
-                },
-            )
-            .await
-            .unwrap();
-        race_continue.notify_one();
-    });
 
     let turn_id = new_turn_id();
     let handle = session
@@ -395,8 +393,6 @@ async fn auto_compact_persist_conflict_keeps_ssot_and_provider_history() {
         .unwrap();
     let result = handle.wait().await.unwrap();
     assert!(result.output.is_ok(), "{:?}", result.output);
-
-    race_task.await.unwrap();
 
     let main_messages = main_requests
         .lock()
@@ -470,15 +466,18 @@ async fn compact_idle_session_skips_when_cursor_races_during_llm() {
         IdleCompactionOutcome, IdleCompactionParams, compact_idle_session,
     };
 
+    let session_to_race = Arc::new(std::sync::Mutex::new(None));
     let race_llm = Arc::new(RaceOnCompactLlm {
-        calls: AtomicUsize::new(0),
+        main_calls: AtomicUsize::new(0),
         main_requests: Arc::new(std::sync::Mutex::new(Vec::new())),
-        compact_started: Arc::new(std::sync::Mutex::new(None)),
-        race_continue: Arc::new(Notify::new()),
+        session_to_race: Arc::clone(&session_to_race),
+        race_message: "race during idle compact".into(),
     });
     let context = ContextSettings {
         auto_compact_enabled: true,
-        auto_compact_threshold: 0.01,
+        compact_threshold_percent: 0.01,
+        predictive_compact_enabled: false,
+        compact_max_retry_attempts: 1,
         ..Default::default()
     };
     let (session, store) = spawn_session(
@@ -487,27 +486,27 @@ async fn compact_idle_session_skips_when_cursor_races_during_llm() {
     )
     .await;
     let session = Arc::new(session);
+    *session_to_race.lock().unwrap() = Some(Arc::clone(&session));
     configure_system_prompt(session.as_ref()).await;
     seed_history(session.as_ref(), 3).await;
 
     let state = session.read_model().await.unwrap();
     let caps = test_caps(race_llm.clone(), context);
-    let extension_runner = caps.extension_runner();
-    let context_assembler = caps.context_assembler();
+    let extension_runner = Arc::clone(caps.extension_runner());
+    let context_assembler = Arc::clone(caps.context_assembler());
+    let llm = caps.llm();
     let tools = session
         .refresh_tools(&state.working_dir)
         .await
         .list_definitions();
 
-    let compact_started = Arc::clone(&race_llm.compact_started);
-    let race_continue = Arc::clone(&race_llm.race_continue);
     let session_for_race = Arc::clone(&session);
     let compact_task = tokio::spawn(async move {
         compact_idle_session(
             session_for_race.as_ref(),
             extension_runner.as_ref(),
             context_assembler.as_ref(),
-            caps.llm(),
+            llm,
             &state,
             &tools,
             IdleCompactionParams {
@@ -517,26 +516,6 @@ async fn compact_idle_session_skips_when_cursor_races_during_llm() {
         )
         .await
     });
-
-    let started_rx = loop {
-        if let Some(tx) = compact_started.lock().unwrap().take() {
-            break tx;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    };
-    started_rx.await.unwrap();
-    session
-        .as_ref()
-        .emit_durable(
-            None,
-            EventPayload::UserMessage {
-                message_id: new_message_id(),
-                text: "race during idle compact".into(),
-            },
-        )
-        .await
-        .unwrap();
-    race_continue.notify_waiters();
 
     let outcome = compact_task.await.unwrap().unwrap();
     assert!(
