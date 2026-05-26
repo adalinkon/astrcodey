@@ -198,9 +198,9 @@ async fn execute_tool_call_blocking(
     call: ExecutableToolCall,
 ) -> (usize, ToolResult) {
     let started_at = Instant::now();
-    let tool_name = call.name.clone();
+    let tool_name = call.name;
     let call_id = call.call_id.clone();
-    let tool_event_bridge = Some(spawn_event_bridge(Arc::clone(&runtime.publisher)));
+    let tool_event_bridge = Some(spawn_event_bridge(runtime.publisher));
     let tool_event_tx = tool_event_bridge
         .as_ref()
         .map(|(tool_tx, _)| tool_tx.clone());
@@ -223,7 +223,7 @@ async fn execute_tool_call_blocking(
     };
 
     let result = match tool_registry
-        .execute(&call.name, call.tool_input.clone(), &tool_ctx)
+        .execute(&tool_name, call.tool_input, &tool_ctx)
         .await
     {
         Ok(mut result) => {
@@ -406,8 +406,8 @@ async fn background_tool_call(
     threshold_secs: u64,
     started_at: Instant,
 ) -> (usize, ToolResult) {
-    let tool_name = call.name.clone();
-    let call_id = call.call_id.clone();
+    let tool_name = call.name;
+    let call_id = call.call_id;
     let call_index = call.index;
     let task_id = new_background_task_id();
 
@@ -499,7 +499,7 @@ async fn background_tool_call(
     let mut mgr = runtime.capabilities.background_tasks.lock();
     mgr.register(
         register_task_id,
-        runtime.session_id.clone(),
+        runtime.session_id,
         exec_handle,
         watcher_handle,
     );

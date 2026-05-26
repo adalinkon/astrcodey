@@ -57,12 +57,8 @@ impl SessionOperations for ServerSessionOperations {
             .await
             .map_err(|e| SessionApiError::Internal(e.to_string()))?;
 
-        let working_dir = request
-            .working_dir
-            .unwrap_or_else(|| parent_model.working_dir.clone());
-        let model_id = request
-            .model_preference
-            .unwrap_or_else(|| parent_model.model_id.clone());
+        let working_dir = request.working_dir.unwrap_or(parent_model.working_dir);
+        let model_id = request.model_preference.unwrap_or(parent_model.model_id);
 
         let child = parent_session
             .spawn_child(
@@ -139,7 +135,7 @@ impl SessionOperations for ServerSessionOperations {
 
         let (turn_id, handle) = self
             .scheduler
-            .submit(target_sid.clone(), request.user_prompt.clone())
+            .submit(target_sid.clone(), request.user_prompt)
             .await
             .map_err(|e| SessionApiError::Internal(format!("submit: {e}")))?;
 
@@ -197,7 +193,7 @@ impl SessionOperations for ServerSessionOperations {
                 child_session_id: target_sid.clone(),
                 parent_session_id: caller_sid.clone(),
                 cleanup,
-                notify_on_complete: request.notify_parent_on_complete.clone(),
+                notify_on_complete: request.notify_parent_on_complete,
             };
 
             let parent_session = self

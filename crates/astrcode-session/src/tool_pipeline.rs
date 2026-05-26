@@ -142,25 +142,25 @@ impl ToolPipeline {
 
             let pre_hook_result = self.extension_runner.emit_pre_tool_use(pre_ctx).await?;
 
-            let tool_input = match &pre_hook_result {
-                PreToolUseResult::ModifyInput { tool_input } => tool_input.clone(),
-                _ => args.clone(),
+            let (tool_input, outcome) = match pre_hook_result {
+                PreToolUseResult::ModifyInput { tool_input } => {
+                    (tool_input, PreparedToolOutcome::Ready)
+                },
+                PreToolUseResult::Block { reason } => {
+                    let outcome = PreparedToolOutcome::Blocked(ToolResult {
+                        call_id: tc.call_id.clone(),
+                        content: format!("Tool execution blocked by hook: {reason}"),
+                        is_error: true,
+                        error: Some(reason),
+                        metadata: Default::default(),
+                        duration_ms: None,
+                    });
+                    (args, outcome)
+                },
+                PreToolUseResult::Allow => (args, PreparedToolOutcome::Ready),
             };
 
             send_tool_requested(publisher, tc, &tool_input).await?;
-
-            let outcome = if let PreToolUseResult::Block { reason } = pre_hook_result {
-                PreparedToolOutcome::Blocked(ToolResult {
-                    call_id: tc.call_id.clone(),
-                    content: format!("Tool execution blocked by hook: {reason}"),
-                    is_error: true,
-                    error: Some(reason),
-                    metadata: Default::default(),
-                    duration_ms: None,
-                })
-            } else {
-                PreparedToolOutcome::Ready
-            };
 
             let mode = match &outcome {
                 PreparedToolOutcome::Ready => self.tool_registry.execution_mode(&tc.name),
@@ -221,7 +221,7 @@ impl ToolPipeline {
                         .await?,
                     );
                     discovered_tools.extend(
-                        self.commit_single_tool_result(&mut input, position, result.clone())
+                        self.commit_single_tool_result(&mut input, position, result)
                             .await?,
                     );
                 },
@@ -484,18 +484,25 @@ impl ToolPipeline {
 
         let mut discovered_tools = Vec::new();
         for pending in pending_results {
-            discovered_tools.extend(discovered_deferred_tool_names(&pending.result));
+            let PendingCommittedToolResult {
+                call_id,
+                tool_name,
+                result,
+                arguments,
+                arguments_json,
+            } = pending;
+            discovered_tools.extend(discovered_deferred_tool_names(&result));
             input
                 .publisher
                 .durable(EventPayload::ToolCallCompleted {
-                    call_id: pending.call_id.clone().into(),
-                    tool_name: pending.tool_name.clone(),
-                    result: pending.result.clone(),
-                    arguments: pending.arguments.clone(),
-                    arguments_json: pending.arguments_json.clone(),
+                    call_id: call_id.into(),
+                    tool_name,
+                    result: result.clone(),
+                    arguments,
+                    arguments_json,
                 })
                 .await?;
-            input.state.push_tool_result(pending.result);
+            input.state.push_tool_result(result);
         }
 
         Ok(discovered_tools)
@@ -531,16 +538,16 @@ impl ToolPipeline {
             return Ok(());
         }
         let original_content = result.content.clone();
+        let preview = tool_result_preview(&original_content, TOOL_RESULT_PREVIEW_CHARS);
         let reference = self
             .session
             .write_tool_artifact(astrcode_core::storage::ToolResultArtifactInput {
                 call_id: call_id.to_string(),
                 tool_name: tool_name.to_string(),
-                content: original_content.clone(),
+                content: original_content,
             })
             .await
             .map_err(|error| TurnError::PersistToolResultFailed(error.to_string()))?;
-        let preview = tool_result_preview(&original_content, TOOL_RESULT_PREVIEW_CHARS);
         result.metadata.insert(
             "persistedToolResult".into(),
             serde_json::json!({

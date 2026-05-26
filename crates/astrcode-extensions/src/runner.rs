@@ -524,7 +524,7 @@ impl ExtensionRunner {
         if !reg.is_empty() {
             let mut records = self.records.write().await;
             records.push(ExtensionRecord {
-                id: id.clone(),
+                id,
                 reg,
                 capabilities,
                 config: ext_config,
@@ -1009,12 +1009,9 @@ impl ExtensionRunner {
                 attach_extension_event_sink(&index, extension_id, &ctx.event_tx);
             match mode {
                 HookMode::Blocking => {
-                    let result =
-                        tokio::time::timeout(self.timeout, handler.handle(handler_ctx.clone()))
-                            .await
-                            .map_err(|_| {
-                                ExtensionError::Timeout(self.timeout.as_millis() as u64)
-                            })??;
+                    let result = tokio::time::timeout(self.timeout, handler.handle(handler_ctx))
+                        .await
+                        .map_err(|_| ExtensionError::Timeout(self.timeout.as_millis() as u64))??;
                     if let HookResult::Block { reason } = result {
                         return Err(ExtensionError::Blocked { reason });
                     }

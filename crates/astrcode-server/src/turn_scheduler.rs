@@ -487,13 +487,14 @@ async fn repair_stale_phase_for_state(
     );
 
     for pending in pending_requested_tool_calls(state) {
+        let result = interrupted_tool_result(&pending.call_id);
         session
             .emit_durable(
                 None,
                 EventPayload::ToolCallCompleted {
-                    call_id: pending.call_id.clone().into(),
+                    call_id: pending.call_id.into(),
                     tool_name: pending.tool_name,
-                    result: interrupted_tool_result(&pending.call_id),
+                    result,
                     arguments: String::new(),
                     arguments_json: None,
                 },

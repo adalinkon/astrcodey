@@ -66,12 +66,17 @@ fn build_extension(session: Arc<S5rSession>, reg: ExtensionRegistration) -> Arc<
     let tools = build_tools(&reg);
     let commands = build_commands(&reg);
     let subscriptions = build_subscriptions(&reg);
-    let event_decls = reg.extension_events.clone();
+    let ExtensionRegistration {
+        extension_id,
+        capabilities,
+        extension_events,
+        ..
+    } = reg;
     Arc::new(S5rExtension {
-        id: reg.extension_id,
-        capabilities: reg.capabilities,
+        id: extension_id,
+        capabilities,
         session,
-        event_decls,
+        event_decls: extension_events,
         tools,
         commands,
         subscriptions,
@@ -378,8 +383,8 @@ impl PreToolUseHandler for S5rPreToolUseHandler {
             &self.ext_id,
             Some(ctx.session_id.clone()),
             Some(ctx.working_dir.clone()),
-            ctx.session_store_dir.clone(),
-            ctx.event_tx.clone(),
+            ctx.session_store_dir,
+            ctx.event_tx,
             None,
         );
         let input = json!({
@@ -416,8 +421,8 @@ impl PostToolUseHandler for S5rPostToolUseHandler {
             &self.ext_id,
             Some(ctx.session_id.clone()),
             Some(ctx.working_dir.clone()),
-            ctx.session_store_dir.clone(),
-            ctx.event_tx.clone(),
+            ctx.session_store_dir,
+            ctx.event_tx,
             None,
         );
         let input = json!({
@@ -456,7 +461,7 @@ impl ProviderHandler for S5rProviderHandler {
             &self.ext_id,
             Some(ctx.session_id.clone()),
             Some(ctx.working_dir.clone()),
-            ctx.session_store_dir.clone(),
+            ctx.session_store_dir,
             None,
             None,
         );
@@ -570,7 +575,7 @@ impl LifecycleHandler for S5rLifecycleHandler {
             Some(ctx.session_id.clone()),
             Some(ctx.working_dir.clone()),
             None,
-            ctx.event_tx.clone(),
+            ctx.event_tx,
             None,
         );
         let input = json!({
