@@ -63,9 +63,9 @@ pub fn estimate_turn_growth(messages: &[LlmMessage], baseline: usize) -> usize {
     }
 
     let latest = turns[turns.len() - 1];
-    let mut ema = latest as f64;
-    for tokens in turns.into_iter().skip(1) {
-        ema = ema * 0.6 + tokens as f64 * 0.4;
+    let mut ema = turns[0] as f64;
+    for tokens in turns.iter().skip(1) {
+        ema = ema * 0.6 + *tokens as f64 * 0.4;
     }
     let ema = ema.round() as usize;
 

@@ -520,7 +520,7 @@ export const useAppStore = create<ConversationState>((set, get) => ({
         agentSessions: snapshot.agentSessions ?? [],
       })
 
-      connectSse(sessionId, snapshot.cursor.value, get, set)
+      connectSse(sessionId, snapshot.cursor.value, 0, get, set)
     } catch (err) {
       console.error('Failed to switch session:', err)
     }
@@ -831,6 +831,7 @@ function sseReconnectDelayMs(attempt: number): number {
 function connectSse(
   sessionId: string,
   cursor: string,
+  reconnectAttempt: number,
   get: () => ConversationState,
   set: (
     partial:
@@ -839,7 +840,6 @@ function connectSse(
   ) => void
 ): void {
   const abortController = new AbortController()
-  let reconnectAttempt = 0
   set({ streamAbortController: abortController })
 
   // rAF batcher: collect high-frequency deltas and flush once per animation frame.
@@ -948,10 +948,10 @@ function connectSse(
         const current = get()
         if (current.activeSessionId === sessionId) {
           const latestCursor = current.cursor ?? cursor
-          const delayMs = sseReconnectDelayMs(reconnectAttempt++)
+          const delayMs = sseReconnectDelayMs(reconnectAttempt)
           setTimeout(() => {
             if (get().activeSessionId === sessionId) {
-              connectSse(sessionId, latestCursor, get, set)
+              connectSse(sessionId, latestCursor, reconnectAttempt + 1, get, set)
             }
           }, delayMs)
         }
@@ -959,13 +959,13 @@ function connectSse(
     })
     .catch((err) => {
       if (abortController.signal.aborted) return
-      const delayMs = sseReconnectDelayMs(reconnectAttempt++)
+      const delayMs = sseReconnectDelayMs(reconnectAttempt)
       console.error('SSE stream error, reconnecting in', delayMs, 'ms:', err)
       if (get().activeSessionId === sessionId) {
         const latestCursor = get().cursor ?? cursor
         setTimeout(() => {
           if (get().activeSessionId === sessionId) {
-            connectSse(sessionId, latestCursor, get, set)
+            connectSse(sessionId, latestCursor, reconnectAttempt + 1, get, set)
           }
         }, delayMs)
       }

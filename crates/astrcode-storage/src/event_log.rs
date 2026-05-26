@@ -112,10 +112,10 @@ impl EventLog {
         let sync_pending = Arc::clone(&self.sync_pending);
 
         tokio::task::spawn_blocking(move || {
+            // 持有 seq 锁直到写入完成，避免并发 append 在磁盘上出现 seq 乱序。
             let mut seq_guard = lock_parking(&next_seq);
             event.seq = Some(*seq_guard);
             *seq_guard += 1;
-            drop(seq_guard);
 
             let line = serde_json::to_string(&event)?;
             let mut guard = lock_parking(&writer);
@@ -124,6 +124,7 @@ impl EventLog {
                 StorageError::Io(std::io::Error::new(e.kind(), enhance_flush_error(&path, e)))
             })?;
             drop(guard);
+            drop(seq_guard);
             sync_pending.store(true, Ordering::Release);
             Ok(event)
         })

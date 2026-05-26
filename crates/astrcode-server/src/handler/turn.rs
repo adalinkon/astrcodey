@@ -136,6 +136,15 @@ async fn run_completion_watcher(
     scheduler.registry().remove_if_matches(&sid, &turn_id);
     scheduler.on_turn_completed(&sid).await;
 
+    if let Some((next_turn_id, next_handle)) = scheduler.start_next_queued_turn(&sid).await {
+        let scheduler = Arc::clone(&scheduler);
+        let actor_tx = actor_tx.clone();
+        let sid = sid.clone();
+        tokio::spawn(async move {
+            run_completion_watcher(next_handle, scheduler, actor_tx, sid, next_turn_id, None).await;
+        });
+    }
+
     if let Some(tx) = completion_tx {
         let _ = tx.send(completion.clone());
     }

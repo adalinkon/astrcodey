@@ -88,8 +88,7 @@ pub(in crate::http) fn event_to_deltas(
             if continued_session_id != &event.session_id {
                 deltas.extend(
                     completed_block_from_payload(event)
-                        .map(|block| ConversationDeltaDto::AppendBlock { block })
-                        .into_iter(),
+                        .map(|block| ConversationDeltaDto::AppendBlock { block }),
                 );
                 deltas.push(ConversationDeltaDto::SessionContinued {
                     parent_session_id: event.session_id.to_string(),

@@ -12,10 +12,14 @@ use crate::{
 };
 
 impl Session {
-    async fn emit_turn_start_events(&self, text: &str, turn_id: &TurnId) {
+    async fn emit_turn_start_events(
+        &self,
+        text: &str,
+        turn_id: &TurnId,
+    ) -> Result<(), TurnError> {
         self.emit_durable(Some(turn_id), EventPayload::TurnStarted)
             .await
-            .ok();
+            .map_err(|e| TurnError::DurableEmitFailed(format!("TurnStarted: {e}")))?;
         self.emit_durable(
             Some(turn_id),
             EventPayload::UserMessage {
@@ -24,9 +28,10 @@ impl Session {
             },
         )
         .await
-        .ok();
+        .map_err(|e| TurnError::DurableEmitFailed(format!("UserMessage: {e}")))?;
         self.emit_live(Some(turn_id), EventPayload::AgentRunStarted)
             .await;
+        Ok(())
     }
 
     async fn prepare_turn_runner(&self) -> Result<TurnRunner, TurnError> {
@@ -134,7 +139,7 @@ impl Session {
     }
 
     pub async fn submit(&self, text: String, turn_id: TurnId) -> Result<TurnHandle, TurnError> {
-        self.emit_turn_start_events(&text, &turn_id).await;
+        self.emit_turn_start_events(&text, &turn_id).await?;
         let agent = self.prepare_turn_runner().await?;
         let (completion_tx, completion_rx) = oneshot::channel();
         let turn_id_for_task = turn_id.clone();

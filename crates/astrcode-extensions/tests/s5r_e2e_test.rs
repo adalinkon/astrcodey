@@ -26,14 +26,60 @@ fn guest_wasm_path() -> std::path::PathBuf {
         .join("s5r_guest_demo.wasm")
 }
 
+fn guest_manifest_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("s5r-guest")
+        .join("Cargo.toml")
+}
+
+/// CI / 本地测试前确保 guest WASM 已编译（`wasm32-wasip1` release）。
+fn ensure_guest_wasm_built() -> std::path::PathBuf {
+    let wasm_path = guest_wasm_path();
+    if wasm_path.exists() {
+        return wasm_path;
+    }
+
+    let manifest = guest_manifest_path();
+    eprintln!(
+        "s5r E2E: building guest WASM via `cargo build --manifest-path {} --target wasm32-wasip1 --release`",
+        manifest.display()
+    );
+
+    let output = std::process::Command::new("cargo")
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("--target")
+        .arg("wasm32-wasip1")
+        .arg("--release")
+        .output()
+        .unwrap_or_else(|e| panic!("failed to spawn cargo build for s5r-guest: {e}"));
+
+    if !output.status.success() {
+        panic!(
+            "cargo build s5r-guest failed (status={:?})\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    assert!(
+        wasm_path.exists(),
+        "guest WASM still missing at {} after build",
+        wasm_path.display()
+    );
+    wasm_path
+}
+
 fn minimal_router() -> Arc<astrcode_extensions::HostRouter> {
     let store: Arc<dyn astrcode_core::storage::EventStore> = Arc::new(InMemoryEventStore::new());
     build_host_router(Arc::new(ExtensionHostServices::new(store, None)), None)
 }
 
 fn load_guest(router: Arc<astrcode_extensions::HostRouter>) -> Arc<WasmExtension> {
-    let wasm_path = guest_wasm_path();
-    assert!(wasm_path.exists(), "guest WASM not found at {wasm_path:?}");
+    let wasm_path = ensure_guest_wasm_built();
     WasmExtension::load(&wasm_path, 10_000_000, 64 * 1024 * 1024, router).unwrap()
 }
 
