@@ -411,12 +411,12 @@ fn resolve_child_small_model(
         .clone()
         .or_else(|| caps.small_model_id.clone())
         .ok_or_else(|| {
-        ExtensionError::Internal(
-            "子 Agent 需要已配置的小模型（activeSmallProfile + activeSmallModel）。\
-             请在设置中配置 Small LLM 后重试。"
-                .into(),
-        )
-    })
+            ExtensionError::Internal(
+                "子 Agent 需要已配置的小模型（activeSmallProfile + \
+                 activeSmallModel）。请在设置中配置 Small LLM 后重试。"
+                    .into(),
+            )
+        })
 }
 
 /// 为子 agent 的 body 追加共享增强内容：环境信息 + 行为规范。

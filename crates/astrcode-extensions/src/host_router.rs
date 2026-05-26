@@ -252,9 +252,10 @@ impl HostRouter {
         collect_chunks: bool,
         ctx: &InvokeContext,
     ) -> Result<Value, ErrorPayload> {
-        let provider = self.backends.main_llm.as_ref().ok_or_else(|| {
-            ErrorPayload::new("backend_unavailable", "main_llm not configured")
-        })?;
+        let provider =
+            self.backends.main_llm.as_ref().ok_or_else(|| {
+                ErrorPayload::new("backend_unavailable", "main_llm not configured")
+            })?;
         self.invoke_llm_chat(provider, "main_llm", input, collect_chunks, ctx)
     }
 
@@ -264,9 +265,10 @@ impl HostRouter {
         collect_chunks: bool,
         ctx: &InvokeContext,
     ) -> Result<Value, ErrorPayload> {
-        let provider = self.backends.small_llm.as_ref().ok_or_else(|| {
-            ErrorPayload::new("backend_unavailable", "small_llm not configured")
-        })?;
+        let provider =
+            self.backends.small_llm.as_ref().ok_or_else(|| {
+                ErrorPayload::new("backend_unavailable", "small_llm not configured")
+            })?;
         self.invoke_llm_chat(provider, "small_llm", input, collect_chunks, ctx)
     }
 
@@ -314,7 +316,13 @@ impl HostRouter {
         block_on_async(async move {
             tokio::time::timeout(
                 HOST_INVOKE_TIMEOUT,
-                run_host_llm_chat(&*provider, &label, messages, collect_chunks, cancel.as_ref()),
+                run_host_llm_chat(
+                    &*provider,
+                    &label,
+                    messages,
+                    collect_chunks,
+                    cancel.as_ref(),
+                ),
             )
             .await
             .map_err(|_| ErrorPayload::new("timeout", format!("{label}.chat timed out")))?

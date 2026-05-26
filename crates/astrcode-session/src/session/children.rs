@@ -75,7 +75,8 @@ impl Session {
     }
 }
 
-/// 子 session 的 turn 使用 `SessionModelBinding.llm`；当目标 model_id 为小模型时选用 small provider。
+/// 子 session 的 turn 使用 `SessionModelBinding.llm`；当目标 model_id 为小模型时选用 small
+/// provider。
 fn primary_llm_for_model_id(
     caps: &crate::session_runtime_services::SessionRuntimeServices,
     model_id: &str,
