@@ -15,7 +15,7 @@ use astrcode_core::{
     tool::ToolDefinition,
     types::*,
 };
-use astrcode_support::hash::hex_fingerprint;
+use astrcode_support::{hash::hex_fingerprint, sync::lock_parking};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -326,8 +326,11 @@ impl TurnRunner {
             model_limits: llm.model_limits(),
             custom_instructions,
         };
-        let should_auto_compact = context_assembler.should_auto_compact(&probe_input);
-        let base_event_seq = if should_auto_compact {
+        let threshold_met = context_assembler.should_auto_compact(&probe_input);
+        let run_compact = context_assembler.auto_compact_enabled() && threshold_met;
+        let use_llm_for_compact =
+            run_compact && self.should_attempt_llm_compact(CompactTrigger::AutoThreshold);
+        let base_event_seq = if run_compact {
             self.read_base_event_seq().await?
         } else {
             0
@@ -345,21 +348,19 @@ impl TurnRunner {
                 CompactionRequest {
                     trigger: CompactTrigger::AutoThreshold,
                     strategy: CompactStrategy::Auto,
-                    allow_auto_compact: should_auto_compact
-                        && self.should_attempt_llm_compact(CompactTrigger::AutoThreshold),
+                    run_compact,
+                    use_llm_for_compact,
                     force_compact: false,
                     base_event_seq,
+                    keep_recent_turns: None,
                 },
             )
             .await?;
 
-        let model = if compaction_applied {
+        if compaction_applied {
             publisher.invalidate_model_cache().await;
-            publisher.snapshot_model().await?
-        } else {
-            model
-        };
-        let messages = build_llm_request_messages(&model, self.system_prompt(), context_messages);
+        }
+        let messages = build_llm_request_messages(self.system_prompt(), context_messages);
         let messages = self
             .apply_before_provider_request_hook(extension_runner, messages)
             .await?;
@@ -398,11 +399,7 @@ impl TurnRunner {
         }
 
         if meta.trigger == CompactTrigger::AutoThreshold && meta.llm_api_failed {
-            self.session()
-                .runtime()
-                .compact_circuit_breaker()
-                .lock()
-                .record_llm_failure();
+            lock_parking(self.session().runtime().compact_circuit_breaker()).record_llm_failure();
         }
 
         let fp = hex_fingerprint(self.system_prompt().as_bytes());
@@ -421,10 +418,7 @@ impl TurnRunner {
         {
             Ok(persisted) => {
                 if meta.trigger == CompactTrigger::AutoThreshold && !meta.llm_api_failed {
-                    self.session()
-                        .runtime()
-                        .compact_circuit_breaker()
-                        .lock()
+                    lock_parking(self.session().runtime().compact_circuit_breaker())
                         .record_compact_success();
                 }
                 self.session()
@@ -471,9 +465,11 @@ impl TurnRunner {
                 CompactionRequest {
                     trigger: CompactTrigger::ReactivePromptTooLong,
                     strategy: CompactStrategy::ReactivePromptTooLong,
-                    allow_auto_compact: false,
+                    run_compact: true,
+                    use_llm_for_compact: true,
                     force_compact: true,
                     base_event_seq,
+                    keep_recent_turns: None,
                 },
             )
             .await?;
@@ -523,12 +519,9 @@ impl TurnRunner {
 
     fn should_attempt_llm_compact(&self, trigger: CompactTrigger) -> bool {
         match trigger {
-            CompactTrigger::AutoThreshold => self
-                .session()
-                .runtime()
-                .compact_circuit_breaker()
-                .lock()
-                .should_attempt(),
+            CompactTrigger::AutoThreshold => {
+                lock_parking(self.session().runtime().compact_circuit_breaker()).should_attempt()
+            },
             CompactTrigger::ManualCommand | CompactTrigger::ReactivePromptTooLong => true,
         }
     }

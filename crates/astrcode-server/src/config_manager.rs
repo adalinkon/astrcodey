@@ -13,7 +13,7 @@ use std::sync::Arc;
 use astrcode_ai::create_provider;
 use astrcode_core::{
     config::{Config, ConfigStore, EffectiveConfig, LlmSettings},
-    llm::{LlmClientConfig, LlmProvider},
+    llm::{LlmClientConfig, LlmProvider, OpenAiProviderExtras, ProviderExtras},
 };
 use astrcode_extensions::runner::ExtensionRunner;
 use astrcode_session::SessionRuntimeServices;
@@ -37,9 +37,11 @@ fn build_provider_from_settings(settings: &LlmSettings) -> Arc<dyn LlmProvider> 
         max_retries: settings.max_retries,
         retry_base_delay_ms: settings.retry_base_delay_ms,
         reasoning: settings.reasoning,
-        reasoning_split: settings.reasoning_split,
-        supports_prompt_cache_key: settings.supports_prompt_cache_key,
-        prompt_cache_retention: settings.prompt_cache_retention,
+        extras: ProviderExtras::OpenAi(OpenAiProviderExtras {
+            reasoning_split: settings.reasoning_split,
+            supports_prompt_cache_key: settings.supports_prompt_cache_key,
+            prompt_cache_retention: settings.prompt_cache_retention,
+        }),
         extra_headers: Default::default(),
     };
     create_provider(

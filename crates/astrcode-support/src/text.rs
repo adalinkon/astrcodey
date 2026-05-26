@@ -73,4 +73,24 @@ mod tests {
     fn truncate_first_line_preserves_internal_whitespace() {
         assert_eq!(truncate_first_line("hello   world", 80), "hello   world");
     }
+
+    #[test]
+    fn compact_inline_empty_string() {
+        assert_eq!(compact_inline("", 10), "");
+    }
+
+    #[test]
+    fn compact_inline_collapses_whitespace() {
+        assert_eq!(compact_inline("  hello   world  ", 80), "hello world");
+    }
+
+    #[test]
+    fn compact_inline_truncates_at_char_boundary() {
+        assert_eq!(compact_inline("0123456789", 5), "01234…");
+    }
+
+    #[test]
+    fn compact_inline_exact_limit_no_ellipsis() {
+        assert_eq!(compact_inline("abcde", 5), "abcde");
+    }
 }

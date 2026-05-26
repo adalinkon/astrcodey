@@ -22,21 +22,16 @@ pub(crate) fn visible_messages_for_assembler(model: &SessionReadModel) -> Vec<Ll
     messages
 }
 
-/// prepare 最终送 LLM：system 行 + context_messages + visible，再走 provider 归一化。
+/// 组装送 LLM 的完整消息：`system` + `prepare_context_messages` 返回的可见窗口。
+///
+/// `context_messages` 已是 compact / 未 compact 后的权威可见历史，不再叠加读模型。
 pub(crate) fn build_llm_request_messages(
-    model: &SessionReadModel,
     system_prompt: &str,
     context_messages: Vec<LlmMessage>,
 ) -> Vec<LlmMessage> {
-    let mut messages = Vec::with_capacity(
-        context_messages
-            .len()
-            .saturating_add(visible_messages_for_assembler(model).len())
-            .saturating_add(4),
-    );
+    let mut messages = Vec::with_capacity(context_messages.len().saturating_add(4));
     messages.extend(system_messages_from_prompt(system_prompt));
     messages.extend(context_messages);
-    messages.extend(visible_messages_for_assembler(model));
     provider_visible_messages(messages)
 }
 
@@ -86,7 +81,8 @@ mod tests {
     #[test]
     fn build_llm_request_injects_system_from_prompt() {
         let model = sample_model();
-        let messages = build_llm_request_messages(&model, "fresh system", Vec::new());
+        let messages =
+            build_llm_request_messages("fresh system", visible_messages_for_assembler(&model));
         assert!(messages.iter().any(|m| {
             m.role == LlmRole::System
                 && m.content.iter().any(|c| {

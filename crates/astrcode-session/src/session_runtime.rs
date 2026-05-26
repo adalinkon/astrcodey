@@ -172,11 +172,11 @@ impl SessionRuntimeState {
     }
 
     pub fn tool_registry(&self) -> Arc<ToolRegistry> {
-        self.tools.registry.lock().clone()
+        Arc::clone(&lock_parking(&self.tools.registry))
     }
 
     pub fn set_tool_registry(&self, registry: Arc<ToolRegistry>) {
-        *self.tools.registry.lock() = registry;
+        *lock_parking(&self.tools.registry) = registry;
     }
 
     pub fn background_tasks(&self) -> Arc<Mutex<BackgroundTaskManager>> {
@@ -184,19 +184,19 @@ impl SessionRuntimeState {
     }
 
     pub fn extra_system_prompt(&self) -> Option<String> {
-        self.configuration.extra_system_prompt.lock().clone()
+        lock_parking(&self.configuration.extra_system_prompt).clone()
     }
 
     pub fn set_extra_system_prompt(&self, prompt: Option<String>) {
-        *self.configuration.extra_system_prompt.lock() = prompt;
+        *lock_parking(&self.configuration.extra_system_prompt) = prompt;
     }
 
     pub fn tool_policy(&self) -> Option<ChildToolPolicy> {
-        self.configuration.tool_policy.lock().clone()
+        lock_parking(&self.configuration.tool_policy).clone()
     }
 
     pub fn set_tool_policy(&self, policy: Option<ChildToolPolicy>) {
-        *self.configuration.tool_policy.lock() = policy;
+        *lock_parking(&self.configuration.tool_policy) = policy;
     }
 
     pub fn compact_circuit_breaker(&self) -> &Mutex<CompactCircuitBreaker> {
@@ -204,22 +204,20 @@ impl SessionRuntimeState {
     }
 
     pub fn configure_compact_circuit_breaker(&self, threshold: u32, cooldown: Duration) {
-        self.compact_circuit_breaker
-            .lock()
-            .reconfigure(threshold, cooldown);
+        lock_parking(&self.compact_circuit_breaker).reconfigure(threshold, cooldown);
     }
 
     pub fn cached_stable_prefix(&self) -> Option<(String, String)> {
-        self.configuration.cached_stable_prefix.lock().clone()
+        lock_parking(&self.configuration.cached_stable_prefix).clone()
     }
 
     pub fn set_cached_stable_prefix(&self, text: String, fingerprint: String) {
-        *self.configuration.cached_stable_prefix.lock() = Some((text, fingerprint));
+        *lock_parking(&self.configuration.cached_stable_prefix) = Some((text, fingerprint));
     }
 
     /// 清空缓存的稳定前缀，强制下一 turn 全量重建（compact 后调用）。
     pub fn invalidate_stable_prefix_cache(&self) {
-        *self.configuration.cached_stable_prefix.lock() = None;
+        *lock_parking(&self.configuration.cached_stable_prefix) = None;
     }
 
     /// 订阅本 session 的事件流。

@@ -1,11 +1,6 @@
 //! 宿主能力路由 — 唯一实现 `astrcode.*` RPC 与扩展事件发射。
 
-use std::{
-    collections::HashMap,
-    path::{Component, Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use astrcode_core::{
     event::EventPayload,
@@ -17,6 +12,7 @@ use astrcode_extension_sdk::{
     s5r::{CapabilityDescriptor, ErrorPayload, EventMsg, EventPhase, WireMessage},
     state,
 };
+use astrcode_support::hostpaths::{WorkspacePathError, resolve_under_workspace_root};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -49,6 +45,7 @@ pub struct InvokeContext {
 }
 
 /// 宿主后端依赖。
+#[derive(Default)]
 pub struct HostBackends {
     pub small_llm: Option<Arc<dyn LlmProvider>>,
     pub session_read: Option<Arc<dyn astrcode_core::storage::EventReader>>,
@@ -136,6 +133,14 @@ impl HostRouter {
             "astrcode.session.state.write" => self.invoke_state_write(&input, ctx),
             "astrcode.event.emit" => self.invoke_emit(&input, ctx),
             "astrcode.workspace.read" => self.invoke_workspace_read(&input, ctx),
+            "astrcode.process.spawn" => Err(ErrorPayload::new(
+                "not_implemented",
+                "astrcode.process.spawn is reserved and not implemented in this host build",
+            )),
+            "astrcode.network.client" => Err(ErrorPayload::new(
+                "not_implemented",
+                "astrcode.network.client is reserved and not implemented in this host build",
+            )),
             _ => Err(ErrorPayload::new(
                 "not_implemented",
                 format!("capability not implemented: {cap}"),
@@ -454,11 +459,23 @@ impl HostRouter {
         let rel = input["path"]
             .as_str()
             .ok_or_else(|| ErrorPayload::new("invalid_input", "path required"))?;
-        let path = resolve_under_root(root, rel)?;
+        let path = resolve_under_workspace_root(root, rel).map_err(workspace_path_to_payload)?;
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|e| ErrorPayload::new("io_error", e.to_string()))?;
+        if metadata.file_type().is_symlink() {
+            return Err(ErrorPayload::new(
+                "permission_denied",
+                "symlink paths are not readable via workspace.read",
+            ));
+        }
         let content = std::fs::read_to_string(&path)
             .map_err(|e| ErrorPayload::new("io_error", e.to_string()))?;
         Ok(serde_json::json!({ "content": content }))
     }
+}
+
+fn workspace_path_to_payload(err: WorkspacePathError) -> ErrorPayload {
+    ErrorPayload::new(err.code, err.message)
 }
 
 fn submit_turn_result_json(r: SubmitTurnResult) -> Value {
@@ -609,35 +626,6 @@ fn safe_filename(key: &str) -> String {
             }
         })
         .collect()
-}
-
-fn resolve_under_root(root: &str, rel: &str) -> Result<PathBuf, ErrorPayload> {
-    let root = Path::new(root)
-        .canonicalize()
-        .map_err(|e| ErrorPayload::new("io_error", e.to_string()))?;
-    let mut path = root.clone();
-    for comp in Path::new(rel).components() {
-        match comp {
-            Component::ParentDir => {
-                return Err(ErrorPayload::new("permission_denied", "path escapes root"));
-            },
-            Component::Normal(p) => path.push(p),
-            Component::CurDir => {},
-            _ => {
-                return Err(ErrorPayload::new("invalid_input", "invalid path component"));
-            },
-        }
-    }
-    let canonical = path
-        .canonicalize()
-        .map_err(|e| ErrorPayload::new("io_error", e.to_string()))?;
-    if !canonical.starts_with(&root) {
-        return Err(ErrorPayload::new(
-            "permission_denied",
-            "path outside working directory",
-        ));
-    }
-    Ok(canonical)
 }
 
 /// 供 runner 内 `ExtensionEventSink` 与 WASM 路径复用。

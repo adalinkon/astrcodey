@@ -62,7 +62,9 @@ impl TurnPublisher {
                     .map_err(|e| TurnError::SessionReadFailed(e.to_string()))?,
             );
         }
-        Ok(cache.clone().expect("model cache populated"))
+        cache
+            .clone()
+            .ok_or_else(|| TurnError::SessionReadFailed("model cache not populated".into()))
     }
 
     pub(crate) async fn durable(&self, payload: EventPayload) -> Result<(), TurnError> {

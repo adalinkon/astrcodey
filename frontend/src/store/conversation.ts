@@ -812,7 +812,17 @@ export const useAppStore = create<ConversationState>((set, get) => ({
   },
 }))
 
-const SSE_RECONNECT_DELAY_MS = 3000
+const SSE_RECONNECT_BASE_MS = 1000
+const SSE_RECONNECT_MAX_MS = 30_000
+
+function sseReconnectDelayMs(attempt: number): number {
+  const capped = Math.min(
+    SSE_RECONNECT_MAX_MS,
+    SSE_RECONNECT_BASE_MS * 2 ** attempt
+  )
+  const jitter = Math.random() * 0.3 * capped
+  return Math.round(capped + jitter)
+}
 
 function connectSse(
   sessionId: string,
@@ -825,6 +835,7 @@ function connectSse(
   ) => void
 ): void {
   const abortController = new AbortController()
+  let reconnectAttempt = 0
   set({ streamAbortController: abortController })
 
   // rAF batcher: collect high-frequency deltas and flush once per animation frame.
@@ -933,29 +944,26 @@ function connectSse(
         const current = get()
         if (current.activeSessionId === sessionId) {
           const latestCursor = current.cursor ?? cursor
+          const delayMs = sseReconnectDelayMs(reconnectAttempt++)
           setTimeout(() => {
             if (get().activeSessionId === sessionId) {
               connectSse(sessionId, latestCursor, get, set)
             }
-          }, SSE_RECONNECT_DELAY_MS)
+          }, delayMs)
         }
       }
     })
     .catch((err) => {
       if (abortController.signal.aborted) return
-      console.error(
-        'SSE stream error, reconnecting in',
-        SSE_RECONNECT_DELAY_MS,
-        'ms:',
-        err
-      )
+      const delayMs = sseReconnectDelayMs(reconnectAttempt++)
+      console.error('SSE stream error, reconnecting in', delayMs, 'ms:', err)
       if (get().activeSessionId === sessionId) {
         const latestCursor = get().cursor ?? cursor
         setTimeout(() => {
           if (get().activeSessionId === sessionId) {
             connectSse(sessionId, latestCursor, get, set)
           }
-        }, SSE_RECONNECT_DELAY_MS)
+        }, delayMs)
       }
     })
 }

@@ -2421,7 +2421,7 @@ async fn auto_compact_uses_configured_keep_recent_turns() {
 }
 
 #[tokio::test]
-async fn auto_compact_breaker_skips_after_llm_compact_failure() {
+async fn auto_compact_breaker_skips_llm_but_still_runs_deterministic_compact() {
     let runtime = test_runtime_with_settings(
         Arc::new(AutoCompactFailingLlm),
         astrcode_context::ContextSettings {
@@ -2486,5 +2486,6 @@ async fn auto_compact_breaker_skips_after_llm_compact_failure() {
             _ => {},
         }
     }
-    assert_eq!(second_compactions, 0);
+    // 断路器只阻止再次调用 LLM，阈值仍满足时会做确定性 compact。
+    assert_eq!(second_compactions, 1);
 }
