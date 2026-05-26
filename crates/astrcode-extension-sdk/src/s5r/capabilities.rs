@@ -7,6 +7,7 @@ pub fn astrcode_capability_name(cap: ExtensionCapability) -> &'static str {
     match cap {
         ExtensionCapability::SessionState => "astrcode.session.state",
         ExtensionCapability::SessionControl => "astrcode.session.control",
+        ExtensionCapability::MainModel => "astrcode.llm.main_chat",
         ExtensionCapability::SmallModel => "astrcode.llm.small_chat",
         ExtensionCapability::SessionHistory => "astrcode.session.read_events",
         ExtensionCapability::EmitEvents => "astrcode.event.emit",
@@ -21,6 +22,7 @@ pub fn capability_to_wire(cap: ExtensionCapability) -> &'static str {
     match cap {
         ExtensionCapability::SessionState => "session_state",
         ExtensionCapability::SessionControl => "session_control",
+        ExtensionCapability::MainModel => "main_model",
         ExtensionCapability::SmallModel => "small_model",
         ExtensionCapability::SessionHistory => "session_history",
         ExtensionCapability::EmitEvents => "emit_events",
@@ -34,6 +36,7 @@ pub fn capability_from_wire(name: &str) -> Option<ExtensionCapability> {
     match name {
         "session_state" => Some(ExtensionCapability::SessionState),
         "session_control" => Some(ExtensionCapability::SessionControl),
+        "main_model" => Some(ExtensionCapability::MainModel),
         "small_model" => Some(ExtensionCapability::SmallModel),
         "session_history" => Some(ExtensionCapability::SessionHistory),
         "emit_events" => Some(ExtensionCapability::EmitEvents),

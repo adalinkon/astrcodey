@@ -58,7 +58,10 @@ impl SessionOperations for ServerSessionOperations {
             .map_err(|e| SessionApiError::Internal(e.to_string()))?;
 
         let working_dir = request.working_dir.unwrap_or(parent_model.working_dir);
-        let model_id = request.model_preference.unwrap_or(parent_model.model_id);
+        let model_id = request
+            .model_preference
+            .filter(|m| m != "inherit" && !m.is_empty())
+            .unwrap_or(parent_model.model_id);
 
         let child = parent_session
             .spawn_child(

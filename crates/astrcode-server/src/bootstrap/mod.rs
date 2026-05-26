@@ -184,6 +184,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     // 提供运行时依赖（EventStore、small_llm）。不传给磁盘 IPC 扩展。
     let host_services = Arc::new(ExtensionHostServices::new(
         Arc::clone(&event_store),
+        Some(capabilities.llm()),
         Some(capabilities.small_llm()),
     ));
     extension_runner.bind_host_services(Arc::clone(&host_services));
@@ -250,10 +251,11 @@ impl ServerRuntime {
 
     /// 按当前配置重载扩展集合，并让已打开 session 的工具快照在下一次 turn 重建。
     pub async fn reload_extensions(&self) -> Vec<String> {
-        let small_llm = self.capabilities().small_llm();
+        let caps = self.capabilities();
         let host_services = Arc::new(ExtensionHostServices::new(
             Arc::clone(self.event_store()),
-            Some(small_llm),
+            Some(caps.llm()),
+            Some(caps.small_llm()),
         ));
         self.extension_runner()
             .bind_host_services(Arc::clone(&host_services));

@@ -38,7 +38,10 @@ impl Extension for AgentToolsExtension {
     }
 
     fn capabilities(&self) -> &[ExtensionCapability] {
-        &[ExtensionCapability::SessionControl]
+        &[
+            ExtensionCapability::SessionControl,
+            ExtensionCapability::SmallModel,
+        ]
     }
 
     fn register(&self, reg: &mut Registrar) {
@@ -222,16 +225,11 @@ impl ToolHandler for AgentToolHandler {
                 })?,
         };
 
-        // TODO: 允许插件页面为每个 agent 单独选择模型
-        let model_for_child = ctx
-            .capabilities
-            .small_model_id
-            .as_deref()
-            .or(matched.model.as_deref())
-            .unwrap_or("inherit");
+        let model_preference = resolve_child_small_model(&ctx.capabilities)?;
+        let model_label = model_preference.as_str();
 
         // 构造 UI 渲染元数据
-        let render = agent_run_render_spec(&args, &matched.name, model_for_child);
+        let render = agent_run_render_spec(&args, &matched.name, model_label);
         let render_json = serde_json::to_value(&render)
             .map_err(|e| ExtensionError::Internal(format!("serialize render: {e}")))?;
 
@@ -250,7 +248,7 @@ impl ToolHandler for AgentToolHandler {
                     name: matched.name.clone(),
                     working_dir: None,
                     system_prompt: Some(enhance_agent_prompt(&matched.body, working_dir)),
-                    model_preference: Some(model_for_child.to_string()),
+                    model_preference: Some(model_preference),
                     // TODO： A BETTER policy 设计
                     tool_policy: Some(ChildToolPolicy::Deny {
                         tools: vec!["agent".into()],
@@ -402,6 +400,25 @@ fn agent_tool_metadata()
 
 // ─── 共享工具函数 ──────────────────────────────────────────────────────
 
+/// 子 session 固定使用配置的小模型（`activeSmallModel` / effective `small_llm`）。
+///
+/// agent 文件中的 `model` 字段暂不生效；后续若支持按 agent 选模型再扩展此处。
+fn resolve_child_small_model(
+    caps: &astrcode_extension_sdk::tool::ToolCapabilities,
+) -> Result<String, ExtensionError> {
+    caps.llm_models
+        .small
+        .clone()
+        .or_else(|| caps.small_model_id.clone())
+        .ok_or_else(|| {
+        ExtensionError::Internal(
+            "子 Agent 需要已配置的小模型（activeSmallProfile + activeSmallModel）。\
+             请在设置中配置 Small LLM 后重试。"
+                .into(),
+        )
+    })
+}
+
 /// 为子 agent 的 body 追加共享增强内容：环境信息 + 行为规范。
 fn enhance_agent_prompt(agent_body: &str, working_dir: &str) -> String {
     let os = std::env::consts::OS;
@@ -495,5 +512,20 @@ mod tests {
         let input = json!({ "description": "test" });
         let result = serde_json::from_value::<AgentArgs>(input);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_child_small_model_always_uses_configured_small_llm() {
+        let caps = astrcode_extension_sdk::tool::ToolCapabilities {
+            small_model_id: Some("haiku".into()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_child_small_model(&caps).unwrap(), "haiku");
+    }
+
+    #[test]
+    fn resolve_child_small_model_errors_when_missing() {
+        let caps = astrcode_extension_sdk::tool::ToolCapabilities::default();
+        assert!(resolve_child_small_model(&caps).is_err());
     }
 }

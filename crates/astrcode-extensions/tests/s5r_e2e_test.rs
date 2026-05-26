@@ -72,7 +72,7 @@ fn ensure_guest_built() -> std::path::PathBuf {
 
 fn minimal_router() -> Arc<astrcode_extensions::HostRouter> {
     let store: Arc<dyn astrcode_core::storage::EventStore> = Arc::new(InMemoryEventStore::new());
-    build_host_router(Arc::new(ExtensionHostServices::new(store, None)), None)
+    build_host_router(Arc::new(ExtensionHostServices::new(store, None, None)), None)
 }
 
 struct MockLlm;
@@ -107,7 +107,11 @@ impl LlmProvider for MockLlm {
 fn mock_router() -> Arc<astrcode_extensions::HostRouter> {
     let store: Arc<dyn astrcode_core::storage::EventStore> = Arc::new(InMemoryEventStore::new());
     build_host_router(
-        Arc::new(ExtensionHostServices::new(store, Some(Arc::new(MockLlm)))),
+        Arc::new(ExtensionHostServices::new(
+            store,
+            Some(Arc::new(MockLlm)),
+            Some(Arc::new(MockLlm)),
+        )),
         None,
     )
 }

@@ -405,16 +405,31 @@ pub enum SessionApiError {
     Internal(String),
 }
 
+/// 按档位暴露的 LLM model id（与 effective config 对齐）。
+///
+/// 后续可增加 `middle` 等字段；子 agent / 插件应显式选择档位，避免硬编码字段名。
+#[derive(Clone, Default)]
+pub struct LlmModelIds {
+    /// 父 session 主模型（`activeModel`）。
+    pub main: Option<String>,
+    /// 配置的小模型（`activeSmallModel`）。
+    pub small: Option<String>,
+}
+
 /// 工具调用时按需注入的会话能力。
 ///
 /// 大多数工具不需要这些能力；`Default::default()` 产生全部为 `None` 的空集。
 /// 生产环境由 agent loop 在构建 `ToolExecutionContext` 时按需填充。
 #[derive(Clone, Default)]
 pub struct ToolCapabilities {
-    /// 当前使用的模型标识（仅 FFI bridge 需要）。
+    /// 当前 session 主模型 id（与 [`LlmModelIds::main`] 相同；保留供既有调用方）。
     pub model_id: Option<String>,
-    /// 小模型标识，供子 agent 使用。
+    /// 主模型 id；须在扩展 manifest 声明 `main_model` 能力后可用。
+    pub main_model_id: Option<String>,
+    /// 小模型 id；须在扩展 manifest 声明 `small_model` 能力后可用。
     pub small_model_id: Option<String>,
+    /// 分档模型 id 快照（未声明对应能力时，各档可能为 `None`）。
+    pub llm_models: LlmModelIds,
     /// 当前 session 在存储层中的真实目录路径。
     ///
     /// 子 session 的真实目录可能在 `subagents/{extension}/` 下，
@@ -500,6 +515,8 @@ impl std::fmt::Debug for ToolCapabilities {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolCapabilities")
             .field("model_id", &self.model_id)
+            .field("main_model_id", &self.main_model_id)
+            .field("small_model_id", &self.small_model_id)
             .field(
                 "available_tools",
                 &self.available_tools.as_ref().map(|t| t.len()),

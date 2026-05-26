@@ -22,8 +22,9 @@ impl Session {
         source_extension: Option<&str>,
         tool_call_id: ToolCallId,
     ) -> Result<Self, super::SessionError> {
+        let primary_llm = primary_llm_for_model_id(&self.caps, model_id);
         let child_runtime = Arc::new(SessionRuntimeState::new(
-            self.caps.llm(),
+            primary_llm,
             self.caps.small_llm(),
             model_id.to_string(),
         ));
@@ -71,5 +72,18 @@ impl Session {
     /// 完成通知 channel（丢弃积压 signal，避免重复处理），再收集已完成的 guard。
     pub fn drain_completed_guards(&self) -> Vec<Arc<crate::child_turn::ChildTurnGuard>> {
         self.runtime.drain_completed()
+    }
+}
+
+/// 子 session 的 turn 使用 `SessionModelBinding.llm`；当目标 model_id 为小模型时选用 small provider。
+fn primary_llm_for_model_id(
+    caps: &crate::session_runtime_services::SessionRuntimeServices,
+    model_id: &str,
+) -> std::sync::Arc<dyn astrcode_core::llm::LlmProvider> {
+    let effective = caps.read_effective();
+    if model_id == effective.small_llm.model_id && model_id != effective.llm.model_id {
+        caps.small_llm()
+    } else {
+        caps.llm()
     }
 }

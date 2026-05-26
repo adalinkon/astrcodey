@@ -78,6 +78,24 @@ pub fn inject_host_api(api: std::sync::Arc<dyn HostApi>) -> Result<(), ()> {
 pub struct HostClient;
 
 impl HostClient {
+    /// 调用宿主主模型（manifest 须声明 `main_model`）。
+    pub async fn main_chat(messages: Value) -> Result<Value, ErrorPayload> {
+        Self::call(
+            "astrcode.llm.main_chat",
+            serde_json::json!({ "messages": messages }),
+        )
+        .await
+    }
+
+    /// 调用宿主小模型（manifest 须声明 `small_model`）。
+    pub async fn small_chat(messages: Value) -> Result<Value, ErrorPayload> {
+        Self::call(
+            "astrcode.llm.small_chat",
+            serde_json::json!({ "messages": messages }),
+        )
+        .await
+    }
+
     pub async fn call(capability: &str, input: Value) -> Result<Value, ErrorPayload> {
         let api = HOST_API
             .get()

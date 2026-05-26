@@ -492,6 +492,7 @@ impl ExtensionRunner {
                 bind_extension_event_sink(&id, reg.extension_event_decls(), tx.clone())
             });
         let needs_host_services = capabilities.contains(&ExtensionCapability::SessionHistory)
+            || capabilities.contains(&ExtensionCapability::MainModel)
             || capabilities.contains(&ExtensionCapability::SmallModel);
         let host_services = needs_host_services
             .then(|| {
@@ -500,6 +501,10 @@ impl ExtensionRunner {
                         session_read: capabilities
                             .contains(&ExtensionCapability::SessionHistory)
                             .then(|| services.session_read.clone())
+                            .flatten(),
+                        main_llm: capabilities
+                            .contains(&ExtensionCapability::MainModel)
+                            .then(|| services.main_llm.clone())
                             .flatten(),
                         small_llm: capabilities
                             .contains(&ExtensionCapability::SmallModel)
@@ -1226,8 +1231,13 @@ impl Tool for HandlerTool {
         {
             ctx.capabilities.session_ops = None;
         }
+        if !self.capabilities.contains(&ExtensionCapability::MainModel) {
+            ctx.capabilities.main_model_id = None;
+            ctx.capabilities.llm_models.main = None;
+        }
         if !self.capabilities.contains(&ExtensionCapability::SmallModel) {
             ctx.capabilities.small_model_id = None;
+            ctx.capabilities.llm_models.small = None;
         }
         ctx.capabilities.extension_event_sink = if self
             .capabilities

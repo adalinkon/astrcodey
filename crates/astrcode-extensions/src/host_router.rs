@@ -69,6 +69,7 @@ const MAX_READ_EVENTS_LIMIT: usize = 500;
 /// 宿主后端依赖。
 #[derive(Default)]
 pub struct HostBackends {
+    pub main_llm: Option<Arc<dyn LlmProvider>>,
     pub small_llm: Option<Arc<dyn LlmProvider>>,
     pub session_read: Option<Arc<dyn astrcode_core::storage::EventReader>>,
     pub default_working_dir: Option<String>,
@@ -83,6 +84,7 @@ impl HostRouter {
     pub fn new(host_services: &ExtensionHostServices, default_working_dir: Option<String>) -> Self {
         Self {
             backends: HostBackends {
+                main_llm: host_services.main_llm.clone(),
                 small_llm: host_services.small_llm.clone(),
                 session_read: host_services.session_read.clone(),
                 default_working_dir,
@@ -146,6 +148,7 @@ impl HostRouter {
             .map_err(|e| ErrorPayload::new("invalid_input", e.to_string()))?;
 
         match cap {
+            "astrcode.llm.main_chat" => self.invoke_main_llm(&input, false, ctx),
             "astrcode.llm.small_chat" => self.invoke_small_llm(&input, false, ctx),
             "astrcode.session.read_events" => self.invoke_read_events(&input, ctx),
             "astrcode.session.control.create" => self.invoke_session_create(&input, ctx),
@@ -189,7 +192,12 @@ impl HostRouter {
         let request_id = request_id.to_string();
 
         match cap {
-            "astrcode.llm.small_chat" => {
+            "astrcode.llm.main_chat" | "astrcode.llm.small_chat" => {
+                let invoke = if cap == "astrcode.llm.main_chat" {
+                    self.invoke_main_llm(&input, true, ctx)
+                } else {
+                    self.invoke_small_llm(&input, true, ctx)
+                };
                 let mut events = vec![WireMessage::Event(EventMsg {
                     id: request_id.clone(),
                     phase: EventPhase::Started,
@@ -197,7 +205,7 @@ impl HostRouter {
                     output: Value::Null,
                     error: None,
                 })];
-                match self.invoke_small_llm(&input, true, ctx) {
+                match invoke {
                     Ok(output) => {
                         if let Some(chunks) = output.get("chunks").and_then(|c| c.as_array()) {
                             for chunk in chunks {
@@ -238,17 +246,38 @@ impl HostRouter {
         }
     }
 
+    fn invoke_main_llm(
+        &self,
+        input: &Value,
+        collect_chunks: bool,
+        ctx: &InvokeContext,
+    ) -> Result<Value, ErrorPayload> {
+        let provider = self.backends.main_llm.as_ref().ok_or_else(|| {
+            ErrorPayload::new("backend_unavailable", "main_llm not configured")
+        })?;
+        self.invoke_llm_chat(provider, "main_llm", input, collect_chunks, ctx)
+    }
+
     fn invoke_small_llm(
         &self,
         input: &Value,
         collect_chunks: bool,
         ctx: &InvokeContext,
     ) -> Result<Value, ErrorPayload> {
-        let provider =
-            self.backends.small_llm.as_ref().ok_or_else(|| {
-                ErrorPayload::new("backend_unavailable", "small_llm not configured")
-            })?;
+        let provider = self.backends.small_llm.as_ref().ok_or_else(|| {
+            ErrorPayload::new("backend_unavailable", "small_llm not configured")
+        })?;
+        self.invoke_llm_chat(provider, "small_llm", input, collect_chunks, ctx)
+    }
 
+    fn invoke_llm_chat(
+        &self,
+        provider: &Arc<dyn LlmProvider>,
+        model_label: &'static str,
+        input: &Value,
+        collect_chunks: bool,
+        ctx: &InvokeContext,
+    ) -> Result<Value, ErrorPayload> {
         let messages = input["messages"]
             .as_array()
             .map(|arr| {
@@ -281,13 +310,14 @@ impl HostRouter {
 
         let cancel = ctx.cancel_token.clone();
         let provider = Arc::clone(provider);
+        let label = model_label.to_string();
         block_on_async(async move {
             tokio::time::timeout(
                 HOST_INVOKE_TIMEOUT,
-                run_small_llm(&*provider, messages, collect_chunks, cancel.as_ref()),
+                run_host_llm_chat(&*provider, &label, messages, collect_chunks, cancel.as_ref()),
             )
             .await
-            .map_err(|_| ErrorPayload::new("timeout", "small_llm.chat timed out"))?
+            .map_err(|_| ErrorPayload::new("timeout", format!("{label}.chat timed out")))?
         })
     }
 
@@ -593,6 +623,7 @@ fn capability_wire_name(cap: ExtensionCapability) -> &'static str {
 
 fn required_capability_for_astrcode(cap: &str) -> Option<ExtensionCapability> {
     match cap {
+        "astrcode.llm.main_chat" => Some(ExtensionCapability::MainModel),
         "astrcode.llm.small_chat" => Some(ExtensionCapability::SmallModel),
         "astrcode.session.read_events" => Some(ExtensionCapability::SessionHistory),
         c if c.starts_with("astrcode.session.control") => Some(ExtensionCapability::SessionControl),
@@ -606,6 +637,17 @@ fn required_capability_for_astrcode(cap: &str) -> Option<ExtensionCapability> {
 fn descriptors_for_capability(cap: ExtensionCapability) -> Vec<CapabilityDescriptor> {
     let object_schema = serde_json::json!({ "type": "object" });
     match cap {
+        ExtensionCapability::MainModel => vec![CapabilityDescriptor {
+            name: "astrcode.llm.main_chat".into(),
+            description: "Chat with the host-configured main LLM (session active model)".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": { "messages": { "type": "array" } }
+            }),
+            output_schema: object_schema.clone(),
+            supports_stream: true,
+            cancelable: true,
+        }],
         ExtensionCapability::SmallModel => vec![CapabilityDescriptor {
             name: "astrcode.llm.small_chat".into(),
             description: "Chat with the host-configured small LLM".into(),
@@ -689,8 +731,9 @@ fn descriptors_for_capability(cap: ExtensionCapability) -> Vec<CapabilityDescrip
     }
 }
 
-async fn run_small_llm(
+async fn run_host_llm_chat(
     provider: &dyn LlmProvider,
+    model_label: &str,
     messages: Vec<LlmMessage>,
     collect_chunks: bool,
     cancel_token: Option<&CancellationToken>,
@@ -734,11 +777,11 @@ async fn run_small_llm(
     if collect_chunks {
         Ok(serde_json::json!({
             "content": text,
-            "model": "small_llm",
+            "model": model_label,
             "chunks": chunks
         }))
     } else {
-        Ok(serde_json::json!({ "content": text, "model": "small_llm" }))
+        Ok(serde_json::json!({ "content": text, "model": model_label }))
     }
 }
 

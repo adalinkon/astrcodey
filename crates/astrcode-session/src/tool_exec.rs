@@ -9,7 +9,7 @@ use astrcode_core::{
     storage::ToolResultArtifactReader,
     tool::{
         BackgroundPolicy, BackgroundTaskReader, FileObservation, FileObservationStore,
-        ToolCapabilities, ToolDefinition, ToolError, ToolExecutionContext, ToolResult,
+        LlmModelIds, ToolCapabilities, ToolDefinition, ToolError, ToolExecutionContext, ToolResult,
     },
     types::*,
 };
@@ -43,8 +43,12 @@ pub(crate) struct ToolRuntimeCapabilities {
     pub file_observation_store: Option<Arc<dyn FileObservationStore>>,
     /// 会话原子操作能力，供 agent 工具使用。
     pub session_ops: Option<Arc<dyn astrcode_core::tool::SessionOperations>>,
-    /// 小模型 ID，供子 agent 工具使用。
+    /// 主模型 ID，供声明 `main_model` 的插件使用。
+    pub main_model_id: Option<String>,
+    /// 小模型 ID，供子 agent / 声明 `small_model` 的插件使用。
     pub small_model_id: Option<String>,
+    /// 分档模型 id（注入 ToolCapabilities 前由 runner 按能力裁剪）。
+    pub llm_models: LlmModelIds,
     /// session 在存储层的真实目录路径。
     pub session_store_dir: Option<std::path::PathBuf>,
 }
@@ -61,14 +65,22 @@ impl ToolRuntimeCapabilities {
         let background_task_reader: Option<Arc<dyn BackgroundTaskReader>> = Some(Arc::new(
             crate::background::BackgroundTaskReaderImpl::new(runtime.background_tasks()),
         ));
+        let effective = caps.read_effective();
+        let main_model_id = effective.llm.model_id.clone();
+        let small_model_id = effective.small_llm.model_id.clone();
         Self {
             background_result_tx,
             background_tasks: runtime.background_tasks(),
             background_task_reader,
             file_observation_store: Some(runtime.file_observation_store()),
             session_ops: caps.session_ops(),
-            small_model_id: Some(caps.read_effective().small_llm.model_id.clone()),
+            small_model_id: Some(small_model_id.clone()),
             session_store_dir,
+            main_model_id: Some(main_model_id.clone()),
+            llm_models: LlmModelIds {
+                main: Some(main_model_id),
+                small: Some(small_model_id),
+            },
         }
     }
 }
@@ -191,6 +203,22 @@ fn resolve_effective_policy(
 
 use crate::turn_publish::spawn_event_bridge;
 
+fn tool_capabilities_from_runtime(runtime: &ToolCallRuntimeContext) -> ToolCapabilities {
+    ToolCapabilities {
+        model_id: Some(runtime.model_id.clone()),
+        main_model_id: runtime.capabilities.main_model_id.clone(),
+        small_model_id: runtime.capabilities.small_model_id.clone(),
+        llm_models: runtime.capabilities.llm_models.clone(),
+        session_store_dir: runtime.capabilities.session_store_dir.clone(),
+        available_tools: Some(runtime.tools.clone()),
+        tool_result_reader: runtime.tool_result_reader.clone(),
+        background_task_reader: runtime.capabilities.background_task_reader.clone(),
+        file_observation_store: runtime.capabilities.file_observation_store.clone(),
+        session_ops: runtime.capabilities.session_ops.clone(),
+        extension_event_sink: None,
+    }
+}
+
 /// 普通的阻塞式工具执行（原有逻辑）。
 async fn execute_tool_call_blocking(
     tool_registry: Arc<ToolRegistry>,
@@ -200,6 +228,7 @@ async fn execute_tool_call_blocking(
     let started_at = Instant::now();
     let tool_name = call.name;
     let call_id = call.call_id.clone();
+    let capabilities = tool_capabilities_from_runtime(&runtime);
     let tool_event_bridge = Some(spawn_event_bridge(runtime.publisher));
     let tool_event_tx = tool_event_bridge
         .as_ref()
@@ -209,17 +238,7 @@ async fn execute_tool_call_blocking(
         working_dir: runtime.working_dir,
         tool_call_id: Some(call.call_id.clone()),
         event_tx: tool_event_tx,
-        capabilities: ToolCapabilities {
-            model_id: Some(runtime.model_id),
-            small_model_id: runtime.capabilities.small_model_id,
-            session_store_dir: runtime.capabilities.session_store_dir,
-            available_tools: Some(runtime.tools),
-            tool_result_reader: runtime.tool_result_reader,
-            background_task_reader: runtime.capabilities.background_task_reader,
-            file_observation_store: runtime.capabilities.file_observation_store,
-            session_ops: runtime.capabilities.session_ops,
-            extension_event_sink: None,
-        },
+        capabilities,
     };
 
     let result = match tool_registry
@@ -289,17 +308,7 @@ async fn execute_tool_call_with_background(
         working_dir: runtime.working_dir.clone(),
         tool_call_id: Some(call.call_id.clone()),
         event_tx: tool_event_tx,
-        capabilities: ToolCapabilities {
-            model_id: Some(runtime.model_id.clone()),
-            small_model_id: runtime.capabilities.small_model_id.clone(),
-            session_store_dir: runtime.capabilities.session_store_dir.clone(),
-            available_tools: Some(runtime.tools.clone()),
-            tool_result_reader: runtime.tool_result_reader.clone(),
-            background_task_reader: runtime.capabilities.background_task_reader.clone(),
-            file_observation_store: runtime.capabilities.file_observation_store.clone(),
-            session_ops: runtime.capabilities.session_ops.clone(),
-            extension_event_sink: None,
-        },
+        capabilities: tool_capabilities_from_runtime(&runtime),
     };
 
     // 共享结果槽：exec task 写入，主线程或 watcher 读取

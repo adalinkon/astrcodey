@@ -76,18 +76,26 @@ worker.tool(
 
 ## 调用宿主能力
 
-```rust
-let out = HostClient::call(
-    "astrcode.llm.small_chat",
-    serde_json::json!({ "messages": [...] }),
-).await?;
-```
-
-须在 manifest 中声明 capability（如 `small_model`）：
+主模型与小模型分别声明、分别调用：
 
 ```rust
+// 主模型（当前 session 的 activeModel）
+worker.capability("main_model");
+let out = HostClient::main_chat(serde_json::json!([
+    { "role": "user", "content": "summarize this" }
+])).await?;
+
+// 小模型（activeSmallModel）
 worker.capability("small_model");
+let out = HostClient::small_chat(serde_json::json!([
+    { "role": "user", "content": "tag this line" }
+])).await?;
 ```
+
+进程内 bundled 工具还可读 `ToolExecutionContext.capabilities`：
+
+- `main_model_id` / `llm_models.main` — 需声明 `main_model`
+- `small_model_id` / `llm_models.small` — 需声明 `small_model`
 
 完整 wire 名与能力对照见 [extension-system.md](extension-system.md)。
 

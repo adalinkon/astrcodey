@@ -15,7 +15,8 @@ pub struct AgentConfig {
     pub name: String,
     /// 描述何时应选择此 Agent（给 LLM 的选择依据）。
     pub description: String,
-    /// `None` 或 `"inherit"` 表示继承父会话模型。
+    /// 预留：按 agent 指定模型档位；当前子 Agent 固定使用 small，本字段暂不读取。
+    #[allow(dead_code)]
     pub model: Option<String>,
     /// 系统提示词正文。
     pub body: String,

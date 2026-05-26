@@ -83,6 +83,8 @@ pub enum ExtensionCapability {
     SessionState,
     /// 创建子 session、提交 turn 与回收 session。
     SessionControl,
+    /// 调用宿主配置的主模型（当前 session 的 active model）。
+    MainModel,
     /// 调用宿主配置的小模型。
     SmallModel,
     /// 只读查询历史 session 投影。
@@ -351,15 +353,22 @@ pub struct ExtensionHostServices {
     /// 由 `Arc<dyn EventStore>` 通过 trait upcasting 转换而来
     /// （Rust 1.86+，`EventStore: EventReader` 建立 supertrait 关系）。
     pub session_read: Option<Arc<dyn EventReader>>,
-    /// 小模型 provider，用于记忆提取。
+    /// 主模型 provider（当前 session active model）。
+    pub main_llm: Option<Arc<dyn LlmProvider>>,
+    /// 小模型 provider（`activeSmallModel`；未配置时与主模型相同）。
     pub small_llm: Option<Arc<dyn LlmProvider>>,
 }
 
 impl ExtensionHostServices {
-    pub fn new(event_store: Arc<dyn EventStore>, small_llm: Option<Arc<dyn LlmProvider>>) -> Self {
+    pub fn new(
+        event_store: Arc<dyn EventStore>,
+        main_llm: Option<Arc<dyn LlmProvider>>,
+        small_llm: Option<Arc<dyn LlmProvider>>,
+    ) -> Self {
         Self {
             // Arc<dyn EventStore> → Arc<dyn EventReader> 由 trait upcasting 自动完成。
             session_read: Some(event_store),
+            main_llm,
             small_llm,
         }
     }
