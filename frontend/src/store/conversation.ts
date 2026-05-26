@@ -951,7 +951,13 @@ function connectSse(
           const delayMs = sseReconnectDelayMs(reconnectAttempt)
           setTimeout(() => {
             if (get().activeSessionId === sessionId) {
-              connectSse(sessionId, latestCursor, reconnectAttempt + 1, get, set)
+              connectSse(
+                sessionId,
+                latestCursor,
+                reconnectAttempt + 1,
+                get,
+                set
+              )
             }
           }, delayMs)
         }

@@ -464,6 +464,92 @@ async fn auto_compact_persist_conflict_keeps_ssot_and_provider_history() {
     );
 }
 
+#[tokio::test]
+async fn compact_idle_session_skips_when_cursor_races_during_llm() {
+    use astrcode_session::compaction_run::{
+        IdleCompactionOutcome, IdleCompactionParams, compact_idle_session,
+    };
+
+    let race_llm = Arc::new(RaceOnCompactLlm {
+        calls: AtomicUsize::new(0),
+        main_requests: Arc::new(std::sync::Mutex::new(Vec::new())),
+        compact_started: Arc::new(std::sync::Mutex::new(None)),
+        race_continue: Arc::new(Notify::new()),
+    });
+    let context = ContextSettings {
+        auto_compact_enabled: true,
+        auto_compact_threshold: 0.01,
+        ..Default::default()
+    };
+    let (session, store) = spawn_session(
+        Arc::clone(&race_llm) as Arc<dyn LlmProvider>,
+        context.clone(),
+    )
+    .await;
+    let session = Arc::new(session);
+    configure_system_prompt(session.as_ref()).await;
+    seed_history(session.as_ref(), 3).await;
+
+    let state = session.read_model().await.unwrap();
+    let caps = test_caps(race_llm.clone(), context);
+    let extension_runner = caps.extension_runner();
+    let context_assembler = caps.context_assembler();
+    let tools = session
+        .refresh_tools(&state.working_dir)
+        .await
+        .list_definitions();
+
+    let compact_started = Arc::clone(&race_llm.compact_started);
+    let race_continue = Arc::clone(&race_llm.race_continue);
+    let session_for_race = Arc::clone(&session);
+    let compact_task = tokio::spawn(async move {
+        compact_idle_session(
+            session_for_race.as_ref(),
+            extension_runner.as_ref(),
+            context_assembler.as_ref(),
+            caps.llm(),
+            &state,
+            &tools,
+            IdleCompactionParams {
+                keep_recent_turns: None,
+                transcript_path: None,
+            },
+        )
+        .await
+    });
+
+    let started_rx = loop {
+        if let Some(tx) = compact_started.lock().unwrap().take() {
+            break tx;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    started_rx.await.unwrap();
+    session
+        .as_ref()
+        .emit_durable(
+            None,
+            EventPayload::UserMessage {
+                message_id: new_message_id(),
+                text: "race during idle compact".into(),
+            },
+        )
+        .await
+        .unwrap();
+    race_continue.notify_waiters();
+
+    let outcome = compact_task.await.unwrap().unwrap();
+    assert!(
+        matches!(outcome, IdleCompactionOutcome::Skipped { .. }),
+        "idle compact should skip persist on cursor race, got {outcome:?}"
+    );
+    assert_eq!(
+        compact_boundary_event_count(store.as_ref(), session.as_ref().id()).await,
+        0,
+        "no compact boundary should be written after conflict"
+    );
+}
+
 struct StaticOkLlm;
 
 #[async_trait::async_trait]

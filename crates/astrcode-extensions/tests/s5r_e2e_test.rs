@@ -42,7 +42,8 @@ fn ensure_guest_wasm_built() -> std::path::PathBuf {
 
     let manifest = guest_manifest_path();
     eprintln!(
-        "s5r E2E: building guest WASM via `cargo build --manifest-path {} --target wasm32-wasip1 --release`",
+        "s5r E2E: building guest WASM via `cargo build --manifest-path {} --target wasm32-wasip1 \
+         --release`",
         manifest.display()
     );
 

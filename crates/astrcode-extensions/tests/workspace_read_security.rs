@@ -89,3 +89,26 @@ fn workspace_read_allows_file_under_root() {
         .unwrap();
     assert_eq!(out["content"], "inside");
 }
+
+#[test]
+fn workspace_read_rejects_oversize_file() {
+    let (_dir, root) = temp_workspace();
+    let big = root.join("huge.bin");
+    let data = vec![b'x'; 1024 * 1024 + 1];
+    std::fs::write(&big, &data).unwrap();
+
+    let router = HostRouter::from_backends(HostBackends::default());
+    let ctx = InvokeContext {
+        working_dir: Some(root.to_string_lossy().into_owned()),
+        declared_capabilities: vec![ExtensionCapability::WorkspaceRead],
+        ..Default::default()
+    };
+    let err = router
+        .invoke_sync(
+            "astrcode.workspace.read",
+            &json!({ "path": "huge.bin" }).to_string(),
+            &ctx,
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "file_too_large");
+}

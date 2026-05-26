@@ -18,6 +18,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 const HOST_INVOKE_TIMEOUT: Duration = Duration::from_secs(30);
+/// `workspace.read` 默认最大读取字节数（1 MiB）。
+const DEFAULT_WORKSPACE_READ_MAX_BYTES: u64 = 1024 * 1024;
 
 fn block_on_async<F: std::future::Future>(future: F) -> F::Output {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
@@ -42,7 +44,11 @@ pub struct InvokeContext {
     pub cancel_token: Option<CancellationToken>,
     pub event_declarations: HashMap<String, ExtensionEventDecl>,
     pub declared_capabilities: Vec<ExtensionCapability>,
+    /// 当前调用是否在 WASM guest 专用线程上（同步 host import）。
+    pub on_wasm_peer_thread: bool,
 }
+
+const MAX_READ_EVENTS_LIMIT: usize = 500;
 
 /// 宿主后端依赖。
 #[derive(Default)]
@@ -148,17 +154,23 @@ impl HostRouter {
         }
     }
 
-    /// 流式 invoke：返回 Event 序列 JSON（started + deltas + completed）。
+    /// 流式 invoke：返回 Event 序列（`started` + `delta*` + `completed`/`failed`）。
     pub fn invoke_stream_sync(
         &self,
         cap: &str,
         input: &str,
+        request_id: &str,
         ctx: &InvokeContext,
     ) -> Result<Vec<WireMessage>, ErrorPayload> {
+        if let Some(token) = &ctx.cancel_token {
+            if token.is_cancelled() {
+                return Err(ErrorPayload::new("cancelled", "invoke cancelled"));
+            }
+        }
         Self::authorize_astrcode(cap, &ctx.declared_capabilities)?;
         let input: Value = serde_json::from_str(input)
             .map_err(|e| ErrorPayload::new("invalid_input", e.to_string()))?;
-        let request_id = "stream-0".to_string();
+        let request_id = request_id.to_string();
 
         match cap {
             "astrcode.llm.small_chat" => {
@@ -210,7 +222,7 @@ impl HostRouter {
         &self,
         input: &Value,
         collect_chunks: bool,
-        _ctx: &InvokeContext,
+        ctx: &InvokeContext,
     ) -> Result<Value, ErrorPayload> {
         let provider =
             self.backends.small_llm.as_ref().ok_or_else(|| {
@@ -247,11 +259,12 @@ impl HostRouter {
             ));
         }
 
+        let cancel = ctx.cancel_token.clone();
         let provider = Arc::clone(provider);
         block_on_async(async move {
             tokio::time::timeout(
                 HOST_INVOKE_TIMEOUT,
-                run_small_llm(&*provider, messages, collect_chunks),
+                run_small_llm(&*provider, messages, collect_chunks, cancel.as_ref()),
             )
             .await
             .map_err(|_| ErrorPayload::new("timeout", "small_llm.chat timed out"))?
@@ -261,27 +274,61 @@ impl HostRouter {
     fn invoke_read_events(
         &self,
         input: &Value,
-        _ctx: &InvokeContext,
+        ctx: &InvokeContext,
     ) -> Result<Value, ErrorPayload> {
         let reader = self.backends.session_read.as_ref().ok_or_else(|| {
             ErrorPayload::new("backend_unavailable", "session_read not configured")
         })?;
-        let session_id = input["session_id"]
+        let target_session_id = input["session_id"]
             .as_str()
             .ok_or_else(|| ErrorPayload::new("invalid_input", "session_id required"))?;
-        let limit = input["limit"].as_u64().unwrap_or(100) as usize;
+        let limit = input["limit"]
+            .as_u64()
+            .unwrap_or(100)
+            .clamp(1, MAX_READ_EVENTS_LIMIT as u64) as usize;
+        let caller_session_id = ctx.session_id.as_deref().ok_or_else(|| {
+            ErrorPayload::new(
+                "invalid_input",
+                "caller session_id required in invoke context",
+            )
+        })?;
         let reader = Arc::clone(reader);
-        let sid = astrcode_core::types::SessionId::new(session_id);
-        block_on_async(async move {
-            reader
-                .replay_events(&sid)
-                .await
-                .map(|events| {
-                    let truncated: Vec<_> = events.into_iter().take(limit).collect();
-                    serde_json::json!({ "events": truncated })
-                })
-                .map_err(|e| ErrorPayload::new("read_failed", e.to_string()))
-        })
+        let target = target_session_id.to_string();
+        let caller = caller_session_id.to_string();
+        if let Some(ops) = ctx.session_ops.as_ref() {
+            let ops = Arc::clone(ops);
+            block_on_async(async move {
+                ops.query_session(&caller, &target)
+                    .await
+                    .map_err(|e| ErrorPayload::new("permission_denied", e.to_string()))?;
+                let sid = astrcode_core::types::SessionId::new(&target);
+                reader
+                    .replay_events(&sid)
+                    .await
+                    .map(|events| {
+                        let truncated: Vec<_> = events.into_iter().take(limit).collect();
+                        serde_json::json!({ "events": truncated })
+                    })
+                    .map_err(|e| ErrorPayload::new("read_failed", e.to_string()))
+            })
+        } else if caller != target {
+            Err(ErrorPayload::new(
+                "permission_denied",
+                "session_history read is limited to the caller session without session_control",
+            ))
+        } else {
+            let sid = astrcode_core::types::SessionId::new(&target);
+            block_on_async(async move {
+                reader
+                    .replay_events(&sid)
+                    .await
+                    .map(|events| {
+                        let truncated: Vec<_> = events.into_iter().take(limit).collect();
+                        serde_json::json!({ "events": truncated })
+                    })
+                    .map_err(|e| ErrorPayload::new("read_failed", e.to_string()))
+            })
+        }
     }
 
     fn invoke_session_create(
@@ -329,6 +376,17 @@ impl HostRouter {
                 "session_ops not available in context",
             )
         })?;
+        let mut wait_for_result = input["wait_for_result"].as_bool().unwrap_or(true);
+        if ctx.on_wasm_peer_thread && wait_for_result {
+            return Err(ErrorPayload::new(
+                "invalid_request",
+                "wait_for_result cannot be used from WASM guest synchronous host invokes \
+                 (deadlock risk); set wait_for_result to false",
+            ));
+        }
+        if ctx.on_wasm_peer_thread {
+            wait_for_result = false;
+        }
         let req = SubmitTurnRequest {
             target_session_id: input["target_session_id"]
                 .as_str()
@@ -338,7 +396,7 @@ impl HostRouter {
                 .as_str()
                 .ok_or_else(|| ErrorPayload::new("invalid_input", "user_prompt required"))?
                 .to_string(),
-            wait_for_result: input["wait_for_result"].as_bool().unwrap_or(true),
+            wait_for_result,
             notify_parent_on_complete: input["notify_parent_on_complete"]
                 .as_str()
                 .map(str::to_string),
@@ -468,6 +526,21 @@ impl HostRouter {
                 "symlink paths are not readable via workspace.read",
             ));
         }
+        let max_bytes = input
+            .get("max_bytes")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(DEFAULT_WORKSPACE_READ_MAX_BYTES)
+            .min(DEFAULT_WORKSPACE_READ_MAX_BYTES);
+        if metadata.len() > max_bytes {
+            return Err(ErrorPayload::new(
+                "file_too_large",
+                format!(
+                    "file size {} exceeds max_bytes {}",
+                    metadata.len(),
+                    max_bytes
+                ),
+            ));
+        }
         let content = std::fs::read_to_string(&path)
             .map_err(|e| ErrorPayload::new("io_error", e.to_string()))?;
         Ok(serde_json::json!({ "content": content }))
@@ -582,6 +655,7 @@ async fn run_small_llm(
     provider: &dyn LlmProvider,
     messages: Vec<LlmMessage>,
     collect_chunks: bool,
+    cancel_token: Option<&CancellationToken>,
 ) -> Result<Value, ErrorPayload> {
     let mut rx = provider
         .generate(messages, vec![])
@@ -590,7 +664,21 @@ async fn run_small_llm(
 
     let mut text = String::new();
     let mut chunks = Vec::new();
-    while let Some(event) = rx.recv().await {
+    loop {
+        let event = if let Some(token) = cancel_token {
+            tokio::select! {
+                biased;
+                () = token.cancelled() => {
+                    return Err(ErrorPayload::new("cancelled", "invoke cancelled"));
+                }
+                ev = rx.recv() => ev,
+            }
+        } else {
+            rx.recv().await
+        };
+        let Some(event) = event else {
+            break;
+        };
         match event {
             LlmEvent::ContentDelta { delta } => {
                 if collect_chunks {
@@ -698,5 +786,47 @@ mod tests {
         let caps = HostRouter::catalog_for_grants(&[ExtensionCapability::SessionControl]);
         let names: Vec<_> = caps.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"astrcode.session.control.create"));
+    }
+
+    #[test]
+    fn invoke_sync_rejects_precancelled_token() {
+        let router = HostRouter::from_backends(HostBackends::default());
+        let token = CancellationToken::new();
+        token.cancel();
+        let ctx = InvokeContext {
+            cancel_token: Some(token),
+            declared_capabilities: vec![ExtensionCapability::WorkspaceRead],
+            working_dir: Some("/tmp".into()),
+            ..Default::default()
+        };
+        let err = router
+            .invoke_sync(
+                "astrcode.workspace.read",
+                &json!({ "path": "x" }).to_string(),
+                &ctx,
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "cancelled");
+    }
+
+    #[test]
+    fn invoke_stream_sync_rejects_precancelled_token() {
+        let router = HostRouter::from_backends(HostBackends::default());
+        let token = CancellationToken::new();
+        token.cancel();
+        let ctx = InvokeContext {
+            cancel_token: Some(token),
+            declared_capabilities: vec![ExtensionCapability::SmallModel],
+            ..Default::default()
+        };
+        let err = router
+            .invoke_stream_sync(
+                "astrcode.llm.small_chat",
+                &json!({ "messages": [] }).to_string(),
+                "req-1",
+                &ctx,
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "cancelled");
     }
 }

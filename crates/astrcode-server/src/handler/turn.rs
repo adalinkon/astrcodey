@@ -108,50 +108,57 @@ impl CommandHandler {
 /// Turn 的终态事件（TurnCompleted / AgentRunCompleted）由 `Session::submit` 内部发射。
 /// 这里只负责 registry 清理、sync durable events、通知 actor 触发 queued input dispatch。
 async fn run_completion_watcher(
-    handle: astrcode_session::turn_handle::TurnHandle,
+    mut handle: astrcode_session::turn_handle::TurnHandle,
     scheduler: Arc<TurnScheduler>,
     actor_tx: mpsc::UnboundedSender<CommandMessage>,
     sid: SessionId,
-    turn_id: TurnId,
-    completion_tx: Option<tokio::sync::oneshot::Sender<TurnCompletion>>,
+    mut turn_id: TurnId,
+    mut completion_tx: Option<tokio::sync::oneshot::Sender<TurnCompletion>>,
 ) {
-    let completion = match handle.wait().await {
-        Some(result) => match result.output {
-            Ok(output) => {
-                scheduler.sync_durable_events(&sid).await;
-                TurnCompletion::Completed {
-                    finish_reason: output.finish_reason,
-                }
+    loop {
+        let completion = match handle.wait().await {
+            Some(result) => match result.output {
+                Ok(output) => {
+                    scheduler.sync_durable_events(&sid).await;
+                    TurnCompletion::Completed {
+                        finish_reason: output.finish_reason,
+                    }
+                },
+                Err(error) => {
+                    scheduler.sync_durable_events(&sid).await;
+                    TurnCompletion::Failed {
+                        error: error.to_string(),
+                    }
+                },
             },
-            Err(error) => {
-                scheduler.sync_durable_events(&sid).await;
-                TurnCompletion::Failed {
-                    error: error.to_string(),
-                }
-            },
-        },
-        None => TurnCompletion::Aborted,
-    };
+            None => TurnCompletion::Aborted,
+        };
 
-    scheduler.registry().remove_if_matches(&sid, &turn_id);
-    scheduler.on_turn_completed(&sid).await;
+        scheduler.registry().remove_if_matches(&sid, &turn_id);
+        scheduler.on_turn_completed(&sid).await;
 
-    if let Some((next_turn_id, next_handle)) = scheduler.start_next_queued_turn(&sid).await {
-        let scheduler = Arc::clone(&scheduler);
-        let actor_tx = actor_tx.clone();
-        let sid = sid.clone();
-        tokio::spawn(async move {
-            run_completion_watcher(next_handle, scheduler, actor_tx, sid, next_turn_id, None).await;
+        if let Some((next_turn_id, next_handle)) = scheduler.start_next_queued_turn(&sid).await {
+            if let Some(tx) = completion_tx.take() {
+                let _ = tx.send(completion.clone());
+            }
+            let _ = actor_tx.send(CommandMessage::AgentTurnCleanup {
+                session_id: sid.clone(),
+                turn_id: turn_id.clone(),
+                completion: completion.clone(),
+            });
+            turn_id = next_turn_id;
+            handle = next_handle;
+            continue;
+        }
+
+        if let Some(tx) = completion_tx.take() {
+            let _ = tx.send(completion.clone());
+        }
+        let _ = actor_tx.send(CommandMessage::AgentTurnCleanup {
+            session_id: sid,
+            turn_id,
+            completion,
         });
+        break;
     }
-
-    if let Some(tx) = completion_tx {
-        let _ = tx.send(completion.clone());
-    }
-
-    let _ = actor_tx.send(CommandMessage::AgentTurnCleanup {
-        session_id: sid,
-        turn_id,
-        completion,
-    });
 }

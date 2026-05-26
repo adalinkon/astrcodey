@@ -12,11 +12,7 @@ use crate::{
 };
 
 impl Session {
-    async fn emit_turn_start_events(
-        &self,
-        text: &str,
-        turn_id: &TurnId,
-    ) -> Result<(), TurnError> {
+    async fn emit_turn_start_events(&self, text: &str, turn_id: &TurnId) -> Result<(), TurnError> {
         self.emit_durable(Some(turn_id), EventPayload::TurnStarted)
             .await
             .map_err(|e| TurnError::DurableEmitFailed(format!("TurnStarted: {e}")))?;

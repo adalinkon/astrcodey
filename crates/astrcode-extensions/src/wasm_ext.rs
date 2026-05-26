@@ -451,6 +451,7 @@ impl ToolHandler for WasmToolHandler {
             cancel_token: None,
             event_declarations: self.peer.event_decls(),
             declared_capabilities: self.peer.declared_capabilities(),
+            on_wasm_peer_thread: false,
         };
         let event = json!({
             "on": "tool",
@@ -496,6 +497,7 @@ impl CommandHandler for WasmCommandHandler {
             cancel_token: None,
             event_declarations: self.peer.event_decls(),
             declared_capabilities: self.peer.declared_capabilities(),
+            on_wasm_peer_thread: false,
         };
         let event = json!({
             "on": "command",
@@ -612,6 +614,7 @@ fn hook_invoke_ctx(
         cancel_token: None,
         event_declarations: peer.event_decls(),
         declared_capabilities: peer.declared_capabilities(),
+        on_wasm_peer_thread: false,
     }
 }
 

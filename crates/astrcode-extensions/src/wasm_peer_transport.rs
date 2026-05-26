@@ -61,7 +61,9 @@ pub fn exchange_blocking(
     invoke_ctx: &InvokeContext,
 ) -> Result<WireMessage, TransportError> {
     let mut guard = inner.lock();
-    guard.store.data_mut().set_invoke_context(invoke_ctx);
+    let mut wasm_ctx = invoke_ctx.clone();
+    wasm_ctx.on_wasm_peer_thread = true;
+    guard.store.data_mut().set_invoke_context(&wasm_ctx);
     let fuel_budget = guard.store.data().fuel_budget;
     guard
         .store

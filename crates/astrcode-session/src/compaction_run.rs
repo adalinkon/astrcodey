@@ -70,6 +70,11 @@ pub async fn compact_idle_session(
         message_count: provider_messages.len(),
     };
     let custom_instructions = collect_compact_instructions(extension_runner, hook_ctx).await?;
+    let base_event_seq = session
+        .latest_cursor()
+        .await?
+        .and_then(|c| c.parse::<u64>().ok())
+        .unwrap_or(0);
     let render_options = CompactSummaryRenderOptions {
         transcript_path: params.transcript_path,
         custom_instructions: custom_instructions.clone(),
@@ -121,12 +126,7 @@ pub async fn compact_idle_session(
         IdleCompactionError::InvalidRequest("Cannot compact session without system prompt".into())
     })?;
     let fingerprint = hex_fingerprint(system_prompt.as_bytes());
-    let base_event_seq = session
-        .latest_cursor()
-        .await?
-        .and_then(|c| c.parse::<u64>().ok())
-        .unwrap_or(0);
-    let persisted = persist_compact_result(
+    let persisted = match persist_compact_result(
         session,
         &compaction,
         compact_trigger_name(CompactTrigger::ManualCommand),
@@ -138,7 +138,16 @@ pub async fn compact_idle_session(
             keep_recent_turns: params.keep_recent_turns,
         },
     )
-    .await?;
+    .await
+    {
+        Ok(persisted) => persisted,
+        Err(PersistCompactError::Conflict(_)) => {
+            return Ok(IdleCompactionOutcome::Skipped {
+                message: "Compaction skipped: session changed during compact".into(),
+            });
+        },
+        Err(error) => return Err(error.into()),
+    };
 
     Ok(IdleCompactionOutcome::Compacted {
         messages_removed: persisted.messages_removed,

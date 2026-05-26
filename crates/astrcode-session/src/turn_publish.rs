@@ -128,7 +128,7 @@ pub(crate) fn spawn_event_bridge(
     let handle = tokio::spawn(async move {
         while let Some(payload) = rx.recv().await {
             if let Err(error) = publisher.publish(payload).await {
-                tracing::warn!(error = %error, "extension event publish failed");
+                tracing::error!(error = %error, "extension event publish failed");
             }
         }
     });

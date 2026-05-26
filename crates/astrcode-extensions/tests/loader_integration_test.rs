@@ -79,7 +79,7 @@ fn s5r_event_and_mode_names_roundtrip() {
 /// 测试 extension.json 清单解析丢弃未知字段。
 ///
 /// **Loader 仅使用 `library`**：tools/commands/hooks/capabilities 由 WASM
-/// `extension_manifest()` 声明；serde 仍解析其它字段但不参与加载。磁盘路径仅 WASM。
+/// `extension_init` 握手返回；serde 仍解析其它字段但不参与加载。磁盘路径仅 WASM。
 #[test]
 fn manifest_ignores_legacy_capability_fields() {
     let manifest: ExtensionManifest = serde_json::from_value(serde_json::json!({

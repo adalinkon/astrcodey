@@ -10,8 +10,8 @@ use std::{
 
 use astrcode_core::extension::{ExtensionCapability, ExtensionError, ExtensionEventDecl};
 use astrcode_extension_sdk::s5r::{
-    self, CAP_HANDLER_INVOKE, HandlerResult, InitializeMsg, InitializeOutput, PeerInfo, ResultKind,
-    ResultMsg, S5R_STACK, S5R_VERSION, WireMessage, capability_from_wire,
+    self, CAP_HANDLER_INVOKE, EventPhase, HandlerResult, InitializeMsg, InitializeOutput, PeerInfo,
+    ResultKind, ResultMsg, S5R_STACK, S5R_VERSION, WireMessage, capability_from_wire,
     is_reserved_capability_prefix,
 };
 use parking_lot::Mutex;
@@ -166,15 +166,26 @@ impl ExtensionPeer {
             WireMessage::Initialize(init) => self.handle_initialize_sync(init),
             WireMessage::Invoke(inv) => self.handle_guest_invoke_sync(inv, invoke_ctx),
             WireMessage::Cancel(cancel) => {
-                if let Some(token) = self.pending_cancels.lock().remove(&cancel.id) {
+                let cancelled = if let Some(token) = self.pending_cancels.lock().remove(&cancel.id)
+                {
                     token.cancel();
-                }
+                    true
+                } else {
+                    false
+                };
                 Ok(WireMessage::Result(ResultMsg {
                     id: cancel.id,
                     kind: ResultKind::InvokeResult,
-                    success: true,
-                    output: Some(json!({ "cancelled": true })),
-                    error: None,
+                    success: cancelled,
+                    output: cancelled.then(|| json!({ "cancelled": true })),
+                    error: if cancelled {
+                        None
+                    } else {
+                        Some(s5r::ErrorPayload::new(
+                            "not_found",
+                            "no in-flight invoke with this id",
+                        ))
+                    },
                 }))
             },
             other => Err(TransportError(format!(
@@ -240,18 +251,15 @@ impl ExtensionPeer {
         ctx.cancel_token = Some(cancel_token);
 
         let result = if inv.stream {
-            match self
-                .router
-                .invoke_stream_sync(&inv.capability, &inv.input.to_string(), &ctx)
-            {
-                Ok(events) => {
-                    // 流式：返回第一条 Event（guest 可继续 exchange）；简化为返回 completed
-                    // 前的聚合
-                    if let Some(last) = events.last() {
-                        Ok(last.clone())
-                    } else {
-                        Err(TransportError("empty stream".into()))
-                    }
+            match self.router.invoke_stream_sync(
+                &inv.capability,
+                &inv.input.to_string(),
+                &inv.id,
+                &ctx,
+            ) {
+                Ok(events) => match terminal_stream_event(&events) {
+                    Some(event) => Ok(event.clone()),
+                    None => Err(TransportError("stream missing terminal event".into())),
                 },
                 Err(e) => Ok(WireMessage::Result(ResultMsg {
                     id: inv.id.clone(),
@@ -375,17 +383,27 @@ fn parse_initialize(init: &InitializeMsg) -> Result<PeerRegistration, TransportE
             "initialize peer name (extension id) is empty".into(),
         ));
     }
-
     let proto = init
         .metadata
         .get("protocol")
         .and_then(|p| p.get("s5r"))
         .and_then(|v| v.as_str());
-    if proto != Some(S5R_VERSION) {
-        let stack = init.metadata.get("stack").and_then(|s| s.as_str());
-        if stack != Some(S5R_STACK) && proto.is_none() {
-            // allow metadata.protocol.s5r on guest
-        }
+    match proto {
+        Some(S5R_VERSION) => {},
+        Some(other) => {
+            return Err(TransportError(format!(
+                "unsupported protocol.s5r version: {other} (expected {S5R_VERSION})"
+            )));
+        },
+        None => {
+            let stack = init.metadata.get("stack").and_then(|s| s.as_str());
+            if stack != Some(S5R_STACK) {
+                return Err(TransportError(format!(
+                    "metadata.protocol.s5r must be \"{S5R_VERSION}\" (or metadata.stack \
+                     \"{S5R_STACK}\")"
+                )));
+            }
+        },
     }
 
     let capabilities: Vec<ExtensionCapability> = init
@@ -485,6 +503,82 @@ fn parse_handler_result(msg: WireMessage) -> Result<HandlerResult, ExtensionErro
             "expected invoke_result, got {:?}",
             std::mem::discriminant(&other)
         ))),
+    }
+}
+
+/// 从流式 Event 序列中取出终态 `completed` / `failed`（`peer_exchange` 单次往返仅回一条）。
+fn terminal_stream_event(events: &[WireMessage]) -> Option<&WireMessage> {
+    events.iter().rev().find(|msg| {
+        matches!(
+            msg,
+            WireMessage::Event(e)
+                if e.phase == EventPhase::Completed || e.phase == EventPhase::Failed
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use astrcode_extension_sdk::s5r::{InitializeMsg, PeerInfo};
+
+    use super::*;
+
+    fn sample_initialize(metadata: serde_json::Value) -> InitializeMsg {
+        InitializeMsg {
+            id: "init-1".into(),
+            peer: PeerInfo {
+                name: "demo-ext".into(),
+                role: "extension".into(),
+                version: "0.1.0".into(),
+            },
+            handlers: vec![],
+            provided_capabilities: vec![],
+            requested_capabilities: vec![],
+            metadata,
+        }
+    }
+
+    #[test]
+    fn parse_initialize_rejects_unsupported_protocol_version() {
+        let init = sample_initialize(json!({ "protocol": { "s5r": "0.9" } }));
+        let err = parse_initialize(&init).unwrap_err();
+        assert!(err.0.contains("unsupported protocol.s5r"));
+    }
+
+    #[test]
+    fn parse_initialize_accepts_s5r_version() {
+        let init = sample_initialize(json!({
+            "protocol": { "s5r": S5R_VERSION },
+            "tools": [],
+            "commands": [],
+            "hooks": [],
+            "extension_events": []
+        }));
+        let reg = parse_initialize(&init).unwrap();
+        assert_eq!(reg.extension_id, "demo-ext");
+    }
+
+    #[test]
+    fn terminal_stream_event_picks_completed() {
+        let events = vec![
+            WireMessage::Event(s5r::EventMsg {
+                id: "r1".into(),
+                phase: EventPhase::Started,
+                data: Value::Null,
+                error: None,
+            }),
+            WireMessage::Event(s5r::EventMsg {
+                id: "r1".into(),
+                phase: EventPhase::Completed,
+                data: json!({ "ok": true }),
+                error: None,
+            }),
+        ];
+        let terminal = terminal_stream_event(&events).unwrap();
+        assert!(matches!(
+            terminal,
+            WireMessage::Event(e) if e.phase == EventPhase::Completed
+        ));
     }
 }
 
