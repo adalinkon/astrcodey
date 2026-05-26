@@ -37,7 +37,6 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
-notify = { workspace = true }
 parking_lot = { workspace = true }
 axum = { workspace = true }
 futures-util = { workspace = true }

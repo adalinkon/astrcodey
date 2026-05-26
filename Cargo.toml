@@ -87,8 +87,10 @@ tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-http = "2"
 # WASM extension host (keep in sync; >=44.0.2 fixes RUSTSEC-2026-0149)
+# 扩展宿主仅使用 WASI preview1（WasiCtxBuilder::build_p1 / p1::add_to_linker_sync）。
+# default 还包含 p2/component-model；显式只开 p1，与插件能力等价且避免多余 WASI 栈。
 wasmtime = { version = "44", default-features = false, features = ["cranelift", "runtime"] }
-wasmtime-wasi = "44"
+wasmtime-wasi = { version = "44", default-features = false, features = ["p1"] }
 
 # --- Profiles ---
 
@@ -103,6 +105,7 @@ opt-level = 2
 
 [profile.release]
 opt-level = 3
-lto = "thin"
-codegen-units = 16
-strip = "symbols"
+lto = "fat"
+codegen-units = 1
+strip = true
+debug = false
