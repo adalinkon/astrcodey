@@ -61,6 +61,9 @@ clap = { version = "4", features = ["derive"] }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 notify = "8"
+# WASM extension host (keep in sync; >=44.0.2 fixes RUSTSEC-2026-0149)
+wasmtime = { version = "44", default-features = false, features = ["cranelift", "runtime"] }
+wasmtime-wasi = "44"
 
 # --- Profiles ---
 

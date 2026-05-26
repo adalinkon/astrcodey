@@ -601,8 +601,12 @@ export const useAppStore = create<ConversationState>((set, get) => ({
     switch (delta.kind) {
       case 'appendBlock':
         set((current) => {
+          const baseBlocks =
+            delta.block.kind === 'compactSummary'
+              ? current.blocks.filter((b) => b.kind !== 'compactSummary')
+              : current.blocks
           return {
-            blocks: upsertBlock(current.blocks, delta.block),
+            blocks: upsertBlock(baseBlocks, delta.block),
             queuedMessages:
               delta.block.kind === 'user' && current.queuedMessages.length > 0
                 ? current.queuedMessages.slice(1)

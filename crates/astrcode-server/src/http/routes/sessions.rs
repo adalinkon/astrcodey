@@ -24,7 +24,10 @@ use serde::Deserialize;
 
 use super::super::{
     HttpState, error_response,
-    projection::{blocks::messages_to_blocks, live::control_from_phase},
+    projection::{
+        blocks::{compact_summary_block, latest_compact_boundary, messages_to_blocks},
+        live::control_from_phase,
+    },
 };
 use crate::{
     handler::{HandlerError, ManualCompactOutcome, PromptSubmission},
@@ -321,19 +324,11 @@ fn conversation_to_dto(
         .first_user_message()
         .unwrap_or_else(|| session_title(&session.working_dir));
 
-    // compact boundary blocks 在前（代表被压缩的历史），retained message blocks 在后
-    let mut blocks: Vec<ConversationBlockDto> = session
-        .compact_boundaries
-        .iter()
-        .map(|boundary| ConversationBlockDto::CompactSummary {
-            id: format!("compact-{}", boundary.seq),
-            summary: boundary.summary.clone(),
-            trigger: boundary.trigger.clone(),
-            pre_tokens: boundary.pre_tokens,
-            post_tokens: boundary.post_tokens,
-            transcript_path: boundary.transcript_path.clone(),
-        })
-        .collect();
+    // 与 provider_messages 一致：最新 compact 摘要紧挨保留消息之前（被压掉的历史不在 UI 展示）
+    let mut blocks: Vec<ConversationBlockDto> = Vec::new();
+    if let Some(boundary) = latest_compact_boundary(&session.compact_boundaries) {
+        blocks.push(compact_summary_block(boundary));
+    }
     blocks.extend(messages_to_blocks(
         &session.messages,
         &session.background_tool_calls,
@@ -493,14 +488,15 @@ mod tests {
     }
 
     #[test]
-    fn conversation_snapshot_multiple_compacts_are_ordered_before_messages() {
+    fn conversation_snapshot_shows_only_latest_compact_before_retained_messages() {
         use astrcode_core::{extension::CompactStrategy, storage::CompactBoundaryView};
+
+        use crate::http::projection::blocks::COMPACT_SUMMARY_BLOCK_ID;
 
         let mut session = SessionReadModel::empty("session-multi-compact".into());
         session.working_dir = "D:/work/project".into();
         session.latest_seq = Some(20);
         session.messages.push(LlmMessage::user("latest user"));
-        // 两次 compact，按 seq 递增
         session.compact_boundaries.push(CompactBoundaryView {
             trigger: "auto_threshold".into(),
             pre_tokens: 800,
@@ -524,21 +520,15 @@ mod tests {
 
         let dto = conversation_to_dto(session, None);
 
-        // 顺序：CompactSummary(seq5) → CompactSummary(seq12) → User
-        assert_eq!(dto.blocks.len(), 3);
+        assert_eq!(dto.blocks.len(), 2);
         match &dto.blocks[0] {
-            ConversationBlockDto::CompactSummary { id, .. } => {
-                assert_eq!(id, "compact-5");
+            ConversationBlockDto::CompactSummary { id, summary, .. } => {
+                assert_eq!(id, COMPACT_SUMMARY_BLOCK_ID);
+                assert_eq!(summary, "Second compaction");
             },
             other => panic!("expected CompactSummary, got {other:?}"),
         }
-        match &dto.blocks[1] {
-            ConversationBlockDto::CompactSummary { id, .. } => {
-                assert_eq!(id, "compact-12");
-            },
-            other => panic!("expected CompactSummary, got {other:?}"),
-        }
-        assert!(matches!(&dto.blocks[2], ConversationBlockDto::User { .. }));
+        assert!(matches!(&dto.blocks[1], ConversationBlockDto::User { .. }));
     }
 
     #[test]

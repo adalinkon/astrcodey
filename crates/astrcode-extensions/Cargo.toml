@@ -17,8 +17,8 @@ tracing = { workspace = true }
 dirs = { workspace = true }
 parking_lot = { workspace = true }
 tokio-util = { workspace = true }
-wasmtime = { version = "43", default-features = false, features = ["cranelift", "runtime"] }
-wasmtime-wasi = "43"
+wasmtime = { workspace = true }
+wasmtime-wasi = { workspace = true }
 
 [dev-dependencies]
 astrcode-storage = { path = "../astrcode-storage", features = ["testing"] }
