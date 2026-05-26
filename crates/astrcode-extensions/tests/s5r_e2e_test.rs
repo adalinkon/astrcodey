@@ -3,13 +3,13 @@
 use std::{sync::Arc, time::Duration};
 
 use astrcode_core::{
+    event::EventPayload,
     extension::{
         Extension, ExtensionEvent, ExtensionHostServices, HookMode, LifecycleContext,
         PreToolUseContext, PreToolUseResult, Registrar,
     },
     llm::{LlmEvent, LlmMessage, LlmProvider},
     tool::{ToolDefinition, ToolExecutionContext},
-
 };
 use astrcode_extension_sdk::config::ModelSelection;
 use astrcode_extensions::{build_host_router, runner::ExtensionRunner, wasm_ext::WasmExtension};
@@ -27,12 +27,8 @@ fn guest_wasm_path() -> std::path::PathBuf {
 }
 
 fn minimal_router() -> Arc<astrcode_extensions::HostRouter> {
-    let store: Arc<dyn astrcode_core::storage::EventStore> =
-        Arc::new(InMemoryEventStore::new());
-    build_host_router(
-        Arc::new(ExtensionHostServices::new(store, None)),
-        None,
-    )
+    let store: Arc<dyn astrcode_core::storage::EventStore> = Arc::new(InMemoryEventStore::new());
+    build_host_router(Arc::new(ExtensionHostServices::new(store, None)), None)
 }
 
 fn load_guest(router: Arc<astrcode_extensions::HostRouter>) -> Arc<WasmExtension> {
@@ -59,6 +55,7 @@ fn pre_tool_use_ctx(tool_name: &str, tool_input: serde_json::Value) -> PreToolUs
         tool_name: tool_name.into(),
         tool_input,
         available_tools: vec![],
+        event_tx: None,
         extension_event_sink: None,
         session_store_dir: None,
     }
@@ -72,8 +69,7 @@ impl LlmProvider for MockLlm {
         &self,
         _messages: Vec<LlmMessage>,
         _tools: Vec<ToolDefinition>,
-    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<LlmEvent>, astrcode_core::llm::LlmError>
-    {
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<LlmEvent>, astrcode_core::llm::LlmError> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tx.send(LlmEvent::ContentDelta {
             delta: "mock-llm-response".into(),
@@ -95,8 +91,7 @@ impl LlmProvider for MockLlm {
 }
 
 fn mock_router() -> Arc<astrcode_extensions::HostRouter> {
-    let store: Arc<dyn astrcode_core::storage::EventStore> =
-        Arc::new(InMemoryEventStore::new());
+    let store: Arc<dyn astrcode_core::storage::EventStore> = Arc::new(InMemoryEventStore::new());
     build_host_router(
         Arc::new(ExtensionHostServices::new(store, Some(Arc::new(MockLlm)))),
         None,
@@ -160,11 +155,55 @@ async fn e2e_pre_tool_use_blocks_dangerous_command() {
 }
 
 #[tokio::test]
+async fn e2e_pre_tool_use_hook_emit_via_host_router() {
+    let ext = load_guest(mock_router());
+    let runner = Arc::new(ExtensionRunner::new(Duration::from_secs(5)));
+    runner.register(ext).await.unwrap();
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let ctx = PreToolUseContext {
+        session_id: "e2e-session".into(),
+        working_dir: "/tmp".into(),
+        model: ModelSelection::simple("test"),
+        tool_name: "emit_hook_probe".into(),
+        tool_input: serde_json::json!({}),
+        available_tools: vec![],
+        event_tx: Some(tx),
+        extension_event_sink: None,
+        session_store_dir: None,
+    };
+    let result = runner.emit_pre_tool_use(ctx).await.unwrap();
+    assert!(matches!(result, PreToolUseResult::Allow));
+
+    let payload = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("timed out waiting for extension event")
+        .expect("event channel closed");
+    match payload {
+        EventPayload::ExtensionEvent {
+            extension_id,
+            event_type,
+            payload,
+            ..
+        } => {
+            assert_eq!(extension_id, "s5r-guest-demo");
+            assert_eq!(event_type, "s5r_guest.probe");
+            assert_eq!(payload["from"], "pre_tool_use");
+        },
+        other => panic!("unexpected payload: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn e2e_ask_llm_calls_host_router() {
     let ext = load_guest(mock_router());
     let mut reg = Registrar::new();
     ext.register(&mut reg);
-    let (_, handler) = reg.tools().iter().find(|(d, _)| d.name == "ask_llm").unwrap();
+    let (_, handler) = reg
+        .tools()
+        .iter()
+        .find(|(d, _)| d.name == "ask_llm")
+        .unwrap();
 
     let result = handler
         .execute(
@@ -187,13 +226,17 @@ async fn e2e_turn_end_continuations_invoke_small_llm() {
     runner.register(ext).await.unwrap();
 
     runner
-        .emit_lifecycle(ExtensionEvent::TurnEnd, LifecycleContext {
-            session_id: "e2e-session".into(),
-            working_dir: "/tmp".into(),
-            model: ModelSelection::simple("test"),
-            extension_event_sink: None,
-            last_exchange: None,
-        })
+        .emit_lifecycle(
+            ExtensionEvent::TurnEnd,
+            LifecycleContext {
+                session_id: "e2e-session".into(),
+                working_dir: "/tmp".into(),
+                model: ModelSelection::simple("test"),
+                event_tx: None,
+                extension_event_sink: None,
+                last_exchange: None,
+            },
+        )
         .await
         .unwrap();
 
@@ -220,6 +263,14 @@ async fn e2e_turn_end_continuations_invoke_small_llm() {
         .await
         .unwrap();
 
-    assert!(result.content.contains("steps=2"), "got: {}", result.content);
-    assert!(result.content.contains("llm_ok=true"), "got: {}", result.content);
+    assert!(
+        result.content.contains("steps=2"),
+        "got: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("llm_ok=true"),
+        "got: {}",
+        result.content
+    );
 }

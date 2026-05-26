@@ -78,6 +78,7 @@ impl CommandHandler {
             session_id: sid.to_string(),
             working_dir: state.working_dir.clone(),
             model: astrcode_core::config::ModelSelection::simple(state.model_id.clone()),
+            event_tx: None,
             extension_event_sink: None,
             last_exchange: None,
         };

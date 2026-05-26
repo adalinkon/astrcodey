@@ -4,7 +4,7 @@ use astrcode_core::{
     event::Event, extension::ChildToolPolicy, llm::LlmProvider, tool::FileObservationStore,
     types::SessionId,
 };
-use astrcode_support::event_fanout::EventFanout;
+use astrcode_support::{event_fanout::EventFanout, sync::lock_parking};
 use astrcode_tools::registry::ToolRegistry;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
@@ -135,20 +135,23 @@ impl SessionRuntimeState {
     }
 
     /// 返回 provider 与模型标识的一致快照。
+    ///
+    /// 需要同时读取 `llm` / `small_llm` / `model_id` 时请用此方法；
+    /// 分别调用 [`Self::llm`]、[`Self::small_llm`] 可能在替换间隙读到不一致组合。
     pub fn model_binding(&self) -> SessionModelBinding {
-        self.model.lock().clone()
+        lock_parking(&self.model).clone()
     }
 
     pub fn llm(&self) -> Arc<dyn LlmProvider> {
-        Arc::clone(&self.model.lock().llm)
+        Arc::clone(&lock_parking(&self.model).llm)
     }
 
     pub fn small_llm(&self) -> Arc<dyn LlmProvider> {
-        Arc::clone(&self.model.lock().small_llm)
+        Arc::clone(&lock_parking(&self.model).small_llm)
     }
 
     pub fn model_id(&self) -> String {
-        self.model.lock().model_id.clone()
+        lock_parking(&self.model).model_id.clone()
     }
 
     pub fn replace_model_binding(
@@ -157,7 +160,7 @@ impl SessionRuntimeState {
         small_llm: Arc<dyn LlmProvider>,
         model_id: String,
     ) {
-        *self.model.lock() = SessionModelBinding {
+        *lock_parking(&self.model) = SessionModelBinding {
             llm,
             small_llm,
             model_id,

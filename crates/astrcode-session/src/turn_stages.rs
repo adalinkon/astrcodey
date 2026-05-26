@@ -2,11 +2,7 @@
 
 use std::collections::HashSet;
 
-use astrcode_context::prompt_engine::system_messages_from_prompt;
-use astrcode_core::{
-    llm::{LlmContent, LlmMessage, LlmRole},
-    tool::{ToolDefinition, ToolPromptMetadata, ToolResult},
-};
+use astrcode_core::tool::{ToolDefinition, ToolPromptMetadata, ToolResult};
 
 use crate::deferred_tools::{
     ToolSnapshot, activate_deferred_tools, clone_tools_by_index, provider_visible_tool_indexes,
@@ -14,7 +10,6 @@ use crate::deferred_tools::{
 
 /// Mutable state carried across provider/tool iterations in a single turn.
 pub(crate) struct TurnState {
-    messages: Vec<LlmMessage>,
     final_text: String,
     tool_results: Vec<ToolResult>,
     reactive_compact_used: bool,
@@ -24,25 +19,7 @@ pub(crate) struct TurnState {
 }
 
 impl TurnState {
-    pub(crate) fn new(
-        initial_history: Vec<LlmMessage>,
-        system_prompt: &str,
-        user_text: &str,
-        all_tools: Vec<(ToolDefinition, Option<ToolPromptMetadata>)>,
-    ) -> Self {
-        let mut messages = Vec::with_capacity(initial_history.len() + 4);
-        // KV 缓存分组：将系统提示词按 Static/SemiStatic/Dynamic 拆成多条 system message，
-        // 让 Anthropic 和 OpenAI 的前缀缓存机制自然生效。
-        messages.extend(system_messages_from_prompt(system_prompt));
-        messages.extend(
-            initial_history
-                .into_iter()
-                .filter(|message| message.role != LlmRole::System),
-        );
-        if !last_message_is_user_text(&messages, user_text) {
-            messages.push(LlmMessage::user(user_text));
-        }
-
+    pub(crate) fn new(all_tools: Vec<(ToolDefinition, Option<ToolPromptMetadata>)>) -> Self {
         let all_tools = all_tools
             .into_iter()
             .map(|(definition, prompt_metadata)| ToolSnapshot {
@@ -55,7 +32,6 @@ impl TurnState {
         let visible_tools = clone_tools_by_index(&all_tools, &tool_indexes);
 
         Self {
-            messages,
             final_text: String::new(),
             tool_results: Vec::new(),
             reactive_compact_used: false,
@@ -65,20 +41,8 @@ impl TurnState {
         }
     }
 
-    pub(crate) fn messages(&self) -> &[LlmMessage] {
-        &self.messages
-    }
-
-    pub(crate) fn replace_messages(&mut self, messages: Vec<LlmMessage>) {
-        self.messages = messages;
-    }
-
-    pub(crate) fn push_message(&mut self, message: LlmMessage) {
-        self.messages.push(message);
-    }
-
-    pub(crate) fn message_count(&self) -> usize {
-        self.messages.len()
+    pub(crate) fn push_tool_result(&mut self, result: ToolResult) {
+        self.tool_results.push(result);
     }
 
     pub(crate) fn append_final_text(&mut self, text: &str) {
@@ -87,12 +51,6 @@ impl TurnState {
 
     pub(crate) fn final_text(&self) -> &str {
         &self.final_text
-    }
-
-    pub(crate) fn messages_and_tool_results_mut(
-        &mut self,
-    ) -> (&mut Vec<LlmMessage>, &mut Vec<ToolResult>) {
-        (&mut self.messages, &mut self.tool_results)
     }
 
     pub(crate) fn reactive_compact_used(&self) -> bool {
@@ -134,37 +92,7 @@ impl TurnState {
     }
 }
 
-fn last_message_is_user_text(messages: &[LlmMessage], text: &str) -> bool {
-    messages.last().is_some_and(|message| {
-        message.role == LlmRole::User
-            && message.content.len() == 1
-            && matches!(&message.content[0], LlmContent::Text { text: value } if value == text)
-    })
-}
-
 pub(crate) struct PreparedProviderRequest {
     pub(crate) llm: std::sync::Arc<dyn astrcode_core::llm::LlmProvider>,
-    pub(crate) messages: Vec<LlmMessage>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn turn_state_does_not_duplicate_already_persisted_user_message() {
-        let state = TurnState::new(
-            vec![LlmMessage::user("current")],
-            "system",
-            "current",
-            Vec::new(),
-        );
-
-        let user_messages = state
-            .messages()
-            .iter()
-            .filter(|message| message.role == LlmRole::User)
-            .count();
-        assert_eq!(user_messages, 1);
-    }
+    pub(crate) messages: Vec<astrcode_core::llm::LlmMessage>,
 }

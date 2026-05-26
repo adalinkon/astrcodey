@@ -48,7 +48,10 @@ impl<T: Clone> EventFanout<T> {
         });
         let dropped = before - senders.len();
         if dropped > 0 {
-            tracing::debug!(dropped, "dropped event fanout subscribers");
+            tracing::warn!(
+                dropped,
+                "removed slow or closed event fanout subscribers (backpressure)"
+            );
         }
     }
 

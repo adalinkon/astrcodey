@@ -18,8 +18,9 @@ use astrcode_extension_sdk::{
 };
 use parking_lot::Mutex;
 use serde_json::json;
+
 use crate::{
-    extension_peer::{manifest_types::ManifestHook, ExtensionPeer, PeerRegistration},
+    extension_peer::{ExtensionPeer, PeerRegistration, manifest_types::ManifestHook},
     host_router::{HostRouter, InvokeContext},
     wasm_api::{self, HostState},
     wasm_peer_transport::{WasmGuestRuntime, WasmPeerTransport},
@@ -50,7 +51,8 @@ impl WasmExtension {
             .map_err(|e| format!("compile wasm module: {e}"))?;
         let linker = wasm_api::create_linker(&engine)?;
 
-        let mut store = wasmtime::Store::new(&engine, HostState::new().with_limits(fuel, memory_bytes));
+        let mut store =
+            wasmtime::Store::new(&engine, HostState::new().with_limits(fuel, memory_bytes));
         store.limiter(|s: &mut HostState| -> &mut dyn wasmtime::ResourceLimiter { s });
 
         let instance = linker
@@ -87,8 +89,14 @@ impl WasmExtension {
         {
             let mut guard = runtime.lock();
             guard.store.data_mut().set_peer(Arc::clone(&peer));
-            guard.store.data_mut().set_invoke_context(&InvokeContext::default());
-            guard.store.set_fuel(fuel).map_err(|e| format!("set_fuel: {e}"))?;
+            guard
+                .store
+                .data_mut()
+                .set_invoke_context(&InvokeContext::default());
+            guard
+                .store
+                .set_fuel(fuel)
+                .map_err(|e| format!("set_fuel: {e}"))?;
             init_fn
                 .call(&mut guard.store, ())
                 .map_err(|e| format!("extension_init trap: {e}"))?;
@@ -116,7 +124,6 @@ impl WasmExtension {
             subscriptions,
         }))
     }
-
 }
 
 fn validate_registration(reg: &PeerRegistration) -> Result<(), String> {
@@ -209,7 +216,11 @@ impl Extension for WasmExtension {
                     reg.on_pre_tool_use(*mode, 0, Arc::new(WasmPreToolUseHandler { peer, ext_id }));
                 },
                 ExtensionEvent::PostToolUse => {
-                    reg.on_post_tool_use(*mode, 0, Arc::new(WasmPostToolUseHandler { peer, ext_id }));
+                    reg.on_post_tool_use(
+                        *mode,
+                        0,
+                        Arc::new(WasmPostToolUseHandler { peer, ext_id }),
+                    );
                 },
                 ExtensionEvent::BeforeProviderRequest => {
                     reg.on_provider(
@@ -394,10 +405,9 @@ fn parse_compact_result(resp: &HandlerResult) -> Result<CompactResult, Extension
     if !resp.ok || resp.effect_name() != "compact_contributions" {
         return Ok(CompactResult::Allow);
     }
-    let contributions: CompactContributions = serde_json::from_value(
-        resp.data.clone().unwrap_or_default(),
-    )
-    .map_err(|e| ExtensionError::Internal(format!("parse CompactContributions: {e}")))?;
+    let contributions: CompactContributions =
+        serde_json::from_value(resp.data.clone().unwrap_or_default())
+            .map_err(|e| ExtensionError::Internal(format!("parse CompactContributions: {e}")))?;
     Ok(CompactResult::Contributions(contributions))
 }
 
@@ -515,17 +525,14 @@ struct WasmPreToolUseHandler {
 #[async_trait::async_trait]
 impl PreToolUseHandler for WasmPreToolUseHandler {
     async fn handle(&self, ctx: PreToolUseContext) -> Result<PreToolUseResult, ExtensionError> {
-        let invoke_ctx = InvokeContext {
-            extension_id: self.ext_id.clone(),
-            session_id: Some(ctx.session_id.to_string()),
-            session_store_dir: ctx.session_store_dir.clone(),
-            session_ops: None,
-            event_tx: ctx.extension_event_sink.as_ref().and_then(|_| None),
-            working_dir: Some(ctx.working_dir.clone()),
-            cancel_token: None,
-            event_declarations: self.peer.event_decls(),
-            declared_capabilities: self.peer.declared_capabilities(),
-        };
+        let invoke_ctx = hook_invoke_ctx(
+            &self.peer,
+            &self.ext_id,
+            Some(ctx.session_id.clone()),
+            Some(ctx.working_dir.clone()),
+            ctx.session_store_dir.clone(),
+            ctx.event_tx.clone(),
+        );
         let input = json!({
             "session_id": ctx.session_id,
             "working_dir": ctx.working_dir,
@@ -557,7 +564,14 @@ struct WasmPostToolUseHandler {
 #[async_trait::async_trait]
 impl PostToolUseHandler for WasmPostToolUseHandler {
     async fn handle(&self, ctx: PostToolUseContext) -> Result<PostToolUseResult, ExtensionError> {
-        let invoke_ctx = default_hook_invoke_ctx(&self.peer, &self.ext_id);
+        let invoke_ctx = hook_invoke_ctx(
+            &self.peer,
+            &self.ext_id,
+            Some(ctx.session_id.clone()),
+            Some(ctx.working_dir.clone()),
+            ctx.session_store_dir.clone(),
+            ctx.event_tx.clone(),
+        );
         let input = json!({
             "session_id": ctx.session_id,
             "working_dir": ctx.working_dir,
@@ -580,14 +594,21 @@ impl PostToolUseHandler for WasmPostToolUseHandler {
     }
 }
 
-fn default_hook_invoke_ctx(peer: &Arc<ExtensionPeer>, ext_id: &str) -> InvokeContext {
+fn hook_invoke_ctx(
+    peer: &Arc<ExtensionPeer>,
+    ext_id: &str,
+    session_id: Option<String>,
+    working_dir: Option<String>,
+    session_store_dir: Option<std::path::PathBuf>,
+    event_tx: Option<tokio::sync::mpsc::UnboundedSender<astrcode_core::event::EventPayload>>,
+) -> InvokeContext {
     InvokeContext {
         extension_id: ext_id.to_string(),
-        session_id: None,
-        session_store_dir: None,
+        session_id,
+        session_store_dir,
         session_ops: None,
-        event_tx: None,
-        working_dir: None,
+        event_tx,
+        working_dir,
         cancel_token: None,
         event_declarations: peer.event_decls(),
         declared_capabilities: peer.declared_capabilities(),
@@ -603,7 +624,14 @@ struct WasmProviderHandler {
 #[async_trait::async_trait]
 impl ProviderHandler for WasmProviderHandler {
     async fn handle(&self, ctx: ProviderContext) -> Result<ProviderResult, ExtensionError> {
-        let invoke_ctx = default_hook_invoke_ctx(&self.peer, &self.ext_id);
+        let invoke_ctx = hook_invoke_ctx(
+            &self.peer,
+            &self.ext_id,
+            Some(ctx.session_id.clone()),
+            Some(ctx.working_dir.clone()),
+            ctx.session_store_dir.clone(),
+            None,
+        );
         let input = json!({
             "session_id": ctx.session_id,
             "working_dir": ctx.working_dir,
@@ -631,7 +659,14 @@ struct WasmPromptBuildHandler {
 #[async_trait::async_trait]
 impl PromptBuildHandler for WasmPromptBuildHandler {
     async fn handle(&self, ctx: PromptBuildContext) -> Result<PromptContributions, ExtensionError> {
-        let invoke_ctx = default_hook_invoke_ctx(&self.peer, &self.ext_id);
+        let invoke_ctx = hook_invoke_ctx(
+            &self.peer,
+            &self.ext_id,
+            Some(ctx.session_id.clone()),
+            Some(ctx.working_dir.clone()),
+            None,
+            None,
+        );
         let input = json!({
             "session_id": ctx.session_id,
             "working_dir": ctx.working_dir,
@@ -659,7 +694,14 @@ struct WasmCompactHandler {
 #[async_trait::async_trait]
 impl CompactHandler for WasmCompactHandler {
     async fn handle(&self, ctx: CompactContext) -> Result<CompactResult, ExtensionError> {
-        let invoke_ctx = default_hook_invoke_ctx(&self.peer, &self.ext_id);
+        let invoke_ctx = hook_invoke_ctx(
+            &self.peer,
+            &self.ext_id,
+            Some(ctx.session_id.clone()),
+            Some(ctx.working_dir.clone()),
+            None,
+            None,
+        );
         let input = json!({
             "session_id": ctx.session_id,
             "working_dir": ctx.working_dir,
@@ -692,7 +734,14 @@ struct WasmLifecycleHandler {
 #[async_trait::async_trait]
 impl LifecycleHandler for WasmLifecycleHandler {
     async fn handle(&self, ctx: LifecycleContext) -> Result<HookResult, ExtensionError> {
-        let invoke_ctx = default_hook_invoke_ctx(&self.peer, &self.ext_id);
+        let invoke_ctx = hook_invoke_ctx(
+            &self.peer,
+            &self.ext_id,
+            Some(ctx.session_id.clone()),
+            Some(ctx.working_dir.clone()),
+            None,
+            ctx.event_tx.clone(),
+        );
         let input = json!({
             "session_id": ctx.session_id,
             "working_dir": ctx.working_dir,

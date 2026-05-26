@@ -6,10 +6,7 @@ use astrcode_extension_sdk::s5r::WireMessage;
 use wasmtime::{Caller, Linker, ResourceLimiter};
 use wasmtime_wasi::WasiCtxBuilder;
 
-use crate::{
-    extension_peer::ExtensionPeer,
-    host_router::InvokeContext,
-};
+use crate::{extension_peer::ExtensionPeer, host_router::InvokeContext};
 
 const DEFAULT_WASM_FUEL: u64 = 10_000_000;
 const DEFAULT_WASM_MEMORY_BYTES: usize = 64 * 1024 * 1024;
@@ -109,9 +106,7 @@ pub fn read_str_from_memory(
     }
     let data = memory.data(store);
     let start = ptr as usize;
-    let end = start
-        .checked_add(len as usize)
-        .ok_or("ptr+len overflow")?;
+    let end = start.checked_add(len as usize).ok_or("ptr+len overflow")?;
     if end > data.len() {
         return Err(format!("out-of-bounds read: ptr={ptr}, len={len}"));
     }
@@ -155,11 +150,7 @@ fn host_log(mut caller: Caller<'_, HostState>, level: i32, msg_ptr: i32, msg_len
 }
 
 /// guest→host 统一 RPC 入口（与 guest export `peer_exchange` 对称）。
-fn peer_exchange_import(
-    mut caller: Caller<'_, HostState>,
-    req_ptr: i32,
-    req_len: i32,
-) -> i64 {
+fn peer_exchange_import(mut caller: Caller<'_, HostState>, req_ptr: i32, req_len: i32) -> i64 {
     let json = read_caller_string(&mut caller, req_ptr as u32, req_len as u32);
     let resp_json = {
         let state = caller.data();

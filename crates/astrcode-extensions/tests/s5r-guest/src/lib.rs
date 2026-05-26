@@ -192,7 +192,7 @@ pub extern "C" fn extension_init() -> i32 {
             },
         ],
         provided_capabilities: vec![],
-        requested_capabilities: vec!["small_model"],
+        requested_capabilities: vec!["small_model", "emit_events"],
         metadata: json!({
             "stack": "astrcode",
             "protocol": { "s5r": S5R_VERSION },
@@ -207,6 +207,14 @@ pub extern "C" fn extension_init() -> i32 {
             "hooks": [
                 { "on": "pre_tool_use", "mode": "blocking" },
                 { "on": "turn_end", "mode": "non_blocking" }
+            ],
+            "extension_events": [
+                {
+                    "event_type": "s5r_guest.probe",
+                    "schema_version": 1,
+                    "durable": true,
+                    "max_payload_bytes": 4096
+                }
             ]
         }),
     };
@@ -322,6 +330,13 @@ fn handle_tool_pipeline_status() -> HandlerResult {
 fn handle_pre_tool_use(event: &Value) -> HandlerResult {
     let input = event.get("input").unwrap_or(event);
     let tool_name = input["tool_name"].as_str().unwrap_or("");
+    if tool_name == "emit_hook_probe" {
+        let _ = invoke_astrcode(
+            "astrcode.event.emit",
+            r#"{"event_type":"s5r_guest.probe","schema_version":1,"payload":{"from":"pre_tool_use"}}"#,
+        );
+        return HandlerResult::ok();
+    }
     if tool_name == "bash" {
         let cmd = input["tool_input"]["command"].as_str().unwrap_or("");
         if cmd.contains("rm -rf") {

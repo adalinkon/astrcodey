@@ -435,8 +435,8 @@ pub enum ExtensionEvent {
 
 /// 磁盘扩展目录中的 `extension.json` 契约（发现阶段元数据）。
 ///
-/// **当前 loader 行为（s5r）**：`protocol.s5r`（须为 `"1.0"`）与 **`library`**（WASM 相对路径）为必填；
-/// 扩展的真实 `id`、能力、工具与 hook 均由 guest 的 `extension_init` 握手返回。
+/// **当前 loader 行为（s5r）**：`protocol.s5r`（须为 `"1.0"`）与 **`library`**（WASM
+/// 相对路径）为必填； 扩展的真实 `id`、能力、工具与 hook 均由 guest 的 `extension_init` 握手返回。
 /// 本结构中的 `id` / `name` / `capabilities` 等字段可被 serde 解析，供 UI、诊断或
 /// 未来校验使用，但**不会**替代 WASM manifest。磁盘路径仅支持 `.wasm`，无 native dlopen。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -825,7 +825,9 @@ pub struct PreToolUseContext {
     pub tool_name: String,
     pub tool_input: serde_json::Value,
     pub available_tools: Vec<ToolDefinition>,
-    /// 插件事件发射器（仅插件钩子会有值）。
+    /// 当前 turn 事件通道；宿主按扩展能力派生 [`extension_event_sink`]。
+    pub event_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::event::EventPayload>>,
+    /// 插件事件发射器（按扩展 id 绑定，内置与 WASM 扩展共用）。
     pub extension_event_sink: Option<std::sync::Arc<dyn ExtensionEventSink>>,
     /// session 在存储层的真实目录路径。
     pub session_store_dir: Option<std::path::PathBuf>,
@@ -854,7 +856,9 @@ pub struct PostToolUseContext {
     pub tool_input: serde_json::Value,
     pub tool_result: ToolResult,
     pub is_error: bool,
-    /// 插件事件发射器（仅插件钩子会有值）。
+    /// 当前 turn 事件通道；宿主按扩展能力派生 [`extension_event_sink`]。
+    pub event_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::event::EventPayload>>,
+    /// 插件事件发射器（按扩展 id 绑定，内置与 WASM 扩展共用）。
     pub extension_event_sink: Option<std::sync::Arc<dyn ExtensionEventSink>>,
     /// session 在存储层的真实目录路径。
     pub session_store_dir: Option<std::path::PathBuf>,
@@ -920,7 +924,9 @@ pub struct LifecycleContext {
     pub session_id: String,
     pub working_dir: String,
     pub model: ModelSelection,
-    /// 插件事件发射器（仅插件钩子会有值）。
+    /// 当前 turn 事件通道；宿主按扩展能力派生 [`extension_event_sink`]。
+    pub event_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::event::EventPayload>>,
+    /// 插件事件发射器（按扩展 id 绑定，内置与 WASM 扩展共用）。
     pub extension_event_sink: Option<std::sync::Arc<dyn ExtensionEventSink>>,
     /// 仅 TurnEnd 事件填充：当轮最后一条 user 和 assistant 消息文本。
     pub last_exchange: Option<ExchangeSummary>,

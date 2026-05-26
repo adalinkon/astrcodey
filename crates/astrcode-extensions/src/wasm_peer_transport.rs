@@ -8,7 +8,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     host_router::InvokeContext,
-    wasm_api::{read_str_from_memory, write_to_guest, HostState},
+    wasm_api::{HostState, read_str_from_memory, write_to_guest},
 };
 
 #[derive(Debug)]
@@ -45,8 +45,7 @@ impl WasmPeerTransport {
             .name(thread_name)
             .spawn(move || {
                 while let Ok(job) = job_rx.recv() {
-                    let result =
-                        exchange_blocking(&inner, &job.request_json, &job.invoke_ctx);
+                    let result = exchange_blocking(&inner, &job.request_json, &job.invoke_ctx);
                     let _ = job.reply.send(result);
                 }
             })
@@ -95,12 +94,11 @@ pub fn exchange_blocking(
 
     let resp_ptr = ((packed >> 32) & 0xFFFF_FFFF) as u32;
     let resp_len = (packed & 0xFFFF_FFFF) as u32;
-    let resp_json = read_str_from_memory(&guard.store, &memory, resp_ptr, resp_len)
-        .map_err(TransportError)?;
+    let resp_json =
+        read_str_from_memory(&guard.store, &memory, resp_ptr, resp_len).map_err(TransportError)?;
     let _ = dealloc_fn.call(&mut guard.store, (resp_ptr as i32, resp_len as i32));
 
-    let result =
-        serde_json::from_str(&resp_json).map_err(|e| TransportError(e.to_string()));
+    let result = serde_json::from_str(&resp_json).map_err(|e| TransportError(e.to_string()));
     guard.store.data_mut().clear_invoke_context();
     result
 }

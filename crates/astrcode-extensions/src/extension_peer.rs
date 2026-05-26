@@ -3,23 +3,25 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicU32, Ordering},
         Arc,
+        atomic::{AtomicU32, Ordering},
     },
 };
 
 use astrcode_core::extension::{ExtensionCapability, ExtensionError, ExtensionEventDecl};
 use astrcode_extension_sdk::s5r::{
-    self, capability_from_wire, is_reserved_capability_prefix,
-    HandlerResult, InitializeMsg, InitializeOutput, PeerInfo, ResultKind, ResultMsg, S5R_STACK,
-    S5R_VERSION, WireMessage, CAP_HANDLER_INVOKE,
+    self, CAP_HANDLER_INVOKE, HandlerResult, InitializeMsg, InitializeOutput, PeerInfo, ResultKind,
+    ResultMsg, S5R_STACK, S5R_VERSION, WireMessage, capability_from_wire,
+    is_reserved_capability_prefix,
 };
 use parking_lot::Mutex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::host_router::{decls_to_map, HostRouter, InvokeContext};
-use crate::wasm_peer_transport::TransportError;
+use crate::{
+    host_router::{HostRouter, InvokeContext, decls_to_map},
+    wasm_peer_transport::TransportError,
+};
 
 const MAX_REENTRANCY: u32 = 8;
 const MAX_CONTINUATION_DEPTH: u32 = 16;
@@ -217,9 +219,12 @@ impl ExtensionPeer {
         inv: astrcode_extension_sdk::s5r::InvokeMsg,
         base_ctx: &InvokeContext,
     ) -> Result<WireMessage, TransportError> {
-        let depth = self.reentrancy.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let depth = self
+            .reentrancy
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if depth >= MAX_REENTRANCY {
-            self.reentrancy.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            self.reentrancy
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             return Err(TransportError("reentrancy depth exceeded".into()));
         }
 
@@ -240,7 +245,8 @@ impl ExtensionPeer {
                 .invoke_stream_sync(&inv.capability, &inv.input.to_string(), &ctx)
             {
                 Ok(events) => {
-                    // 流式：返回第一条 Event（guest 可继续 exchange）；简化为返回 completed 前的聚合
+                    // 流式：返回第一条 Event（guest 可继续 exchange）；简化为返回 completed
+                    // 前的聚合
                     if let Some(last) = events.last() {
                         Ok(last.clone())
                     } else {
@@ -256,11 +262,10 @@ impl ExtensionPeer {
                 })),
             }
         } else {
-            match self.router.invoke_sync(
-                &inv.capability,
-                &inv.input.to_string(),
-                &ctx,
-            ) {
+            match self
+                .router
+                .invoke_sync(&inv.capability, &inv.input.to_string(), &ctx)
+            {
                 Ok(output) => Ok(WireMessage::Result(ResultMsg {
                     id: inv.id.clone(),
                     kind: ResultKind::InvokeResult,
@@ -279,7 +284,8 @@ impl ExtensionPeer {
         };
 
         self.pending_cancels.lock().remove(&inv.id);
-        self.reentrancy.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.reentrancy
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         result
     }
 
@@ -365,7 +371,9 @@ fn parse_initialize(init: &InitializeMsg) -> Result<PeerRegistration, TransportE
 
     let id = init.peer.name.clone();
     if id.trim().is_empty() {
-        return Err(TransportError("initialize peer name (extension id) is empty".into()));
+        return Err(TransportError(
+            "initialize peer name (extension id) is empty".into(),
+        ));
     }
 
     let proto = init
@@ -480,5 +488,5 @@ fn parse_handler_result(msg: WireMessage) -> Result<HandlerResult, ExtensionErro
     }
 }
 
-// Manifest types used in Initialize - guest sends tools in provided_capabilities OR we parse from handlers metadata
-// For s5r-guest we'll send structured metadata with tools/hooks arrays
+// Manifest types used in Initialize - guest sends tools in provided_capabilities OR we parse from
+// handlers metadata For s5r-guest we'll send structured metadata with tools/hooks arrays

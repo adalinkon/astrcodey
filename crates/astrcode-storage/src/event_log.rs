@@ -27,7 +27,7 @@ use astrcode_core::{
 pub struct EventLog {
     path: PathBuf,
     writer: Arc<Mutex<BufWriter<File>>>,
-    next_seq: Mutex<u64>,
+    next_seq: Arc<Mutex<u64>>,
     sync_pending: Arc<AtomicBool>,
 }
 
@@ -69,7 +69,7 @@ impl EventLog {
             Self {
                 path,
                 writer: Arc::new(Mutex::new(writer)),
-                next_seq: Mutex::new(1),
+                next_seq: Arc::new(Mutex::new(1)),
                 sync_pending: Arc::new(AtomicBool::new(false)),
             },
             event,
@@ -94,7 +94,7 @@ impl EventLog {
         Ok(Self {
             path,
             writer: Arc::new(Mutex::new(BufWriter::new(file))),
-            next_seq: Mutex::new(next_seq),
+            next_seq: Arc::new(Mutex::new(next_seq)),
             sync_pending: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -105,21 +105,20 @@ impl EventLog {
     /// `sync_all()` until [`force_sync`] is called, typically at turn boundaries.
     /// I/O is offloaded to a blocking thread to avoid stalling the tokio runtime.
     pub async fn append(&self, mut event: Event) -> Result<Event, StorageError> {
-        {
-            let mut next_seq = self
-                .next_seq
-                .lock()
-                .map_err(|_| StorageError::LockError("event log sequence lock poisoned".into()))?;
-            event.seq = Some(*next_seq);
-            *next_seq += 1;
-        }
-
-        let line = serde_json::to_string(&event)?;
-        let writer = self.writer.clone();
+        let writer = Arc::clone(&self.writer);
+        let next_seq = Arc::clone(&self.next_seq);
         let path = self.path.clone();
-        let sync_pending = self.sync_pending.clone();
+        let sync_pending = Arc::clone(&self.sync_pending);
 
         tokio::task::spawn_blocking(move || {
+            let mut seq_guard = next_seq
+                .lock()
+                .map_err(|_| StorageError::LockError("event log sequence lock poisoned".into()))?;
+            event.seq = Some(*seq_guard);
+            *seq_guard += 1;
+            drop(seq_guard);
+
+            let line = serde_json::to_string(&event)?;
             let mut guard = writer
                 .lock()
                 .map_err(|_| StorageError::LockError("event log writer lock poisoned".into()))?;

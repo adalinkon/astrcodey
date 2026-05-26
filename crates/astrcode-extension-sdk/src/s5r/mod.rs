@@ -14,10 +14,9 @@ pub use capabilities::{
 };
 pub use effects::{CallContinuation, HandlerResult};
 pub use messages::{
-    CapabilityDescriptor, ErrorPayload, EventPhase, HandlerDescriptor, InitializeMsg,
-    InitializeOutput, InvokeMsg, EventMsg, PeerInfo, ResultKind, ResultMsg, WireMessage,
-    S5R_STACK, S5R_VERSION, CAP_HANDLER_INVOKE,
+    CAP_HANDLER_INVOKE, CapabilityDescriptor, ErrorPayload, EventMsg, EventPhase,
+    HandlerDescriptor, InitializeMsg, InitializeOutput, InvokeMsg, PeerInfo, ResultKind, ResultMsg,
+    S5R_STACK, S5R_VERSION, WireMessage,
 };
-
 // Re-export event/mode helpers (same mapping as former s6r).
 pub use messages::{event_from_name, event_to_name, mode_from_name};

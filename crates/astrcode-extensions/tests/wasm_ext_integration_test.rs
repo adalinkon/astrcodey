@@ -7,12 +7,8 @@ use astrcode_extensions::{build_host_router, wasm_ext::WasmExtension};
 use astrcode_storage::in_memory::InMemoryEventStore;
 
 fn test_router() -> Arc<astrcode_extensions::HostRouter> {
-    let store: Arc<dyn astrcode_core::storage::EventStore> =
-        Arc::new(InMemoryEventStore::new());
-    build_host_router(
-        Arc::new(ExtensionHostServices::new(store, None)),
-        None,
-    )
+    let store: Arc<dyn astrcode_core::storage::EventStore> = Arc::new(InMemoryEventStore::new());
+    build_host_router(Arc::new(ExtensionHostServices::new(store, None)), None)
 }
 
 #[test]
@@ -25,7 +21,10 @@ fn s5r_guest_wasm_loads_via_extension_init() {
         .join("release")
         .join("s5r_guest_demo.wasm");
     if !wasm_path.exists() {
-        eprintln!("skip: build s5r-guest first: cargo build -p s5r-guest-demo --target wasm32-wasip1 --release");
+        eprintln!(
+            "skip: build s5r-guest first: cargo build -p s5r-guest-demo --target wasm32-wasip1 \
+             --release"
+        );
         return;
     }
     let ext = WasmExtension::load(&wasm_path, 10_000_000, 64 * 1024 * 1024, test_router()).unwrap();

@@ -598,6 +598,12 @@ fn event_adds_message(event: &Event) -> bool {
 }
 
 fn sse_event<T: serde::Serialize>(value: &T) -> SseEvent {
-    let data = serde_json::to_string(value).unwrap_or_else(|_| "{}".into());
+    let data = match serde_json::to_string(value) {
+        Ok(data) => data,
+        Err(error) => {
+            tracing::error!(%error, "failed to serialize SSE conversation envelope");
+            r#"{"error":"serialization_failed"}"#.to_string()
+        },
+    };
     SseEvent::default().event("conversation").data(data)
 }

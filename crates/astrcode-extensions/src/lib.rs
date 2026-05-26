@@ -11,4 +11,4 @@ pub mod wasm_api;
 pub mod wasm_ext;
 pub mod wasm_peer_transport;
 
-pub use host_router::{build_host_router, HostRouter};
+pub use host_router::{HostRouter, build_host_router};

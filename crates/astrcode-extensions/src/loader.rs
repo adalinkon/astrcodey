@@ -284,12 +284,7 @@ impl ExtensionLoader {
             .ok_or("ExtensionLoadContext.host_router is required for WASM extensions")?;
 
         let lib_path = ext_dir.join(&library);
-        crate::wasm_ext::WasmExtension::load(
-            &lib_path,
-            limits.fuel,
-            limits.memory_bytes,
-            router,
-        )
+        crate::wasm_ext::WasmExtension::load(&lib_path, limits.fuel, limits.memory_bytes, router)
             .map(|ext| ext as Arc<dyn Extension>)
             .map_err(|e| format!("load wasm {}: {e}", lib_path.display()))
     }

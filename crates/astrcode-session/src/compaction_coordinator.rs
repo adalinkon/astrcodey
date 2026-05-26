@@ -6,6 +6,7 @@ use astrcode_context::context_assembler::{ContextPrepareInput, PrepareMessagesOp
 use astrcode_core::{
     extension::{CompactStrategy, CompactTrigger},
     llm::LlmMessage,
+    storage::SessionReadModel,
     types::TurnId,
 };
 use astrcode_extensions::runner::ExtensionRunner;
@@ -13,6 +14,7 @@ use astrcode_extensions::runner::ExtensionRunner;
 use crate::{
     compact::make_compact_request_fn,
     deferred_tools::append_deferred_tools_reminder,
+    llm_request_history::visible_messages_for_assembler,
     turn_runner::{CompactionStageMeta, TurnRunner},
     turn_stages::TurnState,
 };
@@ -28,7 +30,6 @@ pub(crate) struct CompactionRequest {
 
 /// context assembler 输出，含是否实际执行了 compaction。
 pub(crate) struct PreparedContextMessages {
-    pub system_messages: Vec<LlmMessage>,
     pub context_messages: Vec<LlmMessage>,
     pub compaction_applied: bool,
 }
@@ -38,16 +39,17 @@ impl TurnRunner {
     pub(crate) async fn prepare_context_messages(
         &mut self,
         extension_runner: &ExtensionRunner,
-        state: &mut TurnState,
+        state: &TurnState,
+        model: &SessionReadModel,
         turn_id: &TurnId,
         request: CompactionRequest,
     ) -> Result<PreparedContextMessages, crate::turn_context::TurnError> {
         let llm = Arc::clone(self.llm());
         let context_assembler = Arc::clone(self.session().caps().context_assembler());
         let custom_instructions = self
-            .compact_instructions(extension_runner, state, request.trigger)
+            .compact_instructions(extension_runner, model, request.trigger)
             .await;
-        let (system_messages, visible_messages) = split_system_messages(state);
+        let visible_messages = visible_messages_for_assembler(model);
         let input = ContextPrepareInput {
             messages: visible_messages,
             system_prompt: Some(self.system_prompt()),
@@ -73,6 +75,7 @@ impl TurnRunner {
                 .handle_compaction_stage(
                     extension_runner,
                     state,
+                    model,
                     &mut compaction.result,
                     context_assembler.settings(),
                     turn_id,
@@ -85,9 +88,6 @@ impl TurnRunner {
                 )
                 .await;
             if persisted {
-                state.replace_messages(
-                    [system_messages.clone(), prepared.messages.clone()].concat(),
-                );
                 compaction_applied = true;
             }
         }
@@ -100,17 +100,8 @@ impl TurnRunner {
         );
 
         Ok(PreparedContextMessages {
-            system_messages,
             context_messages,
             compaction_applied,
         })
     }
-}
-
-pub(crate) fn split_system_messages(state: &TurnState) -> (Vec<LlmMessage>, Vec<LlmMessage>) {
-    state
-        .messages()
-        .iter()
-        .cloned()
-        .partition(|message| message.role == astrcode_core::llm::LlmRole::System)
 }

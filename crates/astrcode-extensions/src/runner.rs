@@ -114,6 +114,19 @@ fn bind_extension_event_sink(
     }))
 }
 
+fn attach_extension_event_sink(
+    index: &HandlerIndex,
+    extension_id: &str,
+    event_tx: &Option<mpsc::UnboundedSender<EventPayload>>,
+) -> Option<Arc<dyn ExtensionEventSink>> {
+    if !index.allows(extension_id, ExtensionCapability::EmitEvents) {
+        return None;
+    }
+    let tx = event_tx.as_ref()?;
+    let decls = index.extension_event_decls.get(extension_id)?;
+    bind_extension_event_sink(extension_id, decls, tx.clone())
+}
+
 #[async_trait::async_trait]
 impl ExtensionEventSink for BoundExtensionEventSink {
     async fn emit(
@@ -729,6 +742,8 @@ impl ExtensionRunner {
             if !index.allows(extension_id, ExtensionCapability::SessionState) {
                 handler_ctx.session_store_dir = None;
             }
+            handler_ctx.extension_event_sink =
+                attach_extension_event_sink(&index, extension_id, &ctx.event_tx);
             match mode {
                 HookMode::Blocking => {
                     let result = tokio::time::timeout(self.timeout, handler.handle(handler_ctx))
@@ -784,6 +799,8 @@ impl ExtensionRunner {
             if !index.allows(extension_id, ExtensionCapability::SessionState) {
                 handler_ctx.session_store_dir = None;
             }
+            handler_ctx.extension_event_sink =
+                attach_extension_event_sink(&index, extension_id, &ctx.event_tx);
             match mode {
                 HookMode::Blocking => {
                     let result = tokio::time::timeout(self.timeout, handler.handle(handler_ctx))
@@ -987,25 +1004,30 @@ impl ExtensionRunner {
         };
 
         for (extension_id, mode, handler) in handlers {
+            let mut handler_ctx = ctx.clone();
+            handler_ctx.extension_event_sink =
+                attach_extension_event_sink(&index, extension_id, &ctx.event_tx);
             match mode {
                 HookMode::Blocking => {
-                    let result = tokio::time::timeout(self.timeout, handler.handle(ctx.clone()))
-                        .await
-                        .map_err(|_| ExtensionError::Timeout(self.timeout.as_millis() as u64))??;
+                    let result =
+                        tokio::time::timeout(self.timeout, handler.handle(handler_ctx.clone()))
+                            .await
+                            .map_err(|_| {
+                                ExtensionError::Timeout(self.timeout.as_millis() as u64)
+                            })??;
                     if let HookResult::Block { reason } = result {
                         return Err(ExtensionError::Blocked { reason });
                     }
                 },
                 HookMode::Advisory => {
-                    if let Err(e) = handler.handle(ctx.clone()).await {
+                    if let Err(e) = handler.handle(handler_ctx).await {
                         tracing::warn!(error = %e, "advisory lifecycle handler failed");
                     }
                 },
                 HookMode::NonBlocking => {
-                    let ctx = ctx.clone();
                     let handler = Arc::clone(handler);
                     self.spawn_extension_task(extension_id, "lifecycle", async move {
-                        if let Err(e) = handler.handle(ctx).await {
+                        if let Err(e) = handler.handle(handler_ctx).await {
                             tracing::warn!(error = %e, "non-blocking lifecycle handler failed");
                         }
                     })

@@ -23,7 +23,7 @@ use super::{
     },
     session::Session,
     tool_types::ExecutableToolCall,
-    turn_context::{TurnEventTx, send_event},
+    turn_publish::TurnPublisher,
 };
 
 // ─── Runtime context types ──────────────────────────────────────────────
@@ -79,7 +79,7 @@ pub(crate) struct ToolCallRuntimeContext {
     pub model_id: String,
     pub tools: Vec<ToolDefinition>,
     pub tool_result_reader: Option<Arc<dyn ToolResultArtifactReader>>,
-    pub event_tx: Option<TurnEventTx>,
+    pub publisher: Arc<TurnPublisher>,
     pub capabilities: ToolRuntimeCapabilities,
 }
 
@@ -189,26 +189,7 @@ fn resolve_effective_policy(
     }
 }
 
-/// 创建 tool → agent 事件转发桥。
-///
-/// 返回 (tool_event_tx, Option<JoinHandle>)。
-/// tool_event_tx 传给 ToolExecutionContext；JoinHandle 用于在工具执行完毕后等待桥排空。
-/// 调用方需在 tool_ctx drop 后再 drop tool_event_tx，然后 await JoinHandle。
-fn spawn_event_bridge(
-    agent_tx: &TurnEventTx,
-) -> (
-    mpsc::UnboundedSender<EventPayload>,
-    tokio::task::JoinHandle<()>,
-) {
-    let (tool_tx, mut tool_rx) = mpsc::unbounded_channel();
-    let agent_tx = agent_tx.clone();
-    let handle = tokio::spawn(async move {
-        while let Some(payload) = tool_rx.recv().await {
-            let _ = agent_tx.send(payload);
-        }
-    });
-    (tool_tx, handle)
-}
+use crate::turn_publish::spawn_event_bridge;
 
 /// 普通的阻塞式工具执行（原有逻辑）。
 async fn execute_tool_call_blocking(
@@ -219,7 +200,7 @@ async fn execute_tool_call_blocking(
     let started_at = Instant::now();
     let tool_name = call.name.clone();
     let call_id = call.call_id.clone();
-    let tool_event_bridge = runtime.event_tx.as_ref().map(spawn_event_bridge);
+    let tool_event_bridge = Some(spawn_event_bridge(Arc::clone(&runtime.publisher)));
     let tool_event_tx = tool_event_bridge
         .as_ref()
         .map(|(tool_tx, _)| tool_tx.clone());
@@ -298,10 +279,10 @@ async fn execute_tool_call_with_background(
     let call_index = call.index;
 
     // 构造工具执行所需的上下文
-    let tool_event_tx = runtime.event_tx.as_ref().map(|agent_tx| {
-        let (tool_tx, _bridge_handle) = spawn_event_bridge(agent_tx);
-        tool_tx
-    });
+    let tool_event_tx = {
+        let (tool_tx, _bridge_handle) = spawn_event_bridge(Arc::clone(&runtime.publisher));
+        Some(tool_tx)
+    };
 
     let tool_ctx = ToolExecutionContext {
         session_id: runtime.session_id.clone(),
@@ -442,15 +423,15 @@ async fn background_tool_call(
         0 => "explicit".into(),
         _ => "auto_threshold".into(),
     };
-    send_event(
-        runtime.event_tx.as_ref(),
-        EventPayload::ToolCallBackgrounded {
+    runtime
+        .publisher
+        .live(EventPayload::ToolCallBackgrounded {
             call_id: ToolCallId::from(call_id.as_str()),
             tool_name: tool_name.clone(),
             task_id: task_id.clone(),
             reason: bg_reason,
-        },
-    );
+        })
+        .await;
 
     // 闭包专用的变量，之后由 watcher move 消费
     let bg_call_id = call_id.clone();

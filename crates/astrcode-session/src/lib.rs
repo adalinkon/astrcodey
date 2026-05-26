@@ -8,6 +8,7 @@ pub mod compact;
 pub(crate) mod compact_circuit_breaker;
 pub(crate) mod compaction_coordinator;
 pub(crate) mod deferred_tools;
+pub(crate) mod llm_request_history;
 pub(crate) mod llm_stream;
 pub mod payload;
 pub mod post_compact;
@@ -22,6 +23,7 @@ pub(crate) mod tool_results;
 pub(crate) mod tool_types;
 pub mod turn_context;
 pub mod turn_handle;
+pub(crate) mod turn_publish;
 pub(crate) mod turn_runner;
 pub(crate) mod turn_stages;
 

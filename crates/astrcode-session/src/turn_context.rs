@@ -13,7 +13,8 @@ use tokio::sync::mpsc;
 
 // ─── Turn event channel ──────────────────────────────────────────────────
 
-/// Turn 内事件发送端：payload 由 `drive_agent` 写入 session 持久化与 fanout。
+/// Turn 内 live 事件发送端（legacy）；新代码优先
+/// [`TurnPublisher::live`](crate::turn_publish::TurnPublisher::live)。
 pub type TurnEventTx = mpsc::UnboundedSender<EventPayload>;
 
 /// 向后兼容别名；新代码优先使用 [`TurnEventTx`]。
@@ -66,6 +67,8 @@ pub(crate) struct SharedTurnContext {
     pub(crate) working_dir: String,
     pub(crate) model_id: String,
     pub(crate) session_store_dir: Option<std::path::PathBuf>,
+    /// 当前 turn 的扩展事件通道（`ExtensionEventBridge` 在 `process_prompt` 期间注入）。
+    pub(crate) turn_event_tx: Option<TurnEventTx>,
 }
 
 impl SharedTurnContext {
@@ -76,6 +79,7 @@ impl SharedTurnContext {
             working_dir: model.working_dir.clone(),
             model_id: model.model_id.clone(),
             session_store_dir: None,
+            turn_event_tx: None,
         }
     }
 
@@ -85,6 +89,7 @@ impl SharedTurnContext {
             session_id: self.session_id.to_string(),
             working_dir: self.working_dir.clone(),
             model: self.model_selection(),
+            event_tx: self.turn_event_tx.clone(),
             extension_event_sink: None,
             last_exchange: None,
         }
@@ -100,6 +105,7 @@ impl SharedTurnContext {
             session_id: self.session_id.to_string(),
             working_dir: self.working_dir.clone(),
             model: self.model_selection(),
+            event_tx: self.turn_event_tx.clone(),
             extension_event_sink: None,
             last_exchange: Some(ExchangeSummary {
                 user_message,
@@ -149,4 +155,18 @@ pub enum TurnError {
     ToolTaskJoinFailed(String),
     #[error("{0}")]
     Internal(String),
+    #[error("durable event emit failed: {0}")]
+    DurableEmitFailed(String),
+}
+
+/// 是否应在 turn 失败时补发 `TurnEnd`（已由 `end_turn_with_error_typed` 处理的路径除外）。
+pub(crate) fn turn_error_emits_turn_end(error: &TurnError) -> bool {
+    !matches!(
+        error,
+        TurnError::ProviderBlocked { .. }
+            | TurnError::CompactExhausted
+            | TurnError::Llm(_)
+            | TurnError::Extension(_)
+            | TurnError::Tool(_)
+    )
 }

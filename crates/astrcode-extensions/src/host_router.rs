@@ -14,13 +14,10 @@ use astrcode_core::{
     tool::{CreateSessionRequest, SessionOperations, SubmitTurnRequest, SubmitTurnResult},
 };
 use astrcode_extension_sdk::{
-    s5r::{
-        CapabilityDescriptor, ErrorPayload,
-        EventMsg, EventPhase, WireMessage,
-    },
+    s5r::{CapabilityDescriptor, ErrorPayload, EventMsg, EventPhase, WireMessage},
     state,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -126,8 +123,8 @@ impl HostRouter {
         }
         Self::authorize_astrcode(cap, &ctx.declared_capabilities)?;
 
-        let input: Value =
-            serde_json::from_str(input).map_err(|e| ErrorPayload::new("invalid_input", e.to_string()))?;
+        let input: Value = serde_json::from_str(input)
+            .map_err(|e| ErrorPayload::new("invalid_input", e.to_string()))?;
 
         match cap {
             "astrcode.llm.small_chat" => self.invoke_small_llm(&input, false, ctx),
@@ -154,8 +151,8 @@ impl HostRouter {
         ctx: &InvokeContext,
     ) -> Result<Vec<WireMessage>, ErrorPayload> {
         Self::authorize_astrcode(cap, &ctx.declared_capabilities)?;
-        let input: Value =
-            serde_json::from_str(input).map_err(|e| ErrorPayload::new("invalid_input", e.to_string()))?;
+        let input: Value = serde_json::from_str(input)
+            .map_err(|e| ErrorPayload::new("invalid_input", e.to_string()))?;
         let request_id = "stream-0".to_string();
 
         match cap {
@@ -171,12 +168,11 @@ impl HostRouter {
                         if let Some(chunks) = output.get("chunks").and_then(|c| c.as_array()) {
                             for chunk in chunks {
                                 events.push(WireMessage::Event(EventMsg {
-                                        id: request_id.clone(),
-                                        phase: EventPhase::Delta,
-                                        data: chunk.clone(),
-                                        error: None,
-                                    },
-                                ));
+                                    id: request_id.clone(),
+                                    phase: EventPhase::Delta,
+                                    data: chunk.clone(),
+                                    error: None,
+                                }));
                             }
                         }
                         events.push(WireMessage::Event(EventMsg {
@@ -211,9 +207,10 @@ impl HostRouter {
         collect_chunks: bool,
         _ctx: &InvokeContext,
     ) -> Result<Value, ErrorPayload> {
-        let provider = self.backends.small_llm.as_ref().ok_or_else(|| {
-            ErrorPayload::new("backend_unavailable", "small_llm not configured")
-        })?;
+        let provider =
+            self.backends.small_llm.as_ref().ok_or_else(|| {
+                ErrorPayload::new("backend_unavailable", "small_llm not configured")
+            })?;
 
         let messages = input["messages"]
             .as_array()
@@ -256,7 +253,11 @@ impl HostRouter {
         })
     }
 
-    fn invoke_read_events(&self, input: &Value, _ctx: &InvokeContext) -> Result<Value, ErrorPayload> {
+    fn invoke_read_events(
+        &self,
+        input: &Value,
+        _ctx: &InvokeContext,
+    ) -> Result<Value, ErrorPayload> {
         let reader = self.backends.session_read.as_ref().ok_or_else(|| {
             ErrorPayload::new("backend_unavailable", "session_read not configured")
         })?;
@@ -284,23 +285,20 @@ impl HostRouter {
         ctx: &InvokeContext,
     ) -> Result<Value, ErrorPayload> {
         let ops = ctx.session_ops.as_ref().ok_or_else(|| {
-            ErrorPayload::new("backend_unavailable", "session_ops not available in context")
+            ErrorPayload::new(
+                "backend_unavailable",
+                "session_ops not available in context",
+            )
         })?;
         let req = CreateSessionRequest {
-            name: input["name"]
-                .as_str()
-                .unwrap_or("child")
-                .to_string(),
+            name: input["name"].as_str().unwrap_or("child").to_string(),
             working_dir: input["working_dir"].as_str().map(str::to_string),
             system_prompt: input["system_prompt"].as_str().map(str::to_string),
             model_preference: input["model_preference"].as_str().map(str::to_string),
             tool_policy: None,
             source_extension: Some(ctx.extension_id.clone()),
             ephemeral: input["ephemeral"].as_bool().unwrap_or(false),
-            tool_call_id: input["tool_call_id"]
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
+            tool_call_id: input["tool_call_id"].as_str().unwrap_or("").to_string(),
         };
         let parent = ctx
             .session_id
@@ -321,7 +319,10 @@ impl HostRouter {
         ctx: &InvokeContext,
     ) -> Result<Value, ErrorPayload> {
         let ops = ctx.session_ops.as_ref().ok_or_else(|| {
-            ErrorPayload::new("backend_unavailable", "session_ops not available in context")
+            ErrorPayload::new(
+                "backend_unavailable",
+                "session_ops not available in context",
+            )
         })?;
         let req = SubmitTurnRequest {
             target_session_id: input["target_session_id"]
@@ -358,7 +359,10 @@ impl HostRouter {
         ctx: &InvokeContext,
     ) -> Result<Value, ErrorPayload> {
         let ops = ctx.session_ops.as_ref().ok_or_else(|| {
-            ErrorPayload::new("backend_unavailable", "session_ops not available in context")
+            ErrorPayload::new(
+                "backend_unavailable",
+                "session_ops not available in context",
+            )
         })?;
         let session_id = input["session_id"]
             .as_str()
@@ -386,11 +390,21 @@ impl HostRouter {
             .as_str()
             .ok_or_else(|| ErrorPayload::new("invalid_input", "key required"))?;
         let path = state::session_data_dir(base, &ctx.extension_id).join(safe_filename(key));
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => {
+                return Err(ErrorPayload::new("io_error", error.to_string()));
+            },
+        };
         Ok(serde_json::json!({ "content": content }))
     }
 
-    fn invoke_state_write(&self, input: &Value, ctx: &InvokeContext) -> Result<Value, ErrorPayload> {
+    fn invoke_state_write(
+        &self,
+        input: &Value,
+        ctx: &InvokeContext,
+    ) -> Result<Value, ErrorPayload> {
         let base = ctx
             .session_store_dir
             .as_ref()
@@ -449,7 +463,9 @@ impl HostRouter {
 
 fn submit_turn_result_json(r: SubmitTurnResult) -> Value {
     match r {
-        SubmitTurnResult::Completed { content } => json!({ "status": "completed", "content": content }),
+        SubmitTurnResult::Completed { content } => {
+            json!({ "status": "completed", "content": content })
+        },
         SubmitTurnResult::Backgrounded {
             task_id,
             session_id,

@@ -9,7 +9,7 @@ use astrcode_core::{config::OpenAiApiMode, llm::*, tool::ToolDefinition};
 use tokio::sync::mpsc;
 
 use crate::{
-    common::{build_client, stream_body_error, transport_error},
+    common::{build_client, read_http_error_body, stream_body_error, transport_error},
     retry::RetryPolicy,
     serialization::{
         chat_message_to_json, prompt_cache_retention_wire_value, responses_input_items,
@@ -639,7 +639,7 @@ impl<A: ChatAccumulator> OpenAiProvider<A> {
                 continue;
             }
 
-            let text = response.text().await.unwrap_or_default();
+            let text = read_http_error_body(response, &endpoint).await;
             if status.as_u16() >= 500 {
                 return Err(LlmError::ServerError {
                     status: status.as_u16(),
