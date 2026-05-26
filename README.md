@@ -318,68 +318,68 @@ The Cargo workspace under [`crates/`](crates/) contains **21 crates**, plus [`sr
 
 | Crate | Lines | Description |
 |---|---|---|
-| [`astrcode-core`](crates/astrcode-core) | 5.3k | Shared domain types, traits, config system, extension contracts, prompt composition |
-| [`astrcode-support`](crates/astrcode-support) | 1.0k | Host utilities: path resolution, shell detection, tool result persistence |
-| [`astrcode-log`](crates/astrcode-log) | 308 | File rotation, stderr output, env-filter logging |
+| [`astrcode-core`](crates/astrcode-core) | 5.9k | Shared domain types, traits, config system, extension contracts, prompt composition |
+| [`astrcode-support`](crates/astrcode-support) | 1.1k | Host utilities: path resolution, shell detection, tool result persistence |
+| [`astrcode-log`](crates/astrcode-log) | 353 | File rotation, stderr output, env-filter logging |
 
 ### Layer 1: Domain Services
 
 | Crate | Lines | Description |
 |---|---|---|
-| [`astrcode-ai`](crates/astrcode-ai) | 3.5k | Multi-provider LLM layer (Anthropic, OpenAI-compatible, Google GenAI), SSE streaming, retry |
-| [`astrcode-tools`](crates/astrcode-tools) | 5.1k | Built-in tools: read, write, edit, patch, find, grep, shell, terminal, task |
-| [`astrcode-storage`](crates/astrcode-storage) | 3.8k | JSONL event log, snapshots, config persistence, file locking |
-| [`astrcode-context`](crates/astrcode-context) | 3.6k | Token estimation, context window budgeting, auto-compact, prompt engine |
-| [`astrcode-session`](crates/astrcode-session) | 8.0k | Agent loop: turn runner, tool pipeline, LLM stream, compact orchestration, runtime services |
-| [`astrcode-extensions`](crates/astrcode-extensions) | 5.1k | Extension lifecycle, hook dispatch, capability gating, WASM runtime (wasmtime + s5r) |
+| [`astrcode-ai`](crates/astrcode-ai) | 3.8k | Multi-provider LLM layer (Anthropic, OpenAI-compatible, Google GenAI), SSE streaming, retry |
+| [`astrcode-tools`](crates/astrcode-tools) | 5.6k | Built-in tools: read, write, edit, patch, find, grep, shell, terminal, task |
+| [`astrcode-storage`](crates/astrcode-storage) | 4.1k | JSONL event log, snapshots, config persistence, file locking |
+| [`astrcode-context`](crates/astrcode-context) | 4.0k | Token estimation, context window budgeting, auto-compact, prompt engine |
+| [`astrcode-session`](crates/astrcode-session) | 8.8k | Agent loop: turn runner, tool pipeline, LLM stream, compact orchestration, runtime services |
+| [`astrcode-extensions`](crates/astrcode-extensions) | 5.6k | Extension lifecycle, hook dispatch, capability gating, WASM runtime (wasmtime + s5r) |
 
 ### Layer 2: Extensions
 
 | Crate | Lines | Description |
 |---|---|---|
-| [`astrcode-extension-sdk`](crates/astrcode-extension-sdk) | 642 | Stable extension authoring API, capability declarations, s5r wire types, manifest helpers |
-| [`astrcode-bundled-extensions`](crates/astrcode-bundled-extensions) | 88 | Composition root that registers all first-party extension crates |
-| [`astrcode-extension-mode`](crates/astrcode-extension-mode) | 978 | Code / Plan mode switching, exit gate, plan artifact, keybindings & status bar |
-| [`astrcode-extension-skill`](crates/astrcode-extension-skill) | 852 | Slash-command skill discovery and Skill tool dispatch |
-| [`astrcode-extension-todo-tool`](crates/astrcode-extension-todo-tool) | 786 | Progress-tracking todo list tool |
-| [`astrcode-extension-agent-tools`](crates/astrcode-extension-agent-tools) | 658 | Sub-agent delegation, agent discovery (Claude Code compatible) |
-| [`astrcode-extension-mcp`](crates/astrcode-extension-mcp) | 2.7k | MCP client: stdio/HTTP transports, persistent process pool, pre-warm, health checks |
-| [`astrcode-extension-memory`](crates/astrcode-extension-memory) | 1.6k | Project-scoped markdown memory (disabled by default) |
+| [`astrcode-extension-sdk`](crates/astrcode-extension-sdk) | 723 | Stable extension authoring API, capability declarations, s5r wire types, manifest helpers |
+| [`astrcode-bundled-extensions`](crates/astrcode-bundled-extensions) | 99 | Composition root that registers all first-party extension crates |
+| [`astrcode-extension-mode`](crates/astrcode-extension-mode) | 1.1k | Code / Plan mode switching, exit gate, plan artifact, keybindings & status bar |
+| [`astrcode-extension-skill`](crates/astrcode-extension-skill) | 962 | Slash-command skill discovery and Skill tool dispatch |
+| [`astrcode-extension-todo-tool`](crates/astrcode-extension-todo-tool) | 876 | Progress-tracking todo list tool |
+| [`astrcode-extension-agent-tools`](crates/astrcode-extension-agent-tools) | 736 | Sub-agent delegation, agent discovery (Claude Code compatible) |
+| [`astrcode-extension-mcp`](crates/astrcode-extension-mcp) | 3.0k | MCP client: stdio/HTTP transports, persistent process pool, pre-warm, health checks |
+| [`astrcode-extension-memory`](crates/astrcode-extension-memory) | 1.8k | Project-scoped markdown memory (disabled by default) |
 
 ### Layer 3: Server & Protocol
 
 | Crate | Lines | Description |
 |---|---|---|
-| [`astrcode-protocol`](crates/astrcode-protocol) | 1.3k | JSON-RPC 2.0 wire types, commands, events, HTTP/UI DTOs |
-| [`astrcode-server`](crates/astrcode-server) | 12.2k | Session manager, JSON-RPC/HTTP/ACP handlers, transport, HTTP projection & SSE |
+| [`astrcode-protocol`](crates/astrcode-protocol) | 1.5k | JSON-RPC 2.0 wire types, commands, events, HTTP/UI DTOs |
+| [`astrcode-server`](crates/astrcode-server) | 13.4k | Session manager, JSON-RPC/HTTP/ACP handlers, transport, HTTP projection & SSE |
 
 ### Layer 4: Clients
 
 | Crate | Lines | Description |
 |---|---|---|
-| [`astrcode-client`](crates/astrcode-client) | 617 | Typed JSON-RPC client, transport abstraction, stream subscription |
-| [`astrcode-cli`](crates/astrcode-cli) | 7.7k | CLI entry: TUI (ratatui), headless exec, server launcher |
+| [`astrcode-client`](crates/astrcode-client) | 693 | Typed JSON-RPC client, transport abstraction, stream subscription |
+| [`astrcode-cli`](crates/astrcode-cli) | 8.2k | CLI entry: TUI (ratatui), headless exec, server launcher |
 
 ### Eval
 
 | Crate | Lines | Description |
 |---|---|---|
-| [`astrcode-eval`](crates/astrcode-eval) | 1.0k | Benchmark runner: HTTP server control, event-log metrics, structured reports |
+| [`astrcode-eval`](crates/astrcode-eval) | 1.1k | Benchmark runner: HTTP server control, event-log metrics, structured reports |
 
 ### Desktop Shell
 
 | Component | Lines | Description |
 |---|---|---|
-| [`src-tauri/`](src-tauri) | ~690 | Tauri v2 shell: sidecar management, single-instance coordination, native dialogs |
+| [`src-tauri/`](src-tauri) | 778 | Tauri v2 shell: sidecar management, single-instance coordination, native dialogs |
 
-**Totals:** ~67.6k lines of Rust (21 crates + Tauri), **261** `.rs` files; ~6.3k lines of TypeScript in `frontend/` (~**74k** lines overall).
+**Totals:** ~74.2k lines of Rust (21 crates + Tauri), **260** `.rs` files; ~6.8k lines of TypeScript in `frontend/` (~**81k** lines overall).
 
 ### Frontend & Desktop App
 
 | Component | Lines | Description |
 |---|---|---|
-| `frontend/` (React + TS) | ~6.3k | Web frontend — chat view, sidebar, session management, SSE streaming, status bar |
-| `src-tauri/` (Tauri v2) | ~670 | Desktop app shell — sidecar management, single-instance coordination, native dialogs |
+| `frontend/` (React + TS) | ~6.8k | Web frontend — chat view, sidebar, session management, SSE streaming, status bar |
+| `src-tauri/` (Tauri v2) | 778 | Desktop app shell — sidecar management, single-instance coordination, native dialogs |
 
 The web frontend (`frontend/`) is a React 19 + TypeScript + Tailwind CSS v4 + Vite single-page application. It connects to the `astrcode-server` backend via SSE for real-time streaming and JSON-RPC for commands. The frontend supports running standalone in the browser (`npm run dev`) or packaged as a Tauri desktop app (`npm run tauri:dev`).
 
