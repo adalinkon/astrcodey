@@ -329,10 +329,8 @@ fn conversation_to_dto(
     if let Some(boundary) = latest_compact_boundary(&session.compact_boundaries) {
         blocks.push(compact_summary_block(boundary));
     }
-    blocks.extend(messages_to_blocks(
-        &session.messages,
-        &session.background_tool_calls,
-    ));
+    let ui_messages: Vec<_> = session.messages.iter().map(|m| m.message.clone()).collect();
+    blocks.extend(messages_to_blocks(&ui_messages, &session.background_tool_calls));
 
     // 如果有正在流式传输的 assistant 消息，追加一个 streaming block。
     // durable 投影不含 streaming 消息（`AssistantTextDelta` 是 live 事件），
