@@ -4,15 +4,11 @@ use astrcode_core::{
     storage::{SessionReadModel, SessionSummary},
     types::SessionId,
 };
-use astrcode_protocol::{
-    commands::ClientCommand,
-    http::{
-        AgentSessionLinkDto, CompactSessionRequest, CompactSessionResponse, ConversationBlockDto,
-        ConversationBlockStatusDto, ConversationCursorDto, ConversationSnapshotResponseDto,
-        CreateSessionRequest, CreateSessionResponseDto, DeleteProjectResponseDto, PromptRequest,
-        PromptSubmitResponse, SessionListItemDto, SessionListResponseDto,
-        SlashCommandListResponseDto,
-    },
+use astrcode_protocol::http::{
+    AgentSessionLinkDto, CompactSessionRequest, CompactSessionResponse, ConversationBlockDto,
+    ConversationBlockStatusDto, ConversationCursorDto, ConversationSnapshotResponseDto,
+    CreateSessionRequest, CreateSessionResponseDto, DeleteProjectResponseDto, PromptRequest,
+    PromptSubmitResponse, SessionListItemDto, SessionListResponseDto, SlashCommandListResponseDto,
 };
 use axum::{
     Json,
@@ -61,7 +57,7 @@ pub(in crate::http) async fn create_session(
 }
 
 pub(in crate::http) async fn list_sessions(State(state): State<HttpState>) -> Response {
-    match state.runtime.session_manager().list_summaries().await {
+    match state.runtime.event_store().list_session_summaries().await {
         Ok(summaries) => Json(SessionListResponseDto {
             sessions: summaries.into_iter().map(summary_to_dto).collect(),
         })
@@ -84,8 +80,8 @@ pub(in crate::http) async fn conversation_snapshot(
     }
     match state
         .runtime
-        .session_manager()
-        .read_model(&session_id)
+        .event_store()
+        .session_read_model(&session_id)
         .await
     {
         Ok(snapshot) => {
@@ -103,9 +99,13 @@ pub(in crate::http) async fn submit_prompt(
 ) -> Response {
     tracing::info!(session_id = %session_id, text_len = request.text.len(), "POST prompt submit");
     let session_id = SessionId::from(session_id);
+    let input = match crate::handler::user_prompt_from_http(request.text, request.attachments) {
+        Ok(input) => input,
+        Err(error) => return handler_error_response(error, "prompt_failed"),
+    };
     let result = state
         .handler
-        .submit_input_for_session(session_id.clone(), request.text)
+        .submit_input_for_session(session_id.clone(), input)
         .await;
     match result {
         Ok(PromptSubmission::Accepted { turn_id }) => {
@@ -122,10 +122,8 @@ pub(in crate::http) async fn submit_prompt(
             message,
         })
         .into_response(),
-        Err(HandlerError::TurnAlreadyRunning) => {
-            tracing::warn!(session_id = %session_id, "prompt rejected: turn already running");
-            handler_error_response(HandlerError::TurnAlreadyRunning, "prompt_failed")
-        },
+        // TODO(web-client): 在 `frontend/src/store/conversation.ts` 用 `handled` + control 态
+        // 更新 queuedMessages。
         Err(HandlerError::UnknownCommand(cmd)) => {
             tracing::warn!(session_id = %session_id, command = %cmd, "prompt rejected: unknown slash command");
             handler_error_response(HandlerError::UnknownCommand(cmd), "prompt_failed")
@@ -223,11 +221,8 @@ pub(in crate::http) async fn delete_session(
     State(state): State<HttpState>,
     Path(session_id): Path<String>,
 ) -> Response {
-    match state
-        .handler
-        .handle(ClientCommand::DeleteSession { session_id })
-        .await
-    {
+    let session_id = SessionId::from(session_id);
+    match state.handler.delete_session(session_id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => not_found_response("delete_failed", error),
     }

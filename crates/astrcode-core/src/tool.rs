@@ -333,6 +333,10 @@ pub trait SessionOperations: Send + Sync {
 pub struct CreateSessionRequest {
     /// 子会话显示名称。
     pub name: String,
+    /// 子 Agent 任务描述，写入父 session 的 `AgentSessionSpawned.task`。
+    /// 若创建时尚未知（两步 `create_session` + `submit_turn`），可留空并在
+    /// `submit_turn` 时由 server 回填。
+    pub task: Option<String>,
     /// 工作目录。`None` 表示继承父 session。
     pub working_dir: Option<String>,
     /// 额外系统提示词。
@@ -422,8 +426,6 @@ pub struct LlmModelIds {
 /// 生产环境由 agent loop 在构建 `ToolExecutionContext` 时按需填充。
 #[derive(Clone, Default)]
 pub struct ToolCapabilities {
-    /// 当前 session 主模型 id（与 [`LlmModelIds::main`] 相同；保留供既有调用方）。
-    pub model_id: Option<String>,
     /// 主模型 id；须在扩展 manifest 声明 `main_model` 能力后可用。
     pub main_model_id: Option<String>,
     /// 小模型 id；须在扩展 manifest 声明 `small_model` 能力后可用。
@@ -514,7 +516,6 @@ impl std::fmt::Debug for ToolExecutionContext {
 impl std::fmt::Debug for ToolCapabilities {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolCapabilities")
-            .field("model_id", &self.model_id)
             .field("main_model_id", &self.main_model_id)
             .field("small_model_id", &self.small_model_id)
             .field(

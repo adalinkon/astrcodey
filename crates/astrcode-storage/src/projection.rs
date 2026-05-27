@@ -2,6 +2,9 @@
 //!
 //! EventLog 是唯一事实源；本模块只维护可从事件重建的内部读模型。
 
+#[path = "projection/phase.rs"]
+mod phase;
+
 use astrcode_core::{
     event::{Event, EventPayload, Phase},
     llm::{LlmContent, LlmMessage, LlmRole},
@@ -10,7 +13,9 @@ use astrcode_core::{
         SequencedLlmMessage, SessionReadModel,
     },
     types::SessionId,
+    user_prompt::UserPromptParts,
 };
+pub use phase::{ChildAgentPhaseUpdate, child_agent_phase_update, phase_for_control_update};
 
 /// 从事件序列重建会话读模型。
 pub fn replay(session_id: SessionId, events: &[Event]) -> SessionReadModel {
@@ -124,6 +129,18 @@ pub fn reduce(event: &Event, model: &mut SessionReadModel) {
                 .agent_sessions
                 .retain(|l| l.child_session_id != *child_session_id);
         },
+        EventPayload::AgentSessionTaskAssigned {
+            child_session_id,
+            task,
+        } => {
+            if let Some(link) = model
+                .agent_sessions
+                .iter_mut()
+                .find(|l| l.child_session_id == *child_session_id)
+            {
+                link.task = task.clone();
+            }
+        },
         EventPayload::SystemPromptConfigured {
             text,
             fingerprint,
@@ -135,9 +152,13 @@ pub fn reduce(event: &Event, model: &mut SessionReadModel) {
         },
         EventPayload::TurnStarted | EventPayload::UserMessage { .. } => {
             model.phase = Phase::Thinking;
-            if let EventPayload::UserMessage { text, .. } = &event.payload {
+            if let EventPayload::UserMessage { text, images, .. } = &event.payload {
                 model.messages.push(SequencedLlmMessage {
-                    message: LlmMessage::user(text),
+                    message: UserPromptParts {
+                        text: text.clone(),
+                        images: images.clone(),
+                    }
+                    .to_llm_message(),
                     updated_seq: event_seq,
                 });
             }
@@ -426,6 +447,7 @@ mod tests {
                 EventPayload::UserMessage {
                     message_id: new_message_id(),
                     text: "old user".into(),
+                    images: vec![],
                 },
             ),
             event(
@@ -443,6 +465,7 @@ mod tests {
                 EventPayload::UserMessage {
                     message_id: new_message_id(),
                     text: "recent user".into(),
+                    images: vec![],
                 },
             ),
         ];
@@ -518,6 +541,7 @@ mod tests {
             EventPayload::UserMessage {
                 message_id: new_message_id(),
                 text: "after compact".into(),
+                images: vec![],
             },
         ));
 

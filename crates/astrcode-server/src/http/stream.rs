@@ -82,8 +82,8 @@ pub(in crate::http) async fn session_stream(
     // Validate session exists before opening the stream.
     let read_model = match http_state
         .runtime
-        .session_manager
-        .read_model(&session_id)
+        .event_store()
+        .session_read_model(&session_id)
         .await
     {
         Ok(model) => model,
@@ -124,7 +124,7 @@ pub(in crate::http) async fn session_stream(
         Some(cursor) if cursor.parse::<u64>().is_err() => (Vec::new(), true),
         Some(cursor) => match http_state
             .runtime
-            .session_manager
+            .event_store()
             .replay_from(&session_id, &Cursor::from(cursor.as_str()))
             .await
         {
@@ -270,7 +270,7 @@ async fn event_cursor(runtime: &ServerRuntime, event: &Event) -> String {
 }
 
 async fn state_cursor(runtime: &ServerRuntime, session_id: &SessionId) -> String {
-    match runtime.session_manager().latest_cursor(session_id).await {
+    match runtime.event_store().latest_cursor(session_id).await {
         Ok(Some(cursor)) => cursor,
         Ok(None) => "0".to_string(),
         Err(error) => {
@@ -534,25 +534,11 @@ fn resolve_initial_child_id(
 }
 
 fn map_child_phase(payload: &EventPayload) -> Option<ChildPhaseProjection> {
-    let (phase, current_tool) = match payload {
-        EventPayload::TurnStarted | EventPayload::AgentRunStarted => (Phase::Thinking, None),
-        EventPayload::AssistantMessageStarted { .. } | EventPayload::AssistantTextDelta { .. } => {
-            (Phase::Streaming, None)
-        },
-        EventPayload::ToolCallStarted { tool_name, .. }
-        | EventPayload::ToolCallRequested { tool_name, .. } => {
-            (Phase::CallingTool, Some(tool_name.clone()))
-        },
-        EventPayload::ToolCallCompleted { .. } => (Phase::Thinking, None),
-        EventPayload::TurnCompleted { .. } | EventPayload::AgentRunCompleted { .. } => {
-            (Phase::Idle, None)
-        },
-        EventPayload::ErrorOccurred { .. } => (Phase::Error, None),
-        _ => return None,
-    };
-    Some(ChildPhaseProjection {
-        phase,
-        current_tool,
+    astrcode_storage::projection::child_agent_phase_update(payload).map(|update| {
+        ChildPhaseProjection {
+            phase: update.phase,
+            current_tool: update.current_tool,
+        }
     })
 }
 

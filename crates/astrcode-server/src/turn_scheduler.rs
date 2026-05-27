@@ -5,13 +5,13 @@
 //!
 //! ## 下一 turn 输入队列（唯一）
 //!
-//! `pending_queues` 是进程内唯一的「等当前 turn 结束再处理」队列（HTTP / stdio / Actor
-//! 均通过 [`notify_turn`](TurnScheduler::notify_turn) 入队）。`on_turn_completed` 按 FIFO
-//! 每次只弹出一条并启动新 turn，保证连发 prompt 仍对应多个独立 `UserMessage` 事件。
+//! `pending_queues` 是进程内唯一的「等当前 turn 结束再处理」队列（HTTP / 进程内 / Actor
+//! 均通过 [`accept_user_input`](TurnScheduler::accept_user_input) 入队）。turn 结束后由
+//! 内部 completion watcher 链式出队。
 
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
-    sync::Arc,
+    sync::{Arc, OnceLock, Weak},
     time::Duration,
 };
 
@@ -21,6 +21,7 @@ use astrcode_core::{
     storage::SessionReadModel,
     tool::ToolResult,
     types::*,
+    user_prompt::UserPromptParts,
 };
 use astrcode_session::{
     Session, SessionError,
@@ -29,14 +30,21 @@ use astrcode_session::{
 };
 use parking_lot::Mutex;
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 
-use crate::{
-    session_manager::SessionManager, session_operations::ServerSessionOperations,
-    turn_registry::TurnRegistry,
-};
+use crate::{session_manager::SessionManager, turn_registry::TurnRegistry};
+
+#[path = "turn_scheduler_completion.rs"]
+mod completion;
 
 #[path = "turn_scheduler_queue.rs"]
-mod turn_queue;
+mod queue;
+
+pub use completion::TurnSummary;
+/// Handler / ACP 兼容别名。
+pub type TurnCompletion = TurnSummary;
+
+pub use queue::UserInputOutcome;
 
 /// Turn 调度层错误（会话是否存在、是否已有 turn 在跑等）。
 ///
@@ -61,9 +69,9 @@ pub enum TurnScheduleError {
 }
 
 pub enum SubmitOutcome {
+    /// 新 turn 已启动；completion watcher 已由 scheduler 注册。
     Started {
         turn_id: TurnId,
-        handle: TurnHandle,
     },
     Injected,
     /// 消息已入队，等待当前 turn 结束后处理
@@ -72,7 +80,7 @@ pub enum SubmitOutcome {
 
 /// 待处理的消息，用于 "下一 turn" 路径
 pub(crate) struct PendingMessage {
-    text: String,
+    input: UserPromptParts,
 }
 
 /// per-session 的待处理消息队列
@@ -81,41 +89,151 @@ type PendingQueue = VecDeque<PendingMessage>;
 pub struct TurnScheduler {
     session_manager: Arc<SessionManager>,
     registry: Arc<TurnRegistry>,
+    shutdown_token: CancellationToken,
     /// 等待当前 turn 结束后处理的消息队列
     pub(super) pending_queues: Mutex<HashMap<SessionId, PendingQueue>>,
+    weak_self: Weak<TurnScheduler>,
+    session_idle: OnceLock<completion::SessionIdleHook>,
 }
 
 impl TurnScheduler {
-    pub fn new(session_manager: Arc<SessionManager>, registry: Arc<TurnRegistry>) -> Self {
-        Self {
+    /// 创建共享 scheduler（支持内部 completion watcher 自引用）。
+    pub fn new_arc(
+        session_manager: Arc<SessionManager>,
+        registry: Arc<TurnRegistry>,
+        shutdown_token: CancellationToken,
+    ) -> Arc<Self> {
+        Arc::new_cyclic(|weak| Self {
             session_manager,
             registry,
+            shutdown_token,
             pending_queues: Mutex::new(HashMap::new()),
+            weak_self: weak.clone(),
+            session_idle: OnceLock::new(),
+        })
+    }
+
+    /// 注册 session turn 链结束时的回调（如 actor 空闲 recap）。在首次 submit 前调用一次即可。
+    pub fn register_session_idle(&self, hook: completion::SessionIdleHook) {
+        if self.session_idle.set(hook).is_err() {
+            tracing::warn!("register_session_idle called more than once; keeping first hook");
         }
+    }
+
+    pub(super) fn session_idle_hook(&self) -> Option<completion::SessionIdleHook> {
+        self.session_idle.get().cloned()
+    }
+
+    fn track_turn(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        turn_id: TurnId,
+        handle: TurnHandle,
+        completion_tx: Option<tokio::sync::oneshot::Sender<TurnSummary>>,
+    ) {
+        completion::spawn_watcher(
+            Arc::clone(self),
+            session_id,
+            turn_id,
+            handle,
+            completion_tx,
+            self.session_idle_hook(),
+        );
+    }
+
+    pub(crate) fn arc(&self) -> Arc<Self> {
+        self.weak_self
+            .upgrade()
+            .expect("TurnScheduler must be constructed via TurnScheduler::new_arc")
     }
 
     pub fn registry(&self) -> &Arc<TurnRegistry> {
         &self.registry
     }
 
+    pub fn shutdown_token(&self) -> &CancellationToken {
+        &self.shutdown_token
+    }
+
     pub async fn sync_durable_events(&self, session_id: &SessionId) {
         self.session_manager.sync_durable_events(session_id).await;
     }
 
-    /// 提交新 turn。
-    ///
-    /// attach session 到 event_bus、修复遗留状态、调用 `Session::submit`、注册到 registry。
-    /// 排队中的输入由 [`on_turn_completed`](Self::on_turn_completed) 在 turn 结束后按 FIFO 处理。
-    pub async fn submit(
+    /// 启动新 turn 并自动注册 completion watcher。调用方不接触 [`TurnHandle`]。
+    pub async fn submit_tracked(
         &self,
         session_id: SessionId,
-        text: String,
+        input: UserPromptParts,
+    ) -> Result<TurnId, TurnScheduleError> {
+        let (turn_id, handle) = self.submit_raw(session_id.clone(), input).await?;
+        self.arc()
+            .track_turn(session_id, turn_id.clone(), handle, None);
+        Ok(turn_id)
+    }
+
+    /// 启动新 turn，完成后通过 oneshot 发送 [`TurnSummary`]（链中第一个 turn 完成时发送）。
+    pub async fn submit_tracked_with_notify(
+        &self,
+        session_id: SessionId,
+        input: UserPromptParts,
+        completion_tx: tokio::sync::oneshot::Sender<TurnSummary>,
+    ) -> Result<TurnId, TurnScheduleError> {
+        let (turn_id, handle) = self.submit_raw(session_id.clone(), input).await?;
+        self.arc()
+            .track_turn(session_id, turn_id.clone(), handle, Some(completion_tx));
+        Ok(turn_id)
+    }
+
+    /// 同步等待 turn 结束（不 spawn background watcher）。用于扩展 API `wait_for_result`。
+    pub async fn submit_and_wait(
+        &self,
+        session_id: SessionId,
+        input: UserPromptParts,
+    ) -> Result<TurnSummary, TurnScheduleError> {
+        let (turn_id, handle) = self.submit_raw(session_id.clone(), input).await?;
+        let wait_result = match handle.wait_or_shutdown(self.shutdown_token()).await {
+            astrcode_session::turn_handle::TurnWaitOutcome::Shutdown => {
+                self.release_finished_turn(&session_id, &turn_id).await;
+                return Ok(TurnSummary::Aborted);
+            },
+            astrcode_session::turn_handle::TurnWaitOutcome::Completed(result) => result,
+        };
+        let summary = completion::summary_from_wait(self, &session_id, wait_result).await;
+        self.release_finished_turn(&session_id, &turn_id).await;
+        completion::spawn_queued_chain_if_any(self.arc(), session_id).await;
+        Ok(summary)
+    }
+
+    /// 子 agent 等需要自行持有 handle 的路径（如 [`ChildTurnGuard`]）。
+    pub(crate) async fn submit_untracked(
+        &self,
+        session_id: SessionId,
+        input: UserPromptParts,
+    ) -> Result<(TurnId, TurnHandle), TurnScheduleError> {
+        self.submit_raw(session_id, input).await
+    }
+
+    /// turn 结束后尝试启动 pending 队列中的下一条 turn（带 watcher）。
+    pub async fn continue_queued_turns_if_any(&self, session_id: SessionId) {
+        completion::spawn_queued_chain_if_any(self.arc(), session_id).await;
+    }
+
+    /// 提交新 turn 到 registry，不注册 completion watcher。
+    async fn submit_raw(
+        &self,
+        session_id: SessionId,
+        input: UserPromptParts,
     ) -> Result<(TurnId, TurnHandle), TurnScheduleError> {
         if self.registry.has_active(&session_id) {
             return Err(TurnScheduleError::TurnAlreadyRunning);
         }
 
-        tracing::info!(session_id = %session_id, text_len = text.len(), "scheduler: submit turn");
+        tracing::info!(
+            session_id = %session_id,
+            text_len = input.text.len(),
+            image_count = input.images.len(),
+            "scheduler: submit turn"
+        );
 
         let session = self
             .session_manager
@@ -124,7 +242,7 @@ impl TurnScheduler {
             .map_err(|e| TurnScheduleError::SessionNotFound(format!("{session_id}: {e}")))?;
 
         let turn_id = new_turn_id();
-        let handle = session.submit(text, turn_id.clone()).await.map_err(|e| {
+        let handle = session.submit(input, turn_id.clone()).await.map_err(|e| {
             tracing::error!(session_id = %session_id, error = %e, "session.submit failed");
             TurnScheduleError::Turn(e)
         })?;
@@ -143,19 +261,42 @@ impl TurnScheduler {
         Ok((turn_id, handle))
     }
 
-    /// 智能路由：有活跃 turn 则 inject，否则 submit。
+    /// 用户 ESC 引导输入：有活跃 turn 则 inject，否则 submit（与 [`notify_step`] 同类语义）。
+    pub async fn submit_prompt_step(
+        &self,
+        session_id: SessionId,
+        input: UserPromptParts,
+    ) -> Result<SubmitOutcome, TurnScheduleError> {
+        self.process_child_completions(&session_id).await;
+        self.submit_or_inject(session_id, input).await
+    }
+
+    /// 智能路由：有活跃 turn 则 inject，否则 submit 并注册 completion watcher。
     pub async fn submit_or_inject(
         &self,
         session_id: SessionId,
-        text: String,
+        input: UserPromptParts,
     ) -> Result<SubmitOutcome, TurnScheduleError> {
         if self.registry.has_active(&session_id) {
-            self.inject(&session_id, text).await?;
+            self.inject(&session_id, input).await?;
             Ok(SubmitOutcome::Injected)
         } else {
-            let (turn_id, handle) = self.submit(session_id, text).await?;
-            Ok(SubmitOutcome::Started { turn_id, handle })
+            let turn_id = self.submit_tracked(session_id, input).await?;
+            Ok(SubmitOutcome::Started { turn_id })
         }
+    }
+
+    /// 进程内 registry 是否为该 session 持有 executing turn。
+    ///
+    /// `phase` 来自 durable 投影，可能 stale；仅以 registry 作为「正在跑 turn」的权威来源。
+    pub fn session_has_active_turn(&self, session_id: &SessionId, _phase: Phase) -> bool {
+        self.registry.has_active(session_id)
+    }
+
+    /// turn 结束后的 registry 清理与子 agent drain（不含 durable sync）。
+    pub(crate) async fn release_finished_turn(&self, session_id: &SessionId, turn_id: &TurnId) {
+        self.registry().remove_if_matches(session_id, turn_id);
+        self.drain_child_completions_after_turn(session_id).await;
     }
 
     /// 通知后台任务已完成，在当前 turn 的**下一步**触发 agent 继续处理。
@@ -178,7 +319,8 @@ impl TurnScheduler {
             r#"<system type="background_completed" source="{}">"#,
             source
         );
-        self.submit_or_inject(session_id, marker).await
+        self.submit_or_inject(session_id, UserPromptParts::text_only(marker))
+            .await
     }
 
     /// 中止活跃 turn。
@@ -194,8 +336,7 @@ impl TurnScheduler {
         self.cascade_abort_children(session_id).await;
 
         // 快路径：registry 中有活跃 turn
-        if let Some((turn_id, session)) = self.registry.abort_and_remove(session_id) {
-            self.emit_turn_aborted(&turn_id, &session, session_id).await;
+        if self.abort_active_and_emit(session_id).await {
             return Ok(());
         }
 
@@ -228,13 +369,25 @@ impl TurnScheduler {
     /// Abort 活跃 turn + 清理 background tasks + 清理待处理消息队列。
     /// event_bus 的 detach 由 SessionManager::delete/recycle 自动处理。
     pub async fn cleanup(&self, session_id: &SessionId) {
+        self.abort_active_and_emit(session_id).await;
+        self.clear_pending_queue(session_id);
+    }
+
+    /// 删除 session 前的统一 turn 收尾：abort 活跃 turn + 清空 pending 队列。
+    pub async fn teardown_session(&self, session_id: &SessionId) {
+        if let Err(error) = self.abort(session_id).await {
+            tracing::warn!(session_id = %session_id, error = %error, "abort failed before session teardown");
+        }
+        self.clear_pending_queue(session_id);
+    }
+
+    /// Abort registry 中的活跃 turn 并写终态事件。返回是否处理了活跃 turn。
+    async fn abort_active_and_emit(&self, session_id: &SessionId) -> bool {
         if let Some((turn_id, session)) = self.registry.abort_and_remove(session_id) {
             self.emit_turn_aborted(&turn_id, &session, session_id).await;
-        }
-        // 清理待处理消息队列，避免内存泄漏
-        let removed = self.pending_queues.lock().remove(session_id);
-        if removed.is_some() {
-            tracing::info!(session_id = %session_id, "cleaned up pending message queue");
+            true
+        } else {
+            false
         }
     }
 
@@ -338,9 +491,6 @@ impl TurnScheduler {
         &self,
         guards: &[Arc<astrcode_session::child_turn::ChildTurnGuard>],
     ) {
-        let session_manager = &self.session_manager;
-        let scheduler = self;
-
         // 反转：先处理深层（grandchildren），再浅层（children）
         for guard in guards.iter().rev() {
             let child_sid = guard.child_session_id();
@@ -350,27 +500,23 @@ impl TurnScheduler {
                 ChildOutcome::TimedOut => "abort timed out",
                 _ => "aborted",
             };
-            ServerSessionOperations::write_agent_failed(
-                session_manager,
-                parent_sid,
-                child_sid,
-                error,
-            )
-            .await;
-            ServerSessionOperations::recycle_child(
-                session_manager,
-                scheduler,
-                parent_sid,
-                child_sid,
-            )
-            .await;
+            self.write_child_failed(parent_sid, child_sid, error).await;
+            self.recycle_child(parent_sid, child_sid).await;
         }
     }
 
     /// 处理父 session 中已完成的子 turn：回收、通知。
     ///
-    /// 终态事件已由 guard 后台任务写入。本方法只处理 cleanup + notify。
+    /// 终态事件已由 `ChildTurnGuard` 后台任务写入。本方法只处理 cleanup + notify。
     /// 幂等。无已完成子 turn 时为空操作。
+    ///
+    /// ## 触发点（均属刻意冗余，collect-once 语义保证安全）
+    ///
+    /// - [`Self::submit_prompt_step`] / [`Self::notify_step`]：父 turn 继续前先 drain 已完成子
+    ///   agent
+    /// - [`ServerSessionOperations::submit_turn`]：子 turn 提交返回前
+    /// - [`Self::drain_child_completions_after_turn`]：父 turn 结束后
+    /// - [`ServerEventBus::attach`] forwarder：收到 `AgentSessionCompleted` / `Failed` 时
     pub async fn process_child_completions(&self, parent_sid: &SessionId) {
         let parent_session = match self.session_manager.open(parent_sid.clone()).await {
             Ok(s) => s,
@@ -382,20 +528,18 @@ impl TurnScheduler {
         let completed = parent_session.drain_completed_guards();
         for guard in completed {
             if guard.cleanup() == ChildCleanup::Recycle {
-                ServerSessionOperations::recycle_child(
-                    &self.session_manager,
-                    self,
-                    guard.parent_session_id(),
-                    guard.child_session_id(),
-                )
-                .await;
+                self.recycle_child(guard.parent_session_id(), guard.child_session_id())
+                    .await;
             } else {
                 // 非回收策略：仅清理 registry entry（已完成 turn 无需 abort）
                 self.registry().remove(guard.child_session_id());
             }
             if let Some(notify_text) = guard.notify_text() {
                 if let Err(e) = self
-                    .submit_or_inject(guard.parent_session_id().clone(), notify_text.to_string())
+                    .submit_or_inject(
+                        guard.parent_session_id().clone(),
+                        UserPromptParts::text_only(notify_text.to_string()),
+                    )
                     .await
                 {
                     tracing::warn!(
@@ -413,7 +557,7 @@ impl TurnScheduler {
     pub async fn inject(
         &self,
         session_id: &SessionId,
-        text: String,
+        input: UserPromptParts,
     ) -> Result<(), TurnScheduleError> {
         let turn_id = self
             .registry
@@ -425,10 +569,7 @@ impl TurnScheduler {
             .ok_or(TurnScheduleError::NoActiveTurn)?;
         let message_id = new_message_id();
         session
-            .emit_durable(
-                Some(&turn_id),
-                EventPayload::UserMessage { message_id, text },
-            )
+            .emit_durable(Some(&turn_id), input.user_message_event(message_id))
             .await
             .map_err(TurnScheduleError::EventEmit)?;
         Ok(())
@@ -466,6 +607,71 @@ impl TurnScheduler {
 
         self.session_manager.sync_durable_events(session_id).await;
         Ok(())
+    }
+
+    /// 向父 session 写入 `AgentSessionFailed`（abort 级联等无 ChildTurnGuard 的路径）。
+    pub(crate) async fn write_child_failed(
+        &self,
+        parent_sid: &SessionId,
+        child_sid: &SessionId,
+        error: &str,
+    ) {
+        let event = astrcode_core::event::Event::new(
+            parent_sid.clone(),
+            None,
+            astrcode_session::payload::agent_session_failed_payload(
+                child_sid.clone(),
+                error.to_string(),
+            ),
+        );
+        if let Err(e) = self
+            .session_manager
+            .append_durable_event(parent_sid, event)
+            .await
+        {
+            tracing::warn!(
+                parent_session_id = %parent_sid,
+                child_session_id = %child_sid,
+                error = %e,
+                "failed to append AgentSessionFailed event"
+            );
+        } else {
+            self.sync_durable_events(parent_sid).await;
+        }
+    }
+
+    /// 回收子 session 并向父 session 写入 `AgentSessionRecycled`。
+    pub(crate) async fn recycle_child(&self, parent_sid: &SessionId, child_sid: &SessionId) {
+        self.cleanup(child_sid).await;
+        if let Err(e) = self.session_manager.recycle_session(child_sid).await {
+            tracing::warn!(
+                session_id = %child_sid,
+                error = %e,
+                "failed to recycle session"
+            );
+            return;
+        }
+        let event = astrcode_core::event::Event::new(
+            parent_sid.clone(),
+            None,
+            EventPayload::AgentSessionRecycled {
+                child_session_id: child_sid.clone(),
+            },
+        );
+        if let Err(e) = self
+            .session_manager
+            .append_durable_event(parent_sid, event)
+            .await
+        {
+            tracing::warn!(
+                parent_session_id = %parent_sid,
+                child_session_id = %child_sid,
+                error = %e,
+                "failed to append AgentSessionRecycled event"
+            );
+        } else {
+            self.sync_durable_events(parent_sid).await;
+        }
     }
 }
 

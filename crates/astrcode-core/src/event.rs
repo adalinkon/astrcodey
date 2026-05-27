@@ -8,7 +8,10 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{extension::ChildToolPolicy, llm::LlmMessage, tool::ToolResult, types::*};
+use crate::{
+    extension::ChildToolPolicy, llm::LlmMessage, tool::ToolResult, types::*,
+    user_prompt::UserImagePart,
+};
 
 /// 会话的执行阶段。
 ///
@@ -162,6 +165,15 @@ pub enum EventPayload {
         child_session_id: SessionId,
     },
 
+    /// 回填子 Agent 任务描述。
+    ///
+    /// 当 `AgentSessionSpawned.task` 在创建时为空（两步 API 尚未提交 prompt），
+    /// 首次 `submit_turn` 时追加到父 session，更新 `agent_sessions` 投影。
+    AgentSessionTaskAssigned {
+        child_session_id: SessionId,
+        task: String,
+    },
+
     /// 用户轮次开始。
     TurnStarted,
 
@@ -177,6 +189,9 @@ pub enum EventPayload {
         message_id: MessageId,
         /// 消息文本内容。
         text: String,
+        /// 随消息提交的图片（已处理为 provider 可接受的 base64）。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<UserImagePart>,
     },
 
     /// Recap 摘要已生成。
@@ -570,6 +585,7 @@ mod tests {
             payload: EventPayload::UserMessage {
                 message_id: "message-1".into(),
                 text: "hello".into(),
+                images: vec![],
             },
         };
 

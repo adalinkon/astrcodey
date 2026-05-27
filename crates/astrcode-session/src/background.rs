@@ -235,37 +235,14 @@ pub fn backgrounded_placeholder_result(
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        config::{EffectiveConfig, ExtensionSettings, LlmSettings, OpenAiApiMode},
         event::Event,
-        llm::{LlmError, LlmEvent, LlmMessage, LlmProvider, ModelLimits},
         storage::{EventReader, EventStore, SessionReadModel, SessionSummary, StorageError},
-        tool::{ToolDefinition, ToolResult},
+        tool::ToolResult,
         types::Cursor,
     };
-    use astrcode_extensions::runner::ExtensionRunner;
     use astrcode_storage::in_memory::InMemoryEventStore;
 
     use super::*;
-
-    struct NeverLlm;
-
-    #[async_trait::async_trait]
-    impl LlmProvider for NeverLlm {
-        async fn generate(
-            &self,
-            _messages: Vec<LlmMessage>,
-            _tools: Vec<ToolDefinition>,
-        ) -> Result<mpsc::UnboundedReceiver<LlmEvent>, LlmError> {
-            std::future::pending().await
-        }
-
-        fn model_limits(&self) -> ModelLimits {
-            ModelLimits {
-                max_input_tokens: 1024,
-                max_output_tokens: 1024,
-            }
-        }
-    }
 
     struct FailToolCompletionStore {
         inner: InMemoryEventStore,
@@ -283,6 +260,14 @@ mod tests {
     impl EventReader for FailToolCompletionStore {
         async fn replay_events(&self, session_id: &SessionId) -> Result<Vec<Event>, StorageError> {
             self.inner.replay_events(session_id).await
+        }
+
+        async fn replay_events_through(
+            &self,
+            session_id: &SessionId,
+            max_seq: u64,
+        ) -> Result<Vec<Event>, StorageError> {
+            self.inner.replay_events_through(session_id, max_seq).await
         }
 
         async fn session_read_model(
@@ -386,58 +371,7 @@ mod tests {
     }
 
     fn test_caps() -> Arc<crate::session_runtime_services::SessionRuntimeServices> {
-        let llm: Arc<dyn LlmProvider> = Arc::new(NeverLlm);
-        let extension_runner = Arc::new(ExtensionRunner::new(std::time::Duration::from_secs(1)));
-        let context_assembler = Arc::new(
-            astrcode_context::context_assembler::LlmContextAssembler::new(Default::default()),
-        );
-        Arc::new(
-            crate::session_runtime_services::SessionRuntimeServices::new(
-                Arc::clone(&llm),
-                llm,
-                extension_runner,
-                context_assembler,
-                EffectiveConfig {
-                    llm: LlmSettings {
-                        provider_kind: "mock".into(),
-                        base_url: String::new(),
-                        api_key: String::new(),
-                        api_mode: OpenAiApiMode::ChatCompletions,
-                        model_id: "mock".into(),
-                        max_tokens: 1024,
-                        context_limit: 1024,
-                        connect_timeout_secs: 1,
-                        read_timeout_secs: 1,
-                        max_retries: 0,
-                        retry_base_delay_ms: 0,
-                        supports_prompt_cache_key: false,
-                        prompt_cache_retention: None,
-                        reasoning: false,
-                        thinking_level: None,
-                    },
-                    small_llm: LlmSettings {
-                        provider_kind: "mock".into(),
-                        base_url: String::new(),
-                        api_key: String::new(),
-                        api_mode: OpenAiApiMode::ChatCompletions,
-                        model_id: "mock".into(),
-                        max_tokens: 1024,
-                        context_limit: 1024,
-                        connect_timeout_secs: 1,
-                        read_timeout_secs: 1,
-                        max_retries: 0,
-                        retry_base_delay_ms: 0,
-                        supports_prompt_cache_key: false,
-                        prompt_cache_retention: None,
-                        reasoning: false,
-                        thinking_level: None,
-                    },
-                    context: Default::default(),
-                    agent: Default::default(),
-                    extensions: ExtensionSettings::default(),
-                },
-            ),
-        )
+        crate::test_fixtures::default_mock_runtime_services()
     }
 
     fn fake_handles() -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
@@ -523,23 +457,24 @@ mod tests {
     async fn forwarder_sends_live_tool_completion_when_durable_write_fails() {
         let store: Arc<dyn EventStore> = Arc::new(FailToolCompletionStore::new());
         let session_id = SessionId::from("session-forwarder-fallback");
+        let caps = test_caps();
         let runtime = Arc::new(crate::session_runtime::SessionRuntimeState::new(
-            Arc::new(NeverLlm),
-            Arc::new(NeverLlm),
+            caps.llm(),
+            caps.small_llm(),
             "mock".into(),
         ));
         let session = Arc::new(
-            crate::session::Session::create_with_id(
-                Arc::clone(&store),
-                session_id.clone(),
-                ".",
-                "mock",
-                None,
-                None,
-                None,
+            crate::session::Session::create_with_params(crate::session::SessionCreateParams {
+                store: Arc::clone(&store),
+                sid: session_id.clone(),
+                working_dir: ".".into(),
+                model_id: "mock".into(),
+                parent: None,
+                tool_policy: None,
+                source_extension: None,
                 runtime,
-                test_caps(),
-            )
+                caps: test_caps(),
+            })
             .await
             .unwrap(),
         );

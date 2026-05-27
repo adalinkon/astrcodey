@@ -21,6 +21,7 @@ use astrcode_core::{
     storage::EventStore,
     tool::{ToolDefinition, ToolResult},
     types::{SessionId, ToolCallId, new_session_id},
+    user_prompt::UserPromptParts,
 };
 use astrcode_protocol::{commands::ClientCommand, events::ClientNotification};
 use astrcode_session::{compact_boundary_payload, session_continued_from_compaction_payload};
@@ -768,10 +769,11 @@ fn test_runtime() -> Arc<ServerRuntime> {
 }
 
 fn test_scheduler(runtime: &Arc<ServerRuntime>) -> Arc<crate::turn_scheduler::TurnScheduler> {
-    Arc::new(crate::turn_scheduler::TurnScheduler::new(
+    crate::turn_scheduler::TurnScheduler::new_arc(
         runtime.session_manager().clone(),
         Arc::new(crate::turn_registry::TurnRegistry::new()),
-    ))
+        runtime.shutdown_token().clone(),
+    )
 }
 
 fn unique_workspace(name: &str) -> PathBuf {
@@ -908,6 +910,7 @@ async fn append_user_assistant_pair(
             EventPayload::UserMessage {
                 message_id: new_message_id(),
                 text: user.into(),
+                images: vec![],
             },
         ))
         .await
@@ -1208,13 +1211,13 @@ async fn submit_prompt_reuses_session_system_prompt() {
     };
 
     handler
-        .submit_input_for_session(sid.clone(), "one".into())
+        .submit_input_for_session(sid.clone(), "one")
         .await
         .unwrap();
     assert_eq!(wait_for_turn_completed(&mut event_rx).await, "stop");
 
     handler
-        .submit_input_for_session(sid.clone(), "two".into())
+        .submit_input_for_session(sid.clone(), "two")
         .await
         .unwrap();
     assert_eq!(wait_for_turn_completed(&mut event_rx).await, "stop");
@@ -1241,7 +1244,7 @@ async fn submit_prompt_configures_missing_session_system_prompt() {
     let handler = spawn_test_actor(Arc::clone(&runtime), event_tx);
 
     handler
-        .submit_input_for_session(sid.clone(), "hello".into())
+        .submit_input_for_session(sid.clone(), "hello")
         .await
         .unwrap();
     assert_eq!(wait_for_turn_completed(&mut event_rx).await, "stop");
@@ -1267,10 +1270,7 @@ async fn submit_prompt_uses_one_turn_id_for_turn_events() {
     let handler = spawn_test_actor(Arc::clone(&runtime), event_tx);
 
     let sid = handler.create_session(".".into()).await.unwrap();
-    handler
-        .submit_input_for_session(sid, "hi".into())
-        .await
-        .unwrap();
+    handler.submit_input_for_session(sid, "hi").await.unwrap();
     let (finish_reason, turn_ids) = collect_turn_ids_until_completed(&mut event_rx).await;
     assert_eq!(finish_reason, "stop");
 
@@ -1321,13 +1321,11 @@ async fn stale_pending_tool_calls_are_repaired_on_explicit_repair() {
     );
 
     let event_tx = Arc::new(EventFanout::new(1024));
-    let (actor_tx, _actor_rx) = mpsc::channel(super::actor::COMMAND_ACTOR_CAPACITY);
     let scheduler = test_scheduler(&runtime);
     let handler = CommandHandler::new(
         Arc::clone(&runtime),
         Arc::clone(&scheduler),
         test_event_bus(&runtime, event_tx, scheduler),
-        actor_tx,
     );
 
     handler.repair_stale_session(&sid).await.unwrap();
@@ -1429,13 +1427,11 @@ async fn repair_stale_background_tasks_even_when_phase_is_idle() {
     );
 
     let event_tx = Arc::new(EventFanout::new(1024));
-    let (actor_tx, _actor_rx) = mpsc::channel(super::actor::COMMAND_ACTOR_CAPACITY);
     let scheduler = test_scheduler(&runtime);
     let handler = CommandHandler::new(
         Arc::clone(&runtime),
         Arc::clone(&scheduler),
         test_event_bus(&runtime, event_tx, scheduler),
-        actor_tx,
     );
 
     handler.repair_stale_session(&sid).await.unwrap();
@@ -1500,13 +1496,11 @@ async fn repair_stale_runs_marks_child_without_active_execution_interrupted() {
         .unwrap();
 
     let event_tx = Arc::new(EventFanout::new(1024));
-    let (actor_tx, _actor_rx) = mpsc::channel(super::actor::COMMAND_ACTOR_CAPACITY);
     let scheduler = test_scheduler(&runtime);
     let handler = CommandHandler::new(
         Arc::clone(&runtime),
         Arc::clone(&scheduler),
         test_event_bus(&runtime, event_tx, scheduler),
-        actor_tx,
     );
 
     handler.repair_stale_session(&parent_id).await.unwrap();
@@ -1537,11 +1531,11 @@ async fn submit_prompt_queues_second_running_turn_for_next_turn() {
 
     let sid = handler.create_session(".".into()).await.unwrap();
     handler
-        .submit_input_for_session(sid.clone(), "first".into())
+        .submit_input_for_session(sid.clone(), "first")
         .await
         .unwrap();
     let queued = handler
-        .submit_input_for_session(sid.clone(), "second".into())
+        .submit_input_for_session(sid.clone(), "second")
         .await
         .unwrap();
     assert!(matches!(
@@ -1578,21 +1572,21 @@ async fn queued_inputs_run_fifo_for_same_session() {
     let sid = handler.create_session(".".into()).await.unwrap();
     assert!(matches!(
         handler
-            .submit_input_for_session(sid.clone(), "first".into())
+            .submit_input_for_session(sid.clone(), "first")
             .await
             .unwrap(),
         PromptSubmission::Accepted { .. }
     ));
     assert!(matches!(
         handler
-            .submit_input_for_session(sid.clone(), "second".into())
+            .submit_input_for_session(sid.clone(), "second")
             .await
             .unwrap(),
         PromptSubmission::Handled { message } if message == "queued for next turn"
     ));
     assert!(matches!(
         handler
-            .submit_input_for_session(sid.clone(), "third".into())
+            .submit_input_for_session(sid.clone(), "third")
             .await
             .unwrap(),
         PromptSubmission::Handled { message } if message == "queued for next turn"
@@ -1695,7 +1689,7 @@ async fn read_before_edit_guard_survives_across_turns() {
         .unwrap();
 
     handler
-        .submit_input_for_session(sid.clone(), "read the file".into())
+        .submit_input_for_session(sid.clone(), "read the file")
         .await
         .unwrap();
     assert_eq!(wait_for_turn_completed(&mut event_rx).await, "stop");
@@ -1703,7 +1697,7 @@ async fn read_before_edit_guard_survives_across_turns() {
     fs::write(&path, "beta").unwrap();
 
     handler
-        .submit_input_for_session(sid.clone(), "edit the file".into())
+        .submit_input_for_session(sid.clone(), "edit the file")
         .await
         .unwrap();
     assert_eq!(wait_for_turn_completed(&mut event_rx).await, "stop");
@@ -1735,7 +1729,7 @@ async fn abort_stops_active_turn_and_records_completion() {
 
     let sid = handler.create_session(".".into()).await.unwrap();
     handler
-        .submit_input_for_session(sid.clone(), "keep running".into())
+        .submit_input_for_session(sid.clone(), "keep running")
         .await
         .unwrap();
 
@@ -1756,7 +1750,7 @@ async fn abort_stops_inner_turn_before_late_provider_events_are_persisted() {
 
     let sid = handler.create_session(".".into()).await.unwrap();
     handler
-        .submit_input_for_session(sid.clone(), "start then abort".into())
+        .submit_input_for_session(sid.clone(), "start then abort")
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(5), started_rx.changed())
@@ -1786,7 +1780,7 @@ async fn compact_session_rejects_running_turn_without_compaction_started() {
 
     let sid = handler.create_session(".".into()).await.unwrap();
     handler
-        .submit_input_for_session(sid.clone(), "keep running".into())
+        .submit_input_for_session(sid.clone(), "keep running")
         .await
         .unwrap();
     while event_rx.try_recv().is_ok() {}
@@ -1829,7 +1823,7 @@ async fn stale_agent_finish_after_abort_is_ignored() {
 
     let sid = handler.create_session(".".into()).await.unwrap();
     let PromptSubmission::Accepted { turn_id } = handler
-        .submit_input_for_session(sid.clone(), "keep running".into())
+        .submit_input_for_session(sid.clone(), "keep running")
         .await
         .unwrap()
     else {
@@ -1839,12 +1833,7 @@ async fn stale_agent_finish_after_abort_is_ignored() {
     assert_eq!(wait_for_turn_completed(&mut event_rx).await, "aborted");
 
     handler
-        .tx
-        .send(CommandMessage::AgentTurnCleanup {
-            session_id: sid,
-            turn_id,
-            completion: TurnCompletion::Aborted,
-        })
+        .inject_session_turn_idle(sid, turn_id, TurnCompletion::Aborted)
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1869,7 +1858,7 @@ async fn compact_command_rewrites_provider_history_without_exposing_summary() {
     let session_id = handler.create_session(".".into()).await.unwrap();
     for text in ["one", "two", "three"] {
         handler
-            .submit_input_for_session(session_id.clone(), text.into())
+            .submit_input_for_session(session_id.clone(), UserPromptParts::from(text))
             .await
             .unwrap();
         assert_eq!(wait_for_turn_completed(&mut event_rx).await, "stop");
@@ -1918,14 +1907,14 @@ async fn slash_compact_uses_backend_command_without_user_message() {
     let session_id = handler.create_session(".".into()).await.unwrap();
     for text in ["one", "two", "three"] {
         handler
-            .submit_input_for_session(session_id.clone(), text.into())
+            .submit_input_for_session(session_id.clone(), UserPromptParts::from(text))
             .await
             .unwrap();
         assert_eq!(wait_for_turn_completed(&mut event_rx).await, "stop");
     }
 
     let result = handler
-        .submit_input_for_session(session_id.clone(), "/compact".into())
+        .submit_input_for_session(session_id.clone(), "/compact")
         .await
         .unwrap();
     assert!(matches!(result, PromptSubmission::Handled { .. }));
@@ -1945,7 +1934,7 @@ async fn slash_compact_uses_backend_command_without_user_message() {
     );
 
     let following = handler
-        .submit_input_for_session(session_id.clone(), "after compact".into())
+        .submit_input_for_session(session_id.clone(), "after compact")
         .await
         .unwrap();
     assert!(
@@ -1964,7 +1953,7 @@ async fn unknown_slash_command_falls_through_as_regular_prompt() {
 
     // /missing-command 不是已知斜杠命令，应作为普通 prompt 提交并启动 turn
     let result = handler
-        .submit_input_for_session(sid.clone(), "/missing-command".into())
+        .submit_input_for_session(sid.clone(), "/missing-command")
         .await;
 
     assert!(
@@ -1998,7 +1987,7 @@ async fn skill_slash_command_uses_skill_content_as_user_message() {
         .unwrap();
 
     let result = handler
-        .submit_input_for_session(sid.clone(), "/reviewnow src/lib.rs".into())
+        .submit_input_for_session(sid.clone(), "/reviewnow src/lib.rs")
         .await
         .unwrap();
     assert!(matches!(result, PromptSubmission::Accepted { .. }));
@@ -2106,7 +2095,7 @@ async fn compact_command_compacts_existing_hidden_context_again() {
     let session_id = handler.create_session(".".into()).await.unwrap();
     for text in ["one", "two", "three", "four"] {
         handler
-            .submit_input_for_session(session_id.clone(), text.into())
+            .submit_input_for_session(session_id.clone(), UserPromptParts::from(text))
             .await
             .unwrap();
         assert_eq!(wait_for_turn_completed(&mut event_rx).await, "stop");
@@ -2132,7 +2121,7 @@ async fn compact_command_compacts_existing_hidden_context_again() {
     };
 
     handler
-        .submit_input_for_session(session_id.clone(), "five".into())
+        .submit_input_for_session(session_id.clone(), "five")
         .await
         .unwrap();
     assert_eq!(wait_for_turn_completed(&mut event_rx).await, "stop");
@@ -2184,6 +2173,7 @@ async fn auto_compact_applies_in_memory_during_turn() {
                 EventPayload::UserMessage {
                     message_id: new_message_id(),
                     text: format!("old user {index} {}", "x ".repeat(20)),
+                    images: vec![],
                 },
             ))
             .await
@@ -2204,7 +2194,7 @@ async fn auto_compact_applies_in_memory_during_turn() {
     }
 
     handler
-        .submit_input_for_session(session_id.clone(), "current".into())
+        .submit_input_for_session(session_id.clone(), "current")
         .await
         .unwrap();
     let mut compaction_started_count = 0;
@@ -2260,6 +2250,7 @@ async fn prompt_too_long_triggers_reactive_compact_and_retries_once() {
                 EventPayload::UserMessage {
                     message_id: new_message_id(),
                     text: format!("old user {index} {}", "x ".repeat(20)),
+                    images: vec![],
                 },
             ))
             .await
@@ -2280,7 +2271,7 @@ async fn prompt_too_long_triggers_reactive_compact_and_retries_once() {
     }
 
     handler
-        .submit_input_for_session(session_id.clone(), "current".into())
+        .submit_input_for_session(session_id.clone(), "current")
         .await
         .unwrap();
 
@@ -2338,7 +2329,7 @@ async fn prompt_too_long_after_reactive_retry_returns_compact_exhausted() {
     .await;
 
     handler
-        .submit_input_for_session(session_id, "current".into())
+        .submit_input_for_session(session_id, "current")
         .await
         .unwrap();
 
@@ -2393,7 +2384,7 @@ async fn auto_compact_uses_configured_keep_recent_turns() {
     }
 
     handler
-        .submit_input_for_session(session_id.clone(), "current".into())
+        .submit_input_for_session(session_id.clone(), "current")
         .await
         .unwrap();
     assert_eq!(wait_for_turn_completed(&mut event_rx).await, "stop");
@@ -2448,7 +2439,7 @@ async fn auto_compact_breaker_skips_llm_but_still_runs_deterministic_compact() {
     .await;
 
     handler
-        .submit_input_for_session(session_id.clone(), "first".into())
+        .submit_input_for_session(session_id.clone(), "first")
         .await
         .unwrap();
 
@@ -2470,7 +2461,7 @@ async fn auto_compact_breaker_skips_llm_but_still_runs_deterministic_compact() {
     assert_eq!(first_compactions, 1);
 
     handler
-        .submit_input_for_session(session_id, "second".into())
+        .submit_input_for_session(session_id, "second")
         .await
         .unwrap();
 

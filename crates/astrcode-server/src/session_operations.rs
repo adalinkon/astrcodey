@@ -1,21 +1,25 @@
-//! ServerSessionOperations — 纯粹的会话原子操作实现。
+//! 扩展 [`SessionOperations`] trait 的 server 实现。
 //!
-//! 只做基础动作，生命周期事件（TurnStarted/UserMessage/TurnCompleted 等）
-//! 由 Session::submit 内部统一管理。
+//! 子 agent 编排（guard / recycle / task 回填）与 [`TurnScheduler`] 协作；
+//! durable 读走 [`SessionManager::event_store`]，不写第二套查询层。
 
 use std::sync::Arc;
 
 use astrcode_core::{
-    event::{EventPayload, Phase},
+    event::EventPayload,
     tool::{
         CreateSessionRequest, SessionApiError, SessionHandle, SessionOperations, SessionStatus,
         SubmitTurnRequest, SubmitTurnResult,
     },
     types::{SessionId, new_message_id},
+    user_prompt::UserPromptParts,
 };
-use astrcode_session::child_turn::{ChildCleanup, ChildTurnConfig, ChildTurnGuard};
+use astrcode_session::child_turn::{ChildCleanup, ChildOutcome, ChildTurnConfig, ChildTurnGuard};
 
-use crate::{session_manager::SessionManager, turn_scheduler::TurnScheduler};
+use crate::{
+    session_manager::SessionManager,
+    turn_scheduler::{TurnScheduleError, TurnScheduler},
+};
 
 /// 服务端 SessionOperations 实现。
 pub struct ServerSessionOperations {
@@ -37,7 +41,6 @@ impl SessionOperations for ServerSessionOperations {
             .await
             .map_err(|e| SessionApiError::NotFound(format!("parent: {e}")))?;
 
-        // 嵌套深度验证
         let depth = self.session_depth(&parent_sid).await?;
         let max_depth = self
             .session_manager
@@ -63,12 +66,14 @@ impl SessionOperations for ServerSessionOperations {
             .filter(|m| m != "inherit" && !m.is_empty())
             .unwrap_or(parent_model.model_id);
 
+        let task = request.task.unwrap_or_default();
+
         let child = parent_session
             .spawn_child(
                 &working_dir,
                 &model_id,
                 request.name,
-                String::new(),
+                task,
                 request.system_prompt,
                 request.tool_policy,
                 request.source_extension.as_deref(),
@@ -96,25 +101,26 @@ impl SessionOperations for ServerSessionOperations {
 
         self.verify_access(&caller_sid, &target_sid).await?;
 
-        let session = self
-            .session_manager
-            .open(target_sid)
-            .await
-            .map_err(|e| SessionApiError::NotFound(e.to_string()))?;
-
-        let message_id = new_message_id();
-        session
-            .emit_durable(
-                None,
-                EventPayload::UserMessage {
-                    message_id,
-                    text: content,
+        if self.scheduler.registry().has_active(&target_sid) {
+            match self
+                .scheduler
+                .inject(&target_sid, UserPromptParts::text_only(content.clone()))
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(TurnScheduleError::NoActiveTurn) => {
+                    tracing::debug!(
+                        session_id = %target_sid,
+                        "inject raced with turn completion; persisting as durable message"
+                    );
                 },
-            )
-            .await
-            .map_err(|e| SessionApiError::Internal(e.to_string()))?;
+                Err(error) => {
+                    return Err(SessionApiError::Internal(error.to_string()));
+                },
+            }
+        }
 
-        Ok(())
+        self.persist_idle_user_message(&target_sid, content).await
     }
 
     async fn submit_turn(
@@ -127,99 +133,68 @@ impl SessionOperations for ServerSessionOperations {
 
         self.verify_access(&caller_sid, &target_sid).await?;
 
+        let is_child_turn = caller_sid != target_sid;
+        let user_prompt = request.user_prompt.clone();
+        if is_child_turn {
+            self.ensure_child_task_recorded(&caller_sid, &target_sid, &user_prompt)
+                .await;
+        }
+
         let session = self
             .session_manager
             .open(target_sid.clone())
             .await
             .map_err(|e| SessionApiError::NotFound(e.to_string()))?;
-        if let Err(e) = session.ensure_runtime_ready().await {
+        if let Err(e) = session.ensure_runtime_ready(false).await {
             return Err(SessionApiError::Internal(format!("runtime init: {e}")));
         }
 
-        let (turn_id, handle) = self
-            .scheduler
-            .submit(target_sid.clone(), request.user_prompt)
+        let input = UserPromptParts::text_only(user_prompt);
+
+        let result = if is_child_turn {
+            let (turn_id, handle) = self
+                .scheduler
+                .submit_untracked(target_sid.clone(), input)
+                .await
+                .map_err(|e| SessionApiError::Internal(format!("submit: {e}")))?;
+            self.submit_child_turn(
+                caller_sid.clone(),
+                target_sid.clone(),
+                turn_id,
+                handle,
+                request,
+            )
             .await
-            .map_err(|e| SessionApiError::Internal(format!("submit: {e}")))?;
-
-        // registry entry 在同步等待路径由本方法移除，异步路径由 guard 后台任务处理。
-        let registry = Arc::clone(self.scheduler.registry());
-
-        let result = if request.wait_for_result {
-            // 同步等待
-            let result = handle.wait().await;
-            self.scheduler.sync_durable_events(&target_sid).await;
-            registry.remove_if_matches(&target_sid, &turn_id);
-            match result {
-                Some(r) => match r.output {
-                    Ok(out) => {
-                        Self::write_agent_completed(
-                            &self.session_manager,
-                            &caller_sid,
-                            &target_sid,
-                            &out.text,
-                        )
-                        .await;
-                        Ok(SubmitTurnResult::Completed { content: out.text })
-                    },
-                    Err(e) => {
-                        Self::write_agent_failed(
-                            &self.session_manager,
-                            &caller_sid,
-                            &target_sid,
-                            &e.to_string(),
-                        )
-                        .await;
-                        Err(SessionApiError::Internal(format!("turn error: {e}")))
-                    },
+        } else if request.wait_for_result {
+            match self
+                .scheduler
+                .submit_and_wait(target_sid.clone(), input)
+                .await
+            {
+                Ok(crate::turn_scheduler::TurnSummary::Completed { content, .. }) => {
+                    Ok(SubmitTurnResult::Completed { content })
                 },
-                None => {
-                    Self::write_agent_failed(
-                        &self.session_manager,
-                        &caller_sid,
-                        &target_sid,
-                        "turn task panicked",
-                    )
-                    .await;
-                    Err(SessionApiError::Internal("turn task panicked".into()))
+                Ok(crate::turn_scheduler::TurnSummary::Failed { error }) => {
+                    Err(SessionApiError::Internal(format!("turn error: {error}")))
                 },
+                Ok(crate::turn_scheduler::TurnSummary::Aborted) => {
+                    Err(SessionApiError::Internal("turn aborted".into()))
+                },
+                Err(e) => Err(SessionApiError::Internal(format!("submit: {e}"))),
             }
         } else {
-            // 异步：ChildTurnGuard 后台任务写终态事件 + 发 completed_tx 信号。
-            // recycle 和 notify 由 process_child_completions 三入口统一消费。
-            let cleanup = if request.recycle_on_complete {
-                ChildCleanup::Recycle
-            } else {
-                ChildCleanup::Keep
-            };
-            let config = ChildTurnConfig {
-                child_session_id: target_sid.clone(),
-                parent_session_id: caller_sid.clone(),
-                cleanup,
-                notify_on_complete: request.notify_parent_on_complete,
-            };
-
-            let parent_session = self
-                .session_manager
-                .open(caller_sid.clone())
+            let turn_id = self
+                .scheduler
+                .submit_tracked(target_sid.clone(), input)
                 .await
-                .map_err(|e| SessionApiError::Internal(format!("open parent: {e}")))?;
-            let parent_session = Arc::new(parent_session);
-            let completed_tx = parent_session.runtime().completed_tx();
-            let guard =
-                ChildTurnGuard::spawn(handle, config, Arc::clone(&parent_session), completed_tx);
-            parent_session
-                .runtime()
-                .child_turn_manager()
-                .register(Arc::new(guard));
-
+                .map_err(|e| SessionApiError::Internal(format!("submit: {e}")))?;
             Ok(SubmitTurnResult::Backgrounded {
                 task_id: turn_id.into_string(),
                 session_id: target_sid.into_string(),
             })
         };
 
-        // 处理本 turn 期间其他已完成的子 agent（非本次提交的 target）
+        // 与旧语义一致：每次 submit 返回前 drain 已完成子 agent（幂等，collect-once）。
         self.scheduler.process_child_completions(&caller_sid).await;
 
         result
@@ -237,13 +212,16 @@ impl SessionOperations for ServerSessionOperations {
 
         let model = self
             .session_manager
-            .read_model(&target_sid)
+            .event_store()
+            .session_read_model(&target_sid)
             .await
             .map_err(|e| SessionApiError::NotFound(e.to_string()))?;
 
         Ok(SessionStatus {
             alive: true,
-            has_active_turn: !matches!(model.phase, Phase::Idle | Phase::Error),
+            has_active_turn: self
+                .scheduler
+                .session_has_active_turn(&target_sid, model.phase),
             last_finish_reason: None,
             message_count: model.messages.len(),
         })
@@ -259,13 +237,7 @@ impl SessionOperations for ServerSessionOperations {
 
         self.verify_access(&caller_sid, &target_sid).await?;
 
-        Self::recycle_child(
-            &self.session_manager,
-            self.scheduler.as_ref(),
-            &caller_sid,
-            &target_sid,
-        )
-        .await;
+        self.scheduler.recycle_child(&caller_sid, &target_sid).await;
 
         Ok(())
     }
@@ -280,12 +252,8 @@ impl SessionOperations for ServerSessionOperations {
 
         self.verify_access(&caller_sid, &target_sid).await?;
 
-        if let Err(e) = self.scheduler.abort(&target_sid).await {
-            tracing::warn!(%target_sid, error = %e, "abort failed before session delete");
-        }
-        self.scheduler.cleanup(&target_sid).await;
         self.session_manager
-            .delete(&target_sid)
+            .delete_with_turn_teardown(self.scheduler.as_ref(), &target_sid)
             .await
             .map_err(|e| SessionApiError::Internal(e.to_string()))?;
 
@@ -312,6 +280,158 @@ impl SessionOperations for ServerSessionOperations {
 }
 
 impl ServerSessionOperations {
+    async fn persist_idle_user_message(
+        &self,
+        target_sid: &SessionId,
+        content: String,
+    ) -> Result<(), SessionApiError> {
+        let session = self
+            .session_manager
+            .open(target_sid.clone())
+            .await
+            .map_err(|e| SessionApiError::NotFound(e.to_string()))?;
+
+        let message_id = new_message_id();
+        session
+            .emit_durable(
+                None,
+                EventPayload::UserMessage {
+                    message_id,
+                    text: content,
+                    images: vec![],
+                },
+            )
+            .await
+            .map_err(|e| SessionApiError::Internal(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn submit_child_turn(
+        &self,
+        parent_sid: SessionId,
+        child_sid: SessionId,
+        turn_id: astrcode_core::types::TurnId,
+        handle: astrcode_session::turn_handle::TurnHandle,
+        request: SubmitTurnRequest,
+    ) -> Result<SubmitTurnResult, SessionApiError> {
+        let cleanup = if request.recycle_on_complete {
+            ChildCleanup::Recycle
+        } else {
+            ChildCleanup::Keep
+        };
+        let config = ChildTurnConfig {
+            child_session_id: child_sid.clone(),
+            parent_session_id: parent_sid.clone(),
+            cleanup,
+            notify_on_complete: request.notify_parent_on_complete,
+        };
+
+        let parent_session = self
+            .session_manager
+            .open(parent_sid.clone())
+            .await
+            .map_err(|e| SessionApiError::Internal(format!("open parent: {e}")))?;
+        let parent_session = Arc::new(parent_session);
+        let guard = Arc::new(ChildTurnGuard::spawn(
+            handle,
+            config,
+            Arc::clone(&parent_session),
+            parent_session.runtime().completed_tx(),
+            request.wait_for_result,
+            self.scheduler.shutdown_token().clone(),
+        ));
+        parent_session
+            .runtime()
+            .child_turn_manager()
+            .register(Arc::clone(&guard));
+
+        if request.wait_for_result {
+            let outcome = guard.outcome().await;
+            self.scheduler.sync_durable_events(&child_sid).await;
+            self.scheduler
+                .release_finished_turn(&child_sid, &turn_id)
+                .await;
+            self.scheduler
+                .continue_queued_turns_if_any(child_sid.clone())
+                .await;
+            match outcome {
+                ChildOutcome::Completed {
+                    response: Some(content),
+                    ..
+                } => Ok(SubmitTurnResult::Completed { content }),
+                ChildOutcome::Completed { response: None, .. } => Err(SessionApiError::Internal(
+                    "child turn completed without response payload".into(),
+                )),
+                ChildOutcome::Failed { error } => {
+                    Err(SessionApiError::Internal(format!("turn error: {error}")))
+                },
+                ChildOutcome::Aborted => Err(SessionApiError::Internal("turn aborted".into())),
+                ChildOutcome::TimedOut => Err(SessionApiError::Internal("turn timed out".into())),
+            }
+        } else {
+            Ok(SubmitTurnResult::Backgrounded {
+                task_id: turn_id.into_string(),
+                session_id: child_sid.into_string(),
+            })
+        }
+    }
+
+    async fn ensure_child_task_recorded(
+        &self,
+        parent_sid: &SessionId,
+        child_sid: &SessionId,
+        task: &str,
+    ) {
+        if task.is_empty() {
+            return;
+        }
+        let model = match self
+            .session_manager
+            .event_store()
+            .session_read_model(parent_sid)
+            .await
+        {
+            Ok(model) => model,
+            Err(error) => {
+                tracing::warn!(
+                    parent_session_id = %parent_sid,
+                    child_session_id = %child_sid,
+                    error = %error,
+                    "ensure_child_task_recorded: failed to read parent model"
+                );
+                return;
+            },
+        };
+        let needs_backfill = model
+            .agent_sessions
+            .iter()
+            .any(|link| link.child_session_id == *child_sid && link.task.is_empty());
+        if !needs_backfill {
+            return;
+        }
+        let event = astrcode_core::event::Event::new(
+            parent_sid.clone(),
+            None,
+            astrcode_session::agent_session_task_assigned_payload(
+                child_sid.clone(),
+                task.to_string(),
+            ),
+        );
+        if let Err(error) = self
+            .session_manager
+            .append_durable_event(parent_sid, event)
+            .await
+        {
+            tracing::warn!(
+                parent_session_id = %parent_sid,
+                child_session_id = %child_sid,
+                error = %error,
+                "failed to append AgentSessionTaskAssigned event"
+            );
+        }
+    }
+
     async fn verify_access(
         &self,
         caller: &SessionId,
@@ -320,146 +440,56 @@ impl ServerSessionOperations {
         if caller == target {
             return Ok(());
         }
-        let mut current = target.clone();
+        if self
+            .parent_chain(target)
+            .await?
+            .iter()
+            .any(|id| id == caller)
+        {
+            return Ok(());
+        }
+        Err(SessionApiError::PermissionDenied(format!(
+            "session {target} is not a descendant of {caller}"
+        )))
+    }
+
+    async fn session_depth(&self, session_id: &SessionId) -> Result<usize, SessionApiError> {
+        Ok(self.parent_chain(session_id).await?.len())
+    }
+
+    async fn parent_chain(&self, from: &SessionId) -> Result<Vec<SessionId>, SessionApiError> {
+        let store = self.session_manager.event_store();
+        let max_depth = self
+            .session_manager
+            .config()
+            .read_effective()
+            .agent
+            .max_depth;
+        let mut chain = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        let mut current = from.clone();
         loop {
-            let model = self
-                .session_manager
-                .read_model(&current)
+            if !visited.insert(current.clone()) {
+                return Err(SessionApiError::Internal(format!(
+                    "parent chain cycle detected at session {current}"
+                )));
+            }
+            if chain.len() > max_depth {
+                return Err(SessionApiError::Internal(format!(
+                    "parent chain exceeds configured max_depth ({max_depth})"
+                )));
+            }
+            let model = store
+                .session_read_model(&current)
                 .await
                 .map_err(|e| SessionApiError::NotFound(e.to_string()))?;
             match model.parent_session_id {
                 Some(parent) => {
-                    if &parent == caller {
-                        return Ok(());
-                    }
+                    chain.push(parent.clone());
                     current = parent;
                 },
-                None => {
-                    return Err(SessionApiError::PermissionDenied(format!(
-                        "session {target} is not a descendant of {caller}"
-                    )));
-                },
+                None => return Ok(chain),
             }
         }
     }
-
-    async fn session_depth(&self, session_id: &SessionId) -> Result<usize, SessionApiError> {
-        let mut depth = 0;
-        let mut current = session_id.clone();
-        loop {
-            let model = self
-                .session_manager
-                .read_model(&current)
-                .await
-                .map_err(|e| SessionApiError::Internal(format!("read session: {e}")))?;
-            match model.parent_session_id {
-                Some(parent) => {
-                    depth += 1;
-                    current = parent;
-                },
-                None => break,
-            }
-        }
-        Ok(depth)
-    }
-
-    /// 向父 session 写入 AgentSessionCompleted 事件。
-    pub(crate) async fn write_agent_completed(
-        session_manager: &Arc<SessionManager>,
-        parent_sid: &SessionId,
-        child_sid: &SessionId,
-        summary: &str,
-    ) {
-        if let Ok(parent_session) = session_manager.open(parent_sid.clone()).await {
-            if let Err(e) = parent_session
-                .append_event(astrcode_core::event::Event::new(
-                    parent_sid.clone(),
-                    None,
-                    astrcode_session::payload::agent_session_completed_payload(
-                        child_sid.clone(),
-                        one_line_summary(summary),
-                    ),
-                ))
-                .await
-            {
-                tracing::warn!(
-                    parent_session_id = %parent_sid,
-                    child_session_id = %child_sid,
-                    error = %e,
-                    "failed to append AgentSessionCompleted event"
-                );
-            }
-        }
-    }
-
-    /// 向父 session 写入 AgentSessionFailed 事件。
-    pub(crate) async fn write_agent_failed(
-        session_manager: &Arc<SessionManager>,
-        parent_sid: &SessionId,
-        child_sid: &SessionId,
-        error: &str,
-    ) {
-        if let Ok(parent_session) = session_manager.open(parent_sid.clone()).await {
-            if let Err(e) = parent_session
-                .append_event(astrcode_core::event::Event::new(
-                    parent_sid.clone(),
-                    None,
-                    astrcode_session::payload::agent_session_failed_payload(
-                        child_sid.clone(),
-                        error.to_string(),
-                    ),
-                ))
-                .await
-            {
-                tracing::warn!(
-                    parent_session_id = %parent_sid,
-                    child_session_id = %child_sid,
-                    error = %e,
-                    "failed to append AgentSessionFailed event"
-                );
-            }
-        }
-    }
-
-    /// 回收子会话并向父会话写入 AgentSessionRecycled 事件。
-    pub(crate) async fn recycle_child(
-        session_manager: &Arc<SessionManager>,
-        scheduler: &TurnScheduler,
-        parent_sid: &SessionId,
-        child_sid: &SessionId,
-    ) {
-        scheduler.cleanup(child_sid).await;
-        if let Err(e) = session_manager.recycle_session(child_sid).await {
-            tracing::warn!(
-                session_id = %child_sid,
-                error = %e,
-                "failed to recycle session"
-            );
-            return;
-        }
-        if let Ok(parent_session) = session_manager.open(parent_sid.clone()).await {
-            if let Err(e) = parent_session
-                .append_event(astrcode_core::event::Event::new(
-                    parent_sid.clone(),
-                    None,
-                    EventPayload::AgentSessionRecycled {
-                        child_session_id: child_sid.clone(),
-                    },
-                ))
-                .await
-            {
-                tracing::warn!(
-                    parent_session_id = %parent_sid,
-                    child_session_id = %child_sid,
-                    error = %e,
-                    "failed to append AgentSessionRecycled event"
-                );
-            }
-            scheduler.sync_durable_events(parent_sid).await;
-        }
-    }
-}
-
-fn one_line_summary(text: &str) -> String {
-    astrcode_support::text::compact_inline(text, 159)
 }

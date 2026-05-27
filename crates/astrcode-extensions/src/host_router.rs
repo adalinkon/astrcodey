@@ -402,6 +402,7 @@ impl HostRouter {
         })?;
         let req = CreateSessionRequest {
             name: input["name"].as_str().unwrap_or("child").to_string(),
+            task: input["task"].as_str().map(str::to_string),
             working_dir: input["working_dir"].as_str().map(str::to_string),
             system_prompt: input["system_prompt"].as_str().map(str::to_string),
             model_preference: input["model_preference"].as_str().map(str::to_string),

@@ -1,62 +1,40 @@
-//! Turn 管理 — Agent turn 任务启停、完成清理。
+//! Turn 管理 — Agent turn 任务启停。
 
-use std::sync::Arc;
+use astrcode_core::{types::*, user_prompt::UserPromptParts};
 
-use astrcode_core::types::*;
-use tokio::sync::mpsc;
-
-use super::{CommandHandler, CommandMessage, HandlerError, errors::turn_schedule_error_for_client};
-use crate::turn_scheduler::{TurnScheduleError, TurnScheduler};
-
-/// Turn 完成结果，通过 oneshot 通道发送。
-#[derive(Debug, Clone)]
-pub enum TurnCompletion {
-    Completed { finish_reason: String },
-    Failed { error: String },
-    Aborted,
-}
+use super::{CommandHandler, HandlerError, errors::turn_schedule_error_for_client};
+use crate::turn_scheduler::{TurnScheduleError, TurnSummary};
 
 impl CommandHandler {
-    /// 启动新 Turn：委托给 scheduler.submit()，spawn completion watcher。
+    /// 启动新 Turn（completion 由 scheduler 内部跟踪）。
     pub(in crate::handler) async fn start_turn_for_session(
         &self,
         sid: SessionId,
-        user_text: String,
-        completion_tx: Option<tokio::sync::oneshot::Sender<TurnCompletion>>,
+        input: UserPromptParts,
+        completion_tx: Option<tokio::sync::oneshot::Sender<TurnSummary>>,
     ) -> Result<TurnId, HandlerError> {
-        tracing::info!(session_id = %sid, text_len = user_text.len(), "start_turn");
-        let (turn_id, handle) = self
-            .scheduler
-            .submit(sid.clone(), user_text)
-            .await
-            .map_err(|e| {
-                let (code, err) = turn_schedule_error_for_client(e);
-                if code == 40900 {
-                    self.send_error(code, "A turn is already running");
-                }
-                err
-            })?;
-
-        let scheduler = Arc::clone(&self.scheduler);
-        let actor_tx = self.actor_tx.clone();
-        let sid_for_watcher = sid.clone();
-        let turn_id_for_watcher = turn_id.clone();
-        tokio::spawn(async move {
-            run_completion_watcher(
-                handle,
-                scheduler,
-                actor_tx,
-                sid_for_watcher,
-                turn_id_for_watcher,
-                completion_tx,
-            )
-            .await;
-        });
-
-        Ok(turn_id)
+        tracing::info!(
+            session_id = %sid,
+            text_len = input.text.len(),
+            image_count = input.images.len(),
+            "start_turn"
+        );
+        let result = if let Some(tx) = completion_tx {
+            self.scheduler
+                .submit_tracked_with_notify(sid.clone(), input, tx)
+                .await
+        } else {
+            self.scheduler.submit_tracked(sid.clone(), input).await
+        };
+        result.map_err(|e| {
+            let (code, err) = turn_schedule_error_for_client(e);
+            if code == 40900 {
+                self.send_error(code, "A turn is already running");
+            }
+            err
+        })
     }
 
-    /// 中止指定会话的活跃 Turn。
     pub(in crate::handler) async fn abort_session(
         &self,
         session_id: &SessionId,
@@ -71,7 +49,6 @@ impl CommandHandler {
         }
     }
 
-    /// 中止当前活跃会话的 Turn。
     pub(in crate::handler) async fn abort_active_turn(&self) -> Result<(), HandlerError> {
         let Some(sid) = self.active_session_id.as_ref() else {
             self.send_error(40400, "No active turn");
@@ -80,7 +57,6 @@ impl CommandHandler {
         self.abort_session(sid).await
     }
 
-    /// 修复遗留状态。
     pub(in crate::handler) async fn repair_stale_session(
         &self,
         session_id: &SessionId,
@@ -91,94 +67,13 @@ impl CommandHandler {
             .map_err(HandlerError::from)
     }
 
-    /// 提交提示词并返回完成通知接收器。
     pub(in crate::handler) async fn submit_input_with_completion(
         &self,
         sid: SessionId,
-        text: String,
-    ) -> Result<(TurnId, tokio::sync::oneshot::Receiver<TurnCompletion>), HandlerError> {
+        input: UserPromptParts,
+    ) -> Result<(TurnId, tokio::sync::oneshot::Receiver<TurnSummary>), HandlerError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let turn_id = self.start_turn_for_session(sid, text, Some(tx)).await?;
+        let turn_id = self.start_turn_for_session(sid, input, Some(tx)).await?;
         Ok((turn_id, rx))
-    }
-}
-
-/// Completion watcher：等待 TurnHandle 完成，通知 actor 清理。
-///
-/// Turn 的终态事件（TurnCompleted / AgentRunCompleted）由 `Session::submit` 内部发射。
-/// 这里只负责 registry 清理、sync durable events、通知 actor 触发 queued input dispatch。
-async fn run_completion_watcher(
-    mut handle: astrcode_session::turn_handle::TurnHandle,
-    scheduler: Arc<TurnScheduler>,
-    actor_tx: mpsc::Sender<CommandMessage>,
-    sid: SessionId,
-    mut turn_id: TurnId,
-    mut completion_tx: Option<tokio::sync::oneshot::Sender<TurnCompletion>>,
-) {
-    loop {
-        let completion = match handle.wait().await {
-            Some(result) => match result.output {
-                Ok(output) => {
-                    scheduler.sync_durable_events(&sid).await;
-                    TurnCompletion::Completed {
-                        finish_reason: output.finish_reason,
-                    }
-                },
-                Err(error) => {
-                    scheduler.sync_durable_events(&sid).await;
-                    TurnCompletion::Failed {
-                        error: error.to_string(),
-                    }
-                },
-            },
-            None => TurnCompletion::Aborted,
-        };
-
-        scheduler.registry().remove_if_matches(&sid, &turn_id);
-        scheduler.on_turn_completed(&sid).await;
-
-        if let Some((next_turn_id, next_handle)) = scheduler.start_next_queued_turn(&sid).await {
-            if let Some(tx) = completion_tx.take() {
-                let _ = tx.send(completion.clone());
-            }
-            if actor_tx
-                .send(CommandMessage::AgentTurnCleanup {
-                    session_id: sid.clone(),
-                    turn_id: turn_id.clone(),
-                    completion: completion.clone(),
-                })
-                .await
-                .is_err()
-            {
-                tracing::warn!(
-                    session_id = %sid,
-                    turn_id = %turn_id,
-                    "command actor queue closed; skipping turn cleanup message"
-                );
-                break;
-            }
-            turn_id = next_turn_id;
-            handle = next_handle;
-            continue;
-        }
-
-        if let Some(tx) = completion_tx.take() {
-            let _ = tx.send(completion.clone());
-        }
-        if actor_tx
-            .send(CommandMessage::AgentTurnCleanup {
-                session_id: sid,
-                turn_id: turn_id.clone(),
-                completion,
-            })
-            .await
-            .is_err()
-        {
-            tracing::warn!(
-                turn_id = %turn_id,
-                "command actor queue closed; skipping turn cleanup message"
-            );
-        }
-        break;
     }
 }

@@ -103,11 +103,13 @@ impl AgentShared {
 const AGENT_TOOL_DESCRIPTION: &str =
     "Delegate a multi-step task to a specialized subagent. See [Agents] for available \
      types.\nWhen NOT to use:\n- Reading 1-3 known files → `read`\n- Searching for a symbol → \
-     `grep`/`find`\n- Anything achievable in 2-6 direct tool calls → do it yourself\nOne or \
-     multiple agents — match the task scope:\n- Single agent: focused task in one area (find how \
-     X is implemented, review a PR)\n- Multiple agents in parallel: broad task spanning \
-     independent areas (explore impl + tests, review while executing, investigate different \
-     modules)\nSet `waitForResult=false` to background an agent and continue working.";
+     `grep`/`find`\n- Anything achievable in 2-6 direct tool calls → do it yourself\nAgent \
+     selection:\n- `explore` — search across files, trace dependencies, understand \
+     architecture\n- `execute` — make precise code changes, run targeted validation\n- `reviewer` \
+     — review changes for bugs, security, quality\nOne or multiple agents — match the task \
+     scope:\n- Single agent: focused task in one area\n- Multiple agents in parallel: broad task \
+     spanning independent areas (make all independent calls in the same tool block)\nSet \
+     `waitForResult=false` to background an agent and continue working.";
 
 const AGENT_TOOL_PARAMETERS: &str = r#"{"type":"object","properties":{"description":{"type":"string","description":"3-5 word task summary."},"prompt":{"type":"string","description":"Full task description for the subagent, with all context it needs."},"subagentType":{"type":"string","description":"Agent name from [Agents] section."},"waitForResult":{"type":"boolean","default":true,"description":"true: block until done. false: run in background, continue immediately."}},"required":["prompt","description"]}"#;
 
@@ -247,6 +249,7 @@ impl ToolHandler for AgentToolHandler {
                 ctx.session_id.as_str(),
                 CreateSessionRequest {
                     name: matched.name.clone(),
+                    task: Some(args.prompt.clone()),
                     working_dir: None,
                     system_prompt: Some(enhance_agent_prompt(&matched.body, working_dir)),
                     model_preference: Some(model_preference),
@@ -374,19 +377,11 @@ fn agent_tool_metadata()
     map.insert(
         "agent".to_string(),
         astrcode_extension_sdk::tool::ToolPromptMetadata::new(
-            "Delegate to a subagent when the task needs multi-step exploration, isolated context, \
-             or parallel execution. For directed searches (a known symbol or pattern) use \
-             `find`/`grep` directly. Prefer `subagentType=explore` for broad exploration that \
-             would take more than 3 manual queries.\nAgent count — match the scope:\n- Single \
-             agent for a focused task: investigate one area, review specific files, trace a \
-             single call chain.\n- Multiple agents in parallel for broad tasks: each agent gets a \
-             distinct concern.\nSplit examples: implementation + tests, different modules, data \
-             flow + config.\nWhen using multiple agents, make all independent `agent` calls in \
-             the same tool block.\nWriting a good `prompt`:\n- Brief a smart colleague who just \
-             walked in: give context up front.\n- State whether the agent should write code, \
-             explore, or only research.\n- Include relevant file paths, line numbers, and \
-             specific patterns.\n- If depending on a previous agent's output, summarize that \
-             output rather than expecting the subagent to read the whole conversation.",
+            "Writing a good `prompt`:\n- Brief a smart colleague who just walked in: give context \
+             up front.\n- State whether the agent should write code, explore, or only \
+             research.\n- Include relevant file paths, line numbers, and specific patterns.\n- If \
+             depending on a previous agent's output, summarize that output rather than expecting \
+             the subagent to read the whole conversation.",
         )
         .caveat(
             "Don't duplicate work the subagent is doing — if you delegate, stop running the same \
@@ -423,16 +418,10 @@ fn resolve_child_small_model(
 }
 
 /// 为子 agent 的 body 追加共享增强内容：环境信息 + 行为规范。
-fn enhance_agent_prompt(agent_body: &str, working_dir: &str) -> String {
-    let os = std::env::consts::OS;
-    let shell = astrcode_support::shell::resolve_shell().name;
+fn enhance_agent_prompt(agent_body: &str, _working_dir: &str) -> String {
     format!(
         "{}\n\n---\n\nNotes:\n- Agent threads always have their cwd reset between bash calls; \
-         please only use absolute file paths.\n- In your final response, share file paths (always \
-         absolute, never relative) that are relevant to the task. Include code snippets only when \
-         the exact text is load-bearing.\n- For clear communication with the user, avoid using \
-         emojis.\n- Do not use a colon before tool calls.\n\nEnvironment: working directory is \
-         {working_dir}, OS is {os}, shell is {shell}.",
+         please only use absolute file paths.",
         agent_body.trim(),
     )
 }

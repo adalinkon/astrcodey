@@ -2,7 +2,10 @@
 //!
 //! 光标位置使用 char 索引，便于和终端宽字符布局保持一致。
 
+use astrcode_protocol::commands::Attachment;
 use unicode_width::UnicodeWidthChar;
+
+use super::image_attach::{attachment_from_path, is_image_path, placeholder_for_attachment};
 
 const PASTE_PLACEHOLDER_THRESHOLD: usize = 600;
 const MAX_HISTORY_ENTRIES: usize = 1000;
@@ -15,6 +18,12 @@ pub struct ComposerState {
     history: Vec<String>,
     history_idx: Option<usize>,
     pasted: Vec<PastedContent>,
+    pending_images: Vec<PendingImage>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingImage {
+    attachment: Attachment,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +46,7 @@ impl ComposerState {
         self.text = text;
         self.history_idx = None;
         self.pasted.clear();
+        self.pending_images.clear();
     }
 
     pub fn insert_char(&mut self, ch: char) -> bool {
@@ -59,6 +69,10 @@ impl ComposerState {
     }
 
     pub fn insert_paste(&mut self, text: &str) -> bool {
+        let trimmed = text.trim();
+        if is_image_path(trimmed) && self.try_attach_image_path(trimmed) {
+            return true;
+        }
         if text.chars().count() <= PASTE_PLACEHOLDER_THRESHOLD {
             return self.insert_str(text);
         }
@@ -178,6 +192,38 @@ impl ComposerState {
         self.cursor = start;
         self.history_idx = None;
         true
+    }
+
+    pub fn has_submittable(&self) -> bool {
+        !self.text.trim().is_empty() || !self.pending_images.is_empty()
+    }
+
+    pub fn take_submit(&mut self) -> (String, Vec<Attachment>) {
+        let text = self.take_submit_text();
+        let attachments = self
+            .pending_images
+            .drain(..)
+            .map(|entry| entry.attachment)
+            .collect();
+        (text, attachments)
+    }
+
+    pub fn try_attach_image_path(&mut self, path: &str) -> bool {
+        let path = path.trim();
+        if !is_image_path(path) {
+            return false;
+        }
+        let attachment = match attachment_from_path(std::path::Path::new(path)) {
+            Ok(attachment) => attachment,
+            Err(_) => return false,
+        };
+        let index = self.pending_images.len() + 1;
+        let placeholder = placeholder_for_attachment(index, &attachment);
+        self.pending_images.push(PendingImage { attachment });
+        if !self.text.is_empty() && !self.text.ends_with('\n') {
+            self.insert_str("\n");
+        }
+        self.insert_str(&placeholder)
     }
 
     pub fn take_submit_text(&mut self) -> String {

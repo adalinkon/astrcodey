@@ -8,8 +8,15 @@ use tokio::{
     sync::oneshot,
     task::{AbortHandle, JoinHandle},
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::turn_runner::RunTurnResult;
+
+/// [`TurnHandle::wait_or_shutdown`] 的结果。
+pub enum TurnWaitOutcome {
+    Completed(Option<RunTurnResult>),
+    Shutdown,
+}
 
 /// 一次 turn 的运行时句柄。
 pub struct TurnHandle {
@@ -55,5 +62,17 @@ impl TurnHandle {
     /// 通道被关闭（例如 task panicked）时返回 `None`。
     pub async fn wait(self) -> Option<RunTurnResult> {
         self.completion_rx.await.ok()
+    }
+
+    /// 等待 turn 结束，或在 `shutdown` 触发时中止 turn 并返回 [`TurnWaitOutcome::Shutdown`]。
+    pub async fn wait_or_shutdown(self, shutdown: &CancellationToken) -> TurnWaitOutcome {
+        let abort = self.abort_handle();
+        tokio::select! {
+            result = self.wait() => TurnWaitOutcome::Completed(result),
+            () = shutdown.cancelled() => {
+                abort.abort();
+                TurnWaitOutcome::Shutdown
+            }
+        }
     }
 }

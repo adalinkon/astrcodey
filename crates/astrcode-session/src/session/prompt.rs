@@ -106,6 +106,7 @@ impl Session {
             tool_prompt_metadata: ext_data.merged_tool_metadata,
             extension_blocks: ext_data.extension_blocks,
             extra_instructions: resolved_extra.map(str::to_string),
+            is_child_session: resolved_extra.is_some(),
         };
         let stable_fingerprint =
             astrcode_context::prompt_engine::compute_stable_fingerprint(&prompt_input);

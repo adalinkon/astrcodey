@@ -64,6 +64,9 @@ pub struct SystemPromptInput {
     pub extension_blocks: Vec<ExtensionPromptBlock>,
     /// 额外的系统指令（如子会话 prompt）。
     pub extra_instructions: Option<String>,
+    /// 是否为子 agent session。子 session 使用精简的 prompt 结构：
+    /// 跳过通用 Identity/Communication，使用子 agent 专用的 TaskGuidelines。
+    pub is_child_session: bool,
 }
 
 /// 扩展贡献的文本块，带逻辑分类标签。

@@ -172,6 +172,8 @@ pub async fn build_system_prompt_snapshot(
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     });
 
+    let is_child_session = extra_instructions.is_some();
+
     let prompt_input = SystemPromptInput {
         working_dir: working_dir.to_string(),
         os: std::env::consts::OS.into(),
@@ -183,6 +185,7 @@ pub async fn build_system_prompt_snapshot(
         tool_prompt_metadata: ext_data.merged_tool_metadata,
         extension_blocks: ext_data.extension_blocks,
         extra_instructions,
+        is_child_session,
     };
 
     let system_prompt = build_system_prompt(&prompt_input);

@@ -7,17 +7,19 @@ use astrcode_core::{
     event::{Event, EventPayload},
     extension::ExtensionEvent,
     lifecycle::SessionResourceCleanup,
-    storage::{EventStore, SessionReadModel, SessionSummary, StorageError},
+    storage::{EventStore, StorageError},
     types::{Cursor, SessionId},
 };
 use astrcode_session::{
-    Session, SessionError, SessionRuntimeServices, SessionRuntimeState,
+    Session, SessionCreateParams, SessionError, SessionRuntimeServices, SessionRuntimeState,
     session::emit_lifecycle_for_read_model,
 };
 use astrcode_tools::registry::ToolRegistry;
 use parking_lot::Mutex;
 
-use crate::{config_manager::ConfigManager, server_event_bus::ServerEventBus};
+use crate::{
+    config_manager::ConfigManager, server_event_bus::ServerEventBus, turn_scheduler::TurnScheduler,
+};
 
 pub(crate) struct CreatedSession {
     pub(crate) session: Session,
@@ -43,6 +45,11 @@ pub enum SessionManagerError {
 }
 
 /// Server 侧的 session 生命周期门面。
+///
+/// **职责边界（避免与 [`Session`] / [`EventStore`] 重复）：**
+/// - `EventStore`：durable 读写（投影、列表、replay）→ 直接用 [`Self::event_store`]
+/// - `Session`：单 session 操作（submit、spawn_child、emit）→ 经 [`Self::open`]
+/// - `SessionManager`：进程内 sid→runtime 映射、open 并发锁、delete/recycle 资源清理
 ///
 /// durable session 仍由 [`Session`] / [`EventStore`] 负责；这里集中管理
 /// 与 session 同生灭的进程内资源，避免 handler 逐项记忆清理细节。
@@ -151,15 +158,25 @@ impl SessionManager {
         &self.config
     }
 
-    /// 把子会话的 runtime 注册到 manager。
+    pub(crate) fn event_store(&self) -> &Arc<dyn EventStore> {
+        &self.event_store
+    }
+
+    /// 把子会话的 runtime 注册到 manager，并 attach 到 event bus（与 create/open/fork 一致）。
     ///
     /// 子会话由 `Session::spawn_child` 创建，其 runtime 不经过 `get_or_create_runtime`，
     /// 必须手动注册才能让后续 `open(child_sid)` 拿到同一个 runtime（共享广播通道）。
-    /// event_bus 的 attach 由 TurnScheduler 在 submit 时统一处理。
     pub(crate) fn register_child_session(&self, session: &Session) {
         let sid = session.id().clone();
         let runtime = session.runtime().clone();
         self.runtime_states.lock().insert(sid, runtime);
+        self.attach_session_to_event_bus(session);
+    }
+
+    fn attach_session_to_event_bus(&self, session: &Session) {
+        if let Some(bus) = self.event_bus.get() {
+            bus.attach(session);
+        }
     }
 
     /// 让所有已打开 session 的工具快照失效；下一次 turn 会按当前扩展集重建。
@@ -177,23 +194,20 @@ impl SessionManager {
         // 先在 registry 里登记 runtime，再创建 Session 让两者共享同一份。
         let sid = astrcode_core::types::new_session_id();
         let runtime = self.get_or_create_runtime(&sid);
-        // SessionManager 调用 Session::create_with_id 而非 create_full：因为 sid 已生成。
-        let session = Session::create_with_id(
-            Arc::clone(&self.event_store),
-            sid.clone(),
-            working_dir,
-            &model_id,
-            None,
-            None,
-            None,
+        let session = Session::create_with_params(SessionCreateParams {
+            store: Arc::clone(&self.event_store),
+            sid: sid.clone(),
+            working_dir: working_dir.to_string(),
+            model_id,
+            parent: None,
+            tool_policy: None,
+            source_extension: None,
             runtime,
-            Arc::clone(&self.capabilities),
-        )
+            caps: Arc::clone(&self.capabilities),
+        })
         .await?;
 
-        if let Some(bus) = self.event_bus.get() {
-            bus.attach(&session);
-        }
+        self.attach_session_to_event_bus(&session);
 
         let start_event = self
             .event_store
@@ -238,15 +252,23 @@ impl SessionManager {
                     return Err(error.into());
                 }
             }
-            if let Some(bus) = self.event_bus.get() {
-                bus.attach(&session);
-            }
+            self.attach_session_to_event_bus(&session);
             Ok(session)
         }
         .await;
         drop(opening);
         self.remove_open_lock_if_idle(&session_id, &open_lock);
         result
+    }
+
+    /// 停止活跃 turn、清空待处理队列后删除 durable session。
+    pub(crate) async fn delete_with_turn_teardown(
+        &self,
+        scheduler: &TurnScheduler,
+        session_id: &SessionId,
+    ) -> Result<(), SessionManagerError> {
+        scheduler.teardown_session(session_id).await;
+        self.delete(session_id).await
     }
 
     pub(crate) async fn delete(&self, session_id: &SessionId) -> Result<(), SessionManagerError> {
@@ -265,11 +287,21 @@ impl SessionManager {
         Ok(())
     }
 
-    /// 释放 session 占用的进程内资源。
-    ///
-    /// delete 和 recycle 共享同一套清理流程，确保两条路径不会出现遗漏。
+    /// 追加 durable 事件；若进程内 runtime 仍存在则 fan-out，不触发 `open` / `SessionResume`。
+    pub(crate) async fn append_durable_event(
+        &self,
+        session_id: &SessionId,
+        event: Event,
+    ) -> Result<Event, SessionManagerError> {
+        let stored = self.event_store.append_event(event).await?;
+        if let Some(runtime) = self.runtime_states.lock().get(session_id) {
+            runtime.fanout_persisted(stored.clone());
+        }
+        Ok(stored)
+    }
+
+    /// 释放 session 占用的进程内资源（delete / recycle 共用）。
     fn cleanup_session_resources(&self, session_id: &SessionId) {
-        // 清理 runtime（含 bg_tasks）后从 registry 移除。
         if let Some(runtime) = self.runtime_states.lock().remove(session_id) {
             runtime
                 .background_tasks()
@@ -279,60 +311,9 @@ impl SessionManager {
         if let Some(bus) = self.event_bus.get() {
             bus.detach(session_id);
         }
-        // 外部资源清理（trait 注入）。
         for cleanup in self.resource_cleanups.lock().iter() {
             cleanup.cleanup(session_id);
         }
-    }
-
-    // ─── 只读查询 ─────────────────────────────────────────────────────
-
-    pub(crate) async fn read_model(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<SessionReadModel, SessionManagerError> {
-        self.event_store
-            .session_read_model(session_id)
-            .await
-            .map_err(SessionManagerError::from)
-    }
-
-    pub(crate) async fn list_summaries(&self) -> Result<Vec<SessionSummary>, SessionManagerError> {
-        self.event_store
-            .list_session_summaries()
-            .await
-            .map_err(SessionManagerError::from)
-    }
-
-    pub(crate) async fn replay_from(
-        &self,
-        session_id: &SessionId,
-        cursor: &Cursor,
-    ) -> Result<Vec<Event>, SessionManagerError> {
-        self.event_store
-            .replay_from(session_id, cursor)
-            .await
-            .map_err(SessionManagerError::from)
-    }
-
-    pub(crate) async fn latest_cursor(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<Option<Cursor>, SessionManagerError> {
-        self.event_store
-            .latest_cursor(session_id)
-            .await
-            .map_err(SessionManagerError::from)
-    }
-
-    pub(crate) async fn session_store_dir(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<Option<std::path::PathBuf>, SessionManagerError> {
-        self.event_store
-            .session_store_dir(session_id)
-            .await
-            .map_err(SessionManagerError::from)
     }
 
     /// 强制 fsync 指定会话的 durable event log。
@@ -399,15 +380,13 @@ impl SessionManager {
         // 3. 计算 fork 点之前的 provider 消息 如果 at_cursor 为 None（从末尾 fork），直接用 read
         //    model 的消息。 如果指定了 cursor，需要从事件日志重放到指定点来获取消息。
         let (context_messages, retained_messages) = if at_cursor.is_some() {
-            // 重放到指定 cursor 获取消息快照
-            let events = self.event_store.replay_events(source_id).await?;
             let truncated_seq: u64 = fork_cursor
                 .parse()
                 .map_err(|_| SessionManagerError::InvalidCursor(fork_cursor.clone()))?;
-            let truncated_events: Vec<_> = events
-                .into_iter()
-                .filter(|e| e.seq.unwrap_or(0) <= truncated_seq)
-                .collect();
+            let truncated_events = self
+                .event_store
+                .replay_events_through(source_id, truncated_seq)
+                .await?;
             let truncated_model =
                 astrcode_storage::projection::replay(source_id.clone(), &truncated_events);
             (truncated_model.context_messages, truncated_model.messages)
@@ -422,22 +401,20 @@ impl SessionManager {
         let model_id = self.config.read_effective().llm.model_id.clone();
         let new_sid = astrcode_core::types::new_session_id();
         let runtime = self.get_or_create_runtime(&new_sid);
-        let session = Session::create_with_id(
-            Arc::clone(&self.event_store),
-            new_sid.clone(),
-            &source_model.working_dir,
-            &model_id,
-            None,
-            None,
-            None,
+        let session = Session::create_with_params(SessionCreateParams {
+            store: Arc::clone(&self.event_store),
+            sid: new_sid.clone(),
+            working_dir: source_model.working_dir.clone(),
+            model_id,
+            parent: None,
+            tool_policy: None,
+            source_extension: None,
             runtime,
-            Arc::clone(&self.capabilities),
-        )
+            caps: Arc::clone(&self.capabilities),
+        })
         .await?;
 
-        if let Some(bus) = self.event_bus.get() {
-            bus.attach(&session);
-        }
+        self.attach_session_to_event_bus(&session);
 
         // 5. 写入 SessionForked 事件（attach 之后 append，经 fanout 自动进入 event bus）
         session
@@ -472,6 +449,192 @@ impl SessionManager {
         }
 
         Ok(ForkedSession { session })
+    }
+}
+
+#[cfg(test)]
+mod runtime_registry_tests {
+    use std::sync::Arc;
+
+    use astrcode_core::{
+        config::{
+            AgentSettings, ContextSettings, EffectiveConfig, ExtensionSettings, LlmSettings,
+            OpenAiApiMode,
+        },
+        extension::ChildToolPolicy,
+        llm::{LlmError, LlmEvent, LlmMessage, LlmProvider, ModelLimits},
+        storage::EventStore,
+        tool::ToolDefinition,
+        types::SessionId,
+    };
+    use astrcode_session::{SessionCreateParams, SessionRuntimeState};
+    use tokio::sync::mpsc;
+
+    use super::*;
+
+    struct NoopLlm;
+
+    #[async_trait::async_trait]
+    impl LlmProvider for NoopLlm {
+        async fn generate(
+            &self,
+            _messages: Vec<LlmMessage>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<mpsc::UnboundedReceiver<LlmEvent>, LlmError> {
+            unreachable!()
+        }
+
+        fn model_limits(&self) -> ModelLimits {
+            ModelLimits {
+                max_input_tokens: 1,
+                max_output_tokens: 1,
+            }
+        }
+    }
+
+    fn test_manager() -> (SessionManager, Arc<dyn EventStore>) {
+        let store: Arc<dyn EventStore> =
+            Arc::new(astrcode_storage::in_memory::InMemoryEventStore::new());
+        let runner = Arc::new(astrcode_extensions::runner::ExtensionRunner::new(
+            std::time::Duration::from_secs(1),
+        ));
+        let caps = Arc::new(SessionRuntimeServices::new(
+            Arc::new(NoopLlm),
+            Arc::new(NoopLlm),
+            Arc::clone(&runner),
+            Arc::new(
+                astrcode_context::context_assembler::LlmContextAssembler::new(
+                    ContextSettings::default(),
+                ),
+            ),
+            EffectiveConfig {
+                llm: LlmSettings {
+                    provider_kind: "mock".into(),
+                    base_url: String::new(),
+                    api_key: String::new(),
+                    api_mode: OpenAiApiMode::ChatCompletions,
+                    model_id: "mock".into(),
+                    max_tokens: 1024,
+                    context_limit: 1024,
+                    connect_timeout_secs: 1,
+                    read_timeout_secs: 1,
+                    max_retries: 0,
+                    retry_base_delay_ms: 0,
+                    supports_prompt_cache_key: false,
+                    prompt_cache_retention: None,
+                    reasoning: false,
+                    thinking_level: None,
+                },
+                small_llm: LlmSettings {
+                    provider_kind: "mock".into(),
+                    base_url: String::new(),
+                    api_key: String::new(),
+                    api_mode: OpenAiApiMode::ChatCompletions,
+                    model_id: "mock".into(),
+                    max_tokens: 1024,
+                    context_limit: 1024,
+                    connect_timeout_secs: 1,
+                    read_timeout_secs: 1,
+                    max_retries: 0,
+                    retry_base_delay_ms: 0,
+                    supports_prompt_cache_key: false,
+                    prompt_cache_retention: None,
+                    reasoning: false,
+                    thinking_level: None,
+                },
+                context: ContextSettings::default(),
+                agent: AgentSettings::default(),
+                extensions: ExtensionSettings::default(),
+            },
+        ));
+        let config = Arc::new(ConfigManager::new(
+            Arc::new(astrcode_storage::config_store::FileConfigStore::new(
+                std::path::PathBuf::from("target/session-manager-registry-test-config.json"),
+            )),
+            astrcode_core::config::Config::default(),
+            Arc::clone(&caps),
+        ));
+        let manager = SessionManager::new(store.clone(), config, caps, vec![]);
+        (manager, store)
+    }
+
+    #[tokio::test]
+    async fn register_child_session_preserves_spawned_runtime() {
+        let (manager, store) = test_manager();
+        let parent = manager.create(".").await.unwrap().session;
+        let deny_policy = ChildToolPolicy::Deny {
+            tools: vec!["agent".into()],
+        };
+        let child_runtime = Arc::new(SessionRuntimeState::new(
+            Arc::new(NoopLlm),
+            Arc::new(NoopLlm),
+            "mock".into(),
+        ));
+        child_runtime.set_tool_policy(Some(deny_policy.clone()));
+
+        let child = Session::create_with_params(SessionCreateParams {
+            store: Arc::clone(&store),
+            sid: SessionId::from("child-1"),
+            working_dir: ".".into(),
+            model_id: "mock".into(),
+            parent: Some(parent.id().clone()),
+            tool_policy: Some(deny_policy),
+            source_extension: None,
+            runtime: Arc::clone(&child_runtime),
+            caps: Arc::clone(parent.caps()),
+        })
+        .await
+        .unwrap();
+        manager.register_child_session(&child);
+
+        let reopened = manager.open(SessionId::from("child-1")).await.unwrap();
+        assert!(Arc::ptr_eq(reopened.runtime(), &child_runtime));
+        assert_eq!(
+            reopened.runtime().tool_policy(),
+            Some(ChildToolPolicy::Deny {
+                tools: vec!["agent".into()],
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn open_without_register_replaces_child_runtime() {
+        let (manager, store) = test_manager();
+        let parent = manager.create(".").await.unwrap().session;
+        let child_runtime = Arc::new(SessionRuntimeState::new(
+            Arc::new(NoopLlm),
+            Arc::new(NoopLlm),
+            "mock".into(),
+        ));
+        child_runtime.set_tool_policy(Some(ChildToolPolicy::Deny {
+            tools: vec!["agent".into()],
+        }));
+
+        Session::create_with_params(SessionCreateParams {
+            store: Arc::clone(&store),
+            sid: SessionId::from("child-2"),
+            working_dir: ".".into(),
+            model_id: "mock".into(),
+            parent: Some(parent.id().clone()),
+            tool_policy: Some(ChildToolPolicy::Deny {
+                tools: vec!["agent".into()],
+            }),
+            source_extension: None,
+            runtime: Arc::clone(&child_runtime),
+            caps: Arc::clone(parent.caps()),
+        })
+        .await
+        .unwrap();
+
+        let reopened = manager.open(SessionId::from("child-2")).await.unwrap();
+        assert!(!Arc::ptr_eq(reopened.runtime(), &child_runtime));
+        // `Session::open` 会从 durable read model 恢复 tool_policy，但 runtime 实例仍是新建的。
+        assert_eq!(
+            reopened.runtime().tool_policy(),
+            Some(ChildToolPolicy::Deny {
+                tools: vec!["agent".into()],
+            })
+        );
     }
 }
 

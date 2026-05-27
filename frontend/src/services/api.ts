@@ -17,6 +17,7 @@ import {
 import type {
   CreateSessionResponse,
   PromptSubmitResponse,
+  PromptAttachment,
   SessionListResponse,
   ConversationSnapshot,
   ConfigView,
@@ -122,14 +123,22 @@ export async function getConversation(
 
 export async function submitPrompt(
   sessionId: string,
-  text: string
+  text: string,
+  attachments: PromptAttachment[] = []
 ): Promise<PromptSubmitResponse> {
-  console.log('[api] submitPrompt →', { sessionId, text })
+  console.log('[api] submitPrompt →', {
+    sessionId,
+    text,
+    attachmentCount: attachments.length,
+  })
   try {
     const result = decodePromptSubmitResponse(
       await request(`/api/sessions/${encodeURIComponent(sessionId)}/prompt`, {
         method: 'POST',
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({
+          text,
+          attachments: attachments.length > 0 ? attachments : undefined,
+        }),
       })
     )
     console.log('[api] submitPrompt ←', result)

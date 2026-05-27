@@ -1,3 +1,6 @@
+// TODO(web-client): 解码层与 `astrcode-protocol::http` 对齐；连发 prompt 用 SSE
+// `updateControlState` + `handled.queued for next turn`，勿依赖 409 TurnAlreadyRunning。
+
 import type {
   AgentSessionLink,
   AgentSessionStatus,
@@ -8,6 +11,7 @@ import type {
   ConversationControlState,
   ConversationCursor,
   ConversationDelta,
+  ConversationImage,
   ConversationSnapshot,
   ConversationStreamEnvelope,
   CreateSessionResponse,
@@ -86,6 +90,36 @@ function optionalNumber(source: JsonObject, name: string): number | undefined {
   return value
 }
 
+function optionalArray<T>(
+  source: JsonObject,
+  name: string,
+  decodeItem: (value: unknown) => T
+): T[] | undefined {
+  const value = source[name]
+  if (value == null) return undefined
+  if (!Array.isArray(value)) {
+    throw new ProtocolDecodeError(`expected array ${name}`)
+  }
+  return value.map((item, index) => {
+    try {
+      return decodeItem(item)
+    } catch (error) {
+      throw new ProtocolDecodeError(
+        `invalid ${name}[${index}]: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  })
+}
+
+export function decodeConversationImage(value: unknown): ConversationImage {
+  const object = decodeObject(value, 'conversation image')
+  return {
+    filename: requiredString(object, 'filename'),
+    mediaType: requiredString(object, 'mediaType'),
+    dataUrl: requiredString(object, 'dataUrl'),
+  }
+}
+
 function decodeObject(value: unknown, context: string): JsonObject {
   if (!isObject(value))
     throw new ProtocolDecodeError(`expected object ${context}`)
@@ -137,7 +171,12 @@ export function decodeConversationBlock(value: unknown): ConversationBlock {
 
   switch (kind) {
     case 'user':
-      return { kind, id, text: requiredString(object, 'text') }
+      return {
+        kind,
+        id,
+        text: requiredString(object, 'text'),
+        images: optionalArray(object, 'images', decodeConversationImage),
+      }
     case 'assistant':
       return {
         kind,

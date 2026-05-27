@@ -5,14 +5,17 @@
 
 use std::sync::Arc;
 
-use astrcode_core::types::{SessionId, TurnId};
+use astrcode_core::{
+    types::{SessionId, TurnId},
+    user_prompt::UserPromptParts,
+};
 use astrcode_protocol::commands::ClientCommand;
 use tokio::sync::{mpsc, oneshot};
 
-use super::{CommandHandler, HandlerError, ManualCompactOutcome, PromptSubmission, TurnCompletion};
+use super::{CommandHandler, HandlerError, ManualCompactOutcome, PromptSubmission};
 use crate::{
     bootstrap::ServerRuntime,
-    turn_scheduler::{SubmitOutcome, TurnScheduler},
+    turn_scheduler::{TurnCompletion, TurnScheduler},
 };
 
 /// Command actor 队列容量；满时 `send().await` 对调用方施加背压。
@@ -60,12 +63,12 @@ impl CommandHandle {
     pub(crate) async fn submit_prompt_with_completion(
         &self,
         session_id: SessionId,
-        text: String,
+        input: UserPromptParts,
     ) -> Result<(TurnId, oneshot::Receiver<TurnCompletion>), HandlerError> {
         let (reply, rx) = oneshot::channel();
         self.post(CommandMessage::SubmitInputWithCompletion {
             session_id,
-            text,
+            input,
             reply,
         })
         .await?;
@@ -76,12 +79,12 @@ impl CommandHandle {
     pub async fn submit_input_for_session(
         &self,
         session_id: SessionId,
-        text: String,
+        input: impl Into<UserPromptParts>,
     ) -> Result<PromptSubmission, HandlerError> {
         let (reply, rx) = oneshot::channel();
         self.post(CommandMessage::SubmitInputForSession {
             session_id,
-            text,
+            input: input.into(),
             reply,
         })
         .await?;
@@ -158,12 +161,38 @@ impl CommandHandle {
         }
     }
 
+    /// 删除指定会话。
+    pub async fn delete_session(&self, session_id: SessionId) -> Result<(), HandlerError> {
+        let (reply, rx) = oneshot::channel();
+        self.post(CommandMessage::DeleteSession { session_id, reply })
+            .await?;
+        rx.await.map_err(|_| HandlerError::ActorUnavailable)?
+    }
+
     /// 删除指定工作目录下的所有会话，返回删除数量。
     pub async fn delete_project(&self, working_dir: String) -> Result<usize, HandlerError> {
         let (reply, rx) = oneshot::channel();
         self.post(CommandMessage::DeleteProject { working_dir, reply })
             .await?;
         rx.await.map_err(|_| HandlerError::ActorUnavailable)?
+    }
+}
+
+#[cfg(test)]
+impl CommandHandle {
+    /// 模拟 scheduler idle hook 投递，用于测试 stale completion 防护。
+    pub(in crate::handler) async fn inject_session_turn_idle(
+        &self,
+        session_id: SessionId,
+        turn_id: TurnId,
+        completion: TurnCompletion,
+    ) -> Result<(), HandlerError> {
+        self.post(CommandMessage::SessionTurnIdle {
+            session_id,
+            turn_id,
+            completion,
+        })
+        .await
     }
 }
 
@@ -182,7 +211,7 @@ pub(in crate::handler) enum CommandMessage {
     /// 提交输入
     SubmitInputForSession {
         session_id: SessionId,
-        text: String,
+        input: UserPromptParts,
         reply: oneshot::Sender<Result<PromptSubmission, HandlerError>>,
     },
     /// 手动压缩
@@ -203,11 +232,8 @@ pub(in crate::handler) enum CommandMessage {
             Result<Vec<astrcode_protocol::events::ExtensionCommandInfo>, HandlerError>,
         >,
     },
-    /// Agent Turn 完成/失败后的清理（事件已由 turn task 直接广播）。
-    ///
-    /// `session_id` / `completion` 供 actor 侧空闲 recap 门控；
-    /// `turn_id` 用于日志与后续 stale-cleanup 校验。
-    AgentTurnCleanup {
+    /// Turn 正常结束后通知 actor（空闲 recap 计时等）；终态事件已由 turn task 写入 log。
+    SessionTurnIdle {
         session_id: SessionId,
         turn_id: TurnId,
         completion: TurnCompletion,
@@ -215,7 +241,7 @@ pub(in crate::handler) enum CommandMessage {
     /// 提交提示词并等待完成通知
     SubmitInputWithCompletion {
         session_id: SessionId,
-        text: String,
+        input: UserPromptParts,
         reply: oneshot::Sender<Result<(TurnId, oneshot::Receiver<TurnCompletion>), HandlerError>>,
     },
     /// 修复进程重启后残留的过期 turn phase
@@ -229,6 +255,11 @@ pub(in crate::handler) enum CommandMessage {
         at_cursor: Option<String>,
         reply: oneshot::Sender<Result<SessionId, HandlerError>>,
     },
+    /// 删除会话
+    DeleteSession {
+        session_id: SessionId,
+        reply: oneshot::Sender<Result<(), HandlerError>>,
+    },
     /// 删除指定工作目录下的所有会话
     DeleteProject {
         working_dir: String,
@@ -239,31 +270,11 @@ pub(in crate::handler) enum CommandMessage {
 }
 
 impl CommandHandler {
-    async fn queue_input_for_next_turn(
-        &self,
-        session_id: SessionId,
-        text: String,
-    ) -> Result<PromptSubmission, HandlerError> {
-        match self.scheduler.notify_turn(session_id, text).await {
-            Ok(SubmitOutcome::Queued) => Ok(PromptSubmission::Handled {
-                message: "queued for next turn".into(),
-            }),
-            Ok(SubmitOutcome::Started { turn_id, .. }) => {
-                Ok(PromptSubmission::Accepted { turn_id })
-            },
-            Ok(SubmitOutcome::Injected) => Ok(PromptSubmission::Handled {
-                message: "injected into active turn".into(),
-            }),
-            Err(e) => Err(HandlerError::from(e)),
-        }
-    }
-
     /// 创建新的 Handler 实例。
     pub(super) fn new(
         runtime: Arc<ServerRuntime>,
         scheduler: Arc<TurnScheduler>,
         event_bus: Arc<crate::server_event_bus::ServerEventBus>,
-        actor_tx: mpsc::Sender<CommandMessage>,
     ) -> Self {
         let model_selection =
             super::model_selection::ModelSelectionController::new(runtime.config_manager().clone());
@@ -272,7 +283,6 @@ impl CommandHandler {
             active_session_id: None,
             scheduler,
             event_bus,
-            actor_tx,
             model_selection,
         }
     }
@@ -284,7 +294,28 @@ impl CommandHandler {
         event_bus: Arc<crate::server_event_bus::ServerEventBus>,
     ) -> CommandHandle {
         let (tx, rx) = mpsc::channel(COMMAND_ACTOR_CAPACITY);
-        let mut handler = Self::new(runtime, scheduler, event_bus, tx.clone());
+        let actor_tx = tx.clone();
+        scheduler.register_session_idle(Arc::new(move |session_id, turn_id, completion| {
+            let actor_tx = actor_tx.clone();
+            tokio::spawn(async move {
+                if actor_tx
+                    .send(CommandMessage::SessionTurnIdle {
+                        session_id: session_id.clone(),
+                        turn_id: turn_id.clone(),
+                        completion,
+                    })
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        turn_id = %turn_id,
+                        "command actor unavailable; skipping session turn idle"
+                    );
+                }
+            });
+        }));
+        let mut handler = Self::new(runtime, scheduler, event_bus);
         let handle = tokio::spawn(async move {
             handler.run(rx).await;
         });
@@ -348,7 +379,7 @@ impl CommandHandler {
 
             // Turn 正常结束且仍是当前活跃 session → 启动空闲 recap 计时
             let starts_recap_timer = match &message {
-                CommandMessage::AgentTurnCleanup {
+                CommandMessage::SessionTurnIdle {
                     session_id,
                     completion,
                     ..
@@ -384,14 +415,10 @@ impl CommandHandler {
             },
             CommandMessage::SubmitInputForSession {
                 session_id,
-                text,
+                input,
                 reply,
             } => {
-                let result = if self.scheduler.registry().has_active(&session_id) {
-                    self.queue_input_for_next_turn(session_id, text).await
-                } else {
-                    self.submit_input_for_session(session_id, text).await
-                };
+                let result = self.accept_user_input_for_session(session_id, input).await;
                 let _ = reply.send(result);
             },
             CommandMessage::CompactSession {
@@ -409,8 +436,7 @@ impl CommandHandler {
             CommandMessage::ListCommandsForSession { session_id, reply } => {
                 let _ = reply.send(self.command_infos_for_session(&session_id).await);
             },
-            // Agent Turn 清理（终态事件已由 turn task 直接广播）
-            CommandMessage::AgentTurnCleanup {
+            CommandMessage::SessionTurnIdle {
                 session_id,
                 turn_id,
                 completion,
@@ -419,16 +445,15 @@ impl CommandHandler {
                     session_id = %session_id,
                     turn_id = %turn_id,
                     ?completion,
-                    "agent turn cleanup"
+                    "session turn idle"
                 );
-                // 排队输入由 TurnCompleted → TurnScheduler::on_turn_completed 统一出队。
             },
             CommandMessage::SubmitInputWithCompletion {
                 session_id,
-                text,
+                input,
                 reply,
             } => {
-                let _ = reply.send(self.submit_input_with_completion(session_id, text).await);
+                let _ = reply.send(self.submit_input_with_completion(session_id, input).await);
             },
             CommandMessage::RepairStaleTurn { session_id, reply } => {
                 let _ = reply.send(self.repair_stale_session(&session_id).await);
@@ -439,6 +464,9 @@ impl CommandHandler {
                 reply,
             } => {
                 let _ = reply.send(self.fork_session(source_id, at_cursor).await);
+            },
+            CommandMessage::DeleteSession { session_id, reply } => {
+                let _ = reply.send(self.delete_session_by_id(session_id).await);
             },
             CommandMessage::DeleteProject { working_dir, reply } => {
                 let _ = reply.send(self.delete_project(working_dir).await);

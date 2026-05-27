@@ -88,6 +88,8 @@ impl TurnPublisher {
         match cache.as_mut() {
             Some(model) => projection::reduce(&stored, model),
             None => {
+                // cache 在 step 初被 invalidate 后为空：需 full read 以吸收 mid-turn inject 等
+                // 外部 durable 写入，不能仅从 stored 单事件增量 reduce。
                 *cache = Some(
                     self.session
                         .read_model()
@@ -163,13 +165,11 @@ mod tests {
     use std::sync::Arc;
 
     use astrcode_core::{
-        config::{ContextSettings, EffectiveConfig, ExtensionSettings, LlmSettings, OpenAiApiMode},
         event::EventPayload,
         llm::{LlmError, LlmEvent, LlmMessage, LlmProvider, ModelLimits},
         tool::ToolDefinition,
         types::{new_session_id, new_turn_id},
     };
-    use astrcode_extensions::runner::ExtensionRunner;
     use astrcode_storage::in_memory::InMemoryEventStore;
     use tokio::sync::mpsc;
 
@@ -178,6 +178,7 @@ mod tests {
         session::{Session, SessionCreateParams},
         session_runtime::SessionRuntimeState,
         session_runtime_services::SessionRuntimeServices,
+        test_fixtures::mock_runtime_services,
     };
 
     struct UnusedLlm;
@@ -201,59 +202,7 @@ mod tests {
     }
 
     fn test_caps() -> Arc<SessionRuntimeServices> {
-        let llm: Arc<dyn LlmProvider> = Arc::new(UnusedLlm);
-        let extension_runner = Arc::new(ExtensionRunner::new(std::time::Duration::from_secs(1)));
-        let context_assembler = Arc::new(
-            astrcode_context::context_assembler::LlmContextAssembler::new(
-                ContextSettings::default(),
-            ),
-        );
-        let effective = EffectiveConfig {
-            llm: LlmSettings {
-                provider_kind: "mock".into(),
-                base_url: String::new(),
-                api_key: String::new(),
-                api_mode: OpenAiApiMode::ChatCompletions,
-                model_id: "mock-model".into(),
-                max_tokens: 1024,
-                context_limit: 1024,
-                connect_timeout_secs: 1,
-                read_timeout_secs: 1,
-                max_retries: 0,
-                retry_base_delay_ms: 0,
-                supports_prompt_cache_key: false,
-                prompt_cache_retention: None,
-                reasoning: false,
-                thinking_level: None,
-            },
-            small_llm: LlmSettings {
-                provider_kind: "mock".into(),
-                base_url: String::new(),
-                api_key: String::new(),
-                api_mode: OpenAiApiMode::ChatCompletions,
-                model_id: "mock-model".into(),
-                max_tokens: 1024,
-                context_limit: 1024,
-                connect_timeout_secs: 1,
-                read_timeout_secs: 1,
-                max_retries: 0,
-                retry_base_delay_ms: 0,
-                supports_prompt_cache_key: false,
-                prompt_cache_retention: None,
-                reasoning: false,
-                thinking_level: None,
-            },
-            context: ContextSettings::default(),
-            agent: astrcode_core::config::AgentSettings::default(),
-            extensions: ExtensionSettings::default(),
-        };
-        Arc::new(SessionRuntimeServices::new(
-            llm.clone(),
-            llm,
-            extension_runner,
-            context_assembler,
-            effective,
-        ))
+        mock_runtime_services(Arc::new(UnusedLlm))
     }
 
     #[tokio::test]
@@ -288,6 +237,7 @@ mod tests {
             .durable(EventPayload::UserMessage {
                 message_id: astrcode_core::types::new_message_id(),
                 text: "first".into(),
+                images: vec![],
             })
             .await
             .unwrap();
@@ -298,6 +248,7 @@ mod tests {
             .durable(EventPayload::UserMessage {
                 message_id: astrcode_core::types::new_message_id(),
                 text: "second".into(),
+                images: vec![],
             })
             .await
             .unwrap();
@@ -337,6 +288,7 @@ mod tests {
             .durable(EventPayload::UserMessage {
                 message_id: astrcode_core::types::new_message_id(),
                 text: "injected".into(),
+                images: vec![],
             })
             .await
             .unwrap();

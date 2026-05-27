@@ -157,7 +157,7 @@ async fn ssot_tool_loop_projection_matches_provider_messages() {
     });
     let session = spawn_session(llm).await;
     let turn_id = new_turn_id();
-    let handle = session.submit("run tools".into(), turn_id).await.unwrap();
+    let handle = session.submit("run tools", turn_id).await.unwrap();
     let result = handle.wait().await.unwrap();
     assert!(result.output.is_ok(), "{:?}", result.output);
 
@@ -233,10 +233,7 @@ async fn ssot_thinking_and_tools_merge_in_projection() {
     }))
     .await;
     let turn_id = new_turn_id();
-    let handle = session
-        .submit("think then tool".into(), turn_id)
-        .await
-        .unwrap();
+    let handle = session.submit("think then tool", turn_id).await.unwrap();
     let _ = handle.wait().await.unwrap();
 
     let messages = session.read_model().await.unwrap().provider_messages();
@@ -305,7 +302,7 @@ async fn ssot_tool_only_turn_emits_assistant_shell_before_tool_requests() {
     }))
     .await;
     let turn_id = new_turn_id();
-    let handle = session.submit("tool only".into(), turn_id).await.unwrap();
+    let handle = session.submit("tool only", turn_id).await.unwrap();
     let _ = handle.wait().await.unwrap();
 
     let messages = session.read_model().await.unwrap().messages;
@@ -341,12 +338,13 @@ async fn ssot_mid_turn_inject_visible_on_next_prepare() {
                 EventPayload::UserMessage {
                     message_id: new_message_id(),
                     text: "mid-turn inject".into(),
+                    images: vec![],
                 },
             )
             .await;
     });
 
-    let handle = session.submit("start".into(), turn_id).await.unwrap();
+    let handle = session.submit("start", turn_id).await.unwrap();
     let _ = handle.wait().await.unwrap();
     inject.await.unwrap();
 

@@ -316,6 +316,7 @@ async fn stream_preserves_global_updates_during_replay_drain() {
             EventPayload::UserMessage {
                 message_id: "missed-message".into(),
                 text: "missed while reconnecting".into(),
+                images: vec![],
             },
         ))
         .await
@@ -356,6 +357,7 @@ async fn stream_replays_events_after_snapshot_cursor() {
             EventPayload::UserMessage {
                 message_id: "snapshot-message".into(),
                 text: "already in snapshot".into(),
+                images: vec![],
             },
         ))
         .await
@@ -377,6 +379,7 @@ async fn stream_replays_events_after_snapshot_cursor() {
             EventPayload::UserMessage {
                 message_id: "missed-message".into(),
                 text: "missed while connecting stream".into(),
+                images: vec![],
             },
         ))
         .await
@@ -549,6 +552,7 @@ async fn prompt_route_compact_returns_handled_and_streams_continuation() {
                 EventPayload::UserMessage {
                     message_id: new_message_id(),
                     text: text.into(),
+                    images: vec![],
                 },
             ))
             .await
@@ -663,6 +667,7 @@ async fn compact_route_returns_same_session_and_hydrates_post_compact_context() 
                 EventPayload::UserMessage {
                     message_id: new_message_id(),
                     text: text.into(),
+                    images: vec![],
                 },
             ))
             .await

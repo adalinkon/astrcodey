@@ -8,6 +8,7 @@ import type {
   ConversationBlock,
   ConversationControlState,
   ConversationDelta,
+  PromptAttachment,
   SessionListItem,
   Phase,
   ToolOutputStream,
@@ -44,7 +45,10 @@ interface ConversationState {
   bumpModelRefreshKey: () => void
   switchSession: (sessionId: string) => Promise<void>
   refreshConversationSnapshot: () => Promise<void>
-  submitPrompt: (text: string) => Promise<boolean>
+  submitPrompt: (
+    text: string,
+    attachments?: PromptAttachment[]
+  ) => Promise<boolean>
   abortCurrentTurn: () => Promise<void>
   applyDelta: (delta: ConversationDelta) => void
 }
@@ -557,7 +561,10 @@ export const useAppStore = create<ConversationState>((set, get) => ({
     }
   },
 
-  submitPrompt: async (text: string) => {
+  // TODO(web-client): 连发 prompt 时服务端返回 `handled` + `queued for next turn`；
+  // 应依赖 SSE `updateControlState` / snapshot.control，勿本地猜 phase。
+  // ESC 中止后 step 注入仅 TUI `SubmitPromptStep`；Web 待产品定义后再接。
+  submitPrompt: async (text: string, attachments: PromptAttachment[] = []) => {
     const { activeSessionId } = get()
     if (!activeSessionId) {
       return false
@@ -569,7 +576,11 @@ export const useAppStore = create<ConversationState>((set, get) => ({
     }
 
     try {
-      const response = await api.submitPrompt(activeSessionId, text)
+      const response = await api.submitPrompt(
+        activeSessionId,
+        text,
+        attachments
+      )
       if (response.kind === 'handled') {
         if (get().activeSessionId !== response.sessionId) {
           return true

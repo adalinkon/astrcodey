@@ -1,19 +1,16 @@
 //! 命令处理器 — 使用 ServerRuntime 处理客户端命令。
 //!
-//! 传输层无关：同时被 stdio 二进制和进程内 CLI 使用。
-//! 负责将 `ClientCommand` 路由到对应的服务方法，并通过广播通道发送通知。
+//! ## 传输边界
 //!
-//! 连发 prompt 的「下一 turn」排队统一由 [`TurnScheduler::notify_turn`]
-//! 处理，本模块不再维护独立队列。
+//! - **进程内**（TUI / exec）：[`ClientCommand`] → [`CommandHandle::handle`] → 本模块
+//! - **HTTP/SSE**（Desktop / 外部）：REST 路由 → [`CommandHandle`] 显式方法
+//!
+//! 连发 prompt 统一经 [`accept_user_input_for_session`] → [`TurnScheduler::accept_user_input`]。
 
 use std::sync::Arc;
 
 use astrcode_core::types::*;
-use astrcode_protocol::{
-    commands::{ClientCommand, UiResponseValue},
-    events::ClientNotification,
-};
-use tokio::sync::mpsc;
+use astrcode_protocol::{commands::UiResponseValue, events::ClientNotification};
 
 use crate::{
     bootstrap::ServerRuntime, session_manager::SessionManagerError, turn_scheduler::TurnScheduler,
@@ -25,6 +22,7 @@ mod errors;
 mod model_selection;
 mod notifications;
 mod prompt;
+pub(crate) use prompt::user_prompt_from_http;
 mod recap;
 mod router;
 mod session_lifecycle;
@@ -33,7 +31,6 @@ pub(crate) mod snapshot;
 pub(in crate::handler) mod turn;
 
 pub use actor::CommandHandle;
-use actor::CommandMessage;
 pub use compact::ManualCompactOutcome;
 use model_selection::ModelSelectionController;
 use snapshot::session_snapshot;
@@ -82,7 +79,7 @@ pub enum HandlerError {
     InvalidRequest(String),
 }
 
-pub(crate) use turn::TurnCompletion;
+pub(crate) use crate::turn_scheduler::TurnCompletion;
 
 /// 命令处理器，处理客户端命令并通过广播通道发送通知。
 ///
@@ -95,8 +92,6 @@ pub(crate) struct CommandHandler {
     scheduler: Arc<TurnScheduler>,
     /// 事件总线，用于发送客户端通知
     event_bus: Arc<crate::server_event_bus::ServerEventBus>,
-    /// Actor 消息通道发送端，用于在后台任务中发送消息回 Handler
-    actor_tx: mpsc::Sender<CommandMessage>,
     /// 模型选择流程。
     model_selection: ModelSelectionController,
 }
@@ -130,24 +125,17 @@ impl CommandHandler {
         self.active_session_id = Some(new_sid.clone());
 
         // 初始化 runtime（工具表在新 session 上需要重建）
-        let working_dir = self
-            .runtime
-            .session_manager()
-            .read_model(&new_sid)
-            .await
-            .map(|m| m.working_dir)
-            .unwrap_or_else(|_| ".".into());
-        if let Err(e) = forked.session.initialize_runtime(&working_dir).await {
+        if let Err(e) = forked.session.ensure_runtime_ready(true).await {
             tracing::warn!(session_id = %new_sid, error = %e, "fork: runtime init failed");
         }
 
         // 通知客户端
         let state = self
             .runtime
-            .session_manager()
-            .read_model(&new_sid)
+            .event_store()
+            .session_read_model(&new_sid)
             .await
-            .map_err(HandlerError::SessionManager)?;
+            .map_err(|e| HandlerError::SessionManager(e.into()))?;
         let snapshot = session_snapshot(&state);
         self.event_bus
             .send_notification(ClientNotification::SessionResumed {
@@ -167,10 +155,10 @@ impl CommandHandler {
     pub async fn delete_project(&mut self, working_dir: String) -> Result<usize, HandlerError> {
         let summaries = self
             .runtime
-            .session_manager()
-            .list_summaries()
+            .event_store()
+            .list_session_summaries()
             .await
-            .map_err(HandlerError::SessionManager)?;
+            .map_err(|e| HandlerError::SessionManager(e.into()))?;
 
         let matching: Vec<_> = summaries
             .into_iter()
@@ -179,12 +167,7 @@ impl CommandHandler {
 
         let mut deleted_count = 0usize;
         for summary in &matching {
-            match self
-                .handle(ClientCommand::DeleteSession {
-                    session_id: summary.session_id.to_string(),
-                })
-                .await
-            {
+            match self.delete_session_by_id(summary.session_id.clone()).await {
                 Ok(()) => deleted_count += 1,
                 Err(error) => {
                     tracing::warn!(

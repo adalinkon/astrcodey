@@ -16,8 +16,12 @@ impl CommandHandler {
                 self.create_session(working_dir).await?;
             },
 
-            ClientCommand::SubmitPrompt { text, .. } => {
-                self.submit_prompt(text).await?;
+            ClientCommand::SubmitPrompt { text, attachments } => {
+                self.submit_prompt(text, attachments).await?;
+            },
+
+            ClientCommand::SubmitPromptStep { text, attachments } => {
+                self.submit_prompt_step(text, attachments).await?;
             },
 
             ClientCommand::InjectMessage { text } => {
@@ -29,7 +33,7 @@ impl CommandHandler {
             },
 
             ClientCommand::ListSessions => {
-                match self.runtime.session_manager().list_summaries().await {
+                match self.runtime.event_store().list_session_summaries().await {
                     Ok(summaries) => {
                         let items: Vec<_> = summaries
                             .into_iter()
@@ -50,7 +54,7 @@ impl CommandHandler {
                     },
                     Err(e) => {
                         self.send_error(-32603, &e.to_string());
-                        return Err(HandlerError::SessionManager(e));
+                        return Err(HandlerError::SessionManager(e.into()));
                     },
                 }
             },
@@ -73,17 +77,7 @@ impl CommandHandler {
             },
 
             ClientCommand::DeleteSession { session_id } => {
-                let session_id = SessionId::from(session_id);
-                let _ = self.scheduler.abort(&session_id).await;
-                self.scheduler.cleanup(&session_id).await;
-                match self.runtime.session_manager().delete(&session_id).await {
-                    Ok(()) => {
-                        if self.active_session_id.as_ref() == Some(&session_id) {
-                            self.active_session_id = None;
-                        }
-                    },
-                    Err(e) => self.send_error(40401, &format!("Session not found: {e}")),
-                }
+                self.delete_session_by_id(session_id.into()).await?;
             },
 
             ClientCommand::ListExtensionCommands => {

@@ -12,7 +12,7 @@
 
 A Rust-built AI coding agent platform.
 
-AstrCode is a full-stack AI coding assistant built from scratch in ~67.6k lines of Rust across 21 crates under `crates/` (plus a Tauri desktop shell), and a React + TypeScript web frontend (~6.3k lines). It features an agent loop with tool execution, a streaming SSE-based multi-provider LLM layer (Anthropic, OpenAI, Google GenAI), an SDK-based extension/hook system with disk IPC subprocess extensions, background pre-warm, health checks, and a startup event channel, a persistent MCP process pool (reusing long-lived connections across turns), context window management with auto-compaction, an eval framework for automated benchmarking, and multiple interfaces: a terminal TUI, Web frontend, Tauri desktop app, HTTP/SSE API, and ACP (Agent Client Protocol) adapter.
+AstrCode is a full-stack AI coding assistant built from scratch in ~76.7k lines of Rust across 21 crates under `crates/` (plus a Tauri desktop shell), and a React + TypeScript web frontend (~8.1k lines). It features an agent loop with tool execution, a streaming SSE-based multi-provider LLM layer (Anthropic, OpenAI, Google GenAI), an SDK-based extension/hook system with disk IPC subprocess extensions, background pre-warm, health checks, and a startup event channel, a persistent MCP process pool (reusing long-lived connections across turns), context window management with auto-compaction, an eval framework for automated benchmarking, and multiple interfaces: a terminal TUI, Web frontend, Tauri desktop app, HTTP/SSE API, and ACP (Agent Client Protocol) adapter.
 
 ## Table of Contents
 
@@ -271,19 +271,18 @@ For detailed configuration documentation, see [Configuration Guide](docs/configu
 ```
           ┌──────────┐  ┌──────────────────────┐  ┌───────────┐
           │   TUI    │  │ Web / Tauri Frontend  │  │ ACP Client│
-          │ (ratatui)│  │ React 19 + TypeScript │  │  (stdio)  │
+          │ (ratatui)│  │ React 19 + TypeScript │  │   (IDE)   │
           └────┬─────┘  └────────┬─────────────┘  └─────┬─────┘
-               │                  │ SSE / JSON-RPC       │ ACP JSON-RPC
-               │    stdio         │                      │ over stdio
-               └────────┬────────┘──────────────────────┘
-                   ┌─────┴──────┐
-                   │astrcode-cli│  TUI / exec / server launcher
-                   └─────┬──────┘
-                         │
-                   ┌─────┴──────┐
-                   │astrcode-   │  Session management, JSON-RPC + HTTP handler
-                   │server      │  ACP adapter, transport, concurrency control
-                   └─────┬──────┘
+               │ in-process      │ HTTP / SSE             │ WS /api/acp/ws
+               │ ClientCommand   │ REST + SSE deltas      │ JSON-RPC
+               └────────┬────────┴────────────┬─────────────┘
+                        │                     │
+                   ┌────┴──────┐         ┌─────┴──────┐
+                   │astrcode-cli│         │astrcode-   │  HTTP/SSE + ACP WebSocket
+                   └─────┬──────┘         │server      │  共享 CommandHandle / EventFanout
+                         │                └─────┬──────┘
+                         └──────────┬───────────┘
+                                    │
                          │
                    ┌─────┴───────┐
                    │astrcode-    │  Agent loop core: turn runner, tool pipeline
@@ -322,8 +321,8 @@ The Cargo workspace under [`crates/`](crates/) contains **21 crates**, plus [`sr
 
 | Crate | Lines | Description |
 |---|---|---|
-| [`astrcode-core`](crates/astrcode-core) | 6.2k | Shared domain types, traits, config system, extension contracts, prompt composition |
-| [`astrcode-support`](crates/astrcode-support) | 1.1k | Host utilities: path resolution, shell detection, tool result persistence |
+| [`astrcode-core`](crates/astrcode-core) | 6.4k | Shared domain types, traits, config system, extension contracts, prompt composition |
+| [`astrcode-support`](crates/astrcode-support) | 1.5k | Host utilities: path resolution, shell detection, tool result persistence |
 | [`astrcode-log`](crates/astrcode-log) | 353 | File rotation, stderr output, env-filter logging |
 
 ### Layer 1: Domain Services
@@ -331,11 +330,11 @@ The Cargo workspace under [`crates/`](crates/) contains **21 crates**, plus [`sr
 | Crate | Lines | Description |
 |---|---|---|
 | [`astrcode-ai`](crates/astrcode-ai) | 3.8k | Multi-provider LLM layer (Anthropic, OpenAI-compatible, Google GenAI), SSE streaming, retry |
-| [`astrcode-tools`](crates/astrcode-tools) | 5.6k | Built-in tools: read, write, edit, patch, find, grep, shell, terminal, task |
-| [`astrcode-storage`](crates/astrcode-storage) | 4.2k | JSONL event log, snapshots, config persistence, file locking |
-| [`astrcode-context`](crates/astrcode-context) | 3.9k | Token estimation, context window budgeting, auto-compact, prompt engine |
-| [`astrcode-session`](crates/astrcode-session) | 7.9k | Agent loop: turn runner, tool pipeline, LLM stream, compact orchestration, runtime services |
-| [`astrcode-extensions`](crates/astrcode-extensions) | 4.4k | Extension lifecycle, hook dispatch, capability gating, disk IPC extension loader |
+| [`astrcode-tools`](crates/astrcode-tools) | 5.5k | Built-in tools: read, write, edit, patch, find, grep, shell, terminal, task |
+| [`astrcode-storage`](crates/astrcode-storage) | 4.3k | JSONL event log, snapshots, `replay_events_through`, config persistence, file locking |
+| [`astrcode-context`](crates/astrcode-context) | 4.0k | Token estimation, context window budgeting, auto-compact, prompt engine |
+| [`astrcode-session`](crates/astrcode-session) | 8.9k | Agent loop: `Session::submit`, turn runner, tool pipeline, LLM stream, compact, `ChildTurnGuard` |
+| [`astrcode-extensions`](crates/astrcode-extensions) | 5.4k | Extension lifecycle, hook dispatch, capability gating, disk IPC extension loader |
 
 ### Layer 2: Extensions
 
@@ -345,8 +344,8 @@ The Cargo workspace under [`crates/`](crates/) contains **21 crates**, plus [`sr
 | [`astrcode-bundled-extensions`](crates/astrcode-bundled-extensions) | 99 | Composition root that registers all first-party extension crates |
 | [`astrcode-extension-mode`](crates/astrcode-extension-mode) | 1.1k | Code / Plan mode switching, exit gate, plan artifact, keybindings & status bar |
 | [`astrcode-extension-skill`](crates/astrcode-extension-skill) | 962 | Slash-command skill discovery and Skill tool dispatch |
-| [`astrcode-extension-todo-tool`](crates/astrcode-extension-todo-tool) | 876 | Progress-tracking todo list tool |
-| [`astrcode-extension-agent-tools`](crates/astrcode-extension-agent-tools) | 781 | Sub-agent delegation, agent discovery (Claude Code compatible) |
+| [`astrcode-extension-todo-tool`](crates/astrcode-extension-todo-tool) | 860 | Progress-tracking todo list tool |
+| [`astrcode-extension-agent-tools`](crates/astrcode-extension-agent-tools) | 784 | Sub-agent delegation, agent discovery (Claude Code compatible) |
 | [`astrcode-extension-mcp`](crates/astrcode-extension-mcp) | 3.0k | MCP client: stdio/HTTP transports, persistent process pool, pre-warm, health checks |
 | [`astrcode-extension-memory`](crates/astrcode-extension-memory) | 1.8k | Project-scoped markdown memory (disabled by default) |
 
@@ -354,15 +353,15 @@ The Cargo workspace under [`crates/`](crates/) contains **21 crates**, plus [`sr
 
 | Crate | Lines | Description |
 |---|---|---|
-| [`astrcode-protocol`](crates/astrcode-protocol) | 1.5k | JSON-RPC 2.0 wire types, commands, events, HTTP/UI DTOs |
-| [`astrcode-server`](crates/astrcode-server) | 11.9k | Session manager, JSON-RPC/HTTP/ACP handlers, transport, HTTP projection & SSE |
+| [`astrcode-protocol`](crates/astrcode-protocol) | 1.7k | In-process commands/events, HTTP/SSE wire DTOs |
+| [`astrcode-server`](crates/astrcode-server) | 13.5k | `TurnScheduler` / `TurnRegistry`, session manager, HTTP/SSE, ACP, `ServerSessionOperations`, Actor |
 
 ### Layer 4: Clients
 
 | Crate | Lines | Description |
 |---|---|---|
-| [`astrcode-client`](crates/astrcode-client) | 627 | Typed JSON-RPC client, transport abstraction, stream subscription |
-| [`astrcode-cli`](crates/astrcode-cli) | 8.1k | CLI entry: TUI (ratatui), headless exec, server launcher |
+| [`astrcode-client`](crates/astrcode-client) | 693 | Typed in-process client, transport abstraction, stream subscription |
+| [`astrcode-cli`](crates/astrcode-cli) | 8.3k | CLI entry: TUI (ratatui), headless exec, server launcher |
 
 ### Eval
 
@@ -375,18 +374,18 @@ The Cargo workspace under [`crates/`](crates/) contains **21 crates**, plus [`sr
 
 | Component | Lines | Description |
 |---|---|---|
-| [`src-tauri/`](src-tauri) | 777 | Tauri v2 shell: sidecar management, single-instance coordination, native dialogs |
+| [`src-tauri/`](src-tauri) | 1.9k | Tauri v2 shell: sidecar management, single-instance coordination, native dialogs |
 
-**Totals:** ~76.6k lines of Rust (21 crates + Tauri), **265** `.rs` files; ~7.1k lines of TypeScript in `frontend/` (~**84k** lines overall).
+**Totals:** ~78.6k lines of Rust (21 crates + Tauri), **271** `.rs` files; ~8.1k lines of TypeScript in `frontend/` (~**87k** lines overall).
 
 ### Frontend & Desktop App
 
 | Component | Lines | Description |
 |---|---|---|
-| `frontend/` (React + TS) | ~7.1k | Web frontend — chat view, sidebar, session management, SSE streaming, status bar |
-| `src-tauri/` (Tauri v2) | 777 | Desktop app shell — sidecar management, single-instance coordination, native dialogs |
+| `frontend/` (React + TS) | ~8.1k | Web frontend — chat view, sidebar, session management, SSE streaming, status bar |
+| `src-tauri/` (Tauri v2) | 1.9k | Desktop app shell — sidecar management, single-instance coordination, native dialogs |
 
-The web frontend (`frontend/`) is a React 19 + TypeScript + Tailwind CSS v4 + Vite single-page application. It connects to the `astrcode-server` backend via SSE for real-time streaming and JSON-RPC for commands. The frontend supports running standalone in the browser (`npm run dev`) or packaged as a Tauri desktop app (`npm run tauri:dev`).
+The web frontend (`frontend/`) is a React 19 + TypeScript + Tailwind CSS v4 + Vite single-page application. It connects to the `astrcode-server` backend via SSE for real-time streaming and REST for commands. The frontend supports running standalone in the browser (`npm run dev`) or packaged as a Tauri desktop app (`npm run tauri:dev`).
 
 The Tauri desktop app (`src-tauri/`) wraps the web frontend in a native window and manages the `astrcode-server` as a sidecar process — automatically launching it on startup, discovering a free port, and bridging the connection. It also provides single-instance coordination (file-lock + TCP activation) and native file dialogs via `tauri-plugin-dialog`.
 
@@ -457,11 +456,13 @@ The extension system (`astrcode-extensions`) is a core architectural pillar, not
 
 ### ACP Adapter
 
-The ACP adapter (`astrcode-server::acp`) bridges the standard Agent Client Protocol to astrcode's internal command/broadcast architecture:
+The ACP adapter (`astrcode-server::acp`) bridges the standard Agent Client Protocol to astrcode's internal command/broadcast architecture over **HTTP WebSocket** (`GET /api/acp/ws`, same auth as REST).
 
-- Stdio JSON-RPC server implementing Initialize / NewSession / Prompt / Cancel
+For IDEs that only spawn a subprocess with stdio, use the thin **`astrcode acp` bridge** (`astrcode-cli::acp_bridge`): it owns no server state and only forwards JSON-RPC frames between stdin/stdout and the local WebSocket endpoint (discovered via `~/.astrcode/run.json` by default).
+
+- JSON-RPC over WebSocket text frames (one message per frame)
 - Real-time event streaming via broadcast channel to ACP `SessionNotification`
-- Deterministic event flushing with completion oneshot for turn lifecycle
+- Turn completion via `TurnScheduler` completion watcher + optional oneshot (`TurnSummary`); extension sync path uses `submit_and_wait`
 - Designed for IDE extensions and editor integrations
 
 ### Event-Sourcing Architecture
@@ -469,17 +470,29 @@ The ACP adapter (`astrcode-server::acp`) bridges the standard Agent Client Proto
 AstrCode follows a session-first event-sourcing pattern:
 
 - **EventLog is the single source of truth** — all state changes are immutable, append-only events
-- **Session is a projection** — reconstructed by replaying from the event log; fork = replay from a specific sequence number
+- **Session is a projection** — reconstructed by replaying from the event log; fork = replay through a cursor (`replay_events_through`)
 - **Agent is stateless** — `TurnRunner` is discarded after each turn; state lives in the event log
 - **Recovery is replay** — if the agent crashes, the session is intact; simply re-project from the event log
+
+### Turn scheduling (`astrcode-server`)
+
+Orchestration lives in **`TurnScheduler`**, not in the agent loop:
+
+- **`TurnRegistry`** — single in-process index: is a turn executing for this session? (`has_active_turn` API uses registry only)
+- **`pending_queues`** — single FIFO queue for prompts submitted while a turn is already running; drained by the internal completion watcher chain after each turn finishes
+- **Handler / HTTP** — `accept_user_input` → scheduler; callers do not spawn completion watchers manually
+- **Extension API** — `ServerSessionOperations::submit_turn` uses `submit_tracked`, `submit_and_wait`, or `submit_untracked` (+ `ChildTurnGuard` for child sessions)
+- **Session idle** — after the full turn chain ends, Actor receives `SessionTurnIdle` and may start auto-recap (5 min)
+
+See [docs/architecture.md](docs/architecture.md) §2 for the full server/session boundary and API table.
 
 ### Prompt Engineering
 
 System prompt assembly follows a pipeline pattern:
 
 ```
-Identity → System → Task Guidelines → Communication → Environment
-→ User Rules → Project Rules → Tool Summary → Extension → Additional
+Identity → System → Task Guidelines → Environment → Communication
+→ Rules → Tool Summary → Extension → Extra Instructions
 ```
 
 Stable sections (Identity, System, Task Guidelines) come first to leverage prompt cache prefix matching. Users can customize via `~/.astrcode/IDENTITY.md` (identity override) and project-level `AGENTS.md` (project rules, searched upward from working directory).
@@ -490,8 +503,8 @@ Stable sections (Identity, System, Task Guidelines) come first to leverage promp
 |---|---|---|
 | **TUI** | `cargo run -- tui` | Interactive terminal UI with message history, tool display, slash commands, status bar |
 | **Exec** | `cargo run -- exec "prompt"` | Headless single-shot execution, supports `--jsonl`|
-| **Server** | `cargo run -- server [--addr 0.0.0.0:3847]` | HTTP/SSE server with JSON-RPC, session management, real-time event streaming |
-| **ACP** | `cargo run -- acp` | ACP stdio adapter for IDE/editor integration |
+| **Server** | `cargo run -- server [--addr 0.0.0.0:3847]` | HTTP/SSE server + ACP WebSocket (`/api/acp/ws`) |
+| **ACP bridge** | `cargo run -- acp` | Stdio JSON-RPC shim → local server WebSocket (IDE subprocess compat) |
 | **Eval** | `cargo run --features dev-mode -- eval` | Run evaluation benchmarks (requires `dev-mode` feature) |
 | **Web** | `cd frontend && npm run dev` | Browser-based chat interface connected to the server via SSE |
 | **Desktop** | `cd frontend && npm run tauri:dev` | Tauri desktop app (auto-launches server as sidecar) |
@@ -546,7 +559,7 @@ Pre-built binaries are available for Linux, macOS, and Windows (x86_64 + aarch64
 This project drew inspiration and design patterns from several open-source projects:
 
 - **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** — tool execution pipeline, system prompt design, compact design
-- **[OpenCode](https://github.com/anomalyco/opencode)** — the frontend-backend separation (HTTP/SSE + JSON-RPC) references OpenCode's architecture.
+- **[OpenCode](https://github.com/anomalyco/opencode)** — the frontend-backend separation (HTTP/SSE + REST) references OpenCode's architecture.
 - **[Codex CLI](https://github.com/openai/codex)** — TUI layout and terminal UI design borrow from Codex's approach to rendering agent interactions in the terminal.
 
 ## License

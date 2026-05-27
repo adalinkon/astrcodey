@@ -9,12 +9,35 @@ import { cn } from '../../lib/utils'
 import ModelSelector from './ModelSelector'
 import CommandSelector from './CommandSelector'
 import * as api from '../../services/api'
-import type { SlashCommandInfo } from '../../services/types'
+import type { SlashCommandInfo, PromptAttachment } from '../../services/types'
 
 function isExecutionPhase(phase: string): boolean {
   return (
     phase === 'thinking' || phase === 'streaming' || phase === 'calling_tool'
   )
+}
+
+interface PendingImage {
+  id: string
+  filename: string
+  previewUrl: string
+  attachment: PromptAttachment
+}
+
+async function fileToPromptAttachment(file: File): Promise<PromptAttachment> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result ?? ''))
+    reader.onerror = () => reject(reader.error ?? new Error('read failed'))
+    reader.readAsDataURL(file)
+  })
+  const comma = dataUrl.indexOf(',')
+  const content = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl
+  return {
+    filename: file.name || 'image',
+    content,
+    mediaType: file.type || 'image/png',
+  }
 }
 
 export default function InputBar() {
@@ -30,10 +53,13 @@ export default function InputBar() {
   const queuedMessages = useAppStore((s) => s.queuedMessages)
 
   const [value, setValue] = useState('')
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([])
   const [isComposing, setIsComposing] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const isBusy = isExecutionPhase(phase) || compactSubmitting
   const canSubmit = !!activeSessionId && !compactSubmitting
+  const hasInput = value.trim().length > 0 || pendingImages.length > 0
 
   // Abort 防抖：防止快速多次点击
   const abortDebounceRef = useRef<number | null>(null)
@@ -182,17 +208,64 @@ export default function InputBar() {
     updateSlashTrigger(value, textarea.selectionStart)
   }, [updateSlashTrigger, value])
 
+  const addImageFiles = useCallback(async (files: FileList | File[]) => {
+    const imageFiles = Array.from(files).filter((file) =>
+      file.type.startsWith('image/')
+    )
+    if (imageFiles.length === 0) return
+
+    const next = await Promise.all(
+      imageFiles.map(async (file) => {
+        const attachment = await fileToPromptAttachment(file)
+        const previewUrl = URL.createObjectURL(file)
+        return {
+          id: `${file.name}-${file.lastModified}-${Math.random()}`,
+          filename: attachment.filename,
+          previewUrl,
+          attachment,
+        }
+      })
+    )
+    setPendingImages((current) => [...current, ...next])
+  }, [])
+
+  const removePendingImage = useCallback((id: string) => {
+    setPendingImages((current) => {
+      const target = current.find((item) => item.id === id)
+      if (target) URL.revokeObjectURL(target.previewUrl)
+      return current.filter((item) => item.id !== id)
+    })
+  }, [])
+
   const submit = useCallback(async () => {
     const trimmed = value.trim()
-    if (!trimmed || !activeSessionId || !canSubmit) return
+    if (
+      (!trimmed && pendingImages.length === 0) ||
+      !activeSessionId ||
+      !canSubmit
+    ) {
+      return
+    }
     closeSlashTrigger()
-    const accepted = await submitPrompt(trimmed)
+    const attachments = pendingImages.map((item) => item.attachment)
+    const accepted = await submitPrompt(trimmed, attachments)
     if (!accepted) return
     setValue('')
+    setPendingImages((current) => {
+      for (const item of current) URL.revokeObjectURL(item.previewUrl)
+      return []
+    })
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [value, activeSessionId, canSubmit, submitPrompt, closeSlashTrigger])
+  }, [
+    value,
+    pendingImages,
+    activeSessionId,
+    canSubmit,
+    submitPrompt,
+    closeSlashTrigger,
+  ])
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -266,6 +339,30 @@ export default function InputBar() {
             )}
             <div className="relative">
               <div className="flex flex-col px-(--chat-composer-shell-padding-x) py-3">
+                {pendingImages.length > 0 ? (
+                  <div className="mb-3 flex flex-wrap gap-2">
+                    {pendingImages.map((image) => (
+                      <div
+                        key={image.id}
+                        className="relative overflow-hidden rounded-xl border border-border bg-white/60"
+                      >
+                        <img
+                          src={image.previewUrl}
+                          alt={image.filename}
+                          className="h-20 w-20 object-cover"
+                        />
+                        <button
+                          type="button"
+                          className="absolute right-1 top-1 rounded-full bg-black/55 px-1.5 text-[11px] text-white"
+                          onClick={() => removePendingImage(image.id)}
+                          aria-label={`移除 ${image.filename}`}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 <textarea
                   ref={textareaRef}
                   className="mb-3 max-h-60 min-h-12.5 w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-[15px] leading-[1.75] text-text-primary placeholder:text-text-muted focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
@@ -276,12 +373,50 @@ export default function InputBar() {
                   onClick={handleCursorActivity}
                   onKeyDown={handleKeyDown}
                   onKeyUp={handleCursorActivity}
+                  onPaste={(event) => {
+                    const items = event.clipboardData?.items
+                    if (!items) return
+                    const files: File[] = []
+                    for (const item of items) {
+                      if (
+                        item.kind === 'file' &&
+                        item.type.startsWith('image/')
+                      ) {
+                        const file = item.getAsFile()
+                        if (file) files.push(file)
+                      }
+                    }
+                    if (files.length > 0) {
+                      event.preventDefault()
+                      void addImageFiles(files)
+                    }
+                  }}
                   onCompositionStart={() => setIsComposing(true)}
                   onCompositionEnd={() => setIsComposing(false)}
                   disabled={!activeSessionId}
                 />
                 <div className="flex items-center justify-between">
                   <div className="flex shrink-0 items-center gap-2">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={(event) => {
+                        const files = event.target.files
+                        if (files) void addImageFiles(files)
+                        event.target.value = ''
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="rounded-full border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:bg-white/50 disabled:opacity-50"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={!activeSessionId}
+                    >
+                      图片
+                    </button>
                     <ModelSelector
                       refreshKey={modelRefreshKey}
                       getCurrentModel={api.getCurrentModel}
@@ -329,7 +464,7 @@ export default function InputBar() {
                       className={cn(composerSubmitButton)}
                       type="button"
                       onClick={() => void submit()}
-                      disabled={!value.trim() || !activeSessionId || !canSubmit}
+                      disabled={!hasInput || !activeSessionId || !canSubmit}
                       aria-label={isBusy ? '加入队列' : '发送消息'}
                       title={isBusy ? '加入队列' : '发送消息'}
                     >
