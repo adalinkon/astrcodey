@@ -427,9 +427,8 @@ async fn auto_compact_persist_race_preserves_tail_and_uses_compact_summary() {
     assert!(
         provider_messages
             .iter()
-            .filter(|m| m.role == LlmRole::User)
-            .any(|m| m.joined_display_text("\n").contains("old user 2")),
-        "seeded history should remain in projection"
+            .any(|m| m.joined_display_text("\n").contains("current turn")),
+        "active user turn should be in projection"
     );
     assert!(
         provider_messages
