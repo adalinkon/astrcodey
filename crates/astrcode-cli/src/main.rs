@@ -136,19 +136,17 @@ async fn main() {
         Some(Commands::Acp {
             server_addr,
             auth_token,
-        }) => {
-            match acp_bridge::resolve_config(server_addr, auth_token) {
-                Ok(config) => {
-                    if let Err(error) = acp_bridge::run(config).await {
-                        tracing::error!("ACP bridge failed: {error}");
-                        std::process::exit(1);
-                    }
-                },
-                Err(error) => {
-                    tracing::error!("ACP bridge config: {error}");
+        }) => match acp_bridge::resolve_config(server_addr, auth_token) {
+            Ok(config) => {
+                if let Err(error) = acp_bridge::run(config).await {
+                    tracing::error!("ACP bridge failed: {error}");
                     std::process::exit(1);
-                },
-            }
+                }
+            },
+            Err(error) => {
+                tracing::error!("ACP bridge config: {error}");
+                std::process::exit(1);
+            },
         },
         Some(Commands::Version) => {
             println!("astrcode v{}", env!("CARGO_PKG_VERSION"));

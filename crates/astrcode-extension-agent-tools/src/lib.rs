@@ -426,8 +426,8 @@ fn resolve_child_small_model(
 /// 为子 agent 的 body 追加共享增强内容：环境信息 + 行为规范。
 fn enhance_agent_prompt(agent_body: &str, _working_dir: &str) -> String {
     format!(
-        "{}\n\n---\n\nNotes:\n- Agent threads always have their cwd reset between bash \
-         calls; please only use absolute file paths.",
+        "{}\n\n---\n\nNotes:\n- Agent threads always have their cwd reset between bash calls; \
+         please only use absolute file paths.",
         agent_body.trim(),
     )
 }

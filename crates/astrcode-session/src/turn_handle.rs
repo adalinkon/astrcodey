@@ -65,10 +65,7 @@ impl TurnHandle {
     }
 
     /// 等待 turn 结束，或在 `shutdown` 触发时中止 turn 并返回 [`TurnWaitOutcome::Shutdown`]。
-    pub async fn wait_or_shutdown(
-        self,
-        shutdown: &CancellationToken,
-    ) -> TurnWaitOutcome {
+    pub async fn wait_or_shutdown(self, shutdown: &CancellationToken) -> TurnWaitOutcome {
         let abort = self.abort_handle();
         tokio::select! {
             result = self.wait() => TurnWaitOutcome::Completed(result),

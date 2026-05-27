@@ -104,9 +104,7 @@ async fn run_chain(
     loop {
         let wait_result = match handle.wait_or_shutdown(&shutdown).await {
             TurnWaitOutcome::Shutdown => {
-                scheduler
-                    .release_finished_turn(&session_id, &turn_id)
-                    .await;
+                scheduler.release_finished_turn(&session_id, &turn_id).await;
                 return;
             },
             TurnWaitOutcome::Completed(result) => result,

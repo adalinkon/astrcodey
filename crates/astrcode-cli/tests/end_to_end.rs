@@ -78,7 +78,8 @@ async fn test_e2e_create_session_and_prompt() {
             Ok(Err(_)) => break,
             Err(_) => {
                 panic!(
-                    "timed out after {}s waiting for turn lifecycle (got_turn_start={got_turn_start}, got_message={got_message})",
+                    "timed out after {}s waiting for turn lifecycle \
+                     (got_turn_start={got_turn_start}, got_message={got_message})",
                     EVENT_TIMEOUT.as_secs()
                 );
             },
@@ -103,7 +104,8 @@ async fn test_e2e_create_session_and_prompt() {
     }
 
     panic!(
-        "TurnCompleted not received within {}s (got_turn_start={got_turn_start}, got_message={got_message})",
+        "TurnCompleted not received within {}s (got_turn_start={got_turn_start}, \
+         got_message={got_message})",
         EVENT_TIMEOUT.as_secs()
     );
 }

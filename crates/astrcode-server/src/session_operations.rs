@@ -16,7 +16,10 @@ use astrcode_core::{
 };
 use astrcode_session::child_turn::{ChildCleanup, ChildOutcome, ChildTurnConfig, ChildTurnGuard};
 
-use crate::{session_manager::SessionManager, turn_scheduler::{TurnScheduleError, TurnScheduler}};
+use crate::{
+    session_manager::SessionManager,
+    turn_scheduler::{TurnScheduleError, TurnScheduler},
+};
 
 /// 服务端 SessionOperations 实现。
 pub struct ServerSessionOperations {
@@ -101,10 +104,7 @@ impl SessionOperations for ServerSessionOperations {
         if self.scheduler.registry().has_active(&target_sid) {
             match self
                 .scheduler
-                .inject(
-                    &target_sid,
-                    UserPromptParts::text_only(content.clone()),
-                )
+                .inject(&target_sid, UserPromptParts::text_only(content.clone()))
                 .await
             {
                 Ok(()) => return Ok(()),

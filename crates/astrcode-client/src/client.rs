@@ -16,7 +16,8 @@ use crate::{
 
 /// 类型化的 astrcode 客户端。
 ///
-/// 通过泛型传输层 `T` 与服务端通信（TUI/exec 使用 [`InProcessTransport`](../../astrcode-cli/src/transport.rs)）。
+/// 通过泛型传输层 `T` 与服务端通信（TUI/exec 使用
+/// [`InProcessTransport`](../../astrcode-cli/src/transport.rs)）。
 pub struct AstrcodeClient<T: ClientTransport> {
     /// 底层传输层实例，使用 `Arc` 共享所有权以支持事件订阅。
     transport: Arc<T>,

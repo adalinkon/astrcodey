@@ -10,10 +10,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{
-        client::IntoClientRequest,
-        http::header::AUTHORIZATION,
-        http::HeaderValue,
         Message,
+        client::IntoClientRequest,
+        http::{HeaderValue, header::AUTHORIZATION},
     },
 };
 
@@ -213,11 +212,8 @@ mod tests {
 
     #[test]
     fn resolve_config_from_explicit_args() {
-        let config = resolve_config(
-            Some("http://127.0.0.1:4000".into()),
-            Some("secret".into()),
-        )
-        .unwrap();
+        let config =
+            resolve_config(Some("http://127.0.0.1:4000".into()), Some("secret".into())).unwrap();
         assert_eq!(config.ws_url, "ws://127.0.0.1:4000/api/acp/ws");
         assert_eq!(config.auth_token, "secret");
     }
