@@ -81,7 +81,7 @@ fn test_caps(llm: Arc<dyn LlmProvider>, context: ContextSettings) -> Arc<Session
             supports_prompt_cache_key: false,
             prompt_cache_retention: None,
             reasoning: false,
-            reasoning_split: false,
+            thinking_level: None,
         },
         small_llm: LlmSettings {
             provider_kind: "mock".into(),
@@ -98,7 +98,7 @@ fn test_caps(llm: Arc<dyn LlmProvider>, context: ContextSettings) -> Arc<Session
             supports_prompt_cache_key: false,
             prompt_cache_retention: None,
             reasoning: false,
-            reasoning_split: false,
+            thinking_level: None,
         },
         context,
         agent: AgentSettings::default(),

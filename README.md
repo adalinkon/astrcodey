@@ -64,28 +64,11 @@ Example `~/.astrcode/config.json`:
 ```json
 {
   "version": "1",
-  "activeProfile": "anthropic",
-  "activeModel": "claude-sonnet-4-6",
-  "activeSmallProfile": "anthropic",
-  "activeSmallModel": "claude-haiku-4-5-20251001",
+  "activeProfile": "deepseek",
+  "activeModel": "deepseek-v4-flash",
+  "activeSmallProfile": "deepseek",
+  "activeSmallModel": "deepseek-v4-flash",
   "profiles": [
-    {
-      "name": "anthropic",
-      "providerKind": "anthropic",
-      "apiKey": "env:ANTHROPIC_API_KEY",
-      "models": [
-        { "id": "claude-sonnet-4-6", "maxTokens": 16384, "contextLimit": 200000 }
-      ]
-    },
-    {
-      "name": "openai",
-      "providerKind": "openai",
-      "apiKey": "env:OPENAI_API_KEY",
-      "apiMode": "chat_completions",
-      "models": [
-        { "id": "gpt-4.1", "maxTokens": 16384, "contextLimit": 128000 }
-      ]
-    },
     {
       "name": "deepseek",
       "providerKind": "openai",
@@ -93,7 +76,29 @@ Example `~/.astrcode/config.json`:
       "apiKey": "env:DEEPSEEK_API_KEY",
       "apiMode": "chat_completions",
       "models": [
-        { "id": "deepseek-chat", "maxTokens": 16384, "contextLimit": 128000 }
+        {
+          "id": "deepseek-v4-flash",
+          "maxTokens": 393216,
+          "contextLimit": 1000000,
+          "modelOptions": { "reasoning": true }
+        }
+      ]
+    },
+    {
+      "name": "openai",
+      "providerKind": "openai",
+      "apiKey": "env:OPENAI_API_KEY",
+      "apiMode": "responses",
+      "models": [
+        { "id": "gpt-4.1", "maxTokens": 16384, "contextLimit": 128000, "modelOptions": { "thinkingLevel": "medium" } }
+      ]
+    },
+    {
+      "name": "anthropic",
+      "providerKind": "anthropic",
+      "apiKey": "env:ANTHROPIC_API_KEY",
+      "models": [
+        { "id": "claude-sonnet-4-6", "maxTokens": 64000, "contextLimit": 1000000 }
       ]
     }
   ]
@@ -210,13 +215,13 @@ cat > ~/.astrcode/config.json << 'EOF'
           "id": "gpt-4o",
           "maxTokens": 128000,
           "contextLimit": 128000,
-          "reasoning": false
+          "modelOptions": { "thinkingLevel": "medium" }
         },
         {
           "id": "gpt-4o-mini",
           "maxTokens": 128000,
           "contextLimit": 128000,
-          "reasoning": false
+          "modelOptions": { "thinkingLevel": "low" }
         }
       ],
       "apiMode": "chat_completions"

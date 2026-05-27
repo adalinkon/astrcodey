@@ -831,7 +831,7 @@ fn runtime(llm_provider: Arc<dyn LlmProvider>) -> Arc<ServerRuntime> {
             supports_prompt_cache_key: false,
             prompt_cache_retention: None,
             reasoning: false,
-            reasoning_split: false,
+            thinking_level: None,
         },
         small_llm: LlmSettings {
             provider_kind: "mock".into(),
@@ -848,7 +848,7 @@ fn runtime(llm_provider: Arc<dyn LlmProvider>) -> Arc<ServerRuntime> {
             supports_prompt_cache_key: false,
             prompt_cache_retention: None,
             reasoning: false,
-            reasoning_split: false,
+            thinking_level: None,
         },
         context: ContextSettings {
             auto_compact_enabled: true,
