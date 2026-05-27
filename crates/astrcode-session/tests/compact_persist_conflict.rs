@@ -339,8 +339,8 @@ async fn persist_compact_result_accepts_new_tail_events() {
     assert!(
         provider_messages
             .iter()
-            .any(|m| m.joined_display_text("\n").contains("old user 0")),
-        "history remains queryable after persist"
+            .any(|m| m.joined_display_text("\n").contains("kept tail")),
+        "retained messages should be queryable after persist"
     );
     assert!(
         provider_messages
@@ -395,10 +395,10 @@ async fn auto_compact_persist_race_preserves_tail_and_uses_compact_summary() {
         "provider request should use compact summary"
     );
     assert!(
-        main_messages
+        !main_messages
             .iter()
             .any(|m| m.joined_display_text("\n").contains("old user 0")),
-        "provider request should retain pre-compact history"
+        "provider request should not contain compacted-away history"
     );
     assert!(
         main_messages
@@ -516,13 +516,21 @@ async fn compact_idle_session_skips_when_cursor_races_during_llm() {
 
     let outcome = compact_task.await.unwrap().unwrap();
     assert!(
-        matches!(outcome, IdleCompactionOutcome::Skipped { .. }),
-        "idle compact should skip persist on cursor race, got {outcome:?}"
+        matches!(outcome, IdleCompactionOutcome::Compacted { .. }),
+        "idle compact should persist even when cursor races, got {outcome:?}"
     );
     assert_eq!(
         compact_boundary_event_count(store.as_ref(), session.as_ref().id()).await,
-        0,
-        "no compact boundary should be written after conflict"
+        1,
+        "compact boundary should be written after persist"
+    );
+    let model = session.read_model().await.unwrap();
+    let provider_messages = model.provider_messages();
+    assert!(
+        provider_messages.iter().any(|m| m
+            .joined_display_text("\n")
+            .contains("race during idle compact")),
+        "projection must preserve tail delta user message that arrived during compact"
     );
 }
 

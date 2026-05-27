@@ -967,7 +967,6 @@ mod tests {
                 prompt_cache_retention: supports_cache_key
                     .then_some(PromptCacheRetention::TwentyFourHours),
                 thinking_level,
-                ..OpenAiProviderExtras::default()
             }),
             ..LlmClientConfig::default()
         };
