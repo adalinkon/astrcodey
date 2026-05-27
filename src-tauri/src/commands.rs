@@ -117,6 +117,8 @@ fn kill_process_tree(pid: Option<u32>) {
             .stderr(std::process::Stdio::null())
             .status();
     }
+    #[cfg(not(target_os = "windows"))]
+    let _ = pid;
 }
 
 #[tauri::command]
