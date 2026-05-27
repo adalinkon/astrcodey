@@ -12,7 +12,7 @@
 
 用 Rust 从零构建的 AI 编程助手平台。
 
-AstrCode 是一个全栈 AI 编程助手，在 `crates/` 下包含 21 个 Rust crate（另加 Tauri 桌面壳），合计约 6.76 万行 Rust，外加 React + TypeScript 前端（约 6300 行）。包含带工具执行的 Agent 循环、基于 SSE 流式传输的多 Provider LLM 层（Anthropic、OpenAI、Google GenAI）、基于 SDK 与 IPC 子进程的扩展/钩子系统（后台预热、健康检查、启动阶段事件通道）、MCP 常驻进程池（跨 turn 复用长连接）、带自动压缩的上下文窗口管理、评测框架，以及多种交互方式：终端 TUI、Web 前端、Tauri 桌面应用、HTTP/SSE API 和 ACP（Agent Client Protocol）适配器。
+AstrCode 是一个全栈 AI 编程助手，在 `crates/` 下包含 21 个 Rust crate（另加 Tauri 桌面壳），合计约 7.22 万行 Rust，外加 React + TypeScript 前端（约 6800 行）。包含带工具执行的 Agent 循环、基于 SSE 流式传输的多 Provider LLM 层（Anthropic、OpenAI、Google GenAI）、基于 SDK 与 IPC 子进程的扩展/钩子系统（后台预热、健康检查、启动阶段事件通道）、MCP 常驻进程池（跨 turn 复用长连接）、带自动压缩的上下文窗口管理、评测框架，以及多种交互方式：终端 TUI、Web 前端、Tauri 桌面应用、HTTP/SSE API 和 ACP（Agent Client Protocol）适配器。
 
 ## 目录
 
@@ -322,7 +322,7 @@ Cargo workspace 在 [`crates/`](crates/) 下包含 **21 个 crate**，另有 [`s
 
 | Crate | 行数 | 说明 |
 |---|---|---|
-| [`astrcode-core`](crates/astrcode-core) | 6.2k | 共享领域类型、trait、配置系统、扩展契约、提示词组合 |
+| [`astrcode-core`](crates/astrcode-core) | 6.3k | 共享领域类型、trait、配置系统、扩展契约、提示词组合 |
 | [`astrcode-support`](crates/astrcode-support) | 1.1k | 宿主工具：路径解析、Shell 检测、工具结果持久化 |
 | [`astrcode-log`](crates/astrcode-log) | 353 | 文件轮转、stderr 输出、env-filter 日志 |
 
@@ -331,10 +331,10 @@ Cargo workspace 在 [`crates/`](crates/) 下包含 **21 个 crate**，另有 [`s
 | Crate | 行数 | 说明 |
 |---|---|---|
 | [`astrcode-ai`](crates/astrcode-ai) | 3.8k | 多 Provider LLM 层（Anthropic、OpenAI 兼容、Google GenAI）、SSE 流式、重试 |
-| [`astrcode-tools`](crates/astrcode-tools) | 5.6k | 内置工具：read、write、edit、patch、find、grep、shell、terminal、task |
+| [`astrcode-tools`](crates/astrcode-tools) | 5.5k | 内置工具：read、write、edit、patch、find、grep、shell、terminal、task |
 | [`astrcode-storage`](crates/astrcode-storage) | 4.2k | JSONL 事件日志、快照、配置持久化、文件锁 |
-| [`astrcode-context`](crates/astrcode-context) | 3.9k | Token 估算、上下文窗口预算、自动压缩、提示词引擎 |
-| [`astrcode-session`](crates/astrcode-session) | 7.9k | Agent 循环：turn runner、工具管线、LLM 流、压缩编排、运行时服务 |
+| [`astrcode-context`](crates/astrcode-context) | 4.0k | Token 估算、上下文窗口预算、自动压缩、提示词引擎 |
+| [`astrcode-session`](crates/astrcode-session) | 7.8k | Agent 循环：turn runner、工具管线、LLM 流、压缩编排、运行时服务 |
 | [`astrcode-extensions`](crates/astrcode-extensions) | 4.4k | 扩展生命周期、钩子分发、能力门控、磁盘 IPC 扩展加载 |
 
 ### Layer 2：扩展层
@@ -345,8 +345,8 @@ Cargo workspace 在 [`crates/`](crates/) 下包含 **21 个 crate**，另有 [`s
 | [`astrcode-bundled-extensions`](crates/astrcode-bundled-extensions) | 99 | 组合根：注册全部第一方扩展 crate |
 | [`astrcode-extension-mode`](crates/astrcode-extension-mode) | 1.1k | Code / Plan 模式切换、Exit Gate、计划 Artifact、快捷键与状态栏 |
 | [`astrcode-extension-skill`](crates/astrcode-extension-skill) | 962 | 斜杠命令技能发现与 Skill 工具调度 |
-| [`astrcode-extension-todo-tool`](crates/astrcode-extension-todo-tool) | 876 | 进度追踪 Todo 工具 |
-| [`astrcode-extension-agent-tools`](crates/astrcode-extension-agent-tools) | 781 | 子 Agent 委派、Agent 发现（兼容 Claude Code 格式） |
+| [`astrcode-extension-todo-tool`](crates/astrcode-extension-todo-tool) | 860 | 进度追踪 Todo 工具 |
+| [`astrcode-extension-agent-tools`](crates/astrcode-extension-agent-tools) | 784 | 子 Agent 委派、Agent 发现（兼容 Claude Code 格式） |
 | [`astrcode-extension-mcp`](crates/astrcode-extension-mcp) | 3.0k | MCP 客户端：stdio/HTTP 传输、常驻进程池、预热、健康检查 |
 | [`astrcode-extension-memory`](crates/astrcode-extension-memory) | 1.8k | 项目作用域 Markdown 记忆（默认关闭） |
 
@@ -354,8 +354,8 @@ Cargo workspace 在 [`crates/`](crates/) 下包含 **21 个 crate**，另有 [`s
 
 | Crate | 行数 | 说明 |
 |---|---|---|
-| [`astrcode-protocol`](crates/astrcode-protocol) | 1.5k | JSON-RPC 2.0 线协议类型、命令、事件、HTTP/UI DTO |
-| [`astrcode-server`](crates/astrcode-server) | 11.9k | 会话管理、JSON-RPC/HTTP/ACP、transport、HTTP 投影与 SSE |
+| [`astrcode-protocol`](crates/astrcode-protocol) | 1.7k | JSON-RPC 2.0 线协议类型、命令、事件、HTTP/UI DTO |
+| [`astrcode-server`](crates/astrcode-server) | 11.8k | 会话管理、JSON-RPC/HTTP/ACP、transport、HTTP 投影与 SSE |
 
 ### Layer 4：客户端层
 
@@ -376,7 +376,7 @@ Cargo workspace 在 [`crates/`](crates/) 下包含 **21 个 crate**，另有 [`s
 |---|---|---|
 | [`src-tauri/`](src-tauri) | 777 | Tauri v2 壳：sidecar 管理、单实例协调、原生对话框 |
 
-**合计：** Rust 约 7.66 万行（21 个 crate + Tauri），**265** 个 `.rs` 文件；`frontend/` 约 7100 行 TypeScript（整体约 **8.4 万行**）。
+**合计：** Rust 约 7.22 万行（21 个 crate + Tauri），**251** 个 `.rs` 文件；`frontend/` 约 6800 行 TypeScript（整体约 **7.9 万行**）。
 
 ### 前端与桌面应用
 
