@@ -299,7 +299,7 @@ pub fn resolve_api_key(raw: &str) -> Result<String, ResolveError> {
 /// 注意：此函数不会执行 `!command`，只做静态判断和 env var presence 检测。
 pub fn profile_has_resolvable_api_key(profile: &Profile) -> bool {
     match profile.api_key.as_deref().map(str::trim) {
-        Some(s) if s.is_empty() => {},
+        Some("") => {},
         Some(s) => {
             if let Some(var) = s.strip_prefix("env:") {
                 return std::env::var(var).is_ok_and(|v| !v.trim().is_empty());
