@@ -91,6 +91,37 @@ const COMMUNICATION: &str =
      compliance.\n\nBetween tool calls, keep text brief — focus on decisions needing user input, \
      high-level status, and errors that change the plan.";
 
+const TOOL_GUIDANCE: &str =
+    "Prefer the narrowest tool that can answer the request. Read before you write; search before \
+     you ask.\nAll file paths passed to builtin file tools must stay inside the working directory \
+     unless the tool explicitly accepts a persisted result reference.\nWhen a tool returns a \
+     persisted-result reference for large output, keep the reference in context and inspect it \
+     with `read` chunks instead of asking the tool to inline the whole result again.\nAvoid using \
+     `shell` for operations that have dedicated tools — dedicated tools produce more reliable \
+     results.\n\n## Tool Selection Guide\nReading:\n- Read file content → `read`\nSearching:\n- \
+     Search file contents → `grep`\n- Find files by name pattern → `find`\nModifying:\n- Edit \
+     existing files (preferred) → `edit`\n- Create new files → `write`\n- Multi-file changes or \
+     file creation/deletion → `patch`\nExecuting:\n- Run commands (tests, builds, git, installs) \
+     → `shell`\n- Long-running work → `shell` with `runInBackground=true`\n- Interactive REPLs or \
+     debuggers → `terminal`\nPlanning & Discovery:\n- Track progress → `todoWrite`\n- Switch to \
+     other mode(plan,code) → `switchMode`\n- Load a skill → `Skill`\n- Find external MCP tools → \
+     `tool_search_tool`\n- Delegate multi-step tasks → `agent`";
+
+const TOOL_SECTION_BUILTIN: &str = "Builtin Tools";
+const TOOL_SECTION_AGENT_COLLABORATION: &str = "Agent Collaboration Tools";
+const TOOL_SECTION_EXTERNAL_MCP: &str = "External MCP Tools";
+const TOOL_SECTION_EXTENSION: &str = "Extension Tools";
+
+const TOOL_AGENT_COLLABORATION_GUIDANCE: &str =
+    "- Use `agent` to delegate isolated tasks to specialized subagents. For simple, directed \
+     searches, use `find`/`grep` directly. For broader exploration, use agent with \
+     `subagentType=explore` when a simple search proves insufficient.";
+
+const TOOL_EXTENSION_GUIDANCE: &str = "- Extension tools are already present in the \
+                                       provider-visible tool list. Call them directly with their \
+                                       exposed schema; `tool_search_tool` is for MCP discovery, \
+                                       not extension-tool discovery.";
+
 // ─── PromptEngine ───────────────────────────────────────────────────────
 
 /// System prompt 组装器，带指纹缓存。
@@ -571,43 +602,7 @@ fn tool_summary_section(input: &SystemPromptInput) -> Option<String> {
         return None;
     }
 
-    let mut lines = vec![
-        "Prefer the narrowest tool that can answer the request. Read before you write; search \
-         before you ask."
-            .to_string(),
-        "All file paths passed to builtin file tools must stay inside the working directory \
-         unless the tool explicitly accepts a persisted result reference."
-            .to_string(),
-        "When a tool returns a persisted-result reference for large output, keep the reference in \
-         context and inspect it with `read` chunks instead of asking the tool to inline the whole \
-         result again."
-            .to_string(),
-        "Avoid using `shell` for operations that have dedicated tools — dedicated tools produce \
-         more reliable results."
-            .to_string(),
-        String::new(),
-        "## Tool Selection Guide".to_string(),
-        "Reading:".to_string(),
-        "- Read file content → `read`".to_string(),
-        "Searching:".to_string(),
-        "- Search file contents → `grep`".to_string(),
-        "- Find files by name pattern → `find`".to_string(),
-        "Modifying:".to_string(),
-        "- Edit existing files (preferred) → `edit`".to_string(),
-        "- Create new files → `write`".to_string(),
-        "- Multi-file changes or file creation/deletion → `patch`".to_string(),
-        "Executing:".to_string(),
-        "- Run commands (tests, builds, git, installs) → `shell`".to_string(),
-        "- Long-running work → `shell` with `runInBackground=true`".to_string(),
-        "- Interactive REPLs or debuggers → `terminal`".to_string(),
-        "Planning & Discovery:".to_string(),
-        "- Track progress → `todoWrite`".to_string(),
-        "- Switch to other mode → `switchMode`".to_string(),
-        "- Load a skill → `Skill`".to_string(),
-        "- Find external MCP tools → `tool_search_tool`".to_string(),
-        "- Delegate multi-step tasks → `agent`".to_string(),
-        String::new(),
-    ];
+    let mut lines = Vec::new();
 
     // Builtin tools + bundled tools with prompt tags (sorted by rank).
     let mut builtin: Vec<&ToolDefinition> = input
@@ -631,29 +626,17 @@ fn tool_summary_section(input: &SystemPromptInput) -> Option<String> {
     let (collab, regular): (Vec<_>, Vec<_>) = builtin.into_iter().partition(is_collab);
 
     if !regular.is_empty() {
-        lines.push("Builtin Tools".into());
-        for tool in &regular {
-            let short = tool_short_description(&tool.name);
-            if short.is_empty() {
-                lines.push(format!("- `{}`", tool.name));
-            } else {
-                lines.push(format!("- `{}`: {}", tool.name, short));
-            }
-        }
+        lines.push(TOOL_SECTION_BUILTIN.into());
+        push_tool_list_entries(&mut lines, &regular, true);
     }
 
     if !collab.is_empty() {
-        lines.push(String::new());
-        lines.push("Agent Collaboration Tools".into());
-        lines.push(
-            "- Use `agent` to delegate isolated tasks to specialized subagents. For simple, \
-             directed searches, use `find`/`grep` directly. For broader exploration, use agent \
-             with `subagentType=explore` when a simple search proves insufficient."
-                .into(),
+        push_tool_section(
+            &mut lines,
+            TOOL_SECTION_AGENT_COLLABORATION,
+            Some(TOOL_AGENT_COLLABORATION_GUIDANCE),
         );
-        for tool in &collab {
-            lines.push(format!("- `{}`", tool.name));
-        }
+        push_tool_list_entries(&mut lines, &collab, false);
     }
 
     let mcp_tools: Vec<_> = input
@@ -662,11 +645,8 @@ fn tool_summary_section(input: &SystemPromptInput) -> Option<String> {
         .filter(|tool| is_mcp_tool(tool))
         .collect();
     if !mcp_tools.is_empty() {
-        lines.push(String::new());
-        lines.push("External MCP Tools".into());
-        for tool in &mcp_tools {
-            lines.push(format!("- `{}`", tool.name));
-        }
+        push_tool_section(&mut lines, TOOL_SECTION_EXTERNAL_MCP, None);
+        push_tool_list_entries(&mut lines, &mcp_tools, false);
     }
 
     let extension_tools: Vec<_> = input
@@ -675,17 +655,12 @@ fn tool_summary_section(input: &SystemPromptInput) -> Option<String> {
         .filter(|tool| is_extension_tool(tool))
         .collect();
     if !extension_tools.is_empty() {
-        lines.push(String::new());
-        lines.push("Extension Tools".into());
-        lines.push(
-            "- Extension tools are already present in the provider-visible tool list. Call them \
-             directly with their exposed schema; `tool_search_tool` is for MCP discovery, not \
-             extension-tool discovery."
-                .into(),
+        push_tool_section(
+            &mut lines,
+            TOOL_SECTION_EXTENSION,
+            Some(TOOL_EXTENSION_GUIDANCE),
         );
-        for tool in &extension_tools {
-            lines.push(format!("- `{}`", tool.name));
-        }
+        push_tool_list_entries(&mut lines, &extension_tools, false);
     }
 
     // Append detailed guides for discovery/collaboration tools.
@@ -710,7 +685,41 @@ fn tool_summary_section(input: &SystemPromptInput) -> Option<String> {
         }
     }
 
-    Some(lines.join("\n").trim().to_string())
+    let body = if lines.is_empty() {
+        TOOL_GUIDANCE.to_string()
+    } else {
+        format!("{TOOL_GUIDANCE}\n\n{}", lines.join("\n"))
+    };
+    Some(body.trim().to_string())
+}
+
+fn push_tool_section(lines: &mut Vec<String>, heading: &str, guidance: Option<&str>) {
+    if !lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines.push(heading.to_string());
+    if let Some(guidance) = guidance {
+        lines.push(guidance.to_string());
+    }
+}
+
+fn push_tool_list_entries(
+    lines: &mut Vec<String>,
+    tools: &[&ToolDefinition],
+    with_short_desc: bool,
+) {
+    for tool in tools {
+        if with_short_desc {
+            let short = tool_short_description(&tool.name);
+            if short.is_empty() {
+                lines.push(format!("- `{}`", tool.name));
+            } else {
+                lines.push(format!("- `{}`: {}", tool.name, short));
+            }
+        } else {
+            lines.push(format!("- `{}`", tool.name));
+        }
+    }
 }
 
 fn tool_summary_rank(name: &str) -> u8 {
@@ -1112,9 +1121,10 @@ mod tests {
         assert!(prompt.contains("[Project Rules]\n  project rules content"));
         assert!(prompt.contains("[Tool Summary]"));
         assert!(prompt.contains("- `read`"));
-        assert!(prompt.contains("External MCP Tools"));
+        assert!(prompt.contains(TOOL_SECTION_EXTERNAL_MCP));
         assert!(prompt.contains("- `mcp__demo__search`"));
-        assert!(prompt.contains("Extension Tools"));
+        assert!(prompt.contains(TOOL_SECTION_EXTENSION));
+        assert!(prompt.contains(TOOL_EXTENSION_GUIDANCE));
         assert!(prompt.contains("- `extension_lookup`"));
         assert!(prompt.contains("[SystemPromptInstruction]\n  extra hint"));
         assert!(prompt.contains("[Skills]\n  skill a"));

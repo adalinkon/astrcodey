@@ -30,9 +30,9 @@ pub fn switch_mode_tool_definition() -> ToolDefinition {
                        (read-only planning).\n\nEnter plan mode for: new features, ambiguous \
                        scope, or multi-step changes.Must switch plan mode when user asks for a \
                        plan\n\n
-                       Set `requireApproval: true` when the user explicitly asked for a plan. The \
-                       plan will then require user review before implementation. Default: false \
-                       (proceed directly after planning).")
+                       Should set `requireApproval: true` when the user explicitly asked for a \
+                       plan. The plan will then require user review before implementation. \
+                       Default: false (proceed directly after planning).")
             .into(),
         parameters: json!({
             "type": "object",

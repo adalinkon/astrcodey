@@ -6,7 +6,6 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-
 use uuid::Uuid;
 
 use super::error_response;
