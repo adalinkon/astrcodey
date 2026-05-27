@@ -602,7 +602,7 @@ async fn prompt_route_compact_returns_handled_and_streams_continuation() {
             .unwrap()
             .messages
             .iter()
-            .flat_map(|message| message.content.iter())
+            .flat_map(|message| message.message.content.iter())
             .any(|content| matches!(content, LlmContent::Text { text } if text == "/compact"))
     );
 }
@@ -720,7 +720,7 @@ async fn compact_route_returns_same_session_and_hydrates_post_compact_context() 
     let restored_context = state
         .context_messages
         .iter()
-        .flat_map(|message| &message.content)
+        .flat_map(|message| &message.message.content)
         .filter_map(|content| match content {
             astrcode_core::llm::LlmContent::Text { text } => Some(text.as_str()),
             _ => None,
