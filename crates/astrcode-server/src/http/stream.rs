@@ -82,8 +82,8 @@ pub(in crate::http) async fn session_stream(
     // Validate session exists before opening the stream.
     let read_model = match http_state
         .runtime
-        .session_manager
-        .read_model(&session_id)
+        .event_store()
+        .session_read_model(&session_id)
         .await
     {
         Ok(model) => model,
@@ -124,7 +124,7 @@ pub(in crate::http) async fn session_stream(
         Some(cursor) if cursor.parse::<u64>().is_err() => (Vec::new(), true),
         Some(cursor) => match http_state
             .runtime
-            .session_manager
+            .event_store()
             .replay_from(&session_id, &Cursor::from(cursor.as_str()))
             .await
         {
@@ -270,7 +270,7 @@ async fn event_cursor(runtime: &ServerRuntime, event: &Event) -> String {
 }
 
 async fn state_cursor(runtime: &ServerRuntime, session_id: &SessionId) -> String {
-    match runtime.session_manager().latest_cursor(session_id).await {
+    match runtime.event_store().latest_cursor(session_id).await {
         Ok(Some(cursor)) => cursor,
         Ok(None) => "0".to_string(),
         Err(error) => {

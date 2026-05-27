@@ -66,8 +66,8 @@ impl CommandHandler {
                 .into_owned());
         };
         self.runtime
-            .session_manager()
-            .read_model(sid)
+            .event_store()
+            .session_read_model(sid)
             .await
             .map(|state| state.working_dir)
             .map_err(|e| format!("read session {sid}: {e}"))
@@ -85,7 +85,12 @@ impl CommandHandler {
                     self.send_error(-32603, &e.to_string());
                     return;
                 }
-                let state = match self.runtime.session_manager().read_model(&session_id).await {
+                let state = match self
+                    .runtime
+                    .event_store()
+                    .session_read_model(&session_id)
+                    .await
+                {
                     Ok(state) => state,
                     Err(e) => {
                         self.send_error(40401, &format!("Session not found: {e}"));

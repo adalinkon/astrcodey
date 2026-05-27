@@ -57,6 +57,24 @@ impl EventReader for InMemoryEventStore {
             .ok_or_else(|| StorageError::NotFound(session_id.clone()))
     }
 
+    async fn replay_events_through(
+        &self,
+        session_id: &SessionId,
+        max_seq: u64,
+    ) -> Result<Vec<Event>, StorageError> {
+        let map = self.sessions.lock().await;
+        map.get(session_id)
+            .map(|session| {
+                session
+                    .events
+                    .iter()
+                    .take_while(|event| event.seq.unwrap_or(0) <= max_seq)
+                    .cloned()
+                    .collect()
+            })
+            .ok_or_else(|| StorageError::NotFound(session_id.clone()))
+    }
+
     async fn session_read_model(
         &self,
         session_id: &SessionId,

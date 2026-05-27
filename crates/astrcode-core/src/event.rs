@@ -165,6 +165,15 @@ pub enum EventPayload {
         child_session_id: SessionId,
     },
 
+    /// 回填子 Agent 任务描述。
+    ///
+    /// 当 `AgentSessionSpawned.task` 在创建时为空（两步 API 尚未提交 prompt），
+    /// 首次 `submit_turn` 时追加到父 session，更新 `agent_sessions` 投影。
+    AgentSessionTaskAssigned {
+        child_session_id: SessionId,
+        task: String,
+    },
+
     /// 用户轮次开始。
     TurnStarted,
 

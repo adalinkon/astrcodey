@@ -11,9 +11,7 @@ use astrcode_core::{
     types::new_session_id,
 };
 use astrcode_extensions::runner::ExtensionRunner;
-use astrcode_session::{
-    Session, SessionCreateParams, SessionRuntimeServices, SessionRuntimeState,
-};
+use astrcode_session::{Session, SessionCreateParams, SessionRuntimeServices, SessionRuntimeState};
 use astrcode_storage::in_memory::InMemoryEventStore;
 use tokio::sync::mpsc;
 

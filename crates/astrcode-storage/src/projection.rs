@@ -129,6 +129,18 @@ pub fn reduce(event: &Event, model: &mut SessionReadModel) {
                 .agent_sessions
                 .retain(|l| l.child_session_id != *child_session_id);
         },
+        EventPayload::AgentSessionTaskAssigned {
+            child_session_id,
+            task,
+        } => {
+            if let Some(link) = model
+                .agent_sessions
+                .iter_mut()
+                .find(|l| l.child_session_id == *child_session_id)
+            {
+                link.task = task.clone();
+            }
+        },
         EventPayload::SystemPromptConfigured {
             text,
             fingerprint,

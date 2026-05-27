@@ -52,10 +52,11 @@ pub fn spawn_server_system(
     event_tx: Arc<EventFanout<ClientNotification>>,
 ) -> ServerSystem {
     let registry = Arc::new(TurnRegistry::new());
-    let scheduler = Arc::new(TurnScheduler::new(
+    let scheduler = TurnScheduler::new_arc(
         runtime.session_manager().clone(),
         Arc::clone(&registry),
-    ));
+        runtime.shutdown_token().clone(),
+    );
 
     let event_bus = Arc::new(ServerEventBus::new(
         Arc::clone(&event_tx),

@@ -28,9 +28,13 @@ pub(crate) mod turn_publish;
 pub(crate) mod turn_runner;
 pub(crate) mod turn_stages;
 
+#[cfg(test)]
+pub mod test_fixtures;
+
 pub use background::{BackgroundTaskManager, spawn_background_forwarder};
 pub use payload::{
-    agent_session_completed_payload, agent_session_failed_payload, compact_boundary_payload,
+    agent_session_completed_payload, agent_session_failed_payload,
+    agent_session_task_assigned_payload, compact_boundary_payload,
     session_continued_from_compaction_payload, system_prompt_configured_payload,
 };
 pub use session::{Session, SessionCreateParams, SessionError};

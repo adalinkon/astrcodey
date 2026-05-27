@@ -152,6 +152,32 @@ impl EventLog {
         Ok(events)
     }
 
+    /// Replay events from the beginning through `max_seq` inclusive.
+    ///
+    /// Stops reading early once an event with seq > `max_seq` is seen (logs are append-only
+    /// with monotonic seq).
+    pub async fn replay_through(&self, max_seq: u64) -> Result<Vec<Event>, StorageError> {
+        let file = File::open(&self.path)?;
+        let reader = BufReader::new(file);
+        let mut events = Vec::new();
+        for line in reader.lines() {
+            let line = line?;
+            if line.is_empty() {
+                continue;
+            }
+            let event: Event = serde_json::from_str(&line)?;
+            let Some(event_seq) = event.seq else {
+                events.push(event);
+                continue;
+            };
+            if event_seq > max_seq {
+                break;
+            }
+            events.push(event);
+        }
+        Ok(events)
+    }
+
     /// Replay events whose assigned seq is greater than `seq`.
     ///
     /// This is used when recovering from a snapshot: only the events that

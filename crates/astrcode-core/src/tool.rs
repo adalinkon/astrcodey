@@ -333,6 +333,10 @@ pub trait SessionOperations: Send + Sync {
 pub struct CreateSessionRequest {
     /// 子会话显示名称。
     pub name: String,
+    /// 子 Agent 任务描述，写入父 session 的 `AgentSessionSpawned.task`。
+    /// 若创建时尚未知（两步 `create_session` + `submit_turn`），可留空并在
+    /// `submit_turn` 时由 server 回填。
+    pub task: Option<String>,
     /// 工作目录。`None` 表示继承父 session。
     pub working_dir: Option<String>,
     /// 额外系统提示词。

@@ -202,11 +202,17 @@ impl Session {
 impl ToolResultArtifactReader for Session {
     async fn read_tool_result_artifact_by_path(
         &self,
-        _session_id: &SessionId,
+        session_id: &SessionId,
         path: &str,
         char_offset: usize,
         max_chars: usize,
     ) -> Result<ToolResultArtifactSlice, StorageError> {
+        if session_id != &self.id {
+            return Err(StorageError::InvalidId(format!(
+                "artifact reader bound to session {} but requested {}",
+                self.id, session_id
+            )));
+        }
         self.store
             .read_tool_result_artifact_by_path(&self.id, path, char_offset, max_chars)
             .await

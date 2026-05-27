@@ -1,4 +1,4 @@
-//! 下一 turn 输入队列（FIFO），由 [`crate::turn_scheduler`] 引用。
+//! 下一 turn 输入队列（FIFO）。
 
 use astrcode_core::{
     types::{SessionId, TurnId},
@@ -8,55 +8,93 @@ use astrcode_session::turn_handle::TurnHandle;
 
 use super::{SubmitOutcome, TurnScheduleError, TurnScheduler};
 
+/// 连发 prompt 的调度结果。
+pub enum UserInputOutcome {
+    Queued,
+    Started { turn_id: TurnId },
+}
+
 impl TurnScheduler {
-    /// 通知需要处理，在**下一 turn** 触发。
+    /// 连发 prompt：有活跃 turn 则 FIFO 入队，否则 `submit_tracked`。
+    pub async fn accept_user_input(
+        &self,
+        session_id: SessionId,
+        input: UserPromptParts,
+    ) -> Result<UserInputOutcome, TurnScheduleError> {
+        if self.registry.has_active(&session_id) {
+            self.enqueue_pending_input(session_id, input)?;
+            return Ok(UserInputOutcome::Queued);
+        }
+        let turn_id = self.submit_tracked(session_id, input).await?;
+        Ok(UserInputOutcome::Started { turn_id })
+    }
+
+    /// 通知需要处理，在**下一 turn** 触发（[`accept_user_input`] 的别名映射）。
     pub async fn notify_turn(
         &self,
         session_id: SessionId,
         input: UserPromptParts,
     ) -> Result<SubmitOutcome, TurnScheduleError> {
-        if !self.registry.has_active(&session_id) {
-            let (turn_id, handle) = self.submit(session_id, input).await?;
-            return Ok(SubmitOutcome::Started { turn_id, handle });
+        match self.accept_user_input(session_id, input).await? {
+            UserInputOutcome::Queued => Ok(SubmitOutcome::Queued),
+            UserInputOutcome::Started { turn_id } => Ok(SubmitOutcome::Started { turn_id }),
         }
+    }
 
+    pub(super) fn enqueue_pending_input(
+        &self,
+        session_id: SessionId,
+        input: UserPromptParts,
+    ) -> Result<(), TurnScheduleError> {
         let mut queues = self.pending_queues.lock();
         let queue = queues.entry(session_id.clone()).or_default();
         queue.push_back(super::PendingMessage { input });
 
-        let queue_len = queue.len();
-        drop(queues);
-
         tracing::info!(
             session_id = %session_id,
-            queue_len = queue_len,
+            queue_len = queue.len(),
             "message queued for next turn"
         );
-
-        Ok(SubmitOutcome::Queued)
+        Ok(())
     }
 
     pub(super) fn dequeue_next_pending(&self, session_id: &SessionId) -> Option<UserPromptParts> {
         let mut queues = self.pending_queues.lock();
         let queue = queues.get_mut(session_id)?;
-        let input = queue.pop_front()?.input;
-        if queue.is_empty() {
-            queues.remove(session_id);
+        while let Some(pending) = queue.pop_front() {
+            let input = pending.input;
+            if input.is_submittable() {
+                if queue.is_empty() {
+                    queues.remove(session_id);
+                }
+                return Some(input);
+            }
+            tracing::warn!(
+                session_id = %session_id,
+                text_len = input.text.len(),
+                image_count = input.images.len(),
+                "skipped non-submittable queued input"
+            );
+            if queue.is_empty() {
+                queues.remove(session_id);
+                return None;
+            }
         }
-        if input.is_submittable() {
-            Some(input)
-        } else {
-            None
+        None
+    }
+
+    pub(super) fn clear_pending_queue(&self, session_id: &SessionId) {
+        if self.pending_queues.lock().remove(session_id).is_some() {
+            tracing::info!(session_id = %session_id, "cleaned up pending message queue");
         }
     }
 
-    /// turn 结束后的收尾：子 agent 回收等（排队输入由 completion watcher 单独启动）。
-    pub async fn on_turn_completed(&self, session_id: &SessionId) {
+    pub(crate) async fn drain_child_completions_after_turn(&self, session_id: &SessionId) {
         self.process_child_completions(session_id).await;
     }
 
-    /// 若队列非空且当前无活跃 turn，弹出一条并 `submit`（每次 completion 最多一条）。
-    pub async fn start_next_queued_turn(
+    /// 弹出一条 pending 输入并 `submit_raw`（由 completion 链注册 watcher）。
+    pub(super) async fn dequeue_submit_raw(
         &self,
         session_id: &SessionId,
     ) -> Option<(TurnId, TurnHandle)> {
@@ -65,7 +103,7 @@ impl TurnScheduler {
         }
         let input = self.dequeue_next_pending(session_id)?;
         tracing::info!(session_id = %session_id, "auto-submitting next queued message for new turn");
-        match self.submit(session_id.clone(), input).await {
+        match self.submit_raw(session_id.clone(), input).await {
             Ok(pair) => Some(pair),
             Err(e) => {
                 tracing::warn!(

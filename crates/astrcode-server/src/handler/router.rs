@@ -33,7 +33,7 @@ impl CommandHandler {
             },
 
             ClientCommand::ListSessions => {
-                match self.runtime.session_manager().list_summaries().await {
+                match self.runtime.event_store().list_session_summaries().await {
                     Ok(summaries) => {
                         let items: Vec<_> = summaries
                             .into_iter()
@@ -54,7 +54,7 @@ impl CommandHandler {
                     },
                     Err(e) => {
                         self.send_error(-32603, &e.to_string());
-                        return Err(HandlerError::SessionManager(e));
+                        return Err(HandlerError::SessionManager(e.into()));
                     },
                 }
             },

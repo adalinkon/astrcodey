@@ -12,14 +12,17 @@ use tokio::sync::{mpsc, watch};
 
 use crate::{
     payload::{agent_session_completed_payload, agent_session_failed_payload},
-    turn_handle::TurnHandle,
+    turn_handle::{TurnHandle, TurnWaitOutcome},
 };
 
 /// 子 agent 的完成结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChildOutcome {
-    /// 正常完成。
-    Completed { summary: String },
+    /// 正常完成。`summary` 为一行摘要写入父 log；`response` 仅同步等待路径填充（供 API 返回）。
+    Completed {
+        summary: String,
+        response: Option<String>,
+    },
     /// 执行失败。
     Failed { error: String },
     /// 被 abort 中断。
@@ -85,32 +88,40 @@ impl ChildTurnGuard {
     ///
     /// 后台任务完成后自动写 `AgentSessionCompleted` / `AgentSessionFailed` 到父 session。
     /// 同时向 `completed_tx` 发信号供 server 层处理回收和通知。
+    ///
+    /// `retain_full_response`：为 true 时在 outcome 中保留完整 LLM 输出（同步 API）；
+    /// 异步路径应传 false，避免大段文本在 guard 存活期间占内存。
     pub fn spawn(
         handle: TurnHandle,
         config: ChildTurnConfig,
         parent_session: Arc<crate::Session>,
         completed_tx: mpsc::UnboundedSender<SessionId>,
+        retain_full_response: bool,
+        shutdown_token: tokio_util::sync::CancellationToken,
     ) -> Self {
         let (outcome_tx, outcome_rx) = watch::channel(None);
         let outcome_tx_for_task = outcome_tx.clone();
         let abort_handle = handle.abort_handle();
         let parent_sid = config.parent_session_id.clone();
         let child_sid = config.child_session_id.clone();
+        let log_child_sid = child_sid.clone();
+        let log_parent_sid = parent_sid.clone();
 
         tokio::spawn(async move {
-            let result = handle.wait().await;
-            let outcome = match result {
-                Some(r) => match r.output {
-                    Ok(out) => ChildOutcome::Completed {
-                        summary: one_line_summary(&out.text),
-                    },
-                    Err(e) => ChildOutcome::Failed {
-                        error: e.to_string(),
-                    },
-                },
-                None => {
-                    // handle.abort() 被调用。后台任务自己也写 Aborted——
-                    // 外部 abort() 和这里没有顺序保证，谁先写谁赢。
+            tracing::debug!(
+                child_session_id = %child_sid,
+                parent_session_id = %parent_sid,
+                "child-turn completion watcher started"
+            );
+
+            let wait_outcome = handle.wait_or_shutdown(&shutdown_token).await;
+            let outcome = match wait_outcome {
+                TurnWaitOutcome::Shutdown => {
+                    tracing::debug!(
+                        child_session_id = %child_sid,
+                        parent_session_id = %parent_sid,
+                        "child-turn completion watcher stopping: server shutdown"
+                    );
                     try_set_outcome(&outcome_tx_for_task, ChildOutcome::Aborted);
                     let _ = parent_session
                         .emit_durable(
@@ -121,13 +132,55 @@ impl ChildTurnGuard {
                     let _ = completed_tx.send(parent_sid);
                     return;
                 },
+                TurnWaitOutcome::Completed(result) => match result {
+                    Some(r) => match r.output {
+                        Ok(out) => {
+                            tracing::debug!(
+                                child_session_id = %child_sid,
+                                parent_session_id = %parent_sid,
+                                "child-turn completed"
+                            );
+                            ChildOutcome::Completed {
+                                summary: one_line_summary(&out.text),
+                                response: retain_full_response.then_some(out.text),
+                            }
+                        },
+                        Err(e) => {
+                            tracing::warn!(
+                                child_session_id = %child_sid,
+                                parent_session_id = %parent_sid,
+                                error = %e,
+                                "child-turn finished with error"
+                            );
+                            ChildOutcome::Failed {
+                                error: e.to_string(),
+                            }
+                        },
+                    },
+                    None => {
+                        tracing::warn!(
+                            child_session_id = %child_sid,
+                            parent_session_id = %parent_sid,
+                            "child-turn task ended without completion (panic or abort)"
+                        );
+                        try_set_outcome(&outcome_tx_for_task, ChildOutcome::Aborted);
+                        let _ = parent_session
+                            .emit_durable(
+                                None,
+                                agent_session_failed_payload(child_sid.clone(), "aborted".into()),
+                            )
+                            .await;
+                        let _ = completed_tx.send(parent_sid);
+                        return;
+                    },
+                },
             };
             try_set_outcome(&outcome_tx_for_task, outcome.clone());
 
             // 直接写终态事件到父 session。notify 消息由 server 层
             // process_child_completions 统一处理，不在此写入。
             match outcome {
-                ChildOutcome::Completed { summary } => {
+                ChildOutcome::Completed { summary, .. } => {
                     let _ = parent_session
                         .emit_durable(None, agent_session_completed_payload(child_sid, summary))
                         .await;
@@ -155,6 +208,11 @@ impl ChildTurnGuard {
                 },
             }
 
+            tracing::debug!(
+                child_session_id = %log_child_sid,
+                parent_session_id = %log_parent_sid,
+                "child-turn terminal event written"
+            );
             let _ = completed_tx.send(parent_sid);
         });
 
@@ -294,6 +352,7 @@ mod tests {
             &tx,
             ChildOutcome::Completed {
                 summary: "first".into(),
+                response: Some("first full".into()),
             },
         );
         try_set_outcome(
@@ -306,6 +365,7 @@ mod tests {
             rx.borrow().clone(),
             Some(ChildOutcome::Completed {
                 summary: "first".into(),
+                response: Some("first full".into()),
             })
         );
     }

@@ -769,10 +769,11 @@ fn test_runtime() -> Arc<ServerRuntime> {
 }
 
 fn test_scheduler(runtime: &Arc<ServerRuntime>) -> Arc<crate::turn_scheduler::TurnScheduler> {
-    Arc::new(crate::turn_scheduler::TurnScheduler::new(
+    crate::turn_scheduler::TurnScheduler::new_arc(
         runtime.session_manager().clone(),
         Arc::new(crate::turn_registry::TurnRegistry::new()),
-    ))
+        runtime.shutdown_token().clone(),
+    )
 }
 
 fn unique_workspace(name: &str) -> PathBuf {
@@ -1320,13 +1321,11 @@ async fn stale_pending_tool_calls_are_repaired_on_explicit_repair() {
     );
 
     let event_tx = Arc::new(EventFanout::new(1024));
-    let (actor_tx, _actor_rx) = mpsc::channel(super::actor::COMMAND_ACTOR_CAPACITY);
     let scheduler = test_scheduler(&runtime);
     let handler = CommandHandler::new(
         Arc::clone(&runtime),
         Arc::clone(&scheduler),
         test_event_bus(&runtime, event_tx, scheduler),
-        actor_tx,
     );
 
     handler.repair_stale_session(&sid).await.unwrap();
@@ -1428,13 +1427,11 @@ async fn repair_stale_background_tasks_even_when_phase_is_idle() {
     );
 
     let event_tx = Arc::new(EventFanout::new(1024));
-    let (actor_tx, _actor_rx) = mpsc::channel(super::actor::COMMAND_ACTOR_CAPACITY);
     let scheduler = test_scheduler(&runtime);
     let handler = CommandHandler::new(
         Arc::clone(&runtime),
         Arc::clone(&scheduler),
         test_event_bus(&runtime, event_tx, scheduler),
-        actor_tx,
     );
 
     handler.repair_stale_session(&sid).await.unwrap();
@@ -1499,13 +1496,11 @@ async fn repair_stale_runs_marks_child_without_active_execution_interrupted() {
         .unwrap();
 
     let event_tx = Arc::new(EventFanout::new(1024));
-    let (actor_tx, _actor_rx) = mpsc::channel(super::actor::COMMAND_ACTOR_CAPACITY);
     let scheduler = test_scheduler(&runtime);
     let handler = CommandHandler::new(
         Arc::clone(&runtime),
         Arc::clone(&scheduler),
         test_event_bus(&runtime, event_tx, scheduler),
-        actor_tx,
     );
 
     handler.repair_stale_session(&parent_id).await.unwrap();
@@ -1838,12 +1833,7 @@ async fn stale_agent_finish_after_abort_is_ignored() {
     assert_eq!(wait_for_turn_completed(&mut event_rx).await, "aborted");
 
     handler
-        .tx
-        .send(CommandMessage::AgentTurnCleanup {
-            session_id: sid,
-            turn_id,
-            completion: TurnCompletion::Aborted,
-        })
+        .inject_session_turn_idle(sid, turn_id, TurnCompletion::Aborted)
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;

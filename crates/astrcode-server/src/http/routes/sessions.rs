@@ -57,7 +57,7 @@ pub(in crate::http) async fn create_session(
 }
 
 pub(in crate::http) async fn list_sessions(State(state): State<HttpState>) -> Response {
-    match state.runtime.session_manager().list_summaries().await {
+    match state.runtime.event_store().list_session_summaries().await {
         Ok(summaries) => Json(SessionListResponseDto {
             sessions: summaries.into_iter().map(summary_to_dto).collect(),
         })
@@ -80,8 +80,8 @@ pub(in crate::http) async fn conversation_snapshot(
     }
     match state
         .runtime
-        .session_manager()
-        .read_model(&session_id)
+        .event_store()
+        .session_read_model(&session_id)
         .await
     {
         Ok(snapshot) => {

@@ -5,8 +5,6 @@
 mod events;
 mod ws;
 
-pub(crate) use ws::serve_acp_websocket;
-
 use std::{collections::HashSet, sync::Arc};
 
 use agent_client_protocol::{
@@ -22,6 +20,7 @@ use astrcode_core::{event::Event, types::SessionId, user_prompt::UserPromptParts
 use astrcode_protocol::events::ClientNotification;
 use astrcode_support::event_fanout::EventFanout;
 use tokio::sync::mpsc;
+pub(crate) use ws::serve_acp_websocket;
 
 use crate::handler::{CommandHandle, HandlerError, TurnCompletion};
 
@@ -42,7 +41,8 @@ pub async fn run_agent(
         event_tx,
     } = services;
 
-    Agent.builder()
+    Agent
+        .builder()
         .name("astrcode")
         .on_receive_request(
             {
@@ -168,7 +168,7 @@ async fn handle_prompt(
                     cx,
                 );
                 return match completion {
-                    Ok(TurnCompletion::Completed { finish_reason }) => {
+                    Ok(TurnCompletion::Completed { finish_reason, .. }) => {
                         Ok(stop_reason_from_finish_reason(&finish_reason))
                     },
                     Ok(TurnCompletion::Failed { error }) => {

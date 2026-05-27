@@ -77,8 +77,8 @@ impl ServerEventBus {
     /// 当检测到 `BackgroundTaskCompleted` 事件时，会调用 TurnScheduler 的
     /// `notify_step` 方法，在当前 turn 的下一步继续处理。
     ///
-    /// 当检测到 `TurnCompleted` 事件时，会调用 `on_turn_completed` 检查并处理
-    /// 队列中等待的 "下一 turn" 消息。
+    /// 排队 prompt 在 turn 结束后由 TurnScheduler 内部 completion watcher 链式出队，
+    /// 不在 event forwarder 中处理，避免与 registry 竞态。
     pub fn attach(&self, session: &Session) {
         let session_id = session.id().clone();
         if !self.attached.lock().insert(session_id.clone()) {
@@ -118,8 +118,7 @@ impl ServerEventBus {
                     });
                 }
 
-                // 排队输入在 completion watcher 于 registry 清理后调用
-                // `TurnScheduler::on_turn_completed`，避免与 registry 竞态。
+                // 排队输入由 TurnScheduler completion watcher 在 registry 清理后链式出队。
 
                 // 异步处理（如果需要）
                 if needs_task_step {

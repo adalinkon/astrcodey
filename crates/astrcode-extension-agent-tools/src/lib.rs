@@ -247,6 +247,7 @@ impl ToolHandler for AgentToolHandler {
                 ctx.session_id.as_str(),
                 CreateSessionRequest {
                     name: matched.name.clone(),
+                    task: Some(args.prompt.clone()),
                     working_dir: None,
                     system_prompt: Some(enhance_agent_prompt(&matched.body, working_dir)),
                     model_preference: Some(model_preference),
@@ -423,16 +424,10 @@ fn resolve_child_small_model(
 }
 
 /// 为子 agent 的 body 追加共享增强内容：环境信息 + 行为规范。
-fn enhance_agent_prompt(agent_body: &str, working_dir: &str) -> String {
-    let os = std::env::consts::OS;
-    let shell = astrcode_support::shell::resolve_shell().name;
+fn enhance_agent_prompt(agent_body: &str, _working_dir: &str) -> String {
     format!(
-        "{}\n\n---\n\nNotes:\n- Agent threads always have their cwd reset between bash calls; \
-         please only use absolute file paths.\n- In your final response, share file paths (always \
-         absolute, never relative) that are relevant to the task. Include code snippets only when \
-         the exact text is load-bearing.\n- For clear communication with the user, avoid using \
-         emojis.\n- Do not use a colon before tool calls.\n\nEnvironment: working directory is \
-         {working_dir}, OS is {os}, shell is {shell}.",
+        "{}\n\n---\n\nNotes:\n- Agent threads always have their cwd reset between bash \
+         calls; please only use absolute file paths.",
         agent_body.trim(),
     )
 }

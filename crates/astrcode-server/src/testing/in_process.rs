@@ -4,7 +4,10 @@ use std::{sync::Arc, time::Duration};
 
 use astrcode_context::context_assembler::LlmContextAssembler;
 use astrcode_core::{
-    config::{AgentSettings, ContextSettings, EffectiveConfig, ExtensionSettings, LlmSettings, OpenAiApiMode},
+    config::{
+        AgentSettings, ContextSettings, EffectiveConfig, ExtensionSettings, LlmSettings,
+        OpenAiApiMode,
+    },
     llm::{LlmError, LlmEvent, LlmMessage, LlmProvider, ModelLimits},
     storage::EventStore,
     tool::ToolDefinition,

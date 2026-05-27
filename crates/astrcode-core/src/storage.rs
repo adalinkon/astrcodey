@@ -32,6 +32,20 @@ pub trait EventReader: Send + Sync {
     /// 从头开始重放会话的所有事件。
     async fn replay_events(&self, session_id: &SessionId) -> Result<Vec<Event>, StorageError>;
 
+    /// 从头重放直到 `max_seq`（含）。事件 seq 单调递增时可提前停止 I/O。
+    async fn replay_events_through(
+        &self,
+        session_id: &SessionId,
+        max_seq: u64,
+    ) -> Result<Vec<Event>, StorageError> {
+        Ok(self
+            .replay_events(session_id)
+            .await?
+            .into_iter()
+            .take_while(|event| event.seq.unwrap_or(0) <= max_seq)
+            .collect())
+    }
+
     /// 返回当前会话读模型。
     ///
     /// 读模型是事件日志的同步投影缓存，必须能够从事件日志重建；调用方不能把

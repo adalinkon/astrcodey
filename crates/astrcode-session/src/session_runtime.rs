@@ -85,11 +85,12 @@ impl ChildTurns {
 /// `event_out` 故意放在 `SessionRuntimeState` 而非 `Session`：同一 sid 多次
 /// `Session::open` 会得到多个 `Session` 实例（廉价的 store handle clone），
 /// 但所有实例必须共享同一份 `SessionRuntimeState`（含 EventFanout）才能让所有订阅者
-/// 看到全部事件。SessionRuntimeRegistry / SessionManager 保证 per-sid 唯一。
+/// 看到全部事件。Server 侧由 `SessionManager.runtime_states` 映射保证 per-sid 唯一。
 ///
-/// 注意：直接通过 `Session::create_with_params` 而绕过 `SessionRuntimeRegistry` 创建的 session
-/// 会得到独立 runtime，订阅者不会跨实例可见——这是给 `spawn_child` 这类「我就是要新 runtime」
-/// 的场景用的。SessionManager 走 registry 路径。
+/// 注意：直接通过 `Session::create_with_params` 且**未**把 runtime 登记进进程内 sid→runtime
+/// 映射时，后续经 manager `open(sid)` 会再建一份 runtime，订阅者将看不到先前实例发出的事件。
+/// `spawn_child` 会刻意新建子 sid 的 runtime（独立 fanout / 工具表 / model）；server 路径在
+/// 创建后须调用 `SessionManager::register_child_session` 把该 runtime 登记进去。
 pub struct SessionRuntimeState {
     model: Mutex<SessionModelBinding>,
     tools: ToolResources,

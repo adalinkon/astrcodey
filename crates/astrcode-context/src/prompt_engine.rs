@@ -55,26 +55,40 @@ const SYSTEM_RULES: &str = "1. All text you output outside of tool use is displa
 const TASK_GUIDELINES: &str =
     "Understand the goal behind the request, not just the literal words. Propose a better path \
      when the user's approach is clearly suboptimal, but do not deviate without flagging \
-     it.\nDeliver complete results, not shallow approximations.\n\nFix directly related issues \
-     (security bugs, broken tests, compilation errors) without waiting for permission. Stop and \
-     ask when the fix changes behavior beyond task scope.\n\nDo not add unrelated features, \
-     refactor untouched code, or chase unmanifested edge cases.\n\nValidate at system boundaries \
-     (user input, external APIs, file I/O). Trust internal consistency.\n\nComment only where the \
-     WHY is non-obvious. Do not restate what naming conveys.\n\nNever commit secrets or \
-     credentials.\n\nVerify before claiming completion. If you cannot verify, say so. Never \
-     manufacture passing results.\n\nComplete all edits before reporting success.\n\nGit: create \
-     new commits. Never amend/force-push, skip hooks, or modify git config. Fetch before \
-     pushing.\nPlanning: for multi-file changes, ambiguous scope, or risky modifications, \
-     proactively switch to plan mode to design before implementing. Do not plan for simple, \
-     well-understood tasks.";
+     it.\n\nBreak down what the user actually needs, execute each part thoroughly, and deliver \
+     complete results — not shallow approximations that merely look correct.\n\nFix directly \
+     related issues (security vulnerabilities, obvious bugs, broken tests, compilation errors) \
+     without waiting for permission. Stop and ask when the fix changes behavior beyond task \
+     scope or requires architectural decisions.\n\nDo not add unrelated features, refactor \
+     untouched code, or chase unmanifested edge cases.\n\nValidate at system boundaries (user \
+     input, external APIs, file I/O). Trust internal consistency; do not defensively validate \
+     every function argument or intermediate result.\n\nComment only where the WHY is \
+     non-obvious: hidden constraints, subtle invariants, workarounds for specific bugs. Do not \
+     restate what naming conveys.\n\nNever commit secrets, API keys, or credentials. If you \
+     encounter them in code, flag it immediately.\n\nVerify before claiming completion: run \
+     relevant tests, check the build. If you cannot verify, say so explicitly. Never manufacture \
+     passing results.\n\nFor multi-file changes, complete all edits before reporting success. Do \
+     not present partial states as finished work.\n\nGit: create new commits. Never amend, \
+     force-push, skip hooks (`--no-verify`, `--no-hooks`), or modify git config (user.name, \
+     user.email, etc.). Fetch before pushing to check for remote changes.\n\nPlanning: for \
+     multi-file changes, ambiguous scope, or risky modifications, proactively switch to plan \
+     mode to design before implementing. Do not plan for simple, well-understood tasks.";
+
+
 
 const COMMUNICATION: &str =
-    "Before your first tool call, briefly state what you are about to do. Give short updates at \
-     key moments.\n\nAssume the reader may have lost context. Use complete sentences. Distinguish \
-     suspicion from supported finding from final conclusion.\n\nMatch the response to the task: a \
-     simple question gets a direct answer. When closing implementation work, briefly cover what \
-     changed, what you verified, and remaining risk.\n\nVoice concerns and constructive \
-     disagreement. Between tool calls, keep text brief.";
+    "Write for the reader, not for a console log. Before your first tool call, briefly state \
+     what you are about to do. Give short updates at key moments: when you find something \
+     important, change direction, or make progress after silence.\n\nAssume the reader may have \
+     lost context. Use complete sentences with enough detail that someone can pick up cold — no \
+     unexplained jargon or shorthand. Distinguish suspicion from supported finding from final \
+     conclusion. Do not present a guess or partial result as confirmed.\n\nMatch the response to \
+     the task: a simple question gets a direct answer, not headers and sections. When closing \
+     implementation work, briefly cover what changed, why it is correct, what you verified, and \
+     any remaining risk.\n\nWhen you see risks, better alternatives, or have substantive concerns \
+     about the user's direction, voice your doubts and suggestions — constructive disagreement \
+     helps more than silent compliance.\n\nBetween tool calls, keep text brief — focus on \
+     decisions needing user input, high-level status, and errors that change the plan.";
 
 const TOOL_GUIDANCE: &str =
     "Prefer the narrowest tool. Read before you write; search before you ask.\nFile paths must \
@@ -248,7 +262,7 @@ fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
 ///
 /// 纯函数，无副作用。section 顺序固定，不可配置。
 pub fn build_system_prompt(input: &SystemPromptInput) -> String {
-    let mut sections = default_contributors()
+    let mut sections = contributors_for(input)
         .into_iter()
         .flat_map(|contributor| contributor.contribute(input))
         .filter(|section| !section.body.trim().is_empty())
@@ -265,7 +279,7 @@ pub fn build_system_prompt(input: &SystemPromptInput) -> String {
 ///
 /// 这些 section 在 session 生命周期内不变，跨 turn 复用 KV 缓存。
 pub fn build_stable_prefix(input: &SystemPromptInput) -> String {
-    let mut sections = stable_contributors()
+    let mut sections = stable_contributors_for(input)
         .into_iter()
         .flat_map(|contributor| contributor.contribute(input))
         .filter(|section| !section.body.trim().is_empty())
@@ -315,6 +329,8 @@ pub fn compute_stable_fingerprint(input: &SystemPromptInput) -> String {
     if let Some(ref rules) = input.project_rules {
         key.push_str(rules);
     }
+    key.push('\0');
+    key.push_str(if input.is_child_session { "child" } else { "root" });
     astrcode_support::hash::hex_fingerprint(key.as_bytes())
 }
 
@@ -327,6 +343,22 @@ fn stable_contributors() -> [PromptContributor; 6] {
         PromptContributor::Environment,
         PromptContributor::Rules,
     ]
+}
+
+fn child_stable_contributors() -> [PromptContributor; 3] {
+    [
+        PromptContributor::System,
+        PromptContributor::Environment,
+        PromptContributor::Rules,
+    ]
+}
+
+fn stable_contributors_for(input: &SystemPromptInput) -> Vec<PromptContributor> {
+    if input.is_child_session {
+        child_stable_contributors().to_vec()
+    } else {
+        stable_contributors().to_vec()
+    }
 }
 
 fn dynamic_contributors() -> [PromptContributor; 3] {
@@ -349,6 +381,30 @@ fn default_contributors() -> [PromptContributor; 9] {
         PromptContributor::ExtensionPrompt,
         PromptContributor::ExtraInstructions,
     ]
+}
+
+/// 子 agent session 使用的精简 contributors。
+///
+/// 跳过 Identity（由 agent body 定义）、TaskGuidelines（agent body 自含任务规则）、
+/// Communication（agent body 自定义输出格式）。
+fn child_contributors() -> [PromptContributor; 6] {
+    [
+        PromptContributor::System,
+        PromptContributor::Environment,
+        PromptContributor::Rules,
+        PromptContributor::ToolSummary,
+        PromptContributor::ExtensionPrompt,
+        PromptContributor::ExtraInstructions,
+    ]
+}
+
+/// 根据是否为子 session 选择合适的 contributors。
+fn contributors_for(input: &SystemPromptInput) -> Vec<PromptContributor> {
+    if input.is_child_session {
+        child_contributors().to_vec()
+    } else {
+        default_contributors().to_vec()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1008,6 +1064,7 @@ mod tests {
             extension_blocks: vec![],
             extra_instructions: None,
             tool_prompt_metadata: std::collections::HashMap::new(),
+            is_child_session: false,
         }
     }
 
@@ -1086,6 +1143,7 @@ mod tests {
             ],
             extra_instructions: Some("extra body".into()),
             tool_prompt_metadata: std::collections::HashMap::new(),
+            is_child_session: false,
         };
 
         let prompt = build_system_prompt(&input);
@@ -1148,6 +1206,7 @@ mod tests {
             extension_blocks: vec![],
             extra_instructions: None,
             tool_prompt_metadata: std::collections::HashMap::new(),
+            is_child_session: false,
         };
 
         let prompt = build_system_prompt(&input);
@@ -1190,6 +1249,7 @@ mod tests {
             extension_blocks: vec![],
             extra_instructions: None,
             tool_prompt_metadata: std::collections::HashMap::new(),
+            is_child_session: false,
         };
 
         let prompt = build_system_prompt(&input);
@@ -1226,6 +1286,7 @@ mod tests {
             ],
             extra_instructions: None,
             tool_prompt_metadata: std::collections::HashMap::new(),
+            is_child_session: false,
         };
         let mut changed = base.clone();
         changed.working_dir = "/two".into();

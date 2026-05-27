@@ -310,6 +310,15 @@ impl EventReader for FileSystemSessionRepository {
         meta.log.replay_all().await
     }
 
+    async fn replay_events_through(
+        &self,
+        session_id: &SessionId,
+        max_seq: u64,
+    ) -> Result<Vec<Event>, StorageError> {
+        let meta = self.get_or_open_meta(session_id).await?;
+        meta.log.replay_through(max_seq).await
+    }
+
     async fn session_read_model(
         &self,
         session_id: &SessionId,

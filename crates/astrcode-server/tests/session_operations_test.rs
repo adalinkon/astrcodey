@@ -119,10 +119,11 @@ fn build_test_ops(
         capabilities,
         vec![],
     ));
-    let scheduler = Arc::new(TurnScheduler::new(
+    let scheduler = TurnScheduler::new_arc(
         Arc::clone(&session_manager),
         Arc::new(TurnRegistry::new()),
-    ));
+        tokio_util::sync::CancellationToken::new(),
+    );
     let event_bus = Arc::new(ServerEventBus::new(
         Arc::new(EventFanout::new(1024)),
         Arc::clone(&scheduler),
@@ -182,9 +183,10 @@ async fn submit_turn_sync_returns_llm_output() {
         },
     }
 
-    // 父 session 应有 AgentSessionCompleted 事件
+    // 父 session 应有 AgentSessionCompleted 事件，且 task 已由 submit 回填
     let parent_model = store.session_read_model(&parent_id).await.unwrap();
     assert_eq!(parent_model.agent_sessions.len(), 1);
+    assert_eq!(parent_model.agent_sessions[0].task, "say hello");
     assert_eq!(
         parent_model.agent_sessions[0].status,
         AgentSessionStatus::Completed

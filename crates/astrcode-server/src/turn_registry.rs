@@ -111,95 +111,21 @@ impl Default for TurnRegistry {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{
-        config::{EffectiveConfig, ExtensionSettings, LlmSettings, OpenAiApiMode},
-        llm::{LlmError, LlmEvent, LlmMessage, LlmProvider, ModelLimits},
-        storage::EventStore,
-        tool::ToolDefinition,
-    };
-    use astrcode_extensions::runner::ExtensionRunner;
+    use astrcode_core::storage::EventStore;
     use astrcode_storage::in_memory::InMemoryEventStore;
 
     use super::*;
 
-    struct NeverLlm;
-
-    #[async_trait::async_trait]
-    impl LlmProvider for NeverLlm {
-        async fn generate(
-            &self,
-            _messages: Vec<LlmMessage>,
-            _tools: Vec<ToolDefinition>,
-        ) -> Result<tokio::sync::mpsc::UnboundedReceiver<LlmEvent>, LlmError> {
-            std::future::pending().await
-        }
-
-        fn model_limits(&self) -> ModelLimits {
-            ModelLimits {
-                max_input_tokens: 1024,
-                max_output_tokens: 1024,
-            }
-        }
-    }
-
     fn test_caps() -> Arc<astrcode_session::SessionRuntimeServices> {
-        let llm: Arc<dyn LlmProvider> = Arc::new(NeverLlm);
-        let extension_runner = Arc::new(ExtensionRunner::new(std::time::Duration::from_secs(1)));
-        let context_assembler = Arc::new(
-            astrcode_context::context_assembler::LlmContextAssembler::new(Default::default()),
-        );
-        Arc::new(astrcode_session::SessionRuntimeServices::new(
-            Arc::clone(&llm),
-            llm,
-            extension_runner,
-            context_assembler,
-            EffectiveConfig {
-                llm: LlmSettings {
-                    provider_kind: "mock".into(),
-                    base_url: String::new(),
-                    api_key: String::new(),
-                    api_mode: OpenAiApiMode::ChatCompletions,
-                    model_id: "mock".into(),
-                    max_tokens: 1024,
-                    context_limit: 1024,
-                    connect_timeout_secs: 1,
-                    read_timeout_secs: 1,
-                    max_retries: 0,
-                    retry_base_delay_ms: 0,
-                    supports_prompt_cache_key: false,
-                    prompt_cache_retention: None,
-                    reasoning: false,
-                    thinking_level: None,
-                },
-                small_llm: LlmSettings {
-                    provider_kind: "mock".into(),
-                    base_url: String::new(),
-                    api_key: String::new(),
-                    api_mode: OpenAiApiMode::ChatCompletions,
-                    model_id: "mock".into(),
-                    max_tokens: 1024,
-                    context_limit: 1024,
-                    connect_timeout_secs: 1,
-                    read_timeout_secs: 1,
-                    max_retries: 0,
-                    retry_base_delay_ms: 0,
-                    supports_prompt_cache_key: false,
-                    prompt_cache_retention: None,
-                    reasoning: false,
-                    thinking_level: None,
-                },
-                context: Default::default(),
-                agent: Default::default(),
-                extensions: ExtensionSettings::default(),
-            },
-        ))
+        astrcode_session::test_fixtures::default_mock_runtime_services()
     }
 
     async fn make_session(sid: &str) -> Arc<Session> {
         let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
+        let caps = test_caps();
         let runtime = Arc::new(astrcode_session::SessionRuntimeState::new(
-            Arc::new(NeverLlm),
-            Arc::new(NeverLlm),
+            caps.llm(),
+            caps.small_llm(),
             "mock".into(),
         ));
         Arc::new(

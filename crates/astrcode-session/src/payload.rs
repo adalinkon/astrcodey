@@ -84,6 +84,17 @@ pub fn agent_session_failed_payload(child_session_id: SessionId, error: String) 
     }
 }
 
+/// 构造写入父 session 的 `AgentSessionTaskAssigned` 载荷。
+pub fn agent_session_task_assigned_payload(
+    child_session_id: SessionId,
+    task: String,
+) -> EventPayload {
+    EventPayload::AgentSessionTaskAssigned {
+        child_session_id,
+        task,
+    }
+}
+
 /// 构造子会话 compact continuation 投影事件载荷。
 pub fn session_continued_from_compaction_payload(
     parent_session_id: SessionId,

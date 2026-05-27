@@ -8,10 +8,12 @@ use astrcode_protocol::{
 use astrcode_support::prompt_attachments::{self, PromptAttachmentError};
 
 use super::{CommandHandler, HandlerError, PromptSubmission, slash};
-use crate::{http::control_from_phase, turn_scheduler::SubmitOutcome};
+use crate::{
+    http::control_from_phase,
+    turn_scheduler::{SubmitOutcome, UserInputOutcome},
+};
 
 impl CommandHandler {
-    /// 进程内 TUI：提交 prompt；活跃 turn 时默认 [`TurnScheduler::notify_turn`] 排队。
     pub(super) async fn submit_prompt(
         &mut self,
         text: String,
@@ -28,7 +30,6 @@ impl CommandHandler {
         }
     }
 
-    /// ESC 后由 TUI 调用：[`TurnScheduler::submit_prompt_step`]（有活跃 turn 则 inject）。
     pub(super) async fn submit_prompt_step(
         &mut self,
         text: String,
@@ -39,7 +40,6 @@ impl CommandHandler {
         match self.scheduler.submit_prompt_step(sid.clone(), input).await {
             Ok(SubmitOutcome::Injected)
             | Ok(SubmitOutcome::Started { .. })
-            // submit_or_inject 不会返回 Queued；保留分支以满足 enum 穷尽。
             | Ok(SubmitOutcome::Queued) => {
                 self.broadcast_session_control(&sid).await;
                 Ok(())
@@ -55,8 +55,6 @@ impl CommandHandler {
         }
     }
 
-    /// 显式中途注入（legacy）；新客户端应优先 `SubmitPrompt`（排队）或 `SubmitPromptStep`（ESC
-    /// 引导）。
     pub(super) async fn inject_mid_turn_message(
         &mut self,
         text: String,
@@ -78,7 +76,7 @@ impl CommandHandler {
         Ok(())
     }
 
-    /// 统一写入口：斜杠解析 + 活跃 turn 时 `notify_turn` 排队，否则 `start_turn`。
+    /// 斜杠解析 + [`TurnScheduler::accept_user_input`]，映射为 handler 交付语义。
     pub(in crate::handler) async fn accept_user_input_for_session(
         &mut self,
         sid: SessionId,
@@ -99,18 +97,18 @@ impl CommandHandler {
             }
         }
 
-        let submission = if self.scheduler.registry().has_active(&sid) {
-            self.queue_input_for_next_turn(sid.clone(), input).await?
-        } else {
-            self.start_turn_for_session(sid.clone(), input, None)
-                .await
-                .map(|turn_id| PromptSubmission::Accepted { turn_id })?
+        let submission = match self.scheduler.accept_user_input(sid.clone(), input).await {
+            Ok(UserInputOutcome::Queued) => PromptSubmission::Handled {
+                message: "queued for next turn".into(),
+            },
+            Ok(UserInputOutcome::Started { turn_id }) => PromptSubmission::Accepted { turn_id },
+            Err(error) => return Err(HandlerError::from(error)),
         };
+
         if matches!(
             &submission,
             PromptSubmission::Handled { message } if message == "queued for next turn"
         ) {
-            // 进程内 TUI 消费 SessionControlUpdated；HTTP 客户端走 Handled 响应 + SSE control delta。
             self.broadcast_session_control(&sid).await;
         }
         Ok(submission)
@@ -122,14 +120,15 @@ impl CommandHandler {
     ) -> Result<Vec<astrcode_protocol::events::ExtensionCommandInfo>, HandlerError> {
         let state = self
             .runtime
-            .session_manager()
-            .read_model(sid)
+            .event_store()
+            .session_read_model(sid)
             .await
-            .map_err(HandlerError::SessionManager)?;
+            .map_err(|e| HandlerError::SessionManager(e.into()))?;
         Ok(self.command_infos_for_working_dir(&state.working_dir).await)
     }
+
     pub(in crate::handler) async fn broadcast_session_control(&self, sid: &SessionId) {
-        let Ok(state) = self.runtime.session_manager().read_model(sid).await else {
+        let Ok(state) = self.runtime.event_store().session_read_model(sid).await else {
             return;
         };
         let control = control_from_phase(state.phase, !state.messages.is_empty());
