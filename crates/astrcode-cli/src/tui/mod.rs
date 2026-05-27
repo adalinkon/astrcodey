@@ -14,6 +14,7 @@ pub(crate) mod composer;
 pub(crate) mod custom_terminal;
 pub(crate) mod ext;
 pub(crate) mod frame;
+pub(crate) mod image_attach;
 pub(crate) mod insert_history;
 pub(crate) mod keybinding;
 pub(crate) mod render;
@@ -378,31 +379,38 @@ fn complete_slash_selection(app: &mut App) {
 }
 
 async fn submit_current_input(app: &mut App, client: &Arc<Client>) -> io::Result<()> {
-    let input = app.input_text().trim_end().to_string();
-    if input.trim().is_empty() {
+    let (input, attachments) = app.composer.take_submit();
+    if input.trim().is_empty() && attachments.is_empty() {
         return Ok(());
     }
 
     if let Some(command) = slash::parse(
-        &input,
+        input.trim(),
         &app.extension_commands
             .iter()
             .map(|c| c.name.clone())
             .collect::<Vec<_>>(),
     ) {
-        let input = app.take_input();
         app.remember_input(&input);
         execute_slash_command(command, app, client).await?;
         return Ok(());
     }
 
-    if app.is_streaming {
-        let input = app.take_input();
-        if input.trim().is_empty() {
-            return Ok(());
+    let display_text = {
+        use astrcode_core::user_prompt::image_label;
+        let mut labels = Vec::new();
+        if !input.trim().is_empty() {
+            labels.push(input.trim().to_string());
         }
+        for (index, attachment) in attachments.iter().enumerate() {
+            labels.push(image_label(index + 1, &attachment.filename));
+        }
+        labels.join("\n")
+    };
+
+    if app.is_streaming {
         app.remember_input(&input);
-        app.push_user(&input);
+        app.push_user(&display_text);
         app.status_text = "Message queued".into();
         client
             .send_command(&ClientCommand::InjectMessage { text: input })
@@ -411,14 +419,13 @@ async fn submit_current_input(app: &mut App, client: &Arc<Client>) -> io::Result
         return Ok(());
     }
 
-    let input = app.take_input();
     app.remember_input(&input);
-    app.push_user(&input);
+    app.push_user(&display_text);
 
     client
         .send_command(&ClientCommand::SubmitPrompt {
             text: input,
-            attachments: vec![],
+            attachments,
         })
         .await
         .map_err(io_error)?;

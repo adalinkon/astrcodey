@@ -5,7 +5,10 @@
 
 use std::sync::Arc;
 
-use astrcode_core::types::{SessionId, TurnId};
+use astrcode_core::{
+    types::{SessionId, TurnId},
+    user_prompt::UserPromptParts,
+};
 use astrcode_protocol::commands::ClientCommand;
 use tokio::sync::{mpsc, oneshot};
 
@@ -60,12 +63,12 @@ impl CommandHandle {
     pub(crate) async fn submit_prompt_with_completion(
         &self,
         session_id: SessionId,
-        text: String,
+        input: UserPromptParts,
     ) -> Result<(TurnId, oneshot::Receiver<TurnCompletion>), HandlerError> {
         let (reply, rx) = oneshot::channel();
         self.post(CommandMessage::SubmitInputWithCompletion {
             session_id,
-            text,
+            input,
             reply,
         })
         .await?;
@@ -76,12 +79,12 @@ impl CommandHandle {
     pub async fn submit_input_for_session(
         &self,
         session_id: SessionId,
-        text: String,
+        input: impl Into<UserPromptParts>,
     ) -> Result<PromptSubmission, HandlerError> {
         let (reply, rx) = oneshot::channel();
         self.post(CommandMessage::SubmitInputForSession {
             session_id,
-            text,
+            input: input.into(),
             reply,
         })
         .await?;
@@ -182,7 +185,7 @@ pub(in crate::handler) enum CommandMessage {
     /// 提交输入
     SubmitInputForSession {
         session_id: SessionId,
-        text: String,
+        input: UserPromptParts,
         reply: oneshot::Sender<Result<PromptSubmission, HandlerError>>,
     },
     /// 手动压缩
@@ -215,7 +218,7 @@ pub(in crate::handler) enum CommandMessage {
     /// 提交提示词并等待完成通知
     SubmitInputWithCompletion {
         session_id: SessionId,
-        text: String,
+        input: UserPromptParts,
         reply: oneshot::Sender<Result<(TurnId, oneshot::Receiver<TurnCompletion>), HandlerError>>,
     },
     /// 修复进程重启后残留的过期 turn phase
@@ -242,9 +245,9 @@ impl CommandHandler {
     async fn queue_input_for_next_turn(
         &self,
         session_id: SessionId,
-        text: String,
+        input: UserPromptParts,
     ) -> Result<PromptSubmission, HandlerError> {
-        match self.scheduler.notify_turn(session_id, text).await {
+        match self.scheduler.notify_turn(session_id, input).await {
             Ok(SubmitOutcome::Queued) => Ok(PromptSubmission::Handled {
                 message: "queued for next turn".into(),
             }),
@@ -384,13 +387,13 @@ impl CommandHandler {
             },
             CommandMessage::SubmitInputForSession {
                 session_id,
-                text,
+                input,
                 reply,
             } => {
                 let result = if self.scheduler.registry().has_active(&session_id) {
-                    self.queue_input_for_next_turn(session_id, text).await
+                    self.queue_input_for_next_turn(session_id, input).await
                 } else {
-                    self.submit_input_for_session(session_id, text).await
+                    self.submit_input_for_session(session_id, input).await
                 };
                 let _ = reply.send(result);
             },
@@ -425,10 +428,10 @@ impl CommandHandler {
             },
             CommandMessage::SubmitInputWithCompletion {
                 session_id,
-                text,
+                input,
                 reply,
             } => {
-                let _ = reply.send(self.submit_input_with_completion(session_id, text).await);
+                let _ = reply.send(self.submit_input_with_completion(session_id, input).await);
             },
             CommandMessage::RepairStaleTurn { session_id, reply } => {
                 let _ = reply.send(self.repair_stale_session(&session_id).await);

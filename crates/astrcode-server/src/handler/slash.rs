@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use astrcode_core::{
     config::ModelSelection,
     extension::{ExtensionCommandResult, ExtensionError},
+    user_prompt::UserPromptParts,
 };
 
 use super::{CommandHandler, HandlerError, PromptSubmission};
@@ -187,7 +188,7 @@ impl CommandHandler {
                 } else {
                     instructions
                 };
-                self.start_turn_for_session(sid, user_text, None)
+                self.start_turn_for_session(sid, UserPromptParts::text_only(user_text), None)
                     .await
                     .map(|turn_id| PromptSubmission::Accepted { turn_id })
             },

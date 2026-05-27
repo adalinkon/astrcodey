@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use astrcode_core::{event::EventPayload, types::*};
+use astrcode_core::{event::EventPayload, types::*, user_prompt::UserPromptParts};
 use tokio::sync::oneshot;
 
 use super::Session;
@@ -12,19 +12,17 @@ use crate::{
 };
 
 impl Session {
-    async fn emit_turn_start_events(&self, text: &str, turn_id: &TurnId) -> Result<(), TurnError> {
+    async fn emit_turn_start_events(
+        &self,
+        input: &UserPromptParts,
+        turn_id: &TurnId,
+    ) -> Result<(), TurnError> {
         self.emit_durable(Some(turn_id), EventPayload::TurnStarted)
             .await
             .map_err(|e| TurnError::DurableEmitFailed(format!("TurnStarted: {e}")))?;
-        self.emit_durable(
-            Some(turn_id),
-            EventPayload::UserMessage {
-                message_id: new_message_id(),
-                text: text.to_string(),
-            },
-        )
-        .await
-        .map_err(|e| TurnError::DurableEmitFailed(format!("UserMessage: {e}")))?;
+        self.emit_durable(Some(turn_id), input.user_message_event(new_message_id()))
+            .await
+            .map_err(|e| TurnError::DurableEmitFailed(format!("UserMessage: {e}")))?;
         self.emit_live(Some(turn_id), EventPayload::AgentRunStarted)
             .await;
         Ok(())
@@ -89,11 +87,11 @@ impl Session {
     async fn run_and_finalize_turn(
         session: Arc<Self>,
         mut agent: TurnRunner,
-        text: String,
+        lifecycle_text: String,
         turn_id: TurnId,
         completion_tx: oneshot::Sender<RunTurnResult>,
     ) {
-        let result = run_turn(&mut agent, &text, &turn_id).await;
+        let result = run_turn(&mut agent, &lifecycle_text, &turn_id).await;
         let finish_reason = match &result.output {
             Ok(out) => out.finish_reason.clone(),
             Err(_) => "error".into(),
@@ -134,8 +132,14 @@ impl Session {
             .await;
     }
 
-    pub async fn submit(&self, text: String, turn_id: TurnId) -> Result<TurnHandle, TurnError> {
-        self.emit_turn_start_events(&text, &turn_id).await?;
+    pub async fn submit(
+        &self,
+        input: impl Into<UserPromptParts>,
+        turn_id: TurnId,
+    ) -> Result<TurnHandle, TurnError> {
+        let input = input.into();
+        self.emit_turn_start_events(&input, &turn_id).await?;
+        let lifecycle_text = input.display_text();
         let agent = self.prepare_turn_runner().await?;
         let (completion_tx, completion_rx) = oneshot::channel();
         let turn_id_for_task = turn_id.clone();
@@ -144,7 +148,7 @@ impl Session {
             Self::run_and_finalize_turn(
                 session_for_completion,
                 agent,
-                text,
+                lifecycle_text,
                 turn_id_for_task,
                 completion_tx,
             )

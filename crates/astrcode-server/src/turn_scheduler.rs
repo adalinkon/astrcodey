@@ -21,6 +21,7 @@ use astrcode_core::{
     storage::SessionReadModel,
     tool::ToolResult,
     types::*,
+    user_prompt::UserPromptParts,
 };
 use astrcode_session::{
     Session, SessionError,
@@ -72,7 +73,7 @@ pub enum SubmitOutcome {
 
 /// 待处理的消息，用于 "下一 turn" 路径
 pub(crate) struct PendingMessage {
-    text: String,
+    input: UserPromptParts,
 }
 
 /// per-session 的待处理消息队列
@@ -109,13 +110,18 @@ impl TurnScheduler {
     pub async fn submit(
         &self,
         session_id: SessionId,
-        text: String,
+        input: UserPromptParts,
     ) -> Result<(TurnId, TurnHandle), TurnScheduleError> {
         if self.registry.has_active(&session_id) {
             return Err(TurnScheduleError::TurnAlreadyRunning);
         }
 
-        tracing::info!(session_id = %session_id, text_len = text.len(), "scheduler: submit turn");
+        tracing::info!(
+            session_id = %session_id,
+            text_len = input.text.len(),
+            image_count = input.images.len(),
+            "scheduler: submit turn"
+        );
 
         let session = self
             .session_manager
@@ -124,7 +130,7 @@ impl TurnScheduler {
             .map_err(|e| TurnScheduleError::SessionNotFound(format!("{session_id}: {e}")))?;
 
         let turn_id = new_turn_id();
-        let handle = session.submit(text, turn_id.clone()).await.map_err(|e| {
+        let handle = session.submit(input, turn_id.clone()).await.map_err(|e| {
             tracing::error!(session_id = %session_id, error = %e, "session.submit failed");
             TurnScheduleError::Turn(e)
         })?;
@@ -147,13 +153,13 @@ impl TurnScheduler {
     pub async fn submit_or_inject(
         &self,
         session_id: SessionId,
-        text: String,
+        input: UserPromptParts,
     ) -> Result<SubmitOutcome, TurnScheduleError> {
         if self.registry.has_active(&session_id) {
-            self.inject(&session_id, text).await?;
+            self.inject(&session_id, input).await?;
             Ok(SubmitOutcome::Injected)
         } else {
-            let (turn_id, handle) = self.submit(session_id, text).await?;
+            let (turn_id, handle) = self.submit(session_id, input).await?;
             Ok(SubmitOutcome::Started { turn_id, handle })
         }
     }
@@ -178,7 +184,8 @@ impl TurnScheduler {
             r#"<system type="background_completed" source="{}">"#,
             source
         );
-        self.submit_or_inject(session_id, marker).await
+        self.submit_or_inject(session_id, UserPromptParts::text_only(marker))
+            .await
     }
 
     /// 中止活跃 turn。
@@ -395,7 +402,10 @@ impl TurnScheduler {
             }
             if let Some(notify_text) = guard.notify_text() {
                 if let Err(e) = self
-                    .submit_or_inject(guard.parent_session_id().clone(), notify_text.to_string())
+                    .submit_or_inject(
+                        guard.parent_session_id().clone(),
+                        UserPromptParts::text_only(notify_text.to_string()),
+                    )
                     .await
                 {
                     tracing::warn!(
@@ -413,7 +423,7 @@ impl TurnScheduler {
     pub async fn inject(
         &self,
         session_id: &SessionId,
-        text: String,
+        input: UserPromptParts,
     ) -> Result<(), TurnScheduleError> {
         let turn_id = self
             .registry
@@ -425,10 +435,7 @@ impl TurnScheduler {
             .ok_or(TurnScheduleError::NoActiveTurn)?;
         let message_id = new_message_id();
         session
-            .emit_durable(
-                Some(&turn_id),
-                EventPayload::UserMessage { message_id, text },
-            )
+            .emit_durable(Some(&turn_id), input.user_message_event(message_id))
             .await
             .map_err(TurnScheduleError::EventEmit)?;
         Ok(())

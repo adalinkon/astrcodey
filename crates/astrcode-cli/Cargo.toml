@@ -21,6 +21,7 @@ astrcode-protocol = { path = "../astrcode-protocol" }
 astrcode-support = { path = "../astrcode-support" }
 astrcode-eval = { path = "../astrcode-eval", optional = true }
 astrcode-log = { path = "../astrcode-log" }
+base64 = { workspace = true }
 astrcode-context = { path = "../astrcode-context" }
 tokio = { workspace = true, features = ["sync", "time", "rt-multi-thread", "macros"] }
 serde = { workspace = true }

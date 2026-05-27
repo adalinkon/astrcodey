@@ -16,7 +16,7 @@ use agent_client_protocol::{
         ProtocolVersion, SessionId as AcpSessionId, StopReason,
     },
 };
-use astrcode_core::{event::Event, types::SessionId};
+use astrcode_core::{event::Event, types::SessionId, user_prompt::UserPromptParts};
 use astrcode_protocol::events::ClientNotification;
 use astrcode_support::event_fanout::EventFanout;
 use tokio::sync::mpsc;
@@ -133,7 +133,7 @@ async fn handle_prompt(
     let mut event_rx = event_tx.subscribe();
 
     let (turn_id, mut completion_rx) = command_handle
-        .submit_prompt_with_completion(session_id.clone(), text)
+        .submit_prompt_with_completion(session_id.clone(), UserPromptParts::text_only(text))
         .await
         .map_err(handler_error_to_acp)?;
 

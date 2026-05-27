@@ -7,8 +7,11 @@ use astrcode_core::{
     llm::{LlmContent, LlmMessage, LlmRole},
     storage::{BackgroundToolCallView, CompactBoundaryView, SequencedLlmMessage},
     types::ToolCallId,
+    user_prompt::UserImagePart,
 };
-use astrcode_protocol::http::{ConversationBlockDto, ConversationBlockStatusDto};
+use astrcode_protocol::http::{
+    ConversationBlockDto, ConversationBlockStatusDto, ConversationImageDto,
+};
 
 use super::args::format_args_inline;
 
@@ -40,10 +43,11 @@ pub(in crate::http) fn compact_summary_block(
 /// final block. Shared by live and replay delta functions.
 pub(in crate::http) fn completed_block_from_payload(event: &Event) -> Option<ConversationBlockDto> {
     match &event.payload {
-        EventPayload::UserMessage { message_id, text } => Some(ConversationBlockDto::User {
-            id: message_id.to_string(),
-            text: text.clone(),
-        }),
+        EventPayload::UserMessage {
+            message_id,
+            text,
+            images,
+        } => Some(user_block(message_id.to_string(), text.clone(), images)),
         EventPayload::AssistantMessageCompleted {
             message_id,
             text,
@@ -126,10 +130,7 @@ pub(in crate::http) fn messages_to_blocks(
         let message = &message.message;
         let id = format!("snapshot-message-{index}");
         match message.role {
-            LlmRole::User => blocks.push(ConversationBlockDto::User {
-                id,
-                text: visible_message_text(message),
-            }),
+            LlmRole::User => blocks.push(user_block_from_llm(id, message)),
             LlmRole::Assistant => {
                 let text = visible_message_text(message);
                 if !text.trim().is_empty() || message.reasoning_content.is_some() {
@@ -248,6 +249,35 @@ fn push_tool_result_block(
             arguments_json: None,
         });
     }
+}
+
+fn user_block(id: String, text: String, images: &[UserImagePart]) -> ConversationBlockDto {
+    ConversationBlockDto::User {
+        id,
+        text,
+        images: images.iter().map(ConversationImageDto::from).collect(),
+    }
+}
+
+fn user_block_from_llm(id: String, message: &LlmMessage) -> ConversationBlockDto {
+    let mut text = String::new();
+    let mut images = Vec::new();
+    let mut image_index = 0usize;
+    for content in &message.content {
+        match content {
+            LlmContent::Text { text: part } => text.push_str(part),
+            LlmContent::Image { base64, media_type } => {
+                image_index += 1;
+                images.push(ConversationImageDto {
+                    filename: format!("image-{image_index}"),
+                    media_type: media_type.clone(),
+                    data_url: format!("data:{media_type};base64,{base64}"),
+                });
+            },
+            LlmContent::ToolCall { .. } | LlmContent::ToolResult { .. } => {},
+        }
+    }
+    ConversationBlockDto::User { id, text, images }
 }
 
 fn visible_message_text(message: &LlmMessage) -> String {

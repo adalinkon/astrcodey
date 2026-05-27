@@ -10,6 +10,7 @@ use astrcode_core::{
         SequencedLlmMessage, SessionReadModel,
     },
     types::SessionId,
+    user_prompt::UserPromptParts,
 };
 
 /// 从事件序列重建会话读模型。
@@ -135,9 +136,13 @@ pub fn reduce(event: &Event, model: &mut SessionReadModel) {
         },
         EventPayload::TurnStarted | EventPayload::UserMessage { .. } => {
             model.phase = Phase::Thinking;
-            if let EventPayload::UserMessage { text, .. } = &event.payload {
+            if let EventPayload::UserMessage { text, images, .. } = &event.payload {
                 model.messages.push(SequencedLlmMessage {
-                    message: LlmMessage::user(text),
+                    message: UserPromptParts {
+                        text: text.clone(),
+                        images: images.clone(),
+                    }
+                    .to_llm_message(),
                     updated_seq: event_seq,
                 });
             }
@@ -426,6 +431,7 @@ mod tests {
                 EventPayload::UserMessage {
                     message_id: new_message_id(),
                     text: "old user".into(),
+                    images: vec![],
                 },
             ),
             event(
@@ -443,6 +449,7 @@ mod tests {
                 EventPayload::UserMessage {
                     message_id: new_message_id(),
                     text: "recent user".into(),
+                    images: vec![],
                 },
             ),
         ];
@@ -518,6 +525,7 @@ mod tests {
             EventPayload::UserMessage {
                 message_id: new_message_id(),
                 text: "after compact".into(),
+                images: vec![],
             },
         ));
 

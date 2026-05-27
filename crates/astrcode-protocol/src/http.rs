@@ -3,7 +3,10 @@
 //! 这些类型只描述外部协议形状；server 负责把 storage read model 映射到这里，
 //! storage 不依赖也不返回这些 DTO。
 
-use astrcode_core::event::{Phase, ToolOutputStream};
+use astrcode_core::{
+    event::{Phase, ToolOutputStream},
+    user_prompt::UserImagePart,
+};
 use serde::{Deserialize, Serialize};
 
 pub use crate::agent_session_link::{AgentSessionLinkDto, AgentSessionStatusDto};
@@ -27,6 +30,47 @@ pub struct CreateSessionResponseDto {
 #[serde(rename_all = "camelCase")]
 pub struct PromptRequest {
     pub text: String,
+    #[serde(default)]
+    pub attachments: Vec<PromptAttachmentDto>,
+}
+
+/// prompt 附件（HTTP 线缆形状，与 [`crate::commands::Attachment`] 对应）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptAttachmentDto {
+    pub filename: String,
+    pub content: String,
+    pub media_type: String,
+}
+
+impl From<PromptAttachmentDto> for crate::commands::Attachment {
+    fn from(dto: PromptAttachmentDto) -> Self {
+        Self {
+            filename: dto.filename,
+            content: dto.content,
+            media_type: dto.media_type,
+        }
+    }
+}
+
+/// 对话 UI 中展示的用户图片。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationImageDto {
+    pub filename: String,
+    pub media_type: String,
+    /// `data:{media_type};base64,{data}`，供 Web/Tauri 直接渲染。
+    pub data_url: String,
+}
+
+impl From<&UserImagePart> for ConversationImageDto {
+    fn from(part: &UserImagePart) -> Self {
+        Self {
+            filename: part.filename.clone(),
+            media_type: part.media_type.clone(),
+            data_url: format!("data:{};base64,{}", part.media_type, part.base64),
+        }
+    }
 }
 
 /// prompt 提交结果。
@@ -228,6 +272,8 @@ pub enum ConversationBlockDto {
     User {
         id: String,
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ConversationImageDto>,
     },
     Assistant {
         id: String,

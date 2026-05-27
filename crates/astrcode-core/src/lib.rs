@@ -31,3 +31,4 @@ pub mod render;
 pub mod storage;
 pub mod tool;
 pub mod types;
+pub mod user_prompt;

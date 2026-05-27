@@ -146,11 +146,6 @@ impl App {
         self.composer.text()
     }
 
-    pub fn take_input(&mut self) -> String {
-        self.close_slash();
-        self.composer.take_submit_text()
-    }
-
     pub fn set_input(&mut self, text: String) {
         self.composer.set_text(text);
         self.sync_slash_filter();

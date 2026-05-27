@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use astrcode_core::types::*;
+use astrcode_core::{types::*, user_prompt::UserPromptParts};
 use tokio::sync::mpsc;
 
 use super::{CommandHandler, CommandMessage, HandlerError, errors::turn_schedule_error_for_client};
@@ -21,13 +21,18 @@ impl CommandHandler {
     pub(in crate::handler) async fn start_turn_for_session(
         &self,
         sid: SessionId,
-        user_text: String,
+        input: UserPromptParts,
         completion_tx: Option<tokio::sync::oneshot::Sender<TurnCompletion>>,
     ) -> Result<TurnId, HandlerError> {
-        tracing::info!(session_id = %sid, text_len = user_text.len(), "start_turn");
+        tracing::info!(
+            session_id = %sid,
+            text_len = input.text.len(),
+            image_count = input.images.len(),
+            "start_turn"
+        );
         let (turn_id, handle) = self
             .scheduler
-            .submit(sid.clone(), user_text)
+            .submit(sid.clone(), input)
             .await
             .map_err(|e| {
                 let (code, err) = turn_schedule_error_for_client(e);
@@ -95,10 +100,10 @@ impl CommandHandler {
     pub(in crate::handler) async fn submit_input_with_completion(
         &self,
         sid: SessionId,
-        text: String,
+        input: UserPromptParts,
     ) -> Result<(TurnId, tokio::sync::oneshot::Receiver<TurnCompletion>), HandlerError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let turn_id = self.start_turn_for_session(sid, text, Some(tx)).await?;
+        let turn_id = self.start_turn_for_session(sid, input, Some(tx)).await?;
         Ok((turn_id, rx))
     }
 }

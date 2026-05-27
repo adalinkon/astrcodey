@@ -20,8 +20,21 @@ export interface CreateSessionResponse {
   sessionId: string
 }
 
+export interface PromptAttachment {
+  filename: string
+  content: string
+  mediaType: string
+}
+
 export interface PromptRequest {
   text: string
+  attachments?: PromptAttachment[]
+}
+
+export interface ConversationImage {
+  filename: string
+  mediaType: string
+  dataUrl: string
 }
 
 export type PromptSubmitResponse =
@@ -123,7 +136,7 @@ export interface ConversationControlState {
 }
 
 export type ConversationBlock =
-  | { kind: 'user'; id: string; text: string }
+  | { kind: 'user'; id: string; text: string; images?: ConversationImage[] }
   | {
       kind: 'assistant'
       id: string

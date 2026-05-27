@@ -288,6 +288,7 @@ mod tests {
             .durable(EventPayload::UserMessage {
                 message_id: astrcode_core::types::new_message_id(),
                 text: "first".into(),
+                images: vec![],
             })
             .await
             .unwrap();
@@ -298,6 +299,7 @@ mod tests {
             .durable(EventPayload::UserMessage {
                 message_id: astrcode_core::types::new_message_id(),
                 text: "second".into(),
+                images: vec![],
             })
             .await
             .unwrap();
@@ -337,6 +339,7 @@ mod tests {
             .durable(EventPayload::UserMessage {
                 message_id: astrcode_core::types::new_message_id(),
                 text: "injected".into(),
+                images: vec![],
             })
             .await
             .unwrap();

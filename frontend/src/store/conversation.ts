@@ -8,6 +8,7 @@ import type {
   ConversationBlock,
   ConversationControlState,
   ConversationDelta,
+  PromptAttachment,
   SessionListItem,
   Phase,
   ToolOutputStream,
@@ -44,7 +45,7 @@ interface ConversationState {
   bumpModelRefreshKey: () => void
   switchSession: (sessionId: string) => Promise<void>
   refreshConversationSnapshot: () => Promise<void>
-  submitPrompt: (text: string) => Promise<boolean>
+  submitPrompt: (text: string, attachments?: PromptAttachment[]) => Promise<boolean>
   abortCurrentTurn: () => Promise<void>
   applyDelta: (delta: ConversationDelta) => void
 }
@@ -557,7 +558,7 @@ export const useAppStore = create<ConversationState>((set, get) => ({
     }
   },
 
-  submitPrompt: async (text: string) => {
+  submitPrompt: async (text: string, attachments: PromptAttachment[] = []) => {
     const { activeSessionId } = get()
     if (!activeSessionId) {
       return false
@@ -569,7 +570,7 @@ export const useAppStore = create<ConversationState>((set, get) => ({
     }
 
     try {
-      const response = await api.submitPrompt(activeSessionId, text)
+      const response = await api.submitPrompt(activeSessionId, text, attachments)
       if (response.kind === 'handled') {
         if (get().activeSessionId !== response.sessionId) {
           return true

@@ -103,9 +103,13 @@ pub(in crate::http) async fn submit_prompt(
 ) -> Response {
     tracing::info!(session_id = %session_id, text_len = request.text.len(), "POST prompt submit");
     let session_id = SessionId::from(session_id);
+    let input = match crate::handler::user_prompt_from_http(request.text, request.attachments) {
+        Ok(input) => input,
+        Err(error) => return handler_error_response(error, "prompt_failed"),
+    };
     let result = state
         .handler
-        .submit_input_for_session(session_id.clone(), request.text)
+        .submit_input_for_session(session_id.clone(), input)
         .await;
     match result {
         Ok(PromptSubmission::Accepted { turn_id }) => {

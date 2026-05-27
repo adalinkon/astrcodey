@@ -12,6 +12,7 @@ use astrcode_core::{
         SubmitTurnRequest, SubmitTurnResult,
     },
     types::{SessionId, new_message_id},
+    user_prompt::UserPromptParts,
 };
 use astrcode_session::child_turn::{ChildCleanup, ChildTurnConfig, ChildTurnGuard};
 
@@ -109,6 +110,7 @@ impl SessionOperations for ServerSessionOperations {
                 EventPayload::UserMessage {
                     message_id,
                     text: content,
+                    images: vec![],
                 },
             )
             .await
@@ -138,7 +140,10 @@ impl SessionOperations for ServerSessionOperations {
 
         let (turn_id, handle) = self
             .scheduler
-            .submit(target_sid.clone(), request.user_prompt)
+            .submit(
+                target_sid.clone(),
+                UserPromptParts::text_only(request.user_prompt),
+            )
             .await
             .map_err(|e| SessionApiError::Internal(format!("submit: {e}")))?;
 

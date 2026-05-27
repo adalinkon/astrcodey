@@ -25,6 +25,7 @@ mod errors;
 mod model_selection;
 mod notifications;
 mod prompt;
+pub(crate) use prompt::user_prompt_from_http;
 mod recap;
 mod router;
 mod session_lifecycle;

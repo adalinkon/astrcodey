@@ -81,7 +81,7 @@ impl LlmContent {
     pub fn to_display_text(&self) -> String {
         match self {
             LlmContent::Text { text } => text.clone(),
-            LlmContent::Image { .. } => "[image]".into(),
+            LlmContent::Image { .. } => "[image]".into(), // 详细标签见 user_prompt::image_label
             LlmContent::ToolCall {
                 name, arguments, ..
             } => match name.as_str() {
