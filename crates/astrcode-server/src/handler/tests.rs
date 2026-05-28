@@ -747,11 +747,16 @@ fn test_runtime_with_settings(
         Arc::clone(&capabilities),
         vec![],
     ));
+    let scheduler = Arc::new(crate::turn_scheduler::TurnScheduler::new(
+        Arc::clone(&session_manager),
+        Arc::new(crate::turn_registry::TurnRegistry::new()),
+    ));
     Arc::new(ServerRuntime {
         event_store,
         config_manager: config,
         context_assembler,
         session_manager,
+        scheduler,
         extension_runner,
         capabilities,
         startup_working_dir: std::env::temp_dir(),
@@ -948,6 +953,19 @@ async fn collect_turn_ids_until_completed(
             _ => {},
         }
     }
+}
+
+async fn wait_until_no_active_turn(
+    scheduler: &crate::turn_scheduler::TurnScheduler,
+    session_id: &SessionId,
+) {
+    for _ in 0..50 {
+        if !scheduler.registry().has_active(session_id) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("turn registry entry was not cleaned up");
 }
 
 #[test]
@@ -1562,6 +1580,59 @@ async fn submit_prompt_queues_second_running_turn_for_next_turn() {
     );
 
     handler.abort_session(sid).await.unwrap();
+}
+
+#[tokio::test]
+async fn notify_turn_started_from_idle_is_cleaned_up() {
+    let runtime = test_runtime_with_llm(Arc::new(MockLlm));
+    let scheduler = test_scheduler(&runtime);
+    let created = runtime.session_manager().create(".").await.unwrap();
+    let sid = created.session.id().clone();
+
+    let outcome = scheduler
+        .notify_turn(sid.clone(), "queued-after-race".into())
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        outcome,
+        crate::turn_scheduler::SubmitOutcome::Started { .. }
+    ));
+    wait_until_no_active_turn(&scheduler, &sid).await;
+    assert_eq!(
+        runtime
+            .event_store()
+            .session_read_model(&sid)
+            .await
+            .unwrap()
+            .phase,
+        Phase::Idle
+    );
+}
+
+#[tokio::test]
+async fn notify_step_started_from_idle_is_cleaned_up() {
+    let runtime = test_runtime_with_llm(Arc::new(MockLlm));
+    let scheduler = test_scheduler(&runtime);
+    let created = runtime.session_manager().create(".").await.unwrap();
+    let sid = created.session.id().clone();
+
+    let outcome = scheduler.notify_step(sid.clone(), "task").await.unwrap();
+
+    assert!(matches!(
+        outcome,
+        crate::turn_scheduler::SubmitOutcome::Started { .. }
+    ));
+    wait_until_no_active_turn(&scheduler, &sid).await;
+    assert_eq!(
+        runtime
+            .event_store()
+            .session_read_model(&sid)
+            .await
+            .unwrap()
+            .phase,
+        Phase::Idle
+    );
 }
 
 #[tokio::test]

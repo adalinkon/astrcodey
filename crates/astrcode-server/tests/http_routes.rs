@@ -890,11 +890,16 @@ fn runtime(llm_provider: Arc<dyn LlmProvider>) -> Arc<ServerRuntime> {
         Arc::clone(&capabilities),
         vec![],
     ));
+    let scheduler = Arc::new(astrcode_server::turn_scheduler::TurnScheduler::new(
+        Arc::clone(&session_manager),
+        Arc::new(astrcode_server::turn_registry::TurnRegistry::new()),
+    ));
     Arc::new(ServerRuntime::assemble_for_test(
         event_store,
         config,
         context_assembler,
         session_manager,
+        scheduler,
         extension_runner,
         capabilities,
         std::env::temp_dir(),

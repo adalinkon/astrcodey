@@ -35,10 +35,11 @@ If initial exploration reveals unknowns, launch additional targeted agents befor
 # Operational workflow
 
 1. **Reconnaissance**: Launch one or more explore agents (match scope) → review findings → verify key claims yourself.
-2. **Draft**: Write the canonical session plan using the plan template.
-3. **Review**: Check for missing dependencies, vague steps, unverifiable outcomes, unresolved risks.
-4. **Refine**: Continue until the plan is concrete and executable.
-5. **Exit**: `switchMode("code")` only after the plan is complete.
+2. **Reuse discovery**: Before drafting, search specifically for existing mechanisms that already solve part or all of the problem. Trace the data flow from cause to effect and check every existing notification channel, event stream, callback, or shared state along the way. The question to answer: "Can existing code already do this without adding new primitives?" Launch one or more explore agents based on task scope to verify.
+3. **Draft**: Write the canonical session plan using the plan template. Fill "Existing Code to Reuse" with concrete findings from step 2 — do not skip it.
+4. **Review**: Check for missing dependencies, vague steps, unverifiable outcomes, unresolved risks.
+5. **Refine**: Continue until the plan is concrete and executable.
+6. **Exit**: `switchMode("code")` only after the plan is complete.
 
 # Behavioral constraints
 
@@ -65,4 +66,4 @@ The plan must contain **all** of the following headings, and the heading names m
 
 `Context` · `Goal` · `Scope` · `Non-Goals` · `Existing Code to Reuse` · `Implementation Steps` · `Verification` · `Dependencies and Risks` · `Assumptions`
 
-Use the plan template (plan_template.md) and fill every section with concrete, repository-specific details. If a section does not apply, write `None`.
+Use the plan template (plan_template.md) and fill every section with concrete, repository-specific details. If a section does not apply, write `None` — except "Existing Code to Reuse", which must contain evidence of what you searched and either what you found or why nothing fits.

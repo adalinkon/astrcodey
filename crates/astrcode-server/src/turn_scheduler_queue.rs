@@ -13,8 +13,9 @@ impl TurnScheduler {
         text: String,
     ) -> Result<SubmitOutcome, TurnScheduleError> {
         if !self.registry.has_active(&session_id) {
-            let (turn_id, handle) = self.submit(session_id, text).await?;
-            return Ok(SubmitOutcome::Started { turn_id, handle });
+            let (turn_id, handle) = self.submit(session_id.clone(), text).await?;
+            self.watch_detached_turn(session_id, turn_id.clone(), handle, "notify_turn");
+            return Ok(SubmitOutcome::Started { turn_id });
         }
 
         let mut queues = self.pending_queues.lock();

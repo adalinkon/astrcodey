@@ -21,6 +21,7 @@ use super::{
     background::{
         BackgroundTaskCompletion, BackgroundTaskManager, backgrounded_placeholder_result,
     },
+    deferred_tools::suggest_tool_alias,
     session::Session,
     tool_types::ExecutableToolCall,
     turn_publish::TurnPublisher,
@@ -104,11 +105,29 @@ fn error_tool_result(
     use astrcode_core::tool::tool_metadata;
 
     let (message, suggestion): (String, String) = match &err {
-        ToolError::NotFound(name) => (
-            format!("Tool `{name}` not found."),
-            "Use `tool_search_tool` to discover available tools, or proceed without it."
-                .to_string(),
-        ),
+        ToolError::NotFound(name) => {
+            if let Some(alias) = suggest_tool_alias(name) {
+                (
+                    format!("Tool `{name}` not found."),
+                    format!("Use `{alias}` instead (exact name from the provider tool list)."),
+                )
+            } else if name.starts_with("mcp__") {
+                (
+                    format!("Tool `{name}` not found."),
+                    "Call `tool_search_tool` first to load the MCP tool schema, then retry with \
+                     the exact `mcp__...` name from the search result."
+                        .to_string(),
+                )
+            } else {
+                (
+                    format!("Tool `{name}` not found."),
+                    "Use an exact tool name from the provider tool list. There is no `glob` tool \
+                     — use `find` for file paths and `grep` for content search. For external MCP \
+                     tools, call `tool_search_tool` first."
+                        .to_string(),
+                )
+            }
+        },
         ToolError::InvalidArguments(detail) => (
             format!("Invalid arguments for `{tool_name}`: {detail}"),
             "Re-read the parameter schema and retry with corrected arguments. Do not retry with \
@@ -603,6 +622,17 @@ mod tests {
         assert!(result.is_error);
         assert!(result.content.contains("missing"));
         assert!(result.content.contains("Suggestion"));
+    }
+
+    #[test]
+    fn error_tool_result_not_found_suggests_find_for_glob() {
+        let result = error_tool_result(
+            "call-2".into(),
+            "glob",
+            ToolError::NotFound("glob".into()),
+            std::time::Duration::from_millis(10),
+        );
+        assert!(result.content.contains("find"));
     }
 
     #[test]

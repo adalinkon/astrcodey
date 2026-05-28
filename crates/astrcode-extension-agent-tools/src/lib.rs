@@ -16,7 +16,10 @@ use astrcode_extension_sdk::{
         PromptBuildHandler, PromptContributions, Registrar, ToolHandler,
     },
     render::{RenderKeyValue, RenderSpec, RenderTone, UI_RENDER_METADATA_KEY},
-    tool::{CreateSessionRequest, ExecutionMode, SubmitTurnRequest, ToolDefinition, ToolOrigin, ToolResult, tool_metadata},
+    tool::{
+        CreateSessionRequest, ExecutionMode, SubmitTurnRequest, ToolDefinition, ToolOrigin,
+        ToolResult, tool_metadata,
+    },
 };
 use astrcode_support::text::compact_inline;
 use serde::Deserialize;

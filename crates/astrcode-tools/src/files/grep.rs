@@ -232,8 +232,8 @@ fn grep_tool_definition() -> &'static ToolDefinition {
         description: concat!(
             "Searches file contents by regex or literal text.\n",
             "- Full regex syntax. Set `literal=true` for exact text with special characters.\n",
-            "- Filter by `glob` or `fileType`. Output modes: `content`, `files_with_matches` \
-             (default), `count`.\n",
+            "- Optional path filter via the `glob` parameter or `fileType`. Output modes: \
+             `content`, `files_with_matches` (default), `count`.\n",
             "- Set `multiline=true` for cross-line patterns.\n",
             "- For file names, use `find`.",
         ).into(),

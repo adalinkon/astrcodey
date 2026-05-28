@@ -27,7 +27,7 @@ route/config/component searches, similar feature-template searches).
 
 1. Discover likely areas
    - Inspect top-level structure when needed
-   - Use glob-style searches for relevant directories and file types
+   - Use the `find` tool with glob patterns (e.g. `**/*.rs`) for relevant directories and file types — there is no `glob` tool
    - Look for naming conventions related to the user's request
 
 2. Search for specific signals

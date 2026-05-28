@@ -23,6 +23,7 @@ members = [
     "crates/astrcode-extension-todo-tool",
     "crates/astrcode-extension-mode",
     "crates/astrcode-extension-memory",
+    "crates/astrcode-extension-channels",
     "crates/astrcode-eval",
     "src-tauri",
 ]

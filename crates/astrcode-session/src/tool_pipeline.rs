@@ -14,7 +14,7 @@ use astrcode_tools::registry::ToolRegistry;
 use tokio::task::JoinSet;
 
 use super::{
-    deferred_tools::{discovered_deferred_tool_names, tool_is_visible},
+    deferred_tools::{discovered_deferred_tool_names, tool_is_visible, unavailable_tool_guidance},
     tool_exec::{ToolCallRuntimeContext, ToolRuntimeCapabilities, execute_tool_call},
     tool_json_repair::parse_and_repair_json,
     tool_types::{
@@ -104,15 +104,16 @@ impl ToolPipeline {
             let args: serde_json::Value = parse_and_repair_json(&tc.arguments, &tc.name);
 
             if !tool_is_visible(tools, &tc.name) {
+                let guidance = unavailable_tool_guidance(
+                    &tc.name,
+                    tools,
+                    &self.tool_registry.list_definitions(),
+                );
                 let blocked_result = ToolResult {
                     call_id: tc.call_id.clone(),
-                    content: format!(
-                        "Tool '{}' has not been loaded for this request. Use `tool_search_tool` \
-                         to fetch its schema before calling it.",
-                        tc.name
-                    ),
+                    content: guidance.clone(),
                     is_error: true,
-                    error: Some(format!("tool '{}' is not loaded", tc.name)),
+                    error: Some(format!("tool '{}' is not available", tc.name)),
                     metadata: Default::default(),
                     duration_ms: None,
                 };

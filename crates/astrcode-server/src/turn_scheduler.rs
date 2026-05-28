@@ -63,7 +63,6 @@ pub enum TurnScheduleError {
 pub enum SubmitOutcome {
     Started {
         turn_id: TurnId,
-        handle: TurnHandle,
     },
     Injected,
     /// 消息已入队，等待当前 turn 结束后处理
@@ -78,11 +77,12 @@ pub(crate) struct PendingMessage {
 /// per-session 的待处理消息队列
 type PendingQueue = VecDeque<PendingMessage>;
 
+#[derive(Clone)]
 pub struct TurnScheduler {
     session_manager: Arc<SessionManager>,
     registry: Arc<TurnRegistry>,
     /// 等待当前 turn 结束后处理的消息队列
-    pub(super) pending_queues: Mutex<HashMap<SessionId, PendingQueue>>,
+    pub(super) pending_queues: Arc<Mutex<HashMap<SessionId, PendingQueue>>>,
 }
 
 impl TurnScheduler {
@@ -90,7 +90,7 @@ impl TurnScheduler {
         Self {
             session_manager,
             registry,
-            pending_queues: Mutex::new(HashMap::new()),
+            pending_queues: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -153,8 +153,61 @@ impl TurnScheduler {
             self.inject(&session_id, text).await?;
             Ok(SubmitOutcome::Injected)
         } else {
-            let (turn_id, handle) = self.submit(session_id, text).await?;
-            Ok(SubmitOutcome::Started { turn_id, handle })
+            let (turn_id, handle) = self.submit(session_id.clone(), text).await?;
+            self.watch_detached_turn(session_id, turn_id.clone(), handle, "submit_or_inject");
+            Ok(SubmitOutcome::Started { turn_id })
+        }
+    }
+
+    fn watch_detached_turn(
+        &self,
+        session_id: SessionId,
+        turn_id: TurnId,
+        handle: TurnHandle,
+        source: &'static str,
+    ) {
+        let scheduler = self.clone();
+        tokio::spawn(async move {
+            scheduler
+                .run_detached_completion_watcher(session_id, turn_id, handle, source)
+                .await;
+        });
+    }
+
+    async fn run_detached_completion_watcher(
+        &self,
+        session_id: SessionId,
+        mut turn_id: TurnId,
+        mut handle: TurnHandle,
+        source: &'static str,
+    ) {
+        loop {
+            let completion = handle.wait().await;
+            match completion {
+                Some(_) => {
+                    self.sync_durable_events(&session_id).await;
+                },
+                None => {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        turn_id = %turn_id,
+                        source,
+                        "detached turn task ended without completion"
+                    );
+                },
+            }
+
+            self.registry.remove_if_matches(&session_id, &turn_id);
+            self.on_turn_completed(&session_id).await;
+
+            if let Some((next_turn_id, next_handle)) =
+                self.start_next_queued_turn(&session_id).await
+            {
+                turn_id = next_turn_id;
+                handle = next_handle;
+                continue;
+            }
+            break;
         }
     }
 

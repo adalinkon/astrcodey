@@ -256,6 +256,66 @@ impl TurnRunner {
                         }
                     }
                     on_step_end_best_effort(&extension_runner, &lifecycle_ctx).await;
+
+                    // LLM 决定结束 turn，但后台任务可能仍在运行。
+                    // 如果不等它们完成，子 agent 回收时会 abort 这些任务导致结果丢失。
+                    //
+                    // 利用 session 已有的事件流：forwarder 在写完 durable ToolCallCompleted 后
+                    // 会 emit_live(BackgroundTaskCompleted)，subscribe 能直接收到。
+                    // 先订阅再检查，避免 subscribe 和 list_active 之间的竞态。
+                    let mut event_rx = self.session().subscribe();
+                    let active_bg = self
+                        .session()
+                        .runtime()
+                        .background_tasks()
+                        .lock()
+                        .list_active(&self.shared.session_id);
+
+                    if !active_bg.is_empty() {
+                        tracing::info!(
+                            session_id = %self.shared.session_id,
+                            active_bg_count = active_bg.len(),
+                            "LLM completed but background tasks still running; waiting via session events"
+                        );
+                        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+                        loop {
+                            match tokio::time::timeout_at(deadline, event_rx.recv()).await {
+                                Ok(Some(event)) => {
+                                    if matches!(
+                                        event.payload,
+                                        EventPayload::BackgroundTaskCompleted { .. }
+                                    ) {
+                                        let remaining = self
+                                            .session()
+                                            .runtime()
+                                            .background_tasks()
+                                            .lock()
+                                            .list_active(&self.shared.session_id);
+                                        if remaining.is_empty() {
+                                            break;
+                                        }
+                                    }
+                                },
+                                Ok(None) => {
+                                    tracing::warn!(
+                                        session_id = %self.shared.session_id,
+                                        "session event stream closed while waiting for background tasks"
+                                    );
+                                    break;
+                                },
+                                Err(_) => {
+                                    tracing::warn!(
+                                        session_id = %self.shared.session_id,
+                                        "timed out waiting for background tasks; ending turn"
+                                    );
+                                    break;
+                                },
+                            }
+                        }
+                        // 如果仍有任务（超时/流关闭），也 continue 让下一轮再处理。
+                        continue;
+                    }
+
                     return self
                         .postprocess_complete_stage(
                             &extension_runner,

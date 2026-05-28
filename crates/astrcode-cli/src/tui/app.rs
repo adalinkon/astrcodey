@@ -13,8 +13,7 @@ use crate::tui::{
     command::slash::{self, SlashCommandSpec},
     composer::ComposerState,
     ext::{
-        builtin::register_builtin, message::MessageRendererRegistry,
-        tool::ToolRendererRegistry,
+        builtin::register_builtin, message::MessageRendererRegistry, tool::ToolRendererRegistry,
     },
     store::transcript::{Message, MessageBody, MessageRole, ScrollbackEntry},
     theme::Theme,

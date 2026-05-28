@@ -8,8 +8,8 @@ use std::sync::Arc;
 use astrcode_core::{
     event::{EventPayload, Phase},
     tool::{
-        CreateSessionRequest, SessionApiError, SessionHandle, SessionOperations, SessionStatus,
-        SubmitTurnRequest, SubmitTurnResult,
+        CreateRootSessionRequest, CreateSessionRequest, SessionApiError, SessionHandle,
+        SessionOperations, SessionStatus, SubmitTurnRequest, SubmitTurnResult,
     },
     types::{SessionId, new_message_id},
 };
@@ -25,6 +25,26 @@ pub struct ServerSessionOperations {
 
 #[async_trait::async_trait]
 impl SessionOperations for ServerSessionOperations {
+    async fn create_root_session(
+        &self,
+        request: CreateRootSessionRequest,
+    ) -> Result<SessionHandle, SessionApiError> {
+        tracing::debug!(
+            source_extension = request.source_extension.as_deref().unwrap_or("unknown"),
+            working_dir = %request.working_dir,
+            "creating root session for extension"
+        );
+        let created = self
+            .session_manager
+            .create(&request.working_dir)
+            .await
+            .map_err(|e| SessionApiError::Internal(e.to_string()))?;
+
+        Ok(SessionHandle {
+            session_id: created.session.id().clone().into_string(),
+        })
+    }
+
     async fn create_session(
         &self,
         parent_session_id: &str,

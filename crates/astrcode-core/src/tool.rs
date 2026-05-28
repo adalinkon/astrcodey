@@ -275,6 +275,15 @@ pub trait FileObservationStore: Send + Sync {
 /// 插件在 `ToolHandler::execute` 中通过此接口自主编排子会话生命周期。
 #[async_trait::async_trait]
 pub trait SessionOperations: Send + Sync {
+    /// 创建顶层会话。
+    ///
+    /// 供可信宿主入口（例如外部消息通道）把新的外部会话映射到 AstrCode
+    /// session。普通子 agent 编排应继续使用 [`Self::create_session`]。
+    async fn create_root_session(
+        &self,
+        request: CreateRootSessionRequest,
+    ) -> Result<SessionHandle, SessionApiError>;
+
     /// 创建子会话。
     async fn create_session(
         &self,
@@ -326,6 +335,15 @@ pub trait SessionOperations: Send + Sync {
         caller_session_id: &str,
         target_session_id: &str,
     ) -> Result<(), SessionApiError>;
+}
+
+/// 创建顶层会话请求。
+#[derive(Debug, Clone)]
+pub struct CreateRootSessionRequest {
+    /// 工作目录。
+    pub working_dir: String,
+    /// 创建该 session 的扩展 ID。
+    pub source_extension: Option<String>,
 }
 
 /// 创建子会话请求。

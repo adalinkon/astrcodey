@@ -252,9 +252,7 @@ impl CommandHandler {
             Ok(SubmitOutcome::Queued) => Ok(PromptSubmission::Handled {
                 message: "queued for next turn".into(),
             }),
-            Ok(SubmitOutcome::Started { turn_id, .. }) => {
-                Ok(PromptSubmission::Accepted { turn_id })
-            },
+            Ok(SubmitOutcome::Started { turn_id }) => Ok(PromptSubmission::Accepted { turn_id }),
             Ok(SubmitOutcome::Injected) => Ok(PromptSubmission::Handled {
                 message: "injected into active turn".into(),
             }),

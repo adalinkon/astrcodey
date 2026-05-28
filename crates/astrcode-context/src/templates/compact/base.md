@@ -71,7 +71,7 @@ Must return exactly these XML blocks in this order:
    [Problems solved and any ongoing troubleshooting efforts.]
 
 6. All user messages:
-   - [List ALL non-tool-result user messages that matter for intent and feedback.]
+   - [List ALL non-tool-result user messages. For each, quote the original or paraphrase briefly, then add a 1–2 sentence annotation explaining the user's intent or what prompted it. Example: "后台任务会导致agent得不到后台任务的结果你能看看吗" — User reported that background tasks complete after the agent's turn ends, so the agent never sees their results.]
 
 7. Pending Tasks:
    - [Pending task explicitly requested by the user, or "(none)".]
