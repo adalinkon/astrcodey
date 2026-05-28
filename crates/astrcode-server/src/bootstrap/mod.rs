@@ -242,6 +242,7 @@ pub enum BootstrapError {
 #[cfg(feature = "testing")]
 impl ServerRuntime {
     /// 集成测试用：从已组装的部件构造运行时（避免测试直接访问私有字段）。
+    #[allow(clippy::too_many_arguments)] // 字段与 `ServerRuntime` 一一对应，拆 struct 无收益
     pub fn assemble_for_test(
         event_store: Arc<dyn EventStore>,
         config_manager: Arc<ConfigManager>,
