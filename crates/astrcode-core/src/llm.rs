@@ -422,3 +422,21 @@ pub struct ModelLimits {
     /// 最大输出 token 数。
     pub max_output_tokens: usize,
 }
+
+/// 从 LLM 事件流中收集所有文本增量，返回完整文本。
+///
+/// 遇到 `Error` 事件时返回错误，忽略非文本事件（tool call、thinking 等）。
+pub async fn collect_stream_text(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<LlmEvent>,
+) -> Result<String, LlmError> {
+    let mut text = String::new();
+    while let Some(event) = rx.recv().await {
+        match event {
+            LlmEvent::ContentDelta { delta } => text.push_str(&delta),
+            LlmEvent::Done { .. } => break,
+            LlmEvent::Error { message } => return Err(LlmError::StreamParse(message)),
+            _ => {},
+        }
+    }
+    Ok(text)
+}

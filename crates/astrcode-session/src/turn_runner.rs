@@ -20,8 +20,8 @@ use tokio::sync::mpsc;
 
 use crate::{
     compact::{
-        CompactHookContext, collect_compact_instructions, compact_trigger_name,
-        dispatch_post_compact, persist_compact_result,
+        CompactHookContext, collect_compact_instructions, dispatch_post_compact,
+        persist_compact_result,
     },
     compaction_coordinator::{CompactionRequest, PreparedContextMessages},
     llm_request_history::{build_llm_request_messages, visible_messages_for_assembler},
@@ -403,7 +403,7 @@ impl TurnRunner {
         }
 
         let fp = hex_fingerprint(self.system_prompt().as_bytes());
-        let trigger_name = compact_trigger_name(meta.trigger);
+        let trigger_name = meta.trigger.as_str();
         match persist_compact_result(
             self.session(),
             compaction,

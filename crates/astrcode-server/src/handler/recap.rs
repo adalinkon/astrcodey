@@ -3,9 +3,8 @@
 use astrcode_core::{
     event::EventPayload,
     extension::ExtensionEvent,
-    llm::{LlmEvent, LlmMessage},
+    llm::{self, LlmMessage},
 };
-use tokio::sync::mpsc;
 
 use super::{CommandHandler, HandlerError};
 
@@ -57,9 +56,10 @@ impl CommandHandler {
             .await
             .map_err(HandlerError::Llm)?;
 
-        let text = collect_llm_text(rx)
+        let text = llm::collect_stream_text(rx)
             .await
-            .map_err(HandlerError::InvalidRequest)?;
+            .map_err(|e| HandlerError::InvalidRequest(e.to_string()))?;
+        let text = strip_dsml_tags(&text);
 
         // 持久化
         session
@@ -93,20 +93,6 @@ impl CommandHandler {
 
         Ok(())
     }
-}
-
-/// 从 LLM 事件流中收集所有 text delta 拼成完整文本。
-async fn collect_llm_text(mut rx: mpsc::UnboundedReceiver<LlmEvent>) -> Result<String, String> {
-    let mut text = String::new();
-    while let Some(event) = rx.recv().await {
-        match event {
-            LlmEvent::ContentDelta { delta } => text.push_str(&delta),
-            LlmEvent::Done { .. } => break,
-            LlmEvent::Error { message } => return Err(message),
-            _ => {},
-        }
-    }
-    Ok(strip_dsml_tags(&text))
 }
 
 /// 剥离模型内部 tool call 格式标签（如 DeepSeek 的 `<｜｜DSML｜｜...>`）。

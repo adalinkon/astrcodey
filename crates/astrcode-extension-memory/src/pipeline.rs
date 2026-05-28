@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use astrcode_extension_sdk::{
     extension::ExtensionError,
-    llm::{LlmContent, LlmEvent, LlmMessage, LlmProvider, LlmRole},
+    llm::{LlmContent, LlmMessage, LlmProvider, LlmRole},
     storage::{EventReader, SessionReadModel, SessionSummary},
 };
 use chrono::{DateTime, Duration, Local, Utc};
@@ -174,7 +174,9 @@ async fn extract(
             .await
             .map_err(|e| ExtensionError::Internal(e.to_string()))?;
 
-        let text = collect_stream_text(rx).await;
+        let text = astrcode_extension_sdk::llm::collect_stream_text(rx)
+            .await
+            .unwrap_or_default();
         match parse_phase1_output(&text) {
             Ok(output) if output.memories.is_empty() => {
                 results.push((candidate.clone(), output));
@@ -322,20 +324,6 @@ fn write_contexts(
     Ok(())
 }
 
-// ─── Stream Helper ──────────────────────────────────────────────────────
-
-async fn collect_stream_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<LlmEvent>) -> String {
-    let mut text = String::new();
-    while let Some(event) = rx.recv().await {
-        match event {
-            LlmEvent::ContentDelta { delta } => text.push_str(&delta),
-            LlmEvent::Done { .. } => break,
-            _ => {},
-        }
-    }
-    text
-}
-
 // ─── TurnEnd Incremental Extraction ────────────────────────────────────
 
 /// TurnEnd 增量提取：读取已有记忆 → 召回历史上下文 → 小模型提取 → 写入 contexts/。
@@ -376,7 +364,9 @@ pub async fn extract_turn(
         .await
         .map_err(|e| ExtensionError::Internal(e.to_string()))?;
 
-    let text = collect_stream_text(rx).await;
+    let text = astrcode_extension_sdk::llm::collect_stream_text(rx)
+        .await
+        .unwrap_or_default();
     let output = parse_phase1_output(&text)?;
 
     if output.memories.is_empty() {

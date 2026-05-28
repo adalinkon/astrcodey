@@ -2,9 +2,8 @@ use astrcode_core::{
     event::EventPayload, extension::CompactTrigger, storage::CompactSnapshotInput, types::SessionId,
 };
 use astrcode_protocol::events::ClientNotification;
-use astrcode_session::{
-    compact::compact_trigger_name,
-    compaction_run::{IdleCompactionOutcome, IdleCompactionParams, compact_idle_session},
+use astrcode_session::compaction_run::{
+    IdleCompactionOutcome, IdleCompactionParams, compact_idle_session,
 };
 
 use super::{CommandHandler, HandlerError, session_snapshot};
@@ -100,7 +99,7 @@ impl CommandHandler {
 
         let snapshot_path = session
             .write_compact_snapshot(CompactSnapshotInput {
-                trigger: compact_trigger_name(CompactTrigger::ManualCommand).into(),
+                trigger: CompactTrigger::ManualCommand.as_str().into(),
                 model_id: state.model_id.clone(),
                 working_dir: state.working_dir.clone(),
                 system_prompt: state.system_prompt.clone(),

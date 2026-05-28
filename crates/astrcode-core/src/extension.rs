@@ -541,6 +541,17 @@ pub enum CompactTrigger {
     ReactivePromptTooLong,
 }
 
+impl CompactTrigger {
+    /// 返回触发来源的字符串标识，用于事件记录和审计。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CompactTrigger::AutoThreshold => "auto_threshold",
+            CompactTrigger::ManualCommand => "manual_command",
+            CompactTrigger::ReactivePromptTooLong => "reactive_prompt_too_long",
+        }
+    }
+}
+
 /// Compact 使用的策略，记录在事件中用于 replay 和审计。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]

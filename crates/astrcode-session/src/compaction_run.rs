@@ -19,8 +19,7 @@ use crate::{
     Session,
     compact::{
         CompactHookContext, PersistCompactError, collect_compact_instructions,
-        compact_trigger_name, dispatch_post_compact, make_compact_request_fn,
-        persist_compact_result,
+        dispatch_post_compact, make_compact_request_fn, persist_compact_result,
     },
     post_compact::enrich_post_compact_context,
     session::SessionError,
@@ -129,7 +128,7 @@ pub async fn compact_idle_session(
     let persisted = match persist_compact_result(
         session,
         &compaction,
-        compact_trigger_name(CompactTrigger::ManualCommand),
+        CompactTrigger::ManualCommand.as_str(),
         &system_prompt,
         &fingerprint,
         state.extra_system_prompt.as_deref(),

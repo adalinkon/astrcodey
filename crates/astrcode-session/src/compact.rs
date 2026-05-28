@@ -8,12 +8,11 @@ use astrcode_core::{
     event::Event,
     extension::{
         CompactContext, CompactEvent, CompactResult as TypedCompactResult, CompactStrategy,
-        CompactTrigger, ExtensionError,
+        ExtensionError,
     },
-    llm::{LlmError, LlmEvent, LlmMessage, LlmProvider},
+    llm::{self, LlmMessage, LlmProvider},
 };
 use astrcode_extensions::runner::ExtensionRunner;
-use tokio::sync::mpsc;
 
 use crate::{Session, session::SessionError};
 
@@ -27,24 +26,30 @@ pub struct CompactHookContext<'a> {
     pub session_id: &'a str,
     pub working_dir: &'a str,
     pub model_id: &'a str,
-    pub trigger: CompactTrigger,
+    pub trigger: astrcode_core::extension::CompactTrigger,
     pub message_count: usize,
+}
+
+impl<'a> CompactHookContext<'a> {
+    fn build_compact_context(&self, compaction: Option<&CompactResult>) -> CompactContext {
+        CompactContext {
+            session_id: self.session_id.to_string(),
+            working_dir: self.working_dir.to_string(),
+            model: ModelSelection::simple(self.model_id),
+            trigger: self.trigger,
+            message_count: self.message_count,
+            pre_tokens: compaction.map(|c| c.pre_tokens),
+            post_tokens: compaction.map(|c| c.post_tokens),
+            summary: compaction.map(|c| c.summary.clone()),
+        }
+    }
 }
 
 pub async fn collect_compact_instructions(
     extension_runner: &ExtensionRunner,
     input: CompactHookContext<'_>,
 ) -> Result<Vec<String>, ExtensionError> {
-    let ctx = CompactContext {
-        session_id: input.session_id.to_string(),
-        working_dir: input.working_dir.to_string(),
-        model: ModelSelection::simple(input.model_id),
-        trigger: input.trigger,
-        message_count: input.message_count,
-        pre_tokens: None,
-        post_tokens: None,
-        summary: None,
-    };
+    let ctx = input.build_compact_context(None);
     let result = extension_runner
         .emit_compact(CompactEvent::PreCompact, ctx)
         .await?;
@@ -63,46 +68,13 @@ pub async fn collect_compact_instructions(
 pub async fn dispatch_post_compact(
     extension_runner: &ExtensionRunner,
     input: CompactHookContext<'_>,
-    compaction: &astrcode_context::compaction::CompactResult,
+    compaction: &CompactResult,
 ) -> Result<(), ExtensionError> {
-    let ctx = CompactContext {
-        session_id: input.session_id.to_string(),
-        working_dir: input.working_dir.to_string(),
-        model: ModelSelection::simple(input.model_id),
-        trigger: input.trigger,
-        message_count: input.message_count,
-        pre_tokens: Some(compaction.pre_tokens),
-        post_tokens: Some(compaction.post_tokens),
-        summary: Some(compaction.summary.clone()),
-    };
+    let ctx = input.build_compact_context(Some(compaction));
     extension_runner
         .emit_compact(CompactEvent::PostCompact, ctx)
         .await?;
     Ok(())
-}
-
-pub fn compact_trigger_name(trigger: CompactTrigger) -> &'static str {
-    match trigger {
-        CompactTrigger::AutoThreshold => "auto_threshold",
-        CompactTrigger::ManualCommand => "manual_command",
-        CompactTrigger::ReactivePromptTooLong => "reactive_prompt_too_long",
-    }
-}
-
-/// 从 LLM stream 收集纯文本输出，忽略 tool call 事件。
-async fn collect_stream_text(
-    mut rx: mpsc::UnboundedReceiver<LlmEvent>,
-) -> Result<String, LlmError> {
-    let mut text = String::new();
-    while let Some(event) = rx.recv().await {
-        match event {
-            LlmEvent::ContentDelta { delta } => text.push_str(&delta),
-            LlmEvent::Done { .. } => break,
-            LlmEvent::Error { message } => return Err(LlmError::StreamParse(message)),
-            _ => {},
-        }
-    }
-    Ok(text)
 }
 
 /// 从 LlmProvider 构造 compact 请求闭包。
@@ -117,7 +89,9 @@ pub fn make_compact_request_fn(llm: Arc<dyn LlmProvider>) -> CompactRequestFn {
                 .generate(messages, vec![])
                 .await
                 .map_err(CompactError::Llm)?;
-            collect_stream_text(rx).await.map_err(CompactError::Llm)
+            llm::collect_stream_text(rx)
+                .await
+                .map_err(CompactError::Llm)
         })
     })
 }
@@ -172,35 +146,4 @@ pub async fn persist_compact_result(
         base_event_seq,
         messages_removed: compaction.messages_removed,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use astrcode_core::extension::CompactTrigger;
-
-    use super::*;
-
-    #[test]
-    fn compact_trigger_name_auto() {
-        assert_eq!(
-            compact_trigger_name(CompactTrigger::AutoThreshold),
-            "auto_threshold"
-        );
-    }
-
-    #[test]
-    fn compact_trigger_name_manual() {
-        assert_eq!(
-            compact_trigger_name(CompactTrigger::ManualCommand),
-            "manual_command"
-        );
-    }
-
-    #[test]
-    fn compact_trigger_name_reactive() {
-        assert_eq!(
-            compact_trigger_name(CompactTrigger::ReactivePromptTooLong),
-            "reactive_prompt_too_long"
-        );
-    }
 }

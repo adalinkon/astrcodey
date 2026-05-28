@@ -61,17 +61,22 @@ const BLOCK_GAP_PX = 40 // matches Tailwind gap-10 (2.5rem ≈ 40px)
 /** Within this distance from the bottom we treat the user as "following" the stream. */
 const STICK_TO_BOTTOM_THRESHOLD_PX = 64
 
+function isNearBottom(container: HTMLDivElement, threshold = STICK_TO_BOTTOM_THRESHOLD_PX) {
+  return (
+    container.scrollHeight - container.scrollTop - container.clientHeight <=
+    threshold
+  )
+}
+
 export default function MessageList({ blocks, sessionId }: MessageListProps) {
   const listRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
   const shouldStickRef = useRef(true)
   const prevItemCountRef = useRef(0)
   const lastScrollTopRef = useRef(0)
   const ignoreScrollRef = useRef(false)
+  const touchStartYRef = useRef<number | null>(null)
   const queuedMessages = useAppStore((s) => s.queuedMessages)
-
-  const distanceFromBottom = useCallback((container: HTMLDivElement) => {
-    return container.scrollHeight - container.scrollTop - container.clientHeight
-  }, [])
 
   const scrollContainerToBottom = useCallback(
     (behavior: ScrollBehavior = 'auto') => {
@@ -79,15 +84,14 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
       if (!container) return
       ignoreScrollRef.current = true
       container.scrollTo({ top: container.scrollHeight, behavior })
-      lastScrollTopRef.current = container.scrollTop
       requestAnimationFrame(() => {
+        lastScrollTopRef.current = container.scrollTop
         ignoreScrollRef.current = false
       })
     },
     []
   )
 
-  // All items: blocks + queued messages
   const allItems = useMemo(() => {
     const items: { type: 'block'; block: ConversationBlock; index: number }[] =
       []
@@ -121,26 +125,71 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
     },
   })
 
+  const virtualizerRef = useRef(virtualizer)
+  virtualizerRef.current = virtualizer
+
+  const followLatest = useCallback(
+    (behavior: ScrollBehavior = 'auto') => {
+      if (!shouldStickRef.current) return
+      const itemCount = prevItemCountRef.current
+      if (itemCount > 0) {
+        virtualizerRef.current.scrollToIndex(itemCount - 1, { align: 'end' })
+      }
+      scrollContainerToBottom(behavior)
+    },
+    [scrollContainerToBottom]
+  )
+
+  const markUserScrolledUp = useCallback(() => {
+    shouldStickRef.current = false
+  }, [])
+
   const updateStickiness = useCallback(() => {
+    if (ignoreScrollRef.current) return
+
     const container = listRef.current
     if (!container) return
 
     const scrollTop = container.scrollTop
-    if (!ignoreScrollRef.current && scrollTop < lastScrollTopRef.current - 2) {
-      shouldStickRef.current = false
-    } else if (distanceFromBottom(container) <= STICK_TO_BOTTOM_THRESHOLD_PX) {
-      shouldStickRef.current = true
-    } else {
-      shouldStickRef.current = false
-    }
-    lastScrollTopRef.current = scrollTop
-  }, [distanceFromBottom])
 
-  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    if (e.deltaY < 0) {
+    // Only react to user-driven scroll direction — do not disable follow when
+    // content grows below the viewport (scrollTop unchanged, distance increases).
+    if (scrollTop < lastScrollTopRef.current - 2) {
       shouldStickRef.current = false
+    } else if (
+      scrollTop > lastScrollTopRef.current + 2 &&
+      isNearBottom(container)
+    ) {
+      shouldStickRef.current = true
     }
+
+    lastScrollTopRef.current = scrollTop
   }, [])
+
+  const handleWheel = useCallback(
+    (e: React.WheelEvent<HTMLDivElement>) => {
+      if (e.deltaY < 0) {
+        markUserScrolledUp()
+      }
+    },
+    [markUserScrolledUp]
+  )
+
+  const handleTouchStart = useCallback((e: React.TouchEvent<HTMLDivElement>) => {
+    touchStartYRef.current = e.touches[0]?.clientY ?? null
+  }, [])
+
+  const handleTouchMove = useCallback(
+    (e: React.TouchEvent<HTMLDivElement>) => {
+      const startY = touchStartYRef.current
+      const currentY = e.touches[0]?.clientY
+      if (startY === null || currentY === undefined) return
+      if (currentY > startY + 4) {
+        markUserScrolledUp()
+      }
+    },
+    [markUserScrolledUp]
+  )
 
   // New session: default to following the latest messages.
   useEffect(() => {
@@ -169,31 +218,46 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
     if (!grew && !isFirstPaint) return
     if (!shouldStickRef.current && !isFirstPaint) return
 
-    requestAnimationFrame(() => {
+    const frame = requestAnimationFrame(() => {
+      if (!shouldStickRef.current && !isFirstPaint) return
       if (itemCount === 0) return
-      virtualizer.scrollToIndex(itemCount - 1, { align: 'end' })
-      scrollContainerToBottom()
-      const container = listRef.current
-      if (container) {
-        lastScrollTopRef.current = container.scrollTop
-      }
+      followLatest()
     })
-  }, [totalItemCount, virtualizer, scrollContainerToBottom])
+    return () => cancelAnimationFrame(frame)
+  }, [totalItemCount, followLatest])
 
-  // Streaming text growth: pin to bottom only if the user is already following (no scrollToIndex).
+  // Streaming text growth: keep pinned when the user is following.
   useEffect(() => {
-    if (!streamingTailSignature || !shouldStickRef.current) return
+    if (!streamingTailSignature) return
 
-    requestAnimationFrame(() => {
-      const container = listRef.current
-      if (!container) return
-      if (distanceFromBottom(container) > STICK_TO_BOTTOM_THRESHOLD_PX) {
-        shouldStickRef.current = false
-        return
-      }
-      scrollContainerToBottom()
+    const frame = requestAnimationFrame(() => {
+      if (!shouldStickRef.current) return
+      followLatest()
     })
-  }, [streamingTailSignature, distanceFromBottom, scrollContainerToBottom])
+    return () => cancelAnimationFrame(frame)
+  }, [streamingTailSignature, followLatest])
+
+  // Virtual list remeasures asynchronously; follow again after layout settles.
+  useEffect(() => {
+    if (!streamingTailSignature) return
+    const content = contentRef.current
+    if (!content) return
+
+    let raf = 0
+    const observer = new ResizeObserver(() => {
+      if (!shouldStickRef.current) return
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => {
+        if (!shouldStickRef.current) return
+        followLatest()
+      })
+    })
+    observer.observe(content)
+    return () => {
+      cancelAnimationFrame(raf)
+      observer.disconnect()
+    }
+  }, [streamingTailSignature, followLatest])
 
   const virtualItems = virtualizer.getVirtualItems()
 
@@ -203,6 +267,8 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
       className="flex min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto bg-panel-bg px-[var(--chat-content-horizontal-padding)] py-7"
       onScroll={updateStickiness}
       onWheel={handleWheel}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
     >
       {blocks.length === 0 && (
         <div
@@ -217,6 +283,7 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
 
       {blocks.length > 0 && (
         <div
+          ref={contentRef}
           style={{
             height: virtualizer.getTotalSize(),
             width: '100%',

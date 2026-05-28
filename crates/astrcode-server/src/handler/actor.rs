@@ -31,6 +31,10 @@ impl CommandHandle {
             .await
             .map_err(|_| HandlerError::ActorUnavailable)
     }
+
+    async fn recv<T>(rx: oneshot::Receiver<T>) -> Result<T, HandlerError> {
+        rx.await.map_err(|_| HandlerError::ActorUnavailable)
+    }
     /// 启动 CommandHandler Actor，返回可克隆的句柄。
     pub fn spawn(
         runtime: Arc<ServerRuntime>,
@@ -45,7 +49,7 @@ impl CommandHandle {
         let (reply, rx) = oneshot::channel();
         self.post(CommandMessage::ClientCommand { command, reply })
             .await?;
-        rx.await.map_err(|_| HandlerError::ActorUnavailable)?
+        Self::recv(rx).await?
     }
 
     /// 创建新会话，返回会话 ID。
@@ -53,7 +57,7 @@ impl CommandHandle {
         let (reply, rx) = oneshot::channel();
         self.post(CommandMessage::CreateSession { working_dir, reply })
             .await?;
-        rx.await.map_err(|_| HandlerError::ActorUnavailable)?
+        Self::recv(rx).await?
     }
 
     /// 提交提示词，返回 Turn ID 和完成通知接收器。
@@ -69,7 +73,7 @@ impl CommandHandle {
             reply,
         })
         .await?;
-        rx.await.map_err(|_| HandlerError::ActorUnavailable)?
+        Self::recv(rx).await?
     }
 
     /// 向指定会话提交输入。
@@ -85,7 +89,7 @@ impl CommandHandle {
             reply,
         })
         .await?;
-        rx.await.map_err(|_| HandlerError::ActorUnavailable)?
+        Self::recv(rx).await?
     }
 
     /// 手动压缩指定会话。
@@ -101,7 +105,7 @@ impl CommandHandle {
             reply,
         })
         .await?;
-        rx.await.map_err(|_| HandlerError::ActorUnavailable)?
+        Self::recv(rx).await?
     }
 
     /// 中止指定会话的活跃 Turn。
@@ -109,7 +113,7 @@ impl CommandHandle {
         let (reply, rx) = oneshot::channel();
         self.post(CommandMessage::AbortSession { session_id, reply })
             .await?;
-        rx.await.map_err(|_| HandlerError::ActorUnavailable)?
+        Self::recv(rx).await?
     }
 
     /// 获取指定会话的可用命令列表。
@@ -120,7 +124,7 @@ impl CommandHandle {
         let (reply, rx) = oneshot::channel();
         self.post(CommandMessage::ListCommandsForSession { session_id, reply })
             .await?;
-        rx.await.map_err(|_| HandlerError::ActorUnavailable)?
+        Self::recv(rx).await?
     }
 
     /// 修复进程重启后残留的过期 turn phase。
@@ -131,7 +135,7 @@ impl CommandHandle {
         let (reply, rx) = oneshot::channel();
         self.post(CommandMessage::RepairStaleTurn { session_id, reply })
             .await?;
-        rx.await.map_err(|_| HandlerError::ActorUnavailable)?
+        Self::recv(rx).await?
     }
 
     /// Fork 源会话，返回新 session ID。
@@ -147,7 +151,7 @@ impl CommandHandle {
             reply,
         })
         .await?;
-        rx.await.map_err(|_| HandlerError::ActorUnavailable)?
+        Self::recv(rx).await?
     }
 
     /// 停止 actor 主循环并等待任务退出。
@@ -163,7 +167,7 @@ impl CommandHandle {
         let (reply, rx) = oneshot::channel();
         self.post(CommandMessage::DeleteProject { working_dir, reply })
             .await?;
-        rx.await.map_err(|_| HandlerError::ActorUnavailable)?
+        Self::recv(rx).await?
     }
 }
 

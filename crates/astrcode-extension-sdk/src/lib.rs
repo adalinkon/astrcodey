@@ -18,7 +18,7 @@ pub mod config {
 
 pub mod llm {
     pub use astrcode_core::llm::{
-        LlmContent, LlmEvent, LlmMessage, LlmProvider, LlmRole, ModelLimits,
+        LlmContent, LlmEvent, LlmMessage, LlmProvider, LlmRole, ModelLimits, collect_stream_text,
     };
 }
 
