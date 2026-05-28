@@ -230,6 +230,16 @@ impl TurnScheduler {
     pub async fn cleanup(&self, session_id: &SessionId) {
         if let Some((turn_id, session)) = self.registry.abort_and_remove(session_id) {
             self.emit_turn_aborted(&turn_id, &session, session_id).await;
+        } else {
+            // Turn 已从 registry 移除（如同步 agent 路径 remove_if_matches），
+            // 但可能仍有后台任务在运行，需要手动清理。
+            if let Ok(session) = self.session_manager.open(session_id.clone()).await {
+                session
+                    .runtime()
+                    .background_tasks()
+                    .lock()
+                    .cleanup_session(session_id);
+            }
         }
         // 清理待处理消息队列，避免内存泄漏
         let removed = self.pending_queues.lock().remove(session_id);
