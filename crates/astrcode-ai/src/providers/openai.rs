@@ -9,7 +9,7 @@ use astrcode_core::{config::OpenAiApiMode, llm::*, tool::ToolDefinition};
 use tokio::sync::mpsc;
 
 use crate::{
-    common::{build_client, read_http_error_body, stream_body_error, transport_error},
+    common::{HttpPostRequest, build_client, send_event, stream_body_error, stream_text_delta},
     retry::RetryPolicy,
     serialization::{
         chat_message_to_json, prompt_cache_retention_wire_value, responses_input_items,
@@ -98,17 +98,23 @@ impl StandardAccumulator {
                 let call_id = chat_tool_call_id(index, partial);
                 partial.emitted_call_id = Some(call_id.clone());
                 partial.started = true;
-                let _ = tx.send(LlmEvent::ToolCallStart {
-                    call_id: call_id.clone(),
-                    name,
-                    arguments: String::new(),
-                });
+                send_event(
+                    tx,
+                    LlmEvent::ToolCallStart {
+                        call_id: call_id.clone(),
+                        name,
+                        arguments: String::new(),
+                    },
+                );
                 if !partial.pending_arguments.is_empty() {
                     let delta = std::mem::take(&mut partial.pending_arguments);
-                    let _ = tx.send(LlmEvent::ToolCallDelta {
-                        call_id: call_id.clone(),
-                        delta,
-                    });
+                    send_event(
+                        tx,
+                        LlmEvent::ToolCallDelta {
+                            call_id: call_id.clone(),
+                            delta,
+                        },
+                    );
                 }
             }
         }
@@ -118,10 +124,13 @@ impl StandardAccumulator {
                 return;
             }
             if partial.started {
-                let _ = tx.send(LlmEvent::ToolCallDelta {
-                    call_id: chat_tool_call_id(index, partial),
-                    delta: arguments,
-                });
+                send_event(
+                    tx,
+                    LlmEvent::ToolCallDelta {
+                        call_id: chat_tool_call_id(index, partial),
+                        delta: arguments,
+                    },
+                );
             } else {
                 partial.pending_arguments.push_str(&arguments);
             }
@@ -167,17 +176,23 @@ impl StandardAccumulator {
             .clone()
             .unwrap_or_else(|| item_id.to_string());
         partial.started = true;
-        let _ = tx.send(LlmEvent::ToolCallStart {
-            call_id: call_id.clone(),
-            name,
-            arguments: String::new(),
-        });
+        send_event(
+            tx,
+            LlmEvent::ToolCallStart {
+                call_id: call_id.clone(),
+                name,
+                arguments: String::new(),
+            },
+        );
         if !partial.pending_arguments.is_empty() {
             let delta = std::mem::take(&mut partial.pending_arguments);
-            let _ = tx.send(LlmEvent::ToolCallDelta {
-                call_id: call_id.clone(),
-                delta,
-            });
+            send_event(
+                tx,
+                LlmEvent::ToolCallDelta {
+                    call_id: call_id.clone(),
+                    delta,
+                },
+            );
         }
         Some(call_id)
     }
@@ -197,10 +212,14 @@ impl ChatAccumulator for StandardAccumulator {
             for choice in choices {
                 if let Some(delta) = choice.get("delta") {
                     if let Some(content) = delta["content"].as_str() {
-                        self.text.push_str(content);
-                        let _ = tx.send(LlmEvent::ContentDelta {
-                            delta: content.to_string(),
-                        });
+                        if let Some(incremental) = stream_text_delta(&mut self.text, content) {
+                            send_event(
+                                tx,
+                                LlmEvent::ContentDelta {
+                                    delta: incremental,
+                                },
+                            );
+                        }
                     }
                     if let Some(reasoning) = delta
                         .get("reasoning_content")
@@ -208,9 +227,16 @@ impl ChatAccumulator for StandardAccumulator {
                         .or_else(|| delta.get("thinking"))
                         .and_then(|value| value.as_str())
                     {
-                        let _ = tx.send(LlmEvent::ThinkingDelta {
-                            delta: reasoning.to_string(),
-                        });
+                        if let Some(incremental) =
+                            stream_text_delta(&mut self.reasoning_accumulated, reasoning)
+                        {
+                            send_event(
+                                tx,
+                                LlmEvent::ThinkingDelta {
+                                    delta: incremental,
+                                },
+                            );
+                        }
                     }
                     // Some providers emit cumulative reasoning_details[].text.
                     if let Some(details) = delta.get("reasoning_details").and_then(|v| v.as_array())
@@ -220,14 +246,15 @@ impl ChatAccumulator for StandardAccumulator {
                             .filter_map(|d| d.get("text").and_then(|t| t.as_str()))
                             .collect::<Vec<_>>()
                             .join("");
-                        if latest.len() > self.reasoning_accumulated.len() {
-                            let incremental = &latest[self.reasoning_accumulated.len()..];
-                            if !incremental.is_empty() {
-                                let _ = tx.send(LlmEvent::ThinkingDelta {
-                                    delta: incremental.to_string(),
-                                });
-                            }
-                            self.reasoning_accumulated = latest;
+                        if let Some(incremental) =
+                            stream_text_delta(&mut self.reasoning_accumulated, &latest)
+                        {
+                            send_event(
+                                tx,
+                                LlmEvent::ThinkingDelta {
+                                    delta: incremental,
+                                },
+                            );
                         }
                     }
                     if let Some(tool_calls) = delta["tool_calls"].as_array() {
@@ -243,9 +270,12 @@ impl ChatAccumulator for StandardAccumulator {
                 if let Some(finish) = choice["finish_reason"].as_str() {
                     if !self.done_sent {
                         self.done_sent = true;
-                        let _ = tx.send(LlmEvent::Done {
-                            finish_reason: finish.to_string(),
-                        });
+                        send_event(
+                            tx,
+                            LlmEvent::Done {
+                                finish_reason: finish.to_string(),
+                            },
+                        );
                     }
                 }
             }
@@ -267,16 +297,28 @@ impl ChatAccumulator for StandardAccumulator {
         match event_type {
             "response.output_text.delta" => {
                 if let Some(delta) = event["delta"].as_str() {
-                    let _ = tx.send(LlmEvent::ContentDelta {
-                        delta: delta.to_string(),
-                    });
+                    if let Some(incremental) = stream_text_delta(&mut self.text, delta) {
+                        send_event(
+                            tx,
+                            LlmEvent::ContentDelta {
+                                delta: incremental,
+                            },
+                        );
+                    }
                 }
             },
             "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
                 if let Some(delta) = event["delta"].as_str() {
-                    let _ = tx.send(LlmEvent::ThinkingDelta {
-                        delta: delta.to_string(),
-                    });
+                    if let Some(incremental) =
+                        stream_text_delta(&mut self.reasoning_accumulated, delta)
+                    {
+                        send_event(
+                            tx,
+                            LlmEvent::ThinkingDelta {
+                                delta: incremental,
+                            },
+                        );
+                    }
                 }
             },
             "response.output_item.added" => {
@@ -311,10 +353,13 @@ impl ChatAccumulator for StandardAccumulator {
                     if !arguments.is_empty() {
                         let partial = self.response_tool_items.entry(item_id.clone()).or_default();
                         partial.arguments_delta_seen = true;
-                        let _ = tx.send(LlmEvent::ToolCallDelta {
-                            call_id,
-                            delta: arguments,
-                        });
+                        send_event(
+                            tx,
+                            LlmEvent::ToolCallDelta {
+                                call_id,
+                                delta: arguments,
+                            },
+                        );
                     }
                 }
             },
@@ -335,7 +380,7 @@ impl ChatAccumulator for StandardAccumulator {
                         .or_default();
                     partial.arguments_delta_seen = true;
                     if partial.started {
-                        let _ = tx.send(LlmEvent::ToolCallDelta { call_id, delta });
+                        send_event(tx, LlmEvent::ToolCallDelta { call_id, delta });
                     } else {
                         partial.pending_arguments.push_str(&delta);
                     }
@@ -364,18 +409,24 @@ impl ChatAccumulator for StandardAccumulator {
                         if arguments.is_empty() {
                             return;
                         }
-                        let _ = tx.send(LlmEvent::ToolCallDelta {
-                            call_id,
-                            delta: arguments,
-                        });
+                        send_event(
+                            tx,
+                            LlmEvent::ToolCallDelta {
+                                call_id,
+                                delta: arguments,
+                            },
+                        );
                     }
                 }
             },
             "response.completed" if !self.done_sent => {
                 self.done_sent = true;
-                let _ = tx.send(LlmEvent::Done {
-                    finish_reason: "stop".into(),
-                });
+                send_event(
+                    tx,
+                    LlmEvent::Done {
+                        finish_reason: "stop".into(),
+                    },
+                );
             },
             _ => {},
         }
@@ -408,9 +459,9 @@ impl<A: ChatAccumulator> OpenAiProvider<A> {
         model_id: String,
         max_tokens: Option<u32>,
         context_limit: Option<usize>,
-    ) -> Self {
-        let client = build_client(&config);
-        Self {
+    ) -> Result<Self, LlmError> {
+        let client = build_client(&config)?;
+        Ok(Self {
             config,
             api_mode,
             model_id,
@@ -420,7 +471,7 @@ impl<A: ChatAccumulator> OpenAiProvider<A> {
                 max_output_tokens: max_tokens.unwrap_or(8192) as usize,
             },
             client,
-        }
+        })
     }
 
     fn endpoint(&self) -> String {
@@ -577,81 +628,18 @@ impl<A: ChatAccumulator> OpenAiProvider<A> {
         retry: RetryPolicy,
         tx: mpsc::UnboundedSender<LlmEvent>,
     ) -> Result<(), LlmError> {
-        let mut attempt = 0;
+        let mut headers: Vec<(String, String)> = extra_headers.into_iter().collect();
+        headers.push(("Authorization".into(), format!("Bearer {api_key}")));
 
-        loop {
-            attempt += 1;
-            let mut req = client
-                .post(&endpoint)
-                .header("Authorization", format!("Bearer {}", api_key));
-            for (key, value) in &extra_headers {
-                req = req.header(key.as_str(), value.as_str());
-            }
-            let response = match req.json(&body).send().await {
-                Ok(r) => r,
-                Err(e) => {
-                    if retry.should_retry_transport(attempt) {
-                        let delay = retry.delay(attempt);
-                        tracing::warn!(
-                            "LLM request failed with transport error (attempt {attempt}/{}), \
-                             retrying after {}ms: {e}",
-                            retry.max_transport_retries,
-                            delay.as_millis(),
-                        );
-                        tokio::time::sleep(delay).await;
-                        continue;
-                    }
-                    return Err(transport_error("send request", &endpoint, e));
-                },
-            };
-
-            let status = response.status();
-            if status.is_success() {
-                match Self::parse_stream::<A>(response, api_mode, &tx).await {
-                    Ok(()) => return Ok(()),
-                    Err(LlmError::Transport(msg)) => {
-                        if retry.should_retry_transport(attempt) {
-                            let delay = retry.delay(attempt);
-                            tracing::warn!(
-                                "LLM stream read failed with transport error (attempt \
-                                 {attempt}/{}), retrying after {}ms: {msg}",
-                                retry.max_transport_retries,
-                                delay.as_millis(),
-                            );
-                            tokio::time::sleep(delay).await;
-                            continue;
-                        }
-                        return Err(LlmError::Transport(msg));
-                    },
-                    Err(e) => return Err(e),
-                }
-            }
-
-            if retry.should_retry(attempt, status.as_u16()) {
-                let delay = retry.delay(attempt);
-                tracing::warn!(
-                    "LLM request failed with {}, retrying (attempt {}/{}) after {}ms",
-                    status,
-                    attempt,
-                    retry.max_retries,
-                    delay.as_millis()
-                );
-                tokio::time::sleep(delay).await;
-                continue;
-            }
-
-            let text = read_http_error_body(response, &endpoint).await;
-            if status.as_u16() >= 500 {
-                return Err(LlmError::ServerError {
-                    status: status.as_u16(),
-                    message: text,
-                });
-            }
-            return Err(LlmError::ClientError {
-                status: status.as_u16(),
-                message: text,
-            });
+        HttpPostRequest {
+            client,
+            endpoint,
+            headers,
+            body,
+            retry,
         }
+        .run(|response| Self::parse_stream::<A>(response, api_mode, &tx))
+        .await
     }
 
     async fn parse_stream<ACC: ChatAccumulator>(
@@ -679,35 +667,47 @@ impl<A: ChatAccumulator> OpenAiProvider<A> {
         let mut bytes_read = 0usize;
 
         while let Some(chunk) = stream.next().await {
-            let bytes = chunk.map_err(|e| {
+            if tx.is_closed() {
+                return Ok(());
+            }
+            let bytes = chunk.map_err(|error| {
                 stream_body_error(
                     &endpoint,
                     status.as_u16(),
                     content_type.as_deref(),
                     content_encoding.as_deref(),
                     bytes_read,
-                    e,
+                    error,
                 )
             })?;
             bytes_read += bytes.len();
             if let Some(text) = decoder.push(&bytes) {
                 for line in line_reader.push_chunk(&text) {
                     process_sse_line(&line, &mut accumulator, api_mode, tx);
+                    if tx.is_closed() {
+                        return Ok(());
+                    }
                 }
             }
         }
         if let Some(tail_text) = decoder.finish() {
             for line in line_reader.push_chunk(&tail_text) {
                 process_sse_line(&line, &mut accumulator, api_mode, tx);
+                if tx.is_closed() {
+                    return Ok(());
+                }
             }
         }
         if let Some(line) = line_reader.flush() {
             process_sse_line(&line, &mut accumulator, api_mode, tx);
         }
-        if !accumulator.done_sent() {
-            let _ = tx.send(LlmEvent::Done {
-                finish_reason: "stop".into(),
-            });
+        if !accumulator.done_sent() && !tx.is_closed() {
+            send_event(
+                tx,
+                LlmEvent::Done {
+                    finish_reason: "stop".into(),
+                },
+            );
         }
         Ok(())
     }
@@ -748,10 +748,13 @@ impl<A: ChatAccumulator> LlmProvider for OpenAiProvider<A> {
                 tx.clone(),
             )
             .await;
-            if let Err(e) = result {
-                let _ = tx.send(LlmEvent::Error {
-                    message: e.to_string(),
-                });
+            if let Err(error) = result {
+                send_event(
+                    &tx,
+                    LlmEvent::Error {
+                        message: error.to_string(),
+                    },
+                );
             }
         });
 
@@ -792,9 +795,12 @@ fn emit_done_once(accumulator: &mut impl ChatAccumulator, tx: &mpsc::UnboundedSe
         return;
     }
     accumulator.mark_done();
-    let _ = tx.send(LlmEvent::Done {
-        finish_reason: "stop".into(),
-    });
+    send_event(
+        tx,
+        LlmEvent::Done {
+            finish_reason: "stop".into(),
+        },
+    );
 }
 
 fn process_sse_data(
@@ -808,10 +814,7 @@ fn process_sse_data(
         return;
     }
 
-    let cleaned: String = data
-        .chars()
-        .filter(|c| !c.is_control() || c.is_whitespace())
-        .collect();
+    let cleaned = clean_json_fragment(data);
     if cleaned != data {
         if let Ok(event) = serde_json::from_str::<serde_json::Value>(&cleaned) {
             ingest_sse_event(&event, accumulator, api_mode, tx);
@@ -858,9 +861,12 @@ fn emit_stream_error(
     }
 
     accumulator.mark_done();
-    let _ = tx.send(LlmEvent::Error {
-        message: stream_error_message(event).unwrap_or_else(|| event.to_string()),
-    });
+    send_event(
+        tx,
+        LlmEvent::Error {
+            message: stream_error_message(event).unwrap_or_else(|| event.to_string()),
+        },
+    );
     true
 }
 
@@ -970,7 +976,7 @@ mod tests {
             }),
             ..LlmClientConfig::default()
         };
-        StandardProvider::new(config, api_mode, "gpt-test".into(), Some(1024), Some(8192))
+        StandardProvider::new(config, api_mode, "gpt-test".into(), Some(1024), Some(8192)).unwrap()
     }
 
     fn sample_tool() -> ToolDefinition {
@@ -1135,6 +1141,56 @@ mod tests {
             })
             .collect::<String>();
         assert_eq!(reasoning, "plan more");
+    }
+
+    #[test]
+    fn chat_stream_deduplicates_cumulative_content_and_reasoning() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut acc = StandardAccumulator::default();
+
+        acc.ingest_chat_completion(
+            &serde_json::json!({
+                "choices": [{"delta": {"reasoning": "The"}}]
+            }),
+            &tx,
+        );
+        acc.ingest_chat_completion(
+            &serde_json::json!({
+                "choices": [{"delta": {"reasoning": "The user"}}]
+            }),
+            &tx,
+        );
+        acc.ingest_chat_completion(
+            &serde_json::json!({
+                "choices": [{"delta": {"content": "说实话，"}}]
+            }),
+            &tx,
+        );
+        acc.ingest_chat_completion(
+            &serde_json::json!({
+                "choices": [{"delta": {"content": "说实话，逗人开心"}}]
+            }),
+            &tx,
+        );
+
+        let events = drain_events(&mut rx);
+        let thinking: String = events
+            .iter()
+            .filter_map(|event| match event {
+                LlmEvent::ThinkingDelta { delta } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        let content: String = events
+            .iter()
+            .filter_map(|event| match event {
+                LlmEvent::ContentDelta { delta } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thinking, "The user");
+        assert_eq!(content, "说实话，逗人开心");
+        assert_eq!(acc.text(), "说实话，逗人开心");
     }
 
     #[test]

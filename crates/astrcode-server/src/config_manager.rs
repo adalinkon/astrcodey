@@ -28,7 +28,9 @@ pub struct ConfigManager {
     capabilities: Arc<SessionRuntimeServices>,
 }
 
-fn build_provider_from_settings(settings: &LlmSettings) -> Arc<dyn LlmProvider> {
+fn build_provider_from_settings(
+    settings: &LlmSettings,
+) -> Result<Arc<dyn LlmProvider>, astrcode_core::llm::LlmError> {
     let llm_config = LlmClientConfig {
         base_url: settings.base_url.clone(),
         api_key: settings.api_key.clone(),
@@ -65,10 +67,10 @@ impl ConfigManager {
         effective: EffectiveConfig,
         extension_runner: Arc<astrcode_extensions::runner::ExtensionRunner>,
         context_assembler: Arc<astrcode_context::context_assembler::LlmContextAssembler>,
-    ) -> (Self, Arc<SessionRuntimeServices>) {
+    ) -> Result<(Self, Arc<SessionRuntimeServices>), astrcode_core::llm::LlmError> {
         let capabilities = Arc::new(SessionRuntimeServices::new(
-            build_provider_from_settings(&effective.llm),
-            build_provider_from_settings(&effective.small_llm),
+            build_provider_from_settings(&effective.llm)?,
+            build_provider_from_settings(&effective.small_llm)?,
             extension_runner.clone(),
             context_assembler,
             effective,
@@ -78,7 +80,7 @@ impl ConfigManager {
             raw_config: RwLock::new(raw_config),
             capabilities: Arc::clone(&capabilities),
         };
-        (manager, capabilities)
+        Ok((manager, capabilities))
     }
 
     /// 测试用构造：调用方负责传入预先组装好的 `Capabilities`。
@@ -129,15 +131,19 @@ impl ConfigManager {
     }
 
     pub fn rebuild_provider_from_effective(&self) {
-        let (new_llm, new_small) = {
-            let effective = self.read_effective();
-            (
-                build_provider_from_settings(&effective.llm),
-                build_provider_from_settings(&effective.small_llm),
-            )
-        };
-        self.capabilities.swap_llm(new_llm);
-        self.capabilities.swap_small_llm(new_small);
+        let effective = self.read_effective();
+        match build_provider_from_settings(&effective.llm) {
+            Ok(provider) => self.capabilities.swap_llm(provider),
+            Err(error) => {
+                tracing::error!(%error, "failed to rebuild LLM provider, keeping previous");
+            },
+        }
+        match build_provider_from_settings(&effective.small_llm) {
+            Ok(provider) => self.capabilities.swap_small_llm(provider),
+            Err(error) => {
+                tracing::error!(%error, "failed to rebuild small LLM provider, keeping previous");
+            },
+        }
     }
 
     pub fn apply_raw_config_and_rebuild(

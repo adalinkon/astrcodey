@@ -176,7 +176,7 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
         effective,
         Arc::clone(&extension_runner),
         Arc::clone(&context_assembler),
-    );
+    )?;
     let config_manager = Arc::new(config_manager);
 
     let session_manager = Arc::new(SessionManager::new(
@@ -237,6 +237,8 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
 pub enum BootstrapError {
     #[error("Config: {0}")]
     Config(#[from] astrcode_core::config::ConfigStoreError),
+    #[error("LLM provider: {0}")]
+    Llm(#[from] astrcode_core::llm::LlmError),
 }
 
 #[cfg(feature = "testing")]
