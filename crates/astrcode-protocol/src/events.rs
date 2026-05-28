@@ -3,7 +3,7 @@
 //! 定义服务器向连接的客户端推送的所有通知，
 //! 包括运行时事件、会话列表、UI 交互请求和错误信息。
 
-use astrcode_core::event::Event;
+use astrcode_core::{event::Event, extension::Keybinding};
 use serde::{Deserialize, Serialize};
 
 pub use crate::agent_session_link::{AgentSessionLinkDto, AgentSessionStatusDto};
@@ -47,7 +47,7 @@ pub enum ClientNotification {
         commands: Vec<ExtensionCommandInfo>,
         /// 插件注册的快捷键绑定。
         #[serde(default)]
-        keybindings: Vec<KeybindingInfoDto>,
+        keybindings: Vec<Keybinding>,
         /// 插件注册的状态栏项（含初始值）。
         #[serde(default)]
         status_items: Vec<StatusItemInfoDto>,
@@ -132,19 +132,6 @@ pub struct ExtensionCommandInfo {
     pub source: String,
 }
 
-/// 快捷键绑定信息 DTO（通过 ExtensionCommandList 下发到客户端）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KeybindingInfoDto {
-    /// 快捷键描述（如 "shift+tab"）。
-    pub key: String,
-    /// 触发的命令名（不含 `/`）。
-    pub command: String,
-    /// 命令参数。
-    #[serde(default)]
-    pub arguments: String,
-    /// 人类可读描述。
-    pub description: String,
-}
 
 /// 状态栏项信息 DTO（通过 ExtensionCommandList 下发到客户端）。
 #[derive(Debug, Clone, Serialize, Deserialize)]

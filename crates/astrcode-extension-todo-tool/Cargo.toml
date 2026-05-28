@@ -5,9 +5,6 @@ edition.workspace = true
 license.workspace = true
 description = "Progress todo list extension"
 
-[lib]
-crate-type = ["rlib"]
-
 [dependencies]
 astrcode-extension-sdk = { path = "../astrcode-extension-sdk" }
 astrcode-support = { path = "../astrcode-support" }

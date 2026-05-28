@@ -669,7 +669,7 @@ fn apply_ui_request(
 fn apply_extension_command_list(
     app: &mut App,
     commands: &[ExtensionCommandInfo],
-    keybindings: &[astrcode_protocol::events::KeybindingInfoDto],
+    keybindings: &[astrcode_core::extension::Keybinding],
     status_items: &[astrcode_protocol::events::StatusItemInfoDto],
 ) {
     app.extension_commands = commands

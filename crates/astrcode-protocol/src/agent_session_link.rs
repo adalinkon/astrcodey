@@ -1,30 +1,11 @@
 //! 子 Agent 会话链接：唯一线缆 DTO 与集中构造逻辑。
 
-use astrcode_core::{
-    event::Phase,
-    storage::{AgentSessionLinkView, AgentSessionStatus},
-};
-use serde::{Deserialize, Serialize};
-
 /// 子 Agent 会话的运行状态（HTTP/SSE/JSON-RPC 共用）。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentSessionStatusDto {
-    #[default]
-    Running,
-    Completed,
-    Failed,
-}
-
-impl From<AgentSessionStatus> for AgentSessionStatusDto {
-    fn from(status: AgentSessionStatus) -> Self {
-        match status {
-            AgentSessionStatus::Running => Self::Running,
-            AgentSessionStatus::Completed => Self::Completed,
-            AgentSessionStatus::Failed => Self::Failed,
-        }
-    }
-}
+///
+/// Re-export core 类型；线缆格式（snake_case）与内部一致，无需额外 DTO。
+pub use astrcode_core::storage::AgentSessionStatus as AgentSessionStatusDto;
+use astrcode_core::{event::Phase, storage::AgentSessionLinkView};
+use serde::{Deserialize, Serialize};
 
 /// 子 Agent 会话链接（HTTP/SSE/JSON-RPC 共用线缆 DTO，camelCase 序列化）。
 ///
@@ -92,7 +73,7 @@ impl AgentSessionLinkPatch {
             tool_call_id: link.tool_call_id.as_ref().map(ToString::to_string),
             agent_name: Some(link.agent_name.clone()),
             task: Some(link.task.clone()),
-            status: Some(link.status.into()),
+            status: Some(link.status),
             final_session_id: link.final_session_id.as_ref().map(ToString::to_string),
             summary: link.summary.clone(),
             error: link.error.clone(),

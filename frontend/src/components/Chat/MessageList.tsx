@@ -61,7 +61,10 @@ const BLOCK_GAP_PX = 40 // matches Tailwind gap-10 (2.5rem ≈ 40px)
 /** Within this distance from the bottom we treat the user as "following" the stream. */
 const STICK_TO_BOTTOM_THRESHOLD_PX = 64
 
-function isNearBottom(container: HTMLDivElement, threshold = STICK_TO_BOTTOM_THRESHOLD_PX) {
+function isNearBottom(
+  container: HTMLDivElement,
+  threshold = STICK_TO_BOTTOM_THRESHOLD_PX
+) {
   return (
     container.scrollHeight - container.scrollTop - container.clientHeight <=
     threshold
@@ -175,9 +178,12 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
     [markUserScrolledUp]
   )
 
-  const handleTouchStart = useCallback((e: React.TouchEvent<HTMLDivElement>) => {
-    touchStartYRef.current = e.touches[0]?.clientY ?? null
-  }, [])
+  const handleTouchStart = useCallback(
+    (e: React.TouchEvent<HTMLDivElement>) => {
+      touchStartYRef.current = e.touches[0]?.clientY ?? null
+    },
+    []
+  )
 
   const handleTouchMove = useCallback(
     (e: React.TouchEvent<HTMLDivElement>) => {
