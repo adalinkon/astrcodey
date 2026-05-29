@@ -150,14 +150,11 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     let store: Arc<dyn astrcode_core::storage::EventStore> = if opts.config_path.is_some() {
         Arc::new(astrcode_storage::in_memory::InMemoryEventStore::new())
     } else {
-        Arc::new(
-            astrcode_storage::session_repo::FileSystemSessionRepository::for_project_path(&cwd),
-        )
+        Arc::new(astrcode_storage::session_repo::FileSystemSessionRepository::new())
     };
     #[cfg(not(feature = "testing"))]
-    let store: Arc<dyn astrcode_core::storage::EventStore> = Arc::new(
-        astrcode_storage::session_repo::FileSystemSessionRepository::for_project_path(&cwd),
-    );
+    let store: Arc<dyn astrcode_core::storage::EventStore> =
+        Arc::new(astrcode_storage::session_repo::FileSystemSessionRepository::new());
     let event_store = store;
 
     // 5. 创建空的扩展运行器。

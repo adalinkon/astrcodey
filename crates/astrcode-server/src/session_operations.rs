@@ -116,24 +116,34 @@ impl SessionOperations for ServerSessionOperations {
 
         self.verify_access(&caller_sid, &target_sid).await?;
 
-        let session = self
-            .session_manager
-            .open(target_sid)
-            .await
-            .map_err(|e| SessionApiError::NotFound(e.to_string()))?;
+        // 与 `TurnScheduler::submit_or_inject` / `inject` 对齐：活跃 turn 必须把
+        // UserMessage 绑定到当前 turn_id，否则 LLM 下一步看不到注入内容。
+        if self.scheduler.registry().has_active(&target_sid) {
+            self.scheduler
+                .inject(&target_sid, content)
+                .await
+                .map_err(|e| SessionApiError::Internal(e.to_string()))?;
+        } else {
+            let session = self
+                .session_manager
+                .open(target_sid.clone())
+                .await
+                .map_err(|e| SessionApiError::NotFound(e.to_string()))?;
 
-        let message_id = new_message_id();
-        session
-            .emit_durable(
-                None,
-                EventPayload::UserMessage {
-                    message_id,
-                    text: content,
-                },
-            )
-            .await
-            .map_err(|e| SessionApiError::Internal(e.to_string()))?;
+            let message_id = new_message_id();
+            session
+                .emit_durable(
+                    None,
+                    EventPayload::UserMessage {
+                        message_id,
+                        text: content,
+                    },
+                )
+                .await
+                .map_err(|e| SessionApiError::Internal(e.to_string()))?;
+        }
 
+        self.session_manager.sync_durable_events(&target_sid).await;
         Ok(())
     }
 

@@ -89,34 +89,32 @@ pub fn reduce(event: &Event, model: &mut SessionReadModel) {
             child_session_id,
             final_session_id,
             summary,
-        }
-        | EventPayload::AgentSessionFailed {
-            child_session_id,
-            final_session_id,
-            error: summary,
         } => {
             if let Some(link) = model
                 .agent_sessions
                 .iter_mut()
                 .find(|l| l.child_session_id == *child_session_id)
             {
-                link.status = match &event.payload {
-                    EventPayload::AgentSessionCompleted { .. } => AgentSessionStatus::Completed,
-                    EventPayload::AgentSessionFailed { .. } => AgentSessionStatus::Failed,
-                    _ => unreachable!(),
-                };
+                link.status = AgentSessionStatus::Completed;
                 link.final_session_id = Some(final_session_id.clone());
-                match &event.payload {
-                    EventPayload::AgentSessionCompleted { .. } => {
-                        link.summary = Some(summary.clone());
-                        link.error = None;
-                    },
-                    EventPayload::AgentSessionFailed { .. } => {
-                        link.error = Some(summary.clone());
-                        link.summary = None;
-                    },
-                    _ => unreachable!(),
-                }
+                link.summary = Some(summary.clone());
+                link.error = None;
+            }
+        },
+        EventPayload::AgentSessionFailed {
+            child_session_id,
+            final_session_id,
+            error,
+        } => {
+            if let Some(link) = model
+                .agent_sessions
+                .iter_mut()
+                .find(|l| l.child_session_id == *child_session_id)
+            {
+                link.status = AgentSessionStatus::Failed;
+                link.final_session_id = Some(final_session_id.clone());
+                link.error = Some(error.clone());
+                link.summary = None;
             }
         },
         EventPayload::AgentSessionRecycled { child_session_id } => {

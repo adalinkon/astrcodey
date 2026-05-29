@@ -5,13 +5,14 @@ use std::{sync::Arc, time::Duration};
 use astrcode_context::context_assembler::LlmContextAssembler;
 use astrcode_core::{
     config::{EffectiveConfig, ExtensionSettings, LlmSettings, OpenAiApiMode},
+    event::EventPayload,
     llm::{LlmError, LlmEvent, LlmMessage, LlmProvider, ModelLimits},
     storage::{AgentSessionStatus, EventStore},
     tool::{
         CreateSessionRequest, SessionOperations, SubmitTurnRequest, SubmitTurnResult,
         ToolDefinition,
     },
-    types::new_session_id,
+    types::{SessionId, new_session_id},
 };
 use astrcode_extensions::runner::ExtensionRunner;
 use astrcode_server::{
@@ -26,6 +27,52 @@ use tokio::sync::mpsc;
 
 struct StaticTextLlm {
     text: &'static str,
+}
+
+/// 在发送 Done 前阻塞，便于在活跃 turn 期间调用 `inject_message`。
+struct GateLlm {
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl GateLlm {
+    fn new_pair() -> (Self, Arc<tokio::sync::Notify>) {
+        let release = Arc::new(tokio::sync::Notify::new());
+        (
+            Self {
+                release: Arc::clone(&release),
+            },
+            release,
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for GateLlm {
+    async fn generate(
+        &self,
+        _messages: Vec<LlmMessage>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<mpsc::UnboundedReceiver<LlmEvent>, LlmError> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let release = Arc::clone(&self.release);
+        tokio::spawn(async move {
+            let _ = tx.send(LlmEvent::ContentDelta {
+                delta: "partial".into(),
+            });
+            release.notified().await;
+            let _ = tx.send(LlmEvent::Done {
+                finish_reason: "stop".into(),
+            });
+        });
+        Ok(rx)
+    }
+
+    fn model_limits(&self) -> ModelLimits {
+        ModelLimits {
+            max_input_tokens: 200000,
+            max_output_tokens: 1024,
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -53,11 +100,10 @@ impl LlmProvider for StaticTextLlm {
     }
 }
 
-fn build_test_ops(
+fn build_test_ops_with_llm(
     store: Arc<dyn EventStore>,
-    llm_text: &'static str,
+    llm_provider: Arc<dyn LlmProvider>,
 ) -> Arc<ServerSessionOperations> {
-    let llm_provider: Arc<dyn LlmProvider> = Arc::new(StaticTextLlm { text: llm_text });
     let extension_runner = Arc::new(ExtensionRunner::new(Duration::from_secs(1)));
     let context_assembler = Arc::new(LlmContextAssembler::new(Default::default()));
     let effective = EffectiveConfig {
@@ -132,6 +178,96 @@ fn build_test_ops(
         session_manager,
         scheduler,
     })
+}
+
+fn build_test_ops(
+    store: Arc<dyn EventStore>,
+    llm_text: &'static str,
+) -> Arc<ServerSessionOperations> {
+    build_test_ops_with_llm(store, Arc::new(StaticTextLlm { text: llm_text }))
+}
+
+#[tokio::test]
+async fn inject_message_during_active_turn_binds_turn_id() {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
+    let parent_id = new_session_id();
+    store
+        .create_session(&parent_id, ".", "mock", None, None, None)
+        .await
+        .unwrap();
+
+    let (gate_llm, release) = GateLlm::new_pair();
+    let ops = build_test_ops_with_llm(Arc::clone(&store), Arc::new(gate_llm));
+
+    let handle = ops
+        .create_session(
+            parent_id.as_str(),
+            CreateSessionRequest {
+                name: "inject-child".into(),
+                source_extension: Some("test".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let child_id = SessionId::from(handle.session_id.as_str());
+
+    let _bg = ops
+        .submit_turn(
+            parent_id.as_str(),
+            SubmitTurnRequest {
+                target_session_id: handle.session_id.clone(),
+                user_prompt: "start turn".into(),
+                wait_for_result: false,
+                notify_parent_on_complete: None,
+                recycle_on_complete: false,
+                tool_call_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    for _ in 0..50 {
+        if ops.scheduler.registry().has_active(&child_id) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        ops.scheduler.registry().has_active(&child_id),
+        "child turn should be active before inject"
+    );
+
+    ops.inject_message(
+        parent_id.as_str(),
+        child_id.as_str(),
+        "mid-turn inject".into(),
+    )
+    .await
+    .unwrap();
+
+    let events = store.replay_events(&child_id).await.unwrap();
+    let injected = events
+        .iter()
+        .find(|e| {
+            matches!(
+                &e.payload,
+                EventPayload::UserMessage { text, .. } if text == "mid-turn inject"
+            )
+        })
+        .expect("injected UserMessage must be durable");
+    assert!(
+        injected.turn_id.is_some(),
+        "active-turn inject must bind turn_id (same as TurnScheduler::inject)"
+    );
+
+    release.notify_one();
+    for _ in 0..100 {
+        if !ops.scheduler.registry().has_active(&child_id) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 #[tokio::test]
