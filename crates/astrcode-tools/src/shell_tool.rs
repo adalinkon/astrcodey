@@ -51,9 +51,6 @@ struct ShellArgs {
     #[serde(default)]
     timeout: Option<u64>,
     /// 通过 stdin 传入命令的输入数据。
-    ///
-    /// 适用于需要 pipe 数据的场景（如 `jq .`、`python -c "..."` 读取 stdin、
-    /// `wc -l` 统计行数等），避免在 command 中做复杂的 shell 转义。
     #[serde(default)]
     stdin: Option<String>,
 }
@@ -130,7 +127,10 @@ impl Tool for ShellTool {
         if let Some(input) = &args.stdin {
             if let Some(mut stdin) = child.stdin.take() {
                 use tokio::io::AsyncWriteExt;
-                let _ = stdin.write_all(input.as_bytes()).await;
+                stdin
+                    .write_all(input.as_bytes())
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("stdin write: {e}")))?;
                 drop(stdin);
             }
         }
@@ -238,7 +238,8 @@ fn shell_tool_definition(timeout_secs: u64) -> ToolDefinition {
                 "Executes a {shell} command and returns output. Working directory persists, shell \
                  state does not.\n",
                 "- Timeout: up to 600s, default {timeout_secs}s.\n",
-                "- Background: `runInBackground=true` for servers/watchers. Track with `task`.\n",
+                "- Background: `runInBackground=true` (handled by session orchestration before \
+                 shell runs). Track with `task`.\n",
                 "- Independent commands: call in parallel. Dependent: chain with `&&`.\n",
                 "- Set `cwd` instead of using `cd`. Use `stdin` to pipe data.\n",
                 "- Non-zero exit codes produce errors. Do NOT `sleep`; use `task action=list`.",
@@ -466,17 +467,16 @@ mod tests {
     }
 
     fn command_with_delay() -> String {
+        const WINDOWS_SLEEP: &str = "powershell -NoProfile -Command \"Start-Sleep -Seconds 10\"";
         match resolve_shell().family {
             ShellFamily::PowerShell => "[Console]::Out.WriteLine('before'); \
                                         [Console]::Out.Flush(); Start-Sleep -Seconds 10; \
                                         [Console]::Out.WriteLine('after')"
                 .into(),
-            ShellFamily::Cmd => "echo before & ping -n 11 127.0.0.1 > nul & echo after".into(),
+            ShellFamily::Cmd => format!("echo before & {WINDOWS_SLEEP} & echo after"),
             ShellFamily::Posix | ShellFamily::Wsl => {
-                // 在 Windows 上的 Git Bash 等环境中，sleep 命令可能不可用或不可靠
-                // 使用 ping 作为跨平台的延迟方法
                 if cfg!(windows) {
-                    "echo before; ping -n 11 127.0.0.1 > /dev/null; echo after".into()
+                    format!("echo before; {WINDOWS_SLEEP}; echo after")
                 } else {
                     "echo before; sleep 10; echo after".into()
                 }

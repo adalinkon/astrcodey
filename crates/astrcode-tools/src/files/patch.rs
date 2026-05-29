@@ -10,7 +10,7 @@ use astrcode_support::hostpaths::{is_path_within, resolve_path};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use super::shared::{is_unc_path, tool_call_id};
+use super::shared::{is_unc_path, run_blocking, tool_call_id};
 // ─── patch ───────────────────────────────────────────────────────────────
 
 /// 统一差异补丁应用工具，支持多文件协调变更、文件创建和删除。
@@ -132,53 +132,64 @@ impl Tool for ApplyPatchTool {
         let started_at = Instant::now();
         let args: ApplyPatchArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(format!("invalid patch args: {e}")))?;
-        if args.patch.trim().is_empty() {
-            return Ok(patch_error(ctx, started_at, "patch cannot be empty"));
-        }
-
-        let file_patches = match parse_patch(&args.patch) {
-            Ok(file_patches) => file_patches,
-            Err(error) => return Ok(patch_error(ctx, started_at, &error)),
-        };
-
-        let total_files = file_patches.len();
-        let mut results = Vec::with_capacity(total_files);
-        for file_patch in &file_patches {
-            results.push(apply_file_patch(&self.working_dir, file_patch));
-        }
-
-        let applied = results.iter().filter(|result| result.applied).count();
-        let failed = total_files - applied;
-        let first_error = results.iter().find_map(|result| result.error.clone());
-        let ok = failed == 0;
-        let content = if ok {
-            format!("patch: {applied}/{total_files} files changed successfully")
-        } else if applied == 0 {
-            format!("patch: all {total_files} file(s) failed to apply")
-        } else {
-            format!(
-                "patch: {applied}/{total_files} files changed, {failed} failed (partial changes \
-                 committed)"
-            )
-        };
-
-        Ok(ToolResult {
-            call_id: tool_call_id(ctx),
-            content,
-            is_error: !ok,
-            error: if ok {
-                None
-            } else {
-                first_error.or(Some(format!("{failed} file(s) failed to apply")))
-            },
-            metadata: build_patch_metadata(&results, applied, failed),
-            duration_ms: Some(started_at.elapsed().as_millis() as u64),
-        })
+        let call_id = tool_call_id(ctx);
+        let working_dir = self.working_dir.clone();
+        run_blocking(move || execute_patch_sync(working_dir, args, call_id, started_at)).await
     }
 
     fn prompt_metadata(&self) -> Option<ToolPromptMetadata> {
         Some(ToolPromptMetadata::new("").prompt_tag(ToolPromptTag::Filesystem))
     }
+}
+
+fn execute_patch_sync(
+    working_dir: PathBuf,
+    args: ApplyPatchArgs,
+    call_id: String,
+    started_at: Instant,
+) -> Result<ToolResult, ToolError> {
+    if args.patch.trim().is_empty() {
+        return Ok(patch_error(&call_id, started_at, "patch cannot be empty"));
+    }
+
+    let file_patches = match parse_patch(&args.patch) {
+        Ok(file_patches) => file_patches,
+        Err(error) => return Ok(patch_error(&call_id, started_at, &error)),
+    };
+
+    let total_files = file_patches.len();
+    let mut results = Vec::with_capacity(total_files);
+    for file_patch in &file_patches {
+        results.push(apply_file_patch(&working_dir, file_patch));
+    }
+
+    let applied = results.iter().filter(|result| result.applied).count();
+    let failed = total_files - applied;
+    let first_error = results.iter().find_map(|result| result.error.clone());
+    let ok = failed == 0;
+    let content = if ok {
+        format!("patch: {applied}/{total_files} files changed successfully")
+    } else if applied == 0 {
+        format!("patch: all {total_files} file(s) failed to apply")
+    } else {
+        format!(
+            "patch: {applied}/{total_files} files changed, {failed} failed (partial changes \
+             committed)"
+        )
+    };
+
+    Ok(ToolResult {
+        call_id,
+        content,
+        is_error: !ok,
+        error: if ok {
+            None
+        } else {
+            first_error.or(Some(format!("{failed} file(s) failed to apply")))
+        },
+        metadata: build_patch_metadata(&results, applied, failed),
+        duration_ms: Some(started_at.elapsed().as_millis() as u64),
+    })
 }
 
 fn apply_patch_tool_definition() -> &'static ToolDefinition {
@@ -188,7 +199,8 @@ fn apply_patch_tool_definition() -> &'static ToolDefinition {
         description: concat!(
             "Applies a unified diff across one or more files.\n",
             "- For single-file edits, prefer `edit`.\n",
-            "- Failed hunks are skipped; successful ones still apply.\n",
+            "- Within a file, any hunk failure fails that file (no partial hunks).\n",
+            "- Across files, successful files still commit if others fail (partial apply).\n",
             "- New file: `--- /dev/null` → `+++ path`. Delete: reverse.\n",
             "- Context lines must match exactly. `a/`/`b/` prefixes are stripped.",
         )
@@ -811,9 +823,9 @@ fn build_patch_metadata(
 }
 
 /// 构造一个 patch 错误结果（无文件变更）。
-fn patch_error(ctx: &ToolExecutionContext, started_at: Instant, error: &str) -> ToolResult {
+fn patch_error(call_id: &str, started_at: Instant, error: &str) -> ToolResult {
     ToolResult {
-        call_id: tool_call_id(ctx),
+        call_id: call_id.to_string(),
         // content 必须非空,否则 LLM 看不到错误细节(LLM 只读 content)。
         content: format!("patch failed: {error}"),
         is_error: true,

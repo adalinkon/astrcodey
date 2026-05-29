@@ -20,9 +20,9 @@ struct RegisteredTool {
 
 /// Registry of available tools (built-in + extension-registered).
 ///
-/// 用 `BTreeMap` 同时承载 O(log n) 命名查找、按名稱有序遍历，以及单一事实
+/// 用 `BTreeMap` 同时承载 O(log n) 命名查找、按名称有序遍历，以及单一事实
 /// 来源——避免之前 `HashMap` + sorted `Vec` 双结构在 `register` 时做 O(n)
-/// sorted insert。`list_definitions()` 走迭代，仍按名稱有序输出。
+/// sorted insert。`list_definitions()` 走迭代，仍按名称有序输出。
 #[derive(Clone)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, RegisteredTool>,
@@ -154,10 +154,10 @@ impl ToolRegistry {
                 let allow: std::collections::HashSet<&str> =
                     tools.iter().map(String::as_str).collect();
                 let to_remove: Vec<String> = self
-                    .list_definitions()
-                    .into_iter()
-                    .map(|definition| definition.name)
+                    .tools
+                    .keys()
                     .filter(|name| !allow.contains(name.as_str()))
+                    .cloned()
                     .collect();
                 for name in to_remove {
                     self.unregister(&name);

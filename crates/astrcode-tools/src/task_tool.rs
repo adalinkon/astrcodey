@@ -4,10 +4,12 @@
 //! 考虑在 list 中也展示 wait_for_result=false 的 agent 子会话状态，
 //! 让 LLM 能统一查询所有后台活动。
 
-use std::{collections::BTreeMap, sync::OnceLock};
+use std::{collections::BTreeMap, sync::OnceLock, time::Instant};
 
 use astrcode_core::{tool::*, types::BackgroundTaskId};
 use serde::Deserialize;
+
+use crate::files::tool_call_id;
 
 /// task 工具的参数。
 #[derive(Debug, Deserialize)]
@@ -49,6 +51,7 @@ impl Tool for TaskTool {
         args: serde_json::Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult, ToolError> {
+        let started_at = Instant::now();
         let args: TaskArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(format!("invalid task args: {e}")))?;
 
@@ -58,6 +61,7 @@ impl Tool for TaskTool {
             .as_ref()
             .ok_or_else(|| ToolError::Execution("background task reader not available".into()))?;
 
+        let call_id = tool_call_id(ctx);
         match args.action.as_str() {
             "list" => {
                 let tasks = reader.list_active(&ctx.session_id);
@@ -70,7 +74,7 @@ impl Tool for TaskTool {
                         .collect();
                     format!("Active background tasks:\n{}", lines.join("\n"))
                 };
-                Ok(ToolResult::text(content, false, BTreeMap::new()))
+                Ok(task_result(call_id, started_at, content, false, BTreeMap::new()))
             },
             "cancel" => {
                 let task_id_str = args.task_id.unwrap_or_default();
@@ -86,7 +90,7 @@ impl Tool for TaskTool {
                 } else {
                     format!("Task {task_id} not found or already completed.")
                 };
-                Ok(ToolResult::text(content, false, BTreeMap::new()))
+                Ok(task_result(call_id, started_at, content, false, BTreeMap::new()))
             },
             "result" => {
                 let task_id_str = args.task_id.unwrap_or_default();
@@ -116,7 +120,7 @@ impl Tool for TaskTool {
                             .expect("has_more implies next_char_offset is set")
                     ));
                 }
-                Ok(ToolResult::text(content, false, BTreeMap::new()))
+                Ok(task_result(call_id, started_at, content, false, BTreeMap::new()))
             },
             other => Err(ToolError::InvalidArguments(format!(
                 "unknown action '{other}', expected 'list', 'cancel', or 'result'"
@@ -170,4 +174,21 @@ fn task_tool_definition() -> &'static ToolDefinition {
             "additionalProperties": false
         }),
     })
+}
+
+fn task_result(
+    call_id: String,
+    started_at: Instant,
+    content: String,
+    is_error: bool,
+    metadata: BTreeMap<String, serde_json::Value>,
+) -> ToolResult {
+    ToolResult {
+        call_id,
+        content: content.clone(),
+        is_error,
+        error: is_error.then_some(content),
+        metadata,
+        duration_ms: Some(started_at.elapsed().as_millis() as u64),
+    }
 }

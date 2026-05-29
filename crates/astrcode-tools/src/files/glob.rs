@@ -6,10 +6,12 @@ use std::{
 };
 
 use astrcode_core::tool::*;
-use astrcode_support::hostpaths::resolve_path;
 use serde::Deserialize;
 
-use super::shared::{FileCollectOptions, collect_candidate_files, tool_call_id};
+use super::shared::{
+    FileCollectOptions, collect_candidate_files, resolve_sandboxed_path, run_blocking,
+    sandbox_escape_result, tool_call_id,
+};
 
 const DEFAULT_GLOB_MAX_RESULTS: usize = 100;
 
@@ -42,6 +44,9 @@ struct GlobArgs {
     /// 是否包含隐藏文件和目录（默认 true）
     #[serde(default = "default_true")]
     include_hidden: bool,
+    /// 是否在结果中包含目录（默认 true）
+    #[serde(default = "default_true")]
+    include_dirs: bool,
 }
 
 fn default_true() -> bool {
@@ -66,70 +71,9 @@ impl Tool for GlobTool {
         let started_at = Instant::now();
         let args: GlobArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(format!("invalid glob args: {e}")))?;
-        let root = match args.root {
-            Some(ref raw) => resolve_path(&self.working_dir, raw),
-            None => self.working_dir.clone(),
-        };
-        let max_results = args.max_results.unwrap_or(DEFAULT_GLOB_MAX_RESULTS);
-        let mut results = collect_candidate_files(
-            &self.working_dir,
-            &root,
-            Some(&args.pattern),
-            FileCollectOptions {
-                recursive: true,
-                include_hidden: args.include_hidden,
-                respect_gitignore: args.respect_gitignore,
-                skip_vcs_dirs: true,
-                skip_build_output: true,
-            },
-        )
-        .map_err(|e| ToolError::Execution(format!("glob: {e}")))?;
-        results.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
-        let total = results.len();
-        let offset = args.offset.unwrap_or(0).min(total);
-        let out: Vec<_> = results.into_iter().skip(offset).take(max_results).collect();
-        let next_offset = offset.saturating_add(out.len());
-        let truncated = next_offset < total;
-        let files = out
-            .iter()
-            .map(|(path, modified)| {
-                serde_json::json!({
-                    "path": path,
-                    "modifiedUnixMs": modified_unix_ms(*modified)
-                })
-            })
-            .collect::<Vec<_>>();
-        let paths = out.into_iter().map(|(path, _)| path).collect::<Vec<_>>();
-        let mut meta = BTreeMap::new();
-        meta.insert("count".into(), serde_json::json!(paths.len()));
-        meta.insert("totalMatches".into(), serde_json::json!(total));
-        meta.insert("offset".into(), serde_json::json!(offset));
-        meta.insert("maxResults".into(), serde_json::json!(max_results));
-        meta.insert("truncated".into(), serde_json::json!(truncated));
-        meta.insert("hasMore".into(), serde_json::json!(truncated));
-        if truncated {
-            meta.insert("nextOffset".into(), serde_json::json!(next_offset));
-        }
-        meta.insert("root".into(), serde_json::json!(root.display().to_string()));
-        meta.insert("pattern".into(), serde_json::json!(args.pattern));
-        meta.insert("files".into(), serde_json::json!(files));
-        let content = if paths.is_empty() {
-            format!(
-                "No files found matching pattern {:?} in {}",
-                args.pattern,
-                root.display()
-            )
-        } else {
-            paths.join("\n")
-        };
-        Ok(ToolResult {
-            call_id: tool_call_id(ctx),
-            content,
-            is_error: false,
-            error: None,
-            metadata: meta,
-            duration_ms: Some(started_at.elapsed().as_millis() as u64),
-        })
+        let call_id = tool_call_id(ctx);
+        let working_dir = self.working_dir.clone();
+        run_blocking(move || execute_glob_sync(working_dir, args, call_id, started_at)).await
     }
 
     fn prompt_metadata(&self) -> Option<ToolPromptMetadata> {
@@ -137,15 +81,102 @@ impl Tool for GlobTool {
     }
 }
 
+fn execute_glob_sync(
+    working_dir: PathBuf,
+    args: GlobArgs,
+    call_id: String,
+    started_at: Instant,
+) -> Result<ToolResult, ToolError> {
+    let root = match args.root {
+        Some(ref raw) => match resolve_sandboxed_path(&working_dir, raw) {
+            Ok(path) => path,
+            Err(escaped) => return Ok(sandbox_escape_result(call_id, started_at, &escaped)),
+        },
+        None => working_dir.clone(),
+    };
+    let max_results = args.max_results.unwrap_or(DEFAULT_GLOB_MAX_RESULTS);
+    let mut results = collect_candidate_files(
+        &working_dir,
+        &root,
+        Some(&args.pattern),
+        FileCollectOptions {
+            recursive: true,
+            include_hidden: args.include_hidden,
+            respect_gitignore: args.respect_gitignore,
+            skip_vcs_dirs: true,
+            skip_build_output: true,
+            include_dirs: args.include_dirs,
+        },
+    )
+    .map_err(|e| ToolError::Execution(format!("glob: {e}")))?;
+    results.sort_by_key(|(_, modified, _)| std::cmp::Reverse(*modified));
+    let total = results.len();
+    let offset = args.offset.unwrap_or(0).min(total);
+    let out: Vec<_> = results.into_iter().skip(offset).take(max_results).collect();
+    let next_offset = offset.saturating_add(out.len());
+    let truncated = next_offset < total;
+    let files = out
+        .iter()
+        .map(|(path, modified, is_dir)| {
+            serde_json::json!({
+                "path": path,
+                "isDir": is_dir,
+                "modifiedUnixMs": modified_unix_ms(*modified)
+            })
+        })
+        .collect::<Vec<_>>();
+    let paths: Vec<String> = out
+        .into_iter()
+        .map(|(path, _, is_dir)| {
+            if is_dir {
+                format!("{path}/")
+            } else {
+                path
+            }
+        })
+        .collect();
+    let mut meta = BTreeMap::new();
+    meta.insert("count".into(), serde_json::json!(paths.len()));
+    meta.insert("totalMatches".into(), serde_json::json!(total));
+    meta.insert("offset".into(), serde_json::json!(offset));
+    meta.insert("maxResults".into(), serde_json::json!(max_results));
+    meta.insert("truncated".into(), serde_json::json!(truncated));
+    meta.insert("hasMore".into(), serde_json::json!(truncated));
+    if truncated {
+        meta.insert("nextOffset".into(), serde_json::json!(next_offset));
+    }
+    meta.insert("root".into(), serde_json::json!(root.display().to_string()));
+    meta.insert("pattern".into(), serde_json::json!(args.pattern.clone()));
+    meta.insert("files".into(), serde_json::json!(files));
+    let content = if paths.is_empty() {
+        format!(
+            "No files found matching pattern {:?} in {}",
+            args.pattern,
+            root.display()
+        )
+    } else {
+        paths.join("\n")
+    };
+    Ok(ToolResult {
+        call_id,
+        content,
+        is_error: false,
+        error: None,
+        metadata: meta,
+        duration_ms: Some(started_at.elapsed().as_millis() as u64),
+    })
+}
+
 fn glob_tool_definition() -> &'static ToolDefinition {
     static DEFINITION: OnceLock<ToolDefinition> = OnceLock::new();
     DEFINITION.get_or_init(|| ToolDefinition {
         name: "glob".into(),
         description: concat!(
-            "Finds file paths by glob pattern (not file contents), newest first.\n",
-            "- Call this tool when you need paths; use `grep` to search inside files.\n",
+            "Match file and directory paths by glob pattern (not file contents), newest first. Directories end with `/`.\n",
+            "- Use when you need paths; use `grep` to search inside files.\n",
             "- Patterns: `**/*.js`, `src/**/*.ts`, `*.{json,toml}`\n",
-            "- Honors .gitignore by default; set `respectGitignore=false` to include ignored files.",
+            "- Honors .gitignore; skips `.git`/`target`/`node_modules`. Set `respectGitignore=false` to include ignored files.\n",
+            "- Returns files and directories by default; set `includeDirs=false` for files only.",
         )
         .into(),
         origin: ToolOrigin::Builtin,
@@ -178,6 +209,10 @@ fn glob_tool_definition() -> &'static ToolDefinition {
                 "includeHidden": {
                     "type": "boolean",
                     "description": "Include hidden files (default true)."
+                },
+                "includeDirs": {
+                    "type": "boolean",
+                    "description": "Include directories in results (default true)."
                 }
             },
             "required": ["pattern"],

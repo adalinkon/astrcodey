@@ -391,7 +391,7 @@ async fn glob_respects_gitignore_hidden_and_brace_glob() {
 }
 
 #[tokio::test]
-async fn glob_reports_truncation_and_blocks_root_escape() {
+async fn glob_reports_truncation() {
     let temp = unique_temp_dir("find-files-truncated");
     for name in ["a.rs", "b.rs", "c.rs"] {
         std::fs::write(temp.path().join(name), "").expect("seed file");
@@ -415,6 +415,29 @@ async fn glob_reports_truncation_and_blocks_root_escape() {
     assert_eq!(result.metadata["truncated"], serde_json::json!(true));
     assert_eq!(result.metadata["hasMore"], serde_json::json!(true));
     assert_eq!(result.metadata["files"].as_array().map(Vec::len), Some(2));
+}
+
+#[tokio::test]
+async fn glob_blocks_root_escape() {
+    let temp = unique_temp_dir("find-files-escape");
+    std::fs::write(temp.path().join("local.txt"), "").expect("seed file");
+    let tool = GlobTool {
+        working_dir: temp.path().to_path_buf(),
+    };
+
+    let result = tool
+        .execute(
+            serde_json::json!({ "pattern": "*.txt", "root": "../" }),
+            &empty_ctx(),
+        )
+        .await
+        .expect("glob should execute");
+
+    assert!(result.is_error, "{result:?}");
+    assert_eq!(
+        result.metadata["pathEscapesWorkingDir"],
+        serde_json::json!(true)
+    );
 }
 
 #[tokio::test]
