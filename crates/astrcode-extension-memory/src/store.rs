@@ -4,7 +4,12 @@
 //! - **项目记忆**：`~/.astrcode/projects/<key>/extension_data/astrcode.memory/` （`project_ctx` /
 //!   `decision` / `general`、contexts/、pipeline 状态）
 
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    sync::Arc,
+    time::SystemTime,
+};
 
 use astrcode_support::hostpaths::{self, ensure_dir};
 use parking_lot::Mutex;
@@ -227,10 +232,16 @@ impl ParsedMemory {
 
 // ─── MemoryStore ────────────────────────────────────────────────────
 
+struct PreferenceLinesCache {
+    memory_mtime: Option<SystemTime>,
+    lines: Vec<String>,
+}
+
 pub(crate) struct MemoryStore {
     dir: PathBuf,
     write_lock: Mutex<()>,
     scope: MemoryStoreScope,
+    preference_lines_cache: Mutex<Option<PreferenceLinesCache>>,
 }
 
 impl MemoryStore {
@@ -256,6 +267,7 @@ impl MemoryStore {
             dir,
             write_lock: Mutex::new(()),
             scope: MemoryStoreScope::User,
+            preference_lines_cache: Mutex::new(None),
         };
         if !store.memory_path().exists() {
             store.init_memory_file()?;
@@ -276,6 +288,7 @@ impl MemoryStore {
             dir,
             write_lock: Mutex::new(()),
             scope: MemoryStoreScope::Project,
+            preference_lines_cache: Mutex::new(None),
         };
         if !store.memory_path().exists() {
             store.init_memory_file()?;
@@ -317,8 +330,23 @@ impl MemoryStore {
         std::fs::read_to_string(self.memory_path())
     }
 
+    fn memory_file_mtime(&self) -> std::io::Result<Option<SystemTime>> {
+        let path = self.memory_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        Ok(std::fs::metadata(path)?.modified().ok())
+    }
+
     /// 返回 MEMORY.md 中 `user_pref` 类别的前几条，用于 PromptBuild 稳定注入。
     pub(crate) fn global_preference_lines(&self, limit: usize) -> std::io::Result<Vec<String>> {
+        let mtime = self.memory_file_mtime()?;
+        if let Some(cache) = self.preference_lines_cache.lock().as_ref() {
+            if cache.memory_mtime == mtime && cache.lines.len() >= limit {
+                return Ok(cache.lines.iter().take(limit).cloned().collect());
+            }
+        }
+
         let parsed = self.read_parsed()?;
         let mut lines = Vec::new();
         for (category, items) in &parsed.sections {
@@ -327,11 +355,15 @@ impl MemoryStore {
             }
             for item in items {
                 lines.push(item.clone());
-                if lines.len() >= limit {
-                    return Ok(lines);
-                }
             }
         }
+
+        *self.preference_lines_cache.lock() = Some(PreferenceLinesCache {
+            memory_mtime: mtime,
+            lines: lines.clone(),
+        });
+
+        lines.truncate(limit);
         Ok(lines)
     }
 

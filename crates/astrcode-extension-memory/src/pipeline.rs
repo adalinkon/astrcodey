@@ -80,19 +80,19 @@ pub async fn run(
     )
     .await?;
 
-    if extractions.is_empty() {
-        mark_processed(store, &candidates)?;
-        return Ok(());
+    if !extractions.is_empty() {
+        write_contexts(store, &extractions)?;
+        ingest_pipeline_extractions(scoped, &extractions)?;
+
+        if config.max_contexts > 0 {
+            let _ = scoped.user.memory_index().trim_to_max(config.max_contexts);
+            let _ = store.memory_index().trim_to_max(config.max_contexts);
+        }
     }
 
-    write_contexts(store, &extractions)?;
-    ingest_pipeline_extractions(scoped, &extractions)?;
-
-    if config.max_contexts > 0 {
-        let _ = scoped.user.memory_index().trim_to_max(config.max_contexts);
-        let _ = store.memory_index().trim_to_max(config.max_contexts);
-    }
-
+    // Mark every candidate processed (including short conversations skipped by
+    // `extract_batch` and sessions that returned empty memories) to avoid re-running LLM.
+    mark_processed(store, &candidates)?;
     Ok(())
 }
 
@@ -338,14 +338,6 @@ fn write_contexts(
     store: &MemoryStore,
     extractions: &[(Candidate, Phase1Output)],
 ) -> Result<(), ExtensionError> {
-    let processed: Vec<ProcessedSession> = extractions
-        .iter()
-        .map(|(c, _)| ProcessedSession {
-            session_id: c.summary.session_id.as_ref().to_string(),
-            updated_at: c.summary.updated_at.clone(),
-        })
-        .collect();
-
     let context_files: Vec<(String, String)> = extractions
         .iter()
         .filter(|(_, output)| {
@@ -371,8 +363,12 @@ fn write_contexts(
         })
         .collect();
 
+    if context_files.is_empty() {
+        return Ok(());
+    }
+
     store
-        .commit_pipeline_result(&processed, &context_files)
+        .commit_pipeline_result(&[], &context_files)
         .map_err(|e| ExtensionError::Internal(e.to_string()))?;
 
     Ok(())

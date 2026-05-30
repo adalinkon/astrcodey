@@ -199,11 +199,10 @@ impl MemoryIndex {
             if key.len() < 2 {
                 continue;
             }
-            entity_index
-                .links
-                .entry(key)
-                .or_default()
-                .push(record_id.to_string());
+            let ids = entity_index.links.entry(key).or_default();
+            if !ids.iter().any(|id| id == record_id) {
+                ids.push(record_id.to_string());
+            }
         }
         self.save_entities(&entity_index)
     }
@@ -290,7 +289,11 @@ impl MemoryIndex {
         Ok(UpsertResult::Added(record))
     }
 
-    /// ADD-only alias kept for manual append paths that must not fuzzy-match.
+    /// Convenience wrapper around `upsert_record` for manual append paths.
+    ///
+    /// May fuzzy-match and update an existing similar record instead of always
+    /// inserting a new one. Callers that need strictly append-only behavior must
+    /// avoid content that dedupes with existing records.
     pub(crate) fn add_record(
         &self,
         content: &str,
@@ -440,6 +443,40 @@ mod tests {
         let listed = index.list_display(10).unwrap();
         assert_eq!(listed.len(), 1);
         assert!(listed[0].contains("all backend"));
+    }
+
+    #[test]
+    fn link_entities_dedupes_record_ids_on_update() {
+        let tmp = TempDir::new().unwrap();
+        ensure_dir(tmp.path()).unwrap();
+        let index = MemoryIndex::new(tmp.path());
+
+        index
+            .upsert_record(
+                "User prefers Rust for backend",
+                "user_pref",
+                MemorySource::Manual,
+                None,
+                &["rust".to_string()],
+                None,
+            )
+            .unwrap();
+        index
+            .upsert_record(
+                "User prefers Rust for all backend work",
+                "user_pref",
+                MemorySource::Manual,
+                None,
+                &["rust".to_string()],
+                None,
+            )
+            .unwrap();
+
+        let entities_path = tmp.path().join(ENTITIES_FILE);
+        let content = std::fs::read_to_string(entities_path).unwrap();
+        let entities: EntitiesIndexFile = serde_json::from_str(&content).unwrap();
+        let ids = entities.links.get("rust").expect("rust entity linked");
+        assert_eq!(ids.len(), 1, "entity index must not duplicate record ids");
     }
 
     #[test]
