@@ -5,6 +5,8 @@
 //! 本模块将这一公共骨架提取为泛型函数，各 provider 只需提供
 //! SSE 事件处理和请求体构造。
 
+use std::sync::{Arc, Mutex};
+
 use astrcode_core::llm::{LlmClientConfig, LlmError, LlmEvent};
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
@@ -13,6 +15,10 @@ use crate::{
     retry::RetryPolicy,
     stream_decoder::{SseLineReader, Utf8StreamDecoder},
 };
+
+/// SSE 事件回调类型：接收 (event_type, parsed_json, tx)，返回 false 停止处理。
+type SseCallback =
+    Arc<dyn Fn(&str, &serde_json::Value, &mpsc::UnboundedSender<LlmEvent>) -> bool + Send + Sync>;
 
 /// 根据 `LlmClientConfig` 构建 reqwest client。
 ///
@@ -109,6 +115,85 @@ impl StreamEventSink {
     }
 }
 
+/// 跨 SSE 回调共享的 [`StreamEventSink`]，封装 `Arc<Mutex<_>>` 与收尾逻辑。
+pub struct SharedStreamSink {
+    inner: Arc<Mutex<StreamEventSink>>,
+}
+
+impl SharedStreamSink {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(StreamEventSink::new())),
+        }
+    }
+
+    pub fn with_mut<R>(&self, f: impl FnOnce(&mut StreamEventSink) -> R) -> R {
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        f(&mut guard)
+    }
+
+    /// 包装 SSE 事件处理器：自动加锁 sink 后交给 `handler`。
+    pub fn wrap<F>(
+        &self,
+        handler: F,
+    ) -> impl Fn(&str, &serde_json::Value, &mpsc::UnboundedSender<LlmEvent>) -> bool + Send + Sync
+    + 'static
+    where
+        F: Fn(
+                &mut StreamEventSink,
+                &str,
+                &serde_json::Value,
+                &mpsc::UnboundedSender<LlmEvent>,
+            ) -> bool
+            + Send
+            + Sync
+            + 'static,
+    {
+        let sink = Arc::clone(&self.inner);
+        move |event_type, event, tx| {
+            let mut guard = sink.lock().unwrap_or_else(|e| e.into_inner());
+            handler(&mut guard, event_type, event, tx)
+        }
+    }
+
+    /// 流结束后统一处理：成功时补发 `Done`，失败时发送 `Error`。
+    pub fn finalize(&self, result: Result<(), LlmError>, tx: &mpsc::UnboundedSender<LlmEvent>) {
+        if result.is_ok() {
+            self.with_mut(|sink| {
+                if !sink.done_sent() {
+                    sink.ensure_done(tx);
+                }
+            });
+        }
+        report_stream_error(result, tx);
+    }
+}
+
+/// 流式请求失败时向通道发送 `Error` 事件。
+pub fn report_stream_error(result: Result<(), LlmError>, tx: &mpsc::UnboundedSender<LlmEvent>) {
+    if let Err(error) = result {
+        send_event(
+            tx,
+            LlmEvent::Error {
+                message: error.to_string(),
+            },
+        );
+    }
+}
+
+/// 从 `LlmClientConfig` 的公共字段构建重试策略。
+///
+/// 三个 LLM provider 使用相同的重试参数推导逻辑，提取为公共函数避免重复。
+pub fn retry_policy_from_config(config: &LlmClientConfig) -> RetryPolicy {
+    RetryPolicy {
+        max_retries: config.max_retries,
+        base_delay_ms: config.retry_base_delay_ms,
+        max_transport_retries: config.max_retries,
+    }
+}
+
+// ─── HTTP 重试 + SSE 流解析 ─────────────────────────────────────────────
+
 /// 带重试的 HTTP POST 请求参数。
 pub struct HttpPostRequest {
     pub client: reqwest::Client,
@@ -119,6 +204,13 @@ pub struct HttpPostRequest {
 }
 
 impl HttpPostRequest {
+    /// 发起带重试的 POST 请求，成功时调用 `on_success` 处理响应流。
+    ///
+    /// 重试逻辑：
+    /// - 传输层错误（DNS/TLS/连接重置）→ 按 `max_transport_retries` 重试
+    /// - 可重试 HTTP 状态码（408/429/500/502/503/504）→ 按 `max_retries` 重试
+    /// - `on_success` 返回 `Transport` 错误 → 按传输层错误重试
+    /// - 其他错误 → 直接返回
     pub async fn run<F, Fut>(&self, mut on_success: F) -> Result<(), LlmError>
     where
         F: FnMut(reqwest::Response) -> Fut,
@@ -184,94 +276,42 @@ impl HttpPostRequest {
         }
     }
 
+    /// 发起带重试的 SSE `data:` 行流式请求。
+    ///
+    /// `on_data` 在每条成功解析为 JSON 的 `data:` 行到达时被调用，参数为
+    /// `(event_type, parsed_json, tx)`。Data-only 模式下 `event_type` 始终为 `""`。
+    /// 返回 `false` 表示接收端已关闭，停止处理。
     pub async fn stream_data_lines(
         &self,
         tx: &mpsc::UnboundedSender<LlmEvent>,
-        parse_line: impl Fn(&str, &mpsc::UnboundedSender<LlmEvent>) -> bool,
+        on_data: impl Fn(&str, &serde_json::Value, &mpsc::UnboundedSender<LlmEvent>) -> bool
+        + Send
+        + Sync
+        + 'static,
     ) -> Result<(), LlmError> {
-        let mut attempt = 0;
-
-        loop {
-            attempt += 1;
-            let response = match self.send_once().await {
-                Ok(response) => response,
-                Err(error) => {
-                    if self.retry.should_retry_transport(attempt) {
-                        tokio::time::sleep(self.retry.delay(attempt)).await;
-                        continue;
-                    }
-                    return Err(error);
-                },
-            };
-
-            let status = response.status();
-            if status.is_success() {
-                match parse_sse_response(response, tx, &parse_line).await {
-                    Ok(()) => return Ok(()),
-                    Err(LlmError::Transport(message)) => {
-                        if self.retry.should_retry_transport(attempt) {
-                            tokio::time::sleep(self.retry.delay(attempt)).await;
-                            continue;
-                        }
-                        return Err(LlmError::Transport(message));
-                    },
-                    Err(error) => return Err(error),
-                }
-            }
-
-            if self.retry.should_retry(attempt, status.as_u16()) {
-                tokio::time::sleep(self.retry.delay(attempt)).await;
-                continue;
-            }
-
-            let text = read_http_error_body(response, &self.endpoint).await;
-            return Err(classify_error(status.as_u16(), text));
-        }
+        let tx = tx.clone();
+        let on_data: SseCallback = Arc::new(on_data);
+        self.run(move |response| parse_sse_bytes(response, tx.clone(), false, Arc::clone(&on_data)))
+            .await
     }
 
+    /// 发起带重试的 SSE 流式请求，支持 `event:` + `data:` 行模式（Anthropic 风格）。
+    ///
+    /// `handle_event` 参数为 `(event_type, parsed_json, tx)`；返回 `false` 表示接收端已关闭。
     pub async fn stream_typed_events(
         &self,
         tx: &mpsc::UnboundedSender<LlmEvent>,
-        handle_event: impl Fn(&str, &serde_json::Value, &mpsc::UnboundedSender<LlmEvent>) -> bool,
+        handle_event: impl Fn(&str, &serde_json::Value, &mpsc::UnboundedSender<LlmEvent>) -> bool
+        + Send
+        + Sync
+        + 'static,
     ) -> Result<(), LlmError> {
-        let mut attempt = 0;
-
-        loop {
-            attempt += 1;
-            let response = match self.send_once().await {
-                Ok(response) => response,
-                Err(error) => {
-                    if self.retry.should_retry_transport(attempt) {
-                        tokio::time::sleep(self.retry.delay(attempt)).await;
-                        continue;
-                    }
-                    return Err(error);
-                },
-            };
-
-            let status = response.status();
-            if status.is_success() {
-                match parse_sse_response_with_event_type(response, tx, &handle_event).await {
-                    Ok(()) => return Ok(()),
-                    Err(LlmError::Transport(message)) => {
-                        if self.retry.should_retry_transport(attempt) {
-                            tokio::time::sleep(self.retry.delay(attempt)).await;
-                            continue;
-                        }
-                        return Err(LlmError::Transport(message));
-                    },
-                    Err(error) => return Err(error),
-                }
-            }
-
-            if self.retry.should_retry(attempt, status.as_u16()) {
-                tokio::time::sleep(self.retry.delay(attempt)).await;
-                continue;
-            }
-
-            let text = read_http_error_body(response, &self.endpoint).await;
-            return Err(classify_error(status.as_u16(), text));
-        }
+        let tx = tx.clone();
+        let handle_event: SseCallback = Arc::new(handle_event);
+        self.run(move |response| {
+            parse_sse_bytes(response, tx.clone(), true, Arc::clone(&handle_event))
+        })
+        .await
     }
 
     async fn send_once(&self) -> Result<reqwest::Response, LlmError> {
@@ -289,9 +329,11 @@ impl HttpPostRequest {
     }
 }
 
+// ─── 便捷入口函数 ──────────────────────────────────────────────────────
+
 /// 发起带重试的 HTTP POST 流式请求，并通过回调解析 SSE 事件。
 ///
-/// `parse_sse_line` 会在每条 SSE `data:` 行到达时被调用。
+/// `on_data` 会在每条 SSE `data:` 行到达并成功解析为 JSON 后被调用。
 /// 对于 Anthropic 风格的 `event:` + `data:` 行，使用 [`stream_with_event_type`]。
 pub async fn stream_with_retry(
     client: reqwest::Client,
@@ -300,7 +342,10 @@ pub async fn stream_with_retry(
     body: serde_json::Value,
     retry: RetryPolicy,
     tx: mpsc::UnboundedSender<LlmEvent>,
-    parse_sse_line: impl Fn(&str, &mpsc::UnboundedSender<LlmEvent>) -> bool,
+    on_data: impl Fn(&str, &serde_json::Value, &mpsc::UnboundedSender<LlmEvent>) -> bool
+    + Send
+    + Sync
+    + 'static,
 ) -> Result<(), LlmError> {
     HttpPostRequest {
         client,
@@ -309,7 +354,7 @@ pub async fn stream_with_retry(
         body,
         retry,
     }
-    .stream_data_lines(&tx, parse_sse_line)
+    .stream_data_lines(&tx, on_data)
     .await
 }
 
@@ -323,7 +368,10 @@ pub async fn stream_with_event_type(
     body: serde_json::Value,
     retry: RetryPolicy,
     tx: mpsc::UnboundedSender<LlmEvent>,
-    handle_event: impl Fn(&str, &serde_json::Value, &mpsc::UnboundedSender<LlmEvent>) -> bool,
+    handle_event: impl Fn(&str, &serde_json::Value, &mpsc::UnboundedSender<LlmEvent>) -> bool
+    + Send
+    + Sync
+    + 'static,
 ) -> Result<(), LlmError> {
     HttpPostRequest {
         client,
@@ -351,73 +399,21 @@ pub async fn read_http_error_body(response: reqwest::Response, endpoint: &str) -
     }
 }
 
-async fn parse_sse_response(
+// ─── SSE 字节流解析 ─────────────────────────────────────────────────────
+
+/// 解析 SSE 字节流，提取 `data:` 行并回调处理。
+///
+/// 统一了 data-only 模式（Gemini/OpenAI）和 event+data 模式（Anthropic）：
+/// - `track_event_type = false`：忽略 `event:` 行，回调的 `event_type` 参数始终为 `""`
+/// - `track_event_type = true`：跟踪 `event:` 行，回调的 `event_type` 参数为实际值
+///
+/// `[DONE]` 标记和空的 `data:` 行被静默跳过。
+/// 如果响应体非空但未包含任何 `data:` 行，返回 `StreamParse` 错误。
+async fn parse_sse_bytes(
     response: reqwest::Response,
-    tx: &mpsc::UnboundedSender<LlmEvent>,
-    parse_line: &impl Fn(&str, &mpsc::UnboundedSender<LlmEvent>) -> bool,
-) -> Result<(), LlmError> {
-    let endpoint = response.url().to_string();
-    let status = response.status();
-    let content_type = header_value(response.headers(), reqwest::header::CONTENT_TYPE);
-    let content_encoding = header_value(response.headers(), reqwest::header::CONTENT_ENCODING);
-    let mut stream = response.bytes_stream();
-    let mut decoder = Utf8StreamDecoder::new();
-    let mut line_reader = SseLineReader::new();
-    let mut bytes_read = 0usize;
-    let mut has_data_line = false;
-    let mut body_preview = String::new();
-
-    while let Some(chunk) = stream.next().await {
-        if tx.is_closed() {
-            return Ok(());
-        }
-        let bytes = chunk.map_err(|error| {
-            stream_body_error(
-                &endpoint,
-                status.as_u16(),
-                content_type.as_deref(),
-                content_encoding.as_deref(),
-                bytes_read,
-                error,
-            )
-        })?;
-        bytes_read += bytes.len();
-        if body_preview.is_empty() && !bytes.is_empty() {
-            let preview_len = bytes.len().min(512);
-            body_preview = String::from_utf8_lossy(&bytes[..preview_len]).to_string();
-        }
-        if let Some(text) = decoder.push(&bytes) {
-            for line in line_reader.push_chunk(&text) {
-                if line.starts_with("data:") {
-                    has_data_line = true;
-                }
-                if !process_data_line(&line, tx, &parse_line) {
-                    return Ok(());
-                }
-            }
-        }
-    }
-    if !drain_decoder(&mut decoder, &mut line_reader, tx, &parse_line) {
-        return Ok(());
-    }
-
-    if bytes_read > 0 && !has_data_line {
-        return Err(LlmError::StreamParse(format!(
-            "LLM returned 200 but response is not valid SSE (no data: lines found). Content-Type: \
-             {}, bytes: {}, preview: {}",
-            content_type.as_deref().unwrap_or("<missing>"),
-            bytes_read,
-            truncate_str(&body_preview, 256),
-        )));
-    }
-
-    Ok(())
-}
-
-async fn parse_sse_response_with_event_type(
-    response: reqwest::Response,
-    tx: &mpsc::UnboundedSender<LlmEvent>,
-    handle_event: &impl Fn(&str, &serde_json::Value, &mpsc::UnboundedSender<LlmEvent>) -> bool,
+    tx: mpsc::UnboundedSender<LlmEvent>,
+    track_event_type: bool,
+    on_event: SseCallback,
 ) -> Result<(), LlmError> {
     let endpoint = response.url().to_string();
     let status = response.status();
@@ -431,6 +427,17 @@ async fn parse_sse_response_with_event_type(
     let mut has_data_line = false;
     let mut body_preview = String::new();
 
+    let mut dispatch_line = |line: &str| -> bool {
+        process_sse_line(
+            line,
+            &tx,
+            track_event_type,
+            &mut current_event_type,
+            &mut has_data_line,
+            &on_event,
+        )
+    };
+
     while let Some(chunk) = stream.next().await {
         if tx.is_closed() {
             return Ok(());
@@ -452,46 +459,22 @@ async fn parse_sse_response_with_event_type(
         }
         if let Some(text) = decoder.push(&bytes) {
             for line in line_reader.push_chunk(&text) {
-                if let Some(ev_type) = line.strip_prefix("event:") {
-                    current_event_type = ev_type.trim().to_string();
-                    continue;
-                }
-                if let Some(data) = line.strip_prefix("data:") {
-                    has_data_line = true;
-                    let data = data.trim();
-                    if data == "[DONE]" || data.is_empty() {
-                        continue;
-                    }
-                    if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
-                        if !handle_event(&current_event_type, &event, tx) {
-                            return Ok(());
-                        }
-                        current_event_type.clear();
-                    }
+                if !dispatch_line(&line) {
+                    return Ok(());
                 }
             }
         }
     }
     if let Some(tail) = decoder.finish() {
         for line in line_reader.push_chunk(&tail) {
-            if let Some(data) = line.strip_prefix("data:") {
-                has_data_line = true;
-                if let Ok(event) = serde_json::from_str::<serde_json::Value>(data.trim()) {
-                    if !handle_event("", &event, tx) {
-                        return Ok(());
-                    }
-                }
+            if !dispatch_line(&line) {
+                return Ok(());
             }
         }
     }
     if let Some(line) = line_reader.flush() {
-        if let Some(data) = line.strip_prefix("data:") {
-            has_data_line = true;
-            if let Ok(event) = serde_json::from_str::<serde_json::Value>(data.trim()) {
-                if !handle_event("", &event, tx) {
-                    return Ok(());
-                }
-            }
+        if !dispatch_line(&line) {
+            return Ok(());
         }
     }
 
@@ -508,42 +491,47 @@ async fn parse_sse_response_with_event_type(
     Ok(())
 }
 
-fn process_data_line(
+/// 处理单行 SSE 输出。返回 `false` 表示接收端已关闭。
+fn process_sse_line(
     line: &str,
     tx: &mpsc::UnboundedSender<LlmEvent>,
-    parse_line: &impl Fn(&str, &mpsc::UnboundedSender<LlmEvent>) -> bool,
+    track_event_type: bool,
+    current_event_type: &mut String,
+    has_data_line: &mut bool,
+    on_event: &SseCallback,
 ) -> bool {
-    if tx.is_closed() {
-        return false;
+    // event: 行
+    if let Some(ev_type) = line.strip_prefix("event:") {
+        if track_event_type {
+            *current_event_type = ev_type.trim().to_string();
+        }
+        return true;
     }
+
+    // data: 行
     let Some(data) = line.strip_prefix("data:") else {
         return true;
     };
+    *has_data_line = true;
     let data = data.trim();
     if data.is_empty() || data == "[DONE]" {
         return true;
     }
-    parse_line(data, tx)
-}
 
-fn drain_decoder(
-    decoder: &mut Utf8StreamDecoder,
-    line_reader: &mut SseLineReader,
-    tx: &mpsc::UnboundedSender<LlmEvent>,
-    parse_line: &impl Fn(&str, &mpsc::UnboundedSender<LlmEvent>) -> bool,
-) -> bool {
-    if let Some(tail) = decoder.finish() {
-        for line in line_reader.push_chunk(&tail) {
-            if !process_data_line(&line, tx, parse_line) {
-                return false;
-            }
-        }
+    if tx.is_closed() {
+        return false;
     }
-    if let Some(line) = line_reader.flush() {
-        return process_data_line(&line, tx, parse_line);
+
+    if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
+        if !on_event(current_event_type, &event, tx) {
+            return false;
+        }
+        current_event_type.clear();
     }
     true
 }
+
+// ─── 错误工具函数 ──────────────────────────────────────────────────────
 
 fn truncate_str(s: &str, max_chars: usize) -> &str {
     if s.len() <= max_chars {
@@ -721,13 +709,22 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            socket.write_all(b"data: first\n\n").await.unwrap();
+            socket
+                .write_all(b"data: {\"line\":\"first\"}\n\n")
+                .await
+                .unwrap();
             socket.flush().await.unwrap();
             tokio::time::sleep(Duration::from_millis(600)).await;
-            socket.write_all(b"data: second\n\n").await.unwrap();
+            socket
+                .write_all(b"data: {\"line\":\"second\"}\n\n")
+                .await
+                .unwrap();
             socket.flush().await.unwrap();
             tokio::time::sleep(Duration::from_millis(600)).await;
-            socket.write_all(b"data: third\n\n").await.unwrap();
+            socket
+                .write_all(b"data: {\"line\":\"third\"}\n\n")
+                .await
+                .unwrap();
             socket.flush().await.unwrap();
         });
 
@@ -752,8 +749,10 @@ mod tests {
                 max_transport_retries: 0,
             },
             tx,
-            move |line, _| {
-                captured.lock().unwrap().push(line.to_string());
+            move |_event_type, event, _| {
+                if let Some(line) = event.get("line").and_then(|v| v.as_str()) {
+                    captured.lock().unwrap().push(line.to_string());
+                }
                 true
             },
         )
@@ -802,17 +801,22 @@ mod tests {
             .unwrap();
         let event_types = Arc::new(Mutex::new(Vec::new()));
         let captured = Arc::clone(&event_types);
-        parse_sse_response_with_event_type(response, &tx, &|event_type, event, _| {
-            captured.lock().unwrap().push((
-                event_type.to_string(),
-                event
-                    .get("kind")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-            ));
-            true
-        })
+        parse_sse_bytes(
+            response,
+            tx.clone(),
+            true,
+            Arc::new(move |event_type, event, _| {
+                captured.lock().unwrap().push((
+                    event_type.to_string(),
+                    event
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                ));
+                true
+            }),
+        )
         .await
         .unwrap();
         drop(tx);

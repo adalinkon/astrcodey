@@ -3,14 +3,14 @@
 //! Implements [`LlmProvider`] for Google's generativelanguage API with SSE
 //! streaming, function calling, and thinking support.
 
-use std::sync::Mutex;
-
 use astrcode_core::{llm::*, tool::ToolDefinition};
 use tokio::sync::mpsc;
 
 use crate::{
-    common::{StreamEventSink, build_client, send_event, stream_with_retry},
-    retry::RetryPolicy,
+    common::{
+        SharedStreamSink, StreamEventSink, build_client, retry_policy_from_config, send_event,
+        stream_with_retry,
+    },
     serialization::ContentMapper,
 };
 
@@ -127,14 +127,10 @@ impl LlmProvider for GeminiProvider {
             .collect();
         headers.push(("x-goog-api-key".into(), self.config.api_key.clone()));
         let client = self.client.clone();
-        let retry = RetryPolicy {
-            max_retries: self.config.max_retries,
-            base_delay_ms: self.config.retry_base_delay_ms,
-            max_transport_retries: self.config.max_retries,
-        };
+        let retry = retry_policy_from_config(&self.config);
 
         tokio::spawn(async move {
-            let sink = Mutex::new(StreamEventSink::new());
+            let sink = SharedStreamSink::new();
             let result = stream_with_retry(
                 client,
                 endpoint,
@@ -142,30 +138,10 @@ impl LlmProvider for GeminiProvider {
                 body,
                 retry,
                 tx.clone(),
-                |data, tx| {
-                    if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
-                        let mut sink = sink.lock().unwrap_or_else(|e| e.into_inner());
-                        process_gemini_chunk(&event, tx, &mut sink)
-                    } else {
-                        true
-                    }
-                },
+                sink.wrap(|sink, _event_type, event, tx| process_gemini_chunk(event, tx, sink)),
             )
             .await;
-            if result.is_ok() {
-                let mut sink = sink.lock().unwrap_or_else(|e| e.into_inner());
-                if !sink.done_sent() {
-                    sink.ensure_done(&tx);
-                }
-            }
-            if let Err(error) = result {
-                send_event(
-                    &tx,
-                    LlmEvent::Error {
-                        message: error.to_string(),
-                    },
-                );
-            }
+            sink.finalize(result, &tx);
         });
 
         Ok(rx)

@@ -3,16 +3,19 @@
 //! Implements [`LlmProvider`] for Anthropic's Messages API with SSE streaming,
 //! tool use, and thinking support.
 
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use astrcode_core::{llm::*, tool::ToolDefinition};
 use tokio::sync::mpsc;
 
 use crate::{
     common::{
-        StreamEventSink, build_client, send_event, stream_text_delta, stream_with_event_type,
+        SharedStreamSink, StreamEventSink, build_client, retry_policy_from_config, send_event,
+        stream_text_delta, stream_with_event_type,
     },
-    retry::RetryPolicy,
     serialization::ContentMapper,
 };
 
@@ -165,20 +168,15 @@ impl LlmProvider for AnthropicProvider {
             .collect();
         let headers = [headers, extra].concat();
         let client = self.client.clone();
-        let retry = RetryPolicy {
-            max_retries: self.config.max_retries,
-            base_delay_ms: self.config.retry_base_delay_ms,
-            max_transport_retries: self.config.max_retries,
-        };
+        let retry = retry_policy_from_config(&self.config);
 
         tokio::spawn(async move {
-            let sink = Mutex::new(StreamEventSink::new());
+            let sink = SharedStreamSink::new();
             // SSE content block index → actual tool call id 的映射。
             // content_block_start 带 id（如 "call_549f..."）和 index（如 0），
             // content_block_delta 只有 index，需要通过此映射找到真实 call_id。
-            let index_to_call_id: Mutex<HashMap<u64, String>> = Mutex::new(HashMap::new());
-            let block_stream_state: Mutex<HashMap<u64, BlockStreamState>> =
-                Mutex::new(HashMap::new());
+            let index_to_call_id = Arc::new(Mutex::new(HashMap::new()));
+            let block_stream_state = Arc::new(Mutex::new(HashMap::new()));
 
             let result = stream_with_event_type(
                 client,
@@ -187,33 +185,23 @@ impl LlmProvider for AnthropicProvider {
                 request_body,
                 retry,
                 tx.clone(),
-                |event_type, event, tx| {
-                    let mut sink = sink.lock().unwrap_or_else(|e| e.into_inner());
-                    handle_anthropic_event(
-                        event_type,
-                        event,
-                        tx,
-                        &index_to_call_id,
-                        &block_stream_state,
-                        &mut sink,
-                    )
+                {
+                    let index_to_call_id = Arc::clone(&index_to_call_id);
+                    let block_stream_state = Arc::clone(&block_stream_state);
+                    sink.wrap(move |sink, event_type, event, tx| {
+                        handle_anthropic_event(
+                            event_type,
+                            event,
+                            tx,
+                            &index_to_call_id,
+                            &block_stream_state,
+                            sink,
+                        )
+                    })
                 },
             )
             .await;
-            if result.is_ok() {
-                let mut sink = sink.lock().unwrap_or_else(|e| e.into_inner());
-                if !sink.done_sent() {
-                    sink.ensure_done(&tx);
-                }
-            }
-            if let Err(error) = result {
-                send_event(
-                    &tx,
-                    LlmEvent::Error {
-                        message: error.to_string(),
-                    },
-                );
-            }
+            sink.finalize(result, &tx);
         });
 
         Ok(rx)

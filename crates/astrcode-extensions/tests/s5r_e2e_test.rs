@@ -426,10 +426,7 @@ async fn s5r_turn_end_continuations_and_pipeline() {
         .expect("pipeline_status");
 
     let result = tool
-        .execute(
-            serde_json::json!({}),
-            &tool_ctx("/tmp"),
-        )
+        .execute(serde_json::json!({}), &tool_ctx("/tmp"))
         .await
         .unwrap();
 

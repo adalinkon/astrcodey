@@ -35,9 +35,9 @@ pub mod tool {
         CreateRootSessionRequest, CreateSessionRequest, DEFERRED_TOOLS_METADATA_KEY, ExecutionMode,
         SessionApiError, SessionHandle, SessionOperations, SessionStatus, SubmitTurnRequest,
         SubmitTurnResult, Tool, ToolCallScope, ToolCapabilities, ToolDefinition, ToolError,
-        ToolExecutionContext, ToolFileServices, ToolHostServices, ToolModelAccess,
-        ToolSessionControl, ToolSessionPaths, ToolOrigin, ToolPromptMetadata, ToolPromptTag,
-        ToolResult, tool_metadata,
+        ToolExecutionContext, ToolFileServices, ToolHostServices, ToolModelAccess, ToolOrigin,
+        ToolPromptMetadata, ToolPromptTag, ToolResult, ToolSessionControl, ToolSessionPaths,
+        tool_metadata,
     };
 }
 

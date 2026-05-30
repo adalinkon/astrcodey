@@ -9,7 +9,10 @@ use astrcode_core::{config::OpenAiApiMode, llm::*, tool::ToolDefinition};
 use tokio::sync::mpsc;
 
 use crate::{
-    common::{HttpPostRequest, build_client, send_event, stream_body_error, stream_text_delta},
+    common::{
+        HttpPostRequest, build_client, report_stream_error, retry_policy_from_config, send_event,
+        stream_body_error, stream_text_delta,
+    },
     retry::RetryPolicy,
     serialization::{
         chat_message_to_json, prompt_cache_retention_wire_value, responses_input_items,
@@ -705,11 +708,7 @@ impl<A: ChatAccumulator> LlmProvider for OpenAiProvider<A> {
         let extra_headers = self.config.extra_headers.clone();
         let client = self.client.clone();
         let api_mode = self.api_mode;
-        let retry = RetryPolicy {
-            max_retries: self.config.max_retries,
-            base_delay_ms: self.config.retry_base_delay_ms,
-            max_transport_retries: self.config.max_retries,
-        };
+        let retry = retry_policy_from_config(&self.config);
 
         tokio::spawn(async move {
             let result = Self::stream_request(
@@ -723,14 +722,7 @@ impl<A: ChatAccumulator> LlmProvider for OpenAiProvider<A> {
                 tx.clone(),
             )
             .await;
-            if let Err(error) = result {
-                send_event(
-                    &tx,
-                    LlmEvent::Error {
-                        message: error.to_string(),
-                    },
-                );
-            }
+            report_stream_error(result, &tx);
         });
 
         Ok(rx)
