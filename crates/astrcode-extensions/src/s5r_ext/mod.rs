@@ -7,7 +7,8 @@ use std::{path::Path, sync::Arc};
 
 use astrcode_core::extension::{
     CommandContext, CommandHandler, CompactContext, CompactEvent, CompactHandler, CompactResult,
-    Extension, ExtensionCapability, ExtensionCommandResult, ExtensionError, ExtensionEvent,
+    ContinueAfterStopContext, ContinueAfterStopHandler, ContinueAfterStopResult, Extension,
+    ExtensionCapability, ExtensionCommandResult, ExtensionError, ExtensionEvent,
     ExtensionEventDecl, HookMode, HookResult, LifecycleContext, LifecycleHandler,
     PostToolUseContext, PostToolUseHandler, PostToolUseResult, PreToolUseContext,
     PreToolUseHandler, PreToolUseResult, PromptBuildContext, PromptBuildHandler,
@@ -26,9 +27,9 @@ use crate::{
     host_router::{HostRouter, InvokeContext},
     remote_manifest::{
         build_commands, build_subscriptions, build_tools, handler_id, parse_command_result,
-        parse_compact_result, parse_lifecycle_result, parse_post_tool_use_result,
-        parse_pre_tool_use_result, parse_prompt_build_result, parse_provider_result,
-        parse_tool_result, validate_registration,
+        parse_compact_result, parse_continue_after_stop_result, parse_lifecycle_result,
+        parse_post_tool_use_result, parse_pre_tool_use_result, parse_prompt_build_result,
+        parse_provider_result, parse_tool_result, validate_registration,
     },
     s5r_ext::session::S5rSession,
 };
@@ -204,6 +205,13 @@ impl Extension for S5rExtension {
                             ext_id,
                             on: "after_provider_response".into(),
                         }),
+                    );
+                },
+                ExtensionEvent::ContinueAfterStop => {
+                    reg.on_continue_after_stop(
+                        *mode,
+                        0,
+                        Arc::new(S5rContinueAfterStopHandler { session, ext_id }),
                     );
                 },
                 ExtensionEvent::PromptBuild => {
@@ -484,6 +492,46 @@ impl ProviderHandler for S5rProviderHandler {
             )
             .await?;
         parse_provider_result(&resp)
+    }
+}
+
+struct S5rContinueAfterStopHandler {
+    session: Arc<S5rSession>,
+    ext_id: String,
+}
+
+#[async_trait::async_trait]
+impl ContinueAfterStopHandler for S5rContinueAfterStopHandler {
+    async fn handle(
+        &self,
+        ctx: ContinueAfterStopContext,
+    ) -> Result<ContinueAfterStopResult, ExtensionError> {
+        let invoke_ctx = hook_invoke_ctx(
+            &self.session,
+            &self.ext_id,
+            Some(ctx.session_id.clone()),
+            Some(ctx.working_dir.clone()),
+            None,
+            None,
+            None,
+        );
+        let input = json!({
+            "session_id": ctx.session_id,
+            "working_dir": ctx.working_dir,
+            "model": ctx.model,
+            "assistant_text": ctx.assistant_text,
+            "finish_reason": ctx.finish_reason,
+        });
+        let hid = handler_id(&self.ext_id, "hook", "continue_after_stop");
+        let resp = self
+            .session
+            .invoke_handler_with_continuations(
+                &hid,
+                json!({ "on": "continue_after_stop", "input": input }),
+                &invoke_ctx,
+            )
+            .await?;
+        parse_continue_after_stop_result(&resp)
     }
 }
 

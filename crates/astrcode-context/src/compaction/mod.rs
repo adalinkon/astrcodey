@@ -357,6 +357,67 @@ pub fn is_prompt_too_long_message(message: &str) -> bool {
     positive && !negative
 }
 
+/// 是否可在 `split_after` 所指的 message 之后切分压缩边界（Kimi `canSplitAfter` 语义）。
+///
+/// `keep_start` 为保留区首条消息下标时，应对 `split_after = keep_start - 1` 调用本函数。
+pub fn can_split_after(messages: &[LlmMessage], split_after: usize) -> bool {
+    if split_after >= messages.len() {
+        return true;
+    }
+    let Some(message) = messages.get(split_after) else {
+        return true;
+    };
+    if message.role == LlmRole::User && !is_synthetic_context_message(message) {
+        return false;
+    }
+    if message.role == LlmRole::Assistant {
+        let has_tool_calls = message
+            .content
+            .iter()
+            .any(|content| matches!(content, LlmContent::ToolCall { .. }));
+        if has_tool_calls {
+            return false;
+        }
+    }
+    if messages
+        .get(split_after + 1)
+        .is_some_and(|next| next.role == LlmRole::Tool)
+    {
+        return false;
+    }
+    true
+}
+
+fn can_compact_before(messages: &[LlmMessage], keep_start: usize) -> bool {
+    if keep_start == 0 {
+        return false;
+    }
+    can_split_after(messages, keep_start - 1)
+}
+
+fn adjust_keep_start_to_safe_boundary(
+    messages: &[LlmMessage],
+    mut keep_start: usize,
+) -> Option<usize> {
+    let turn_starts = user_turn_starts(messages);
+    while keep_start > 0 && !can_compact_before(messages, keep_start) {
+        let previous = turn_starts
+            .iter()
+            .copied()
+            .filter(|index| *index < keep_start)
+            .max()?;
+        if previous == keep_start {
+            return None;
+        }
+        keep_start = previous;
+    }
+    if keep_start == 0 || !can_compact_before(messages, keep_start) {
+        None
+    } else {
+        Some(keep_start)
+    }
+}
+
 fn split_compact_start(messages: &[LlmMessage], keep_recent_turns: Option<usize>) -> Option<usize> {
     let has_compressible = messages
         .iter()
@@ -376,9 +437,10 @@ fn split_compact_start(messages: &[LlmMessage], keep_recent_turns: Option<usize>
         return Some(messages.len());
     }
 
-    turn_starts
+    let candidate = turn_starts
         .get(turn_starts.len().saturating_sub(keep_turns))
-        .copied()
+        .copied()?;
+    adjust_keep_start_to_safe_boundary(messages, candidate)
 }
 
 fn removed_visible_messages(messages: &[LlmMessage]) -> usize {
@@ -601,7 +663,22 @@ fn truncate_summary_line(text: &str) -> String {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use serde_json::json;
+
     use super::*;
+
+    fn assistant_tool_call(call_id: &str, name: &str, arguments: serde_json::Value) -> LlmMessage {
+        LlmMessage {
+            role: LlmRole::Assistant,
+            content: vec![LlmContent::ToolCall {
+                call_id: call_id.into(),
+                name: name.into(),
+                arguments,
+            }],
+            name: None,
+            reasoning_content: None,
+        }
+    }
 
     fn valid_compact_summary() -> &'static str {
         r#"<analysis>
@@ -677,6 +754,36 @@ The summary should preserve the compact contract and omit this scratchpad later.
             "recent real"
         );
         assert_eq!(result.messages_removed, 2);
+    }
+
+    #[test]
+    fn can_split_after_rejects_unsafe_boundaries() {
+        let messages = vec![
+            LlmMessage::user("u1"),
+            LlmMessage::assistant("a1"),
+            LlmMessage::user("u2"),
+            assistant_tool_call("call-1", "tool", json!({})),
+            LlmMessage::tool("tool", "call-1", "ok", false),
+            LlmMessage::user("u3"),
+        ];
+        assert!(!can_split_after(&messages, 0));
+        assert!(!can_split_after(&messages, 2));
+        assert!(!can_split_after(&messages, 3));
+        assert!(can_split_after(&messages, 4));
+    }
+
+    #[test]
+    fn split_compact_start_skips_unsafe_user_turn_boundary() {
+        let messages = vec![
+            LlmMessage::user("old"),
+            assistant_tool_call("c1", "read", json!({"path": "a"})),
+            LlmMessage::tool("read", "c1", "done", false),
+            LlmMessage::user("recent"),
+            LlmMessage::assistant("done"),
+        ];
+        let keep_start = split_compact_start(&messages, Some(1)).unwrap();
+        assert_eq!(keep_start, 3);
+        assert_eq!(visible_message_text(&messages[keep_start]), "recent");
     }
 
     #[test]

@@ -48,6 +48,16 @@ impl HandlerResult {
         }
     }
 
+    /// LLM 自然结束后请求宿主再跑一个 agent step。
+    pub fn continue_one_step() -> Self {
+        Self::effect("continue_one_step", Value::Null)
+    }
+
+    /// LLM 自然结束后结束当前 turn（默认）。
+    pub fn end_turn() -> Self {
+        Self::ok()
+    }
+
     pub fn effect_name(&self) -> &str {
         self.effect.as_deref().unwrap_or("ok")
     }

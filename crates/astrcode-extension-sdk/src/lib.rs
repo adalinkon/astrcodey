@@ -65,11 +65,12 @@ pub mod state {
 /// 进程内（bundled）扩展：实现 [`extension::Extension`] trait，使用 [`builder::handler_fn`]。
 pub mod prelude {
     pub use crate::{
-        builder::{handler_fn, tool},
+        builder::{continue_after_stop_handler_fn, handler_fn, tool},
         extension::{
             CommandContext, CommandHandler, CompactContext, CompactContributions, CompactEvent,
             CompactHandler, CompactResult, Extension, ExtensionCapability, ExtensionCommandResult,
             ExtensionConfig, ExtensionCtx, ExtensionError, ExtensionEvent, ExtensionManifest,
+            ContinueAfterStopContext, ContinueAfterStopHandler, ContinueAfterStopResult,
             HookMode, HookResult, LifecycleContext, LifecycleHandler, PostToolUseContext,
             PostToolUseHandler, PostToolUseResult, PreToolUseContext, PreToolUseHandler,
             PreToolUseResult, PromptBuildContext, PromptBuildHandler, PromptContributions,

@@ -8,7 +8,10 @@ use std::{sync::Arc, time::Duration};
 
 use astrcode_core::{
     event::EventPayload,
-    extension::{ExtensionEvent, ProviderEvent, ProviderResult},
+    extension::{
+        ContinueAfterStopContext, ContinueAfterStopResult, ExtensionEvent, ProviderEvent,
+        ProviderResult,
+    },
     llm::{LlmError, LlmEvent, LlmMessage, provider_visible_messages},
     storage::SessionReadModel,
     tool::ToolDefinition,
@@ -22,6 +25,7 @@ use crate::{
     llm_request_history::build_llm_request_messages,
     llm_stream::{StreamOutcome, consume_llm_stream, non_empty_reasoning_content},
     session::Session,
+    steer::count_visible_user_messages,
     tool_exec::TurnToolContext,
     tool_pipeline::ToolCalls,
     tool_types::ExecuteToolCalls,
@@ -157,10 +161,20 @@ impl TurnLoop {
         }
 
         let mut state = TurnState::new(all_tools);
+        if let Ok(model) = publisher.snapshot_model().await {
+            state.set_tracked_user_message_count(count_visible_user_messages(&model));
+        }
 
+        // Step
         loop {
             self.check_aborted()?;
-            publisher.invalidate_model_cache().await;
+            self.flush_steered_inputs_at_step_start(
+                &extension_runner,
+                &lifecycle_ctx,
+                publisher,
+                &mut state,
+            )
+            .await?;
 
             extension_runner
                 .emit_lifecycle(ExtensionEvent::StepStart, lifecycle_ctx.clone())
@@ -207,6 +221,7 @@ impl TurnLoop {
                     message_started,
                 } => {
                     let reasoning_content = non_empty_reasoning_content(reasoning_content);
+                    let assistant_text_for_continue = text.clone();
                     if !text.is_empty() || reasoning_content.is_some() {
                         state.append_final_text(&text);
                         if message_started {
@@ -220,6 +235,18 @@ impl TurnLoop {
                         }
                     }
                     on_step_end_best_effort(&extension_runner, &lifecycle_ctx).await;
+
+                    if self
+                        .should_continue_after_stop(
+                            &extension_runner,
+                            &assistant_text_for_continue,
+                            &finish_reason,
+                            &mut state,
+                        )
+                        .await?
+                    {
+                        continue;
+                    }
 
                     return self
                         .postprocess_complete_stage(
@@ -469,6 +496,60 @@ impl TurnLoop {
         } else {
             Ok(())
         }
+    }
+
+    /// 每个 agent step 开始前：重载读模型，检测并 flush 中途注入的 user 消息（steer）。
+    async fn flush_steered_inputs_at_step_start(
+        &self,
+        extension_runner: &astrcode_extensions::runner::ExtensionRunner,
+        lifecycle_ctx: &astrcode_core::extension::LifecycleContext,
+        publisher: &Arc<TurnEvents>,
+        state: &mut TurnState,
+    ) -> Result<(), TurnError> {
+        publisher.invalidate_model_cache().await;
+        let model = publisher.snapshot_model().await?;
+        let current = count_visible_user_messages(&model);
+        let previous = state.tracked_user_message_count();
+        if current > previous {
+            let flushed = current - previous;
+            tracing::debug!(
+                flushed,
+                previous,
+                current,
+                "steer buffer flush: mid-turn user inputs merged into context"
+            );
+            extension_runner
+                .emit_lifecycle(ExtensionEvent::SteerFlush, lifecycle_ctx.clone())
+                .await?;
+        }
+        state.set_tracked_user_message_count(current);
+        Ok(())
+    }
+
+    async fn should_continue_after_stop(
+        &self,
+        extension_runner: &astrcode_extensions::runner::ExtensionRunner,
+        assistant_text: &str,
+        finish_reason: &str,
+        state: &mut TurnState,
+    ) -> Result<bool, TurnError> {
+        if !state.can_continue_after_stop() {
+            return Ok(false);
+        }
+        let ctx = ContinueAfterStopContext {
+            session_id: self.shared().session_id.to_string(),
+            working_dir: self.shared().working_dir.clone(),
+            model: self.shared().model_selection(),
+            assistant_text: assistant_text.to_string(),
+            finish_reason: finish_reason.to_string(),
+        };
+        let decision = extension_runner.emit_continue_after_stop(ctx).await?;
+        if decision == ContinueAfterStopResult::ContinueOneStep {
+            state.consume_continue_after_stop();
+            tracing::debug!("ContinueAfterStop: running one more agent step");
+            return Ok(true);
+        }
+        Ok(false)
     }
 }
 

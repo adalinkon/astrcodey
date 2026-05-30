@@ -71,6 +71,16 @@ impl Worker {
         self.registry.register_hook(on, mode, handler);
     }
 
+    /// 注册 [`continue_after_stop`](crate::extension::ContinueAfterStopHandler) hook。
+    pub fn on_continue_after_stop(
+        &mut self,
+        mode: impl Into<String>,
+        handler: HookHandlerFn,
+    ) {
+        self.registry
+            .register_hook("continue_after_stop", mode, handler);
+    }
+
     /// 注册 slash command。
     pub fn command(
         &mut self,

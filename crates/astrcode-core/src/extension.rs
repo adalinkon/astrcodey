@@ -414,6 +414,8 @@ pub enum ExtensionEvent {
     StepStart,
     /// Step 结束（loop 迭代末尾，tool_calls 执行完毕或 LLM 返回 Complete 后）。
     StepEnd,
+    /// 本 step 开始前检测到新的中途用户输入（steer）已并入上下文。
+    SteerFlush,
 
     // ── 工具级别（主要钩子点） ──
     /// 工具执行前。
@@ -431,6 +433,8 @@ pub enum ExtensionEvent {
     BeforeProviderRequest,
     /// LLM 响应接收后。
     AfterProviderResponse,
+    /// LLM 自然结束（无 tool call）后是否再跑一个 agent step。
+    ContinueAfterStop,
 
     // ── 用户输入 ──
     /// 用户提交提示词。
@@ -824,6 +828,25 @@ pub enum PostToolUseResult {
     ModifyResult { content: String },
 }
 
+/// LLM 自然结束（无 tool call）后，扩展是否再跑一个 agent step。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContinueAfterStopResult {
+    /// 结束 turn（默认）。
+    EndTurn,
+    /// 再执行一个 step（由宿主限制每轮预算）。
+    ContinueOneStep,
+}
+
+/// LLM 自然结束后的扩展决策钩子上下文。
+#[derive(Debug, Clone)]
+pub struct ContinueAfterStopContext {
+    pub session_id: String,
+    pub working_dir: String,
+    pub model: ModelSelection,
+    pub assistant_text: String,
+    pub finish_reason: String,
+}
+
 /// Provider 钩子结果。
 #[derive(Debug, Clone)]
 pub enum ProviderResult {
@@ -1044,6 +1067,15 @@ pub trait LifecycleHandler: Send + Sync {
     async fn handle(&self, ctx: LifecycleContext) -> Result<HookResult, ExtensionError>;
 }
 
+/// LLM 返回纯文本结束后的继续决策钩子。
+#[async_trait::async_trait]
+pub trait ContinueAfterStopHandler: Send + Sync {
+    async fn handle(
+        &self,
+        ctx: ContinueAfterStopContext,
+    ) -> Result<ContinueAfterStopResult, ExtensionError>;
+}
+
 /// 工具执行处理器。
 #[async_trait::async_trait]
 pub trait ToolHandler: Send + Sync {
@@ -1122,6 +1154,7 @@ pub struct Registrar {
     prompt_build: Vec<(i32, std::sync::Arc<dyn PromptBuildHandler>)>,
     compact: Vec<(CompactEvent, i32, std::sync::Arc<dyn CompactHandler>)>,
     post_tool_use_failure: Vec<(i32, std::sync::Arc<dyn PostToolUseFailureHandler>)>,
+    continue_after_stop: Vec<(HookMode, i32, std::sync::Arc<dyn ContinueAfterStopHandler>)>,
     lifecycle: Vec<(
         ExtensionEvent,
         HookMode,
@@ -1148,6 +1181,7 @@ impl Registrar {
             prompt_build: Vec::new(),
             compact: Vec::new(),
             post_tool_use_failure: Vec::new(),
+            continue_after_stop: Vec::new(),
             lifecycle: Vec::new(),
             extension_event_decls: Vec::new(),
             needs_extension_data_dir: false,
@@ -1235,6 +1269,15 @@ impl Registrar {
         self.post_tool_use_failure.push((priority, handler));
     }
 
+    pub fn on_continue_after_stop(
+        &mut self,
+        mode: HookMode,
+        priority: i32,
+        handler: std::sync::Arc<dyn ContinueAfterStopHandler>,
+    ) {
+        self.continue_after_stop.push((mode, priority, handler));
+    }
+
     pub fn on_event(
         &mut self,
         event: ExtensionEvent,
@@ -1259,6 +1302,7 @@ impl Registrar {
             && self.prompt_build.is_empty()
             && self.compact.is_empty()
             && self.post_tool_use_failure.is_empty()
+            && self.continue_after_stop.is_empty()
             && self.lifecycle.is_empty()
             && self.extension_event_decls.is_empty()
             && !self.needs_extension_data_dir
@@ -1331,6 +1375,12 @@ impl Registrar {
 
     pub fn post_tool_use_failure(&self) -> &[(i32, std::sync::Arc<dyn PostToolUseFailureHandler>)] {
         &self.post_tool_use_failure
+    }
+
+    pub fn continue_after_stop(
+        &self,
+    ) -> &[(HookMode, i32, std::sync::Arc<dyn ContinueAfterStopHandler>)] {
+        &self.continue_after_stop
     }
 
     pub fn lifecycle(

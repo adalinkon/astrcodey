@@ -212,11 +212,13 @@ pub fn event_from_name(name: &str) -> Option<ExtensionEvent> {
         "turn_aborted" => Some(ExtensionEvent::TurnAborted),
         "step_start" => Some(ExtensionEvent::StepStart),
         "step_end" => Some(ExtensionEvent::StepEnd),
+        "steer_flush" => Some(ExtensionEvent::SteerFlush),
         "pre_tool_use" => Some(ExtensionEvent::PreToolUse),
         "post_tool_use" => Some(ExtensionEvent::PostToolUse),
         "post_tool_use_failure" => Some(ExtensionEvent::PostToolUseFailure),
         "before_provider_request" => Some(ExtensionEvent::BeforeProviderRequest),
         "after_provider_response" => Some(ExtensionEvent::AfterProviderResponse),
+        "continue_after_stop" => Some(ExtensionEvent::ContinueAfterStop),
         "user_prompt_submit" => Some(ExtensionEvent::UserPromptSubmit),
         "prompt_build" => Some(ExtensionEvent::PromptBuild),
         "pre_compact" => Some(ExtensionEvent::PreCompact),
@@ -245,11 +247,13 @@ pub fn event_to_name(event: &ExtensionEvent) -> &'static str {
         ExtensionEvent::TurnAborted => "turn_aborted",
         ExtensionEvent::StepStart => "step_start",
         ExtensionEvent::StepEnd => "step_end",
+        ExtensionEvent::SteerFlush => "steer_flush",
         ExtensionEvent::PreToolUse => "pre_tool_use",
         ExtensionEvent::PostToolUse => "post_tool_use",
         ExtensionEvent::PostToolUseFailure => "post_tool_use_failure",
         ExtensionEvent::BeforeProviderRequest => "before_provider_request",
         ExtensionEvent::AfterProviderResponse => "after_provider_response",
+        ExtensionEvent::ContinueAfterStop => "continue_after_stop",
         ExtensionEvent::UserPromptSubmit => "user_prompt_submit",
         ExtensionEvent::PromptBuild => "prompt_build",
         ExtensionEvent::PreCompact => "pre_compact",
@@ -261,6 +265,18 @@ pub fn event_to_name(event: &ExtensionEvent) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continue_after_stop_event_roundtrip() {
+        assert_eq!(
+            event_from_name("continue_after_stop"),
+            Some(ExtensionEvent::ContinueAfterStop)
+        );
+        assert_eq!(
+            event_to_name(&ExtensionEvent::ContinueAfterStop),
+            "continue_after_stop"
+        );
+    }
 
     #[test]
     fn wire_message_roundtrip() {

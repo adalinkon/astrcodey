@@ -3,9 +3,10 @@
 use std::collections::HashMap;
 
 use astrcode_core::extension::{
-    CompactContributions, CompactResult, EXTENSION_TOOL_OUTCOME_KEY, ExtensionCommandResult,
-    ExtensionError, ExtensionEvent, ExtensionEventDecl, ExtensionToolOutcome, HookMode, HookResult,
-    PostToolUseResult, PreToolUseResult, PromptContributions, ProviderResult,
+    CompactContributions, CompactResult, ContinueAfterStopResult, EXTENSION_TOOL_OUTCOME_KEY,
+    ExtensionCommandResult, ExtensionError, ExtensionEvent, ExtensionEventDecl,
+    ExtensionToolOutcome, HookMode, HookResult, PostToolUseResult, PreToolUseResult,
+    PromptContributions, ProviderResult,
 };
 use astrcode_extension_sdk::{
     extension::SlashCommand,
@@ -173,6 +174,18 @@ pub fn parse_provider_result(resp: &HandlerResult) -> Result<ProviderResult, Ext
             })
         },
         _ => Ok(ProviderResult::Allow),
+    }
+}
+
+pub fn parse_continue_after_stop_result(
+    resp: &HandlerResult,
+) -> Result<ContinueAfterStopResult, ExtensionError> {
+    if !resp.ok {
+        return Ok(ContinueAfterStopResult::EndTurn);
+    }
+    match resp.effect_name() {
+        "continue_one_step" => Ok(ContinueAfterStopResult::ContinueOneStep),
+        _ => Ok(ContinueAfterStopResult::EndTurn),
     }
 }
 

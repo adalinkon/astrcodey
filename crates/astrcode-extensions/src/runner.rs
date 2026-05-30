@@ -164,6 +164,7 @@ struct HandlerIndex {
     prompt_build: Vec<Arc<dyn PromptBuildHandler>>,
     compact: HashMap<CompactEvent, Vec<Arc<dyn CompactHandler>>>,
     post_tool_use_failure: Vec<Arc<dyn PostToolUseFailureHandler>>,
+    continue_after_stop: Vec<ExtensionHandler<dyn ContinueAfterStopHandler>>,
     lifecycle: HashMap<ExtensionEvent, Vec<ExtensionHandler<dyn LifecycleHandler>>>,
     // 预计算的 collect 缓存
     tool_metadata:
@@ -203,6 +204,7 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
     let mut pb: Vec<(i32, Arc<dyn PromptBuildHandler>)> = Vec::new();
     let mut cmp: Vec<(CompactEvent, i32, Arc<dyn CompactHandler>)> = Vec::new();
     let mut ptuf: Vec<(i32, Arc<dyn PostToolUseFailureHandler>)> = Vec::new();
+    let mut cas: Vec<PrioritizedHandler<dyn ContinueAfterStopHandler>> = Vec::new();
     let mut lc: Vec<PrioritizedEventHandler<ExtensionEvent, dyn LifecycleHandler>> = Vec::new();
     let mut tool_metadata = std::collections::HashMap::new();
     #[allow(clippy::type_complexity)]
@@ -245,6 +247,9 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
         }
         for (pri, h) in record.reg.post_tool_use_failure() {
             ptuf.push((*pri, Arc::clone(h)));
+        }
+        for (mode, pri, h) in record.reg.continue_after_stop() {
+            cas.push((*pri, record.id.clone(), *mode, Arc::clone(h)));
         }
         for (ev, mode, pri, h) in record.reg.lifecycle() {
             lc.push((ev.clone(), *pri, record.id.clone(), *mode, Arc::clone(h)));
@@ -295,6 +300,7 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
     pb.sort_by_key(|b| std::cmp::Reverse(b.0));
     cmp.sort_by_key(|b| std::cmp::Reverse(b.1));
     ptuf.sort_by_key(|b| std::cmp::Reverse(b.0));
+    cas.sort_by_key(|b| std::cmp::Reverse(b.0));
     lc.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     HandlerIndex {
@@ -304,6 +310,7 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
         prompt_build: pb.into_iter().map(|(_, h)| h).collect(),
         compact: group_by_event_plain(cmp),
         post_tool_use_failure: ptuf.into_iter().map(|(_, h)| h).collect(),
+        continue_after_stop: cas.into_iter().map(|(_, id, m, h)| (id, m, h)).collect(),
         lifecycle: group_by_event_with_mode(lc),
         tool_metadata,
         static_tools,
@@ -426,6 +433,7 @@ impl ExtensionRunner {
                 prompt_build: Vec::new(),
                 compact: HashMap::new(),
                 post_tool_use_failure: Vec::new(),
+                continue_after_stop: Vec::new(),
                 lifecycle: HashMap::new(),
                 tool_metadata: std::collections::HashMap::new(),
                 static_tools: Vec::new(),
@@ -991,6 +999,53 @@ impl ExtensionRunner {
                 },
             }
         }
+    }
+
+    /// LLM 自然结束（无 tool call）后询问扩展是否再跑一个 step。
+    ///
+    /// 按优先级降序；首个返回 [`ContinueAfterStopResult::ContinueOneStep`] 的 blocking
+    /// handler 生效。每轮 turn 的继续次数由宿主 [`TurnState`] 预算限制。
+    pub async fn emit_continue_after_stop(
+        &self,
+        ctx: ContinueAfterStopContext,
+    ) -> Result<ContinueAfterStopResult, ExtensionError> {
+        let index = self.load_index();
+        if index.continue_after_stop.is_empty() {
+            return Ok(ContinueAfterStopResult::EndTurn);
+        }
+
+        for (extension_id, mode, handler) in &index.continue_after_stop {
+            match mode {
+                HookMode::Blocking => {
+                    let result = tokio::time::timeout(self.timeout, handler.handle(ctx.clone()))
+                        .await
+                        .map_err(|_| ExtensionError::Timeout(self.timeout.as_millis() as u64))??;
+                    if result == ContinueAfterStopResult::ContinueOneStep {
+                        tracing::debug!(
+                            extension_id = %extension_id,
+                            "ContinueAfterStop: extension requested one more step"
+                        );
+                        return Ok(ContinueAfterStopResult::ContinueOneStep);
+                    }
+                },
+                HookMode::Advisory => {
+                    if let Err(e) = handler.handle(ctx.clone()).await {
+                        tracing::warn!(error = %e, "advisory continue_after_stop handler failed");
+                    }
+                },
+                HookMode::NonBlocking => {
+                    let handler = Arc::clone(handler);
+                    let ctx = ctx.clone();
+                    self.spawn_extension_task(extension_id, "continue_after_stop", async move {
+                        if let Err(e) = handler.handle(ctx).await {
+                            tracing::warn!(error = %e, "non-blocking continue_after_stop failed");
+                        }
+                    })
+                    .await;
+                },
+            }
+        }
+        Ok(ContinueAfterStopResult::EndTurn)
     }
 
     /// 通用生命周期事件分发。

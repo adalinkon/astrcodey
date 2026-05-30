@@ -3,7 +3,7 @@
 use std::{future::Future, sync::Arc};
 
 use crate::{
-    extension::{ExtensionError, ToolHandler},
+    extension::{ContinueAfterStopContext, ContinueAfterStopResult, ExtensionError, ToolHandler},
     tool::{ExecutionMode, ToolDefinition, ToolExecutionContext, ToolOrigin, ToolResult},
 };
 
@@ -49,6 +49,35 @@ where
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult, ExtensionError> {
         (self.f)(tool_name, arguments, working_dir, ctx).await
+    }
+}
+
+// ─── continue_after_stop_handler_fn ──────────────────────────────────────
+
+/// Wraps an async closure into `Arc<dyn ContinueAfterStopHandler>`.
+pub fn continue_after_stop_handler_fn<F, Fut>(f: F) -> Arc<dyn crate::extension::ContinueAfterStopHandler>
+where
+    F: Fn(ContinueAfterStopContext) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<ContinueAfterStopResult, ExtensionError>> + Send + 'static,
+{
+    Arc::new(FnContinueAfterStopHandler { f })
+}
+
+struct FnContinueAfterStopHandler<F> {
+    f: F,
+}
+
+#[async_trait::async_trait]
+impl<F, Fut> crate::extension::ContinueAfterStopHandler for FnContinueAfterStopHandler<F>
+where
+    F: Fn(ContinueAfterStopContext) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<ContinueAfterStopResult, ExtensionError>> + Send + 'static,
+{
+    async fn handle(
+        &self,
+        ctx: ContinueAfterStopContext,
+    ) -> Result<ContinueAfterStopResult, ExtensionError> {
+        (self.f)(ctx).await
     }
 }
 
@@ -112,9 +141,11 @@ impl ToolDefinitionBuilder {
 
 #[cfg(test)]
 mod tests {
+    use astrcode_core::config::ModelSelection;
     use astrcode_core::types::SessionId;
 
     use super::*;
+    use crate::extension::{ContinueAfterStopContext, ContinueAfterStopResult};
     use crate::tool::ToolCapabilities;
 
     #[test]
@@ -148,5 +179,25 @@ mod tests {
             .unwrap();
         assert_eq!(result.content, "ok");
         assert!(!result.is_error);
+    }
+
+    #[tokio::test]
+    async fn continue_after_stop_handler_fn_dispatches_to_closure() {
+        let handler = continue_after_stop_handler_fn(|ctx| async move {
+            if ctx.finish_reason == "stop" {
+                Ok(ContinueAfterStopResult::ContinueOneStep)
+            } else {
+                Ok(ContinueAfterStopResult::EndTurn)
+            }
+        });
+        let ctx = ContinueAfterStopContext {
+            session_id: "s1".into(),
+            working_dir: "/tmp".into(),
+            model: ModelSelection::simple("test"),
+            assistant_text: "done".into(),
+            finish_reason: "stop".into(),
+        };
+        let result = handler.handle(ctx).await.unwrap();
+        assert_eq!(result, ContinueAfterStopResult::ContinueOneStep);
     }
 }
