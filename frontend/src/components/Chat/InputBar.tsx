@@ -8,6 +8,7 @@ import {
 import { cn } from '../../lib/utils'
 import ModelSelector from './ModelSelector'
 import CommandSelector from './CommandSelector'
+import { Icon } from '../ui'
 import * as api from '../../services/api'
 import type { SlashCommandInfo } from '../../services/types'
 
@@ -236,8 +237,8 @@ export default function InputBar() {
   }, [abortCurrentTurn])
 
   return (
-    <div className="shrink-0 bg-panel-bg px-(--chat-content-horizontal-padding) pb-4.5 pt-4">
-      <div className="mx-auto w-full max-w-(--chat-composer-max-width) translate-x-(--chat-assistant-center-shift)">
+    <div className="shrink-0 bg-panel-bg px-[var(--layout-page-padding-x)] pb-4.5 pt-4">
+      <div className="mx-auto w-full max-w-[var(--layout-content-max-width)] translate-x-[var(--chat-assistant-center-shift)]">
         <div className="relative w-full">
           <div className={composerShell}>
             {workingDir && (
@@ -249,15 +250,7 @@ export default function InputBar() {
                   className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center"
                   aria-hidden="true"
                 >
-                  <svg className="h-3.5 w-3.5" viewBox="0 0 20 20">
-                    <path
-                      d="M2.5 5.75A1.75 1.75 0 0 1 4.25 4h4.03c.46 0 .9.18 1.23.5l1.02 1c.32.3.74.47 1.18.47h4.04A1.75 1.75 0 0 1 17.5 7.72v6.53A1.75 1.75 0 0 1 15.75 16H4.25A1.75 1.75 0 0 1 2.5 14.25V5.75Z"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeLinejoin="round"
-                      strokeWidth="1.4"
-                    />
-                  </svg>
+                  <Icon name="folder" size={14} />
                 </span>
                 <div className="overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs">
                   {workingDir}
@@ -265,7 +258,7 @@ export default function InputBar() {
               </div>
             )}
             <div className="relative">
-              <div className="flex flex-col px-(--chat-composer-shell-padding-x) py-3">
+              <div className="flex flex-col px-[var(--chat-composer-shell-padding-x)] py-3">
                 <textarea
                   ref={textareaRef}
                   className="mb-3 max-h-60 min-h-12.5 w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-[15px] leading-[1.75] text-text-primary placeholder:text-text-muted focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
@@ -333,17 +326,7 @@ export default function InputBar() {
                       aria-label={isBusy ? '加入队列' : '发送消息'}
                       title={isBusy ? '加入队列' : '发送消息'}
                     >
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <line x1="12" y1="19" x2="12" y2="5"></line>
-                        <polyline points="5 12 12 5 19 12"></polyline>
-                      </svg>
+                      <Icon name="send" size={16} />
                     </button>
                   </div>
                 </div>
@@ -363,7 +346,7 @@ export default function InputBar() {
           )}
         </div>
       </div>
-      <div className="mx-auto mt-2.5 w-full max-w-(--chat-composer-max-width) text-center text-xs text-text-muted">
+      <div className="mx-auto mt-2.5 w-full max-w-[var(--layout-content-max-width)] text-center text-xs text-text-muted">
         AI 可能会产生误导性信息，请核实重要内容
       </div>
     </div>

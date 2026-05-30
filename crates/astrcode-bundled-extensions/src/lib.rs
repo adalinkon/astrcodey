@@ -96,10 +96,41 @@ pub fn bundled_extension_ids() -> Vec<&'static str> {
 }
 
 fn is_enabled(extension_states: &BTreeMap<String, bool>, extension_id: &str) -> bool {
+    extension_enabled(extension_states, extension_id)
+}
+
+/// 解析扩展是否启用（config 显式值优先，否则按扩展 id 的默认策略）。
+///
+/// 与 [`bundled_extensions`] 加载逻辑、HTTP `/api/extensions` 展示共用此函数，
+/// 避免「实际未加载但 UI 显示已启用」的分歧。
+pub fn extension_enabled(extension_states: &BTreeMap<String, bool>, extension_id: &str) -> bool {
     // memory、channels 扩展默认关闭，其他扩展默认启用
     let default = !matches!(extension_id, "astrcode.memory" | "astrcode-channels");
     extension_states
         .get(extension_id)
         .copied()
         .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extension_enabled_uses_per_extension_defaults_when_unconfigured() {
+        let states = BTreeMap::new();
+        assert!(extension_enabled(&states, "astrcode-mode"));
+        assert!(!extension_enabled(&states, "astrcode.memory"));
+        assert!(!extension_enabled(&states, "astrcode-channels"));
+    }
+
+    #[test]
+    fn extension_enabled_prefers_explicit_config() {
+        let states = BTreeMap::from([
+            ("astrcode.memory".to_string(), true),
+            ("astrcode-mode".to_string(), false),
+        ]);
+        assert!(extension_enabled(&states, "astrcode.memory"));
+        assert!(!extension_enabled(&states, "astrcode-mode"));
+    }
 }

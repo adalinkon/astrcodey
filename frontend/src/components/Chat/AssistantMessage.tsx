@@ -281,7 +281,7 @@ function AssistantMessage({ block, reasoningText }: AssistantMessageProps) {
                     <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" />
                   </svg>
                 </span>
-                <span className="font-semibold tracking-wide text-text-secondary/75 font-outfit">
+                <span className="font-outfit font-semibold tracking-wide text-text-secondary/75">
                   Thinking
                 </span>
                 <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-text-secondary opacity-50 transition-transform duration-150 ease-out group-open:rotate-90">

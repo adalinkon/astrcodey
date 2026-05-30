@@ -2,6 +2,7 @@ import { useAppStore } from '../../store/conversation'
 import MessageList from './MessageList'
 import InputBar from './InputBar'
 import TopBar from './TopBar'
+import { useKeybindings } from '../../hooks/useKeybindings'
 
 interface ChatViewProps {
   isSidebarOpen: boolean
@@ -14,6 +15,8 @@ export default function ChatView({
 }: ChatViewProps) {
   const blocks = useAppStore((s) => s.blocks)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
+
+  useKeybindings()
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-panel-bg">

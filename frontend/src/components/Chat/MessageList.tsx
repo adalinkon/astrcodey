@@ -33,7 +33,7 @@ const BlockRenderer = memo(function BlockRenderer({
   return (
     <div
       className={cn(
-        'mx-auto w-[min(100%,var(--chat-content-max-width))] min-w-0 transition-[margin-top] duration-200 ease-out',
+        'mx-auto w-[min(100%,var(--layout-content-max-width))] min-w-0 transition-[margin-top] duration-200 ease-out',
         isContinuation && '-mt-[32px]'
       )}
     >
@@ -271,7 +271,7 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
   return (
     <div
       ref={listRef}
-      className="flex min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto bg-panel-bg px-[var(--chat-content-horizontal-padding)] py-7"
+      className="flex min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto bg-panel-bg px-[var(--layout-page-padding-x)] py-7"
       onScroll={updateStickiness}
       onWheel={handleWheel}
       onTouchStart={handleTouchStart}
@@ -281,10 +281,21 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
         <div
           className={cn(
             emptyStateSurface,
-            'mx-auto mt-[90px] w-[min(100%,var(--chat-content-max-width))]'
+            'mx-auto mt-[90px] w-[min(100%,var(--layout-content-max-width))]'
           )}
         >
-          {sessionId ? '向 AstrCode 提问，开始对话...' : '选择或创建一个会话'}
+          {sessionId ? (
+            <>
+              <p className="mb-1 text-[15px] font-medium text-text-primary">
+                向 AstrCode 提问，开始对话
+              </p>
+              <p className="text-[13px] text-text-secondary">
+                输入问题，或使用 / 查看可用命令
+              </p>
+            </>
+          ) : (
+            '选择或创建一个会话'
+          )}
         </div>
       )}
 
@@ -310,7 +321,7 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
               const text = queuedMessages[qi]
               content =
                 text !== undefined ? (
-                  <div className="mx-auto w-[min(100%,var(--chat-content-max-width))] min-w-0">
+                  <div className="mx-auto w-[min(100%,var(--layout-content-max-width))] min-w-0">
                     <div className="flex justify-end">
                       <div className="max-w-[80%] rounded-2xl rounded-br-md border border-dashed border-border bg-user-bubble/60 px-4 py-3 text-[15px] leading-[1.7] text-text-primary">
                         <span className="mr-2 text-[11px] text-text-secondary">

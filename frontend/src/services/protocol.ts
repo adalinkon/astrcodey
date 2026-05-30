@@ -12,6 +12,7 @@ import type {
   ConversationStreamEnvelope,
   CreateSessionResponse,
   CurrentModelInfo,
+  ExtensionStateView,
   ModelTestResult,
   ModelView,
   Phase,
@@ -546,5 +547,52 @@ export function decodeModelTestResult(value: unknown): ModelTestResult {
   return {
     success: requiredBoolean(object, 'success'),
     message: requiredString(object, 'message'),
+  }
+}
+
+function decodeExtensionStateView(value: unknown): ExtensionStateView {
+  const object = decodeObject(value, 'extension state')
+  const source = requiredString(object, 'source')
+  return {
+    extensionId: requiredString(object, 'extensionId'),
+    enabled: requiredBoolean(object, 'enabled'),
+    loaded: requiredBoolean(object, 'loaded'),
+    source:
+      source === 'builtin' || source === 'disk' || source === 'unknown'
+        ? source
+        : 'unknown',
+  }
+}
+
+export function decodeExtensionListResponse(value: unknown): {
+  extensions: ExtensionStateView[]
+} {
+  const object = decodeObject(value, 'extension list response')
+  return {
+    extensions: arrayField(object, 'extensions').map(decodeExtensionStateView),
+  }
+}
+
+export function decodeExtensionReloadResponse(value: unknown): {
+  reloadErrors: string[]
+} {
+  const object = decodeObject(value, 'extension reload response')
+  return {
+    reloadErrors: arrayField(object, 'reloadErrors').map((item) =>
+      typeof item === 'string' ? item : String(item)
+    ),
+  }
+}
+
+export function decodeSetExtensionEnabledResponse(value: unknown): {
+  success: boolean
+  reloadErrors: string[]
+} {
+  const object = decodeObject(value, 'set extension enabled response')
+  return {
+    success: requiredBoolean(object, 'success'),
+    reloadErrors: arrayField(object, 'reloadErrors').map((item) =>
+      typeof item === 'string' ? item : String(item)
+    ),
   }
 }

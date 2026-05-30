@@ -7,6 +7,7 @@ import { getHostBridge } from '../../lib/hostBridge'
 import ProjectGroup from './ProjectGroup'
 import NewProjectModal from './NewProjectModal'
 import SettingsModal from '../Settings/SettingsModal'
+import { Icon } from '../ui'
 import * as api from '../../services/api'
 
 function groupByWorkingDir(
@@ -34,6 +35,8 @@ export default function Sidebar() {
   const deleteSession = useAppStore((s) => s.deleteSession)
   const deleteProject = useAppStore((s) => s.deleteProject)
   const bumpModelRefreshKey = useAppStore((s) => s.bumpModelRefreshKey)
+  const extensions = useAppStore((s) => s.extensions)
+  const refreshExtensionData = useAppStore((s) => s.refreshExtensionData)
 
   const [showNewProject, setShowNewProject] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
@@ -101,19 +104,8 @@ export default function Sidebar() {
           }}
           className="flex min-h-[34px] w-full items-center gap-2 rounded-lg border-none bg-transparent px-2 text-text-primary outline-none transition-[background-color,color] duration-150 ease-out hover:bg-surface-muted"
         >
-          <div className="w-4 h-4 flex items-center justify-center shrink-0 text-text-secondary">
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="w-4 h-4"
-            >
-              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-            </svg>
+          <div className="flex h-4 w-4 shrink-0 items-center justify-center text-text-secondary">
+            <Icon name="edit" size={16} />
           </div>
           <span className="truncate text-[13px] font-medium">新会话</span>
         </button>
@@ -164,12 +156,7 @@ export default function Sidebar() {
             aria-label="打开设置"
             title="设置"
           >
-            <svg viewBox="0 0 24 24" className="w-4 h-4" aria-hidden="true">
-              <path
-                d="M10.4 2h3.2l.5 2.6c.6.2 1.1.5 1.6.9l2.5-.9 1.6 2.8-2 1.7c.1.3.1.6.1.9s0 .6-.1.9l2 1.7-1.6 2.8-2.5-.9c-.5.4-1 .7-1.6.9l-.5 2.6h-3.2l-.5-2.6c-.6-.2-1.1-.5-1.6-.9l-2.5.9-1.6-2.8 2-1.7c-.1-.3-.1-.6-.1-.9s0-.6.1-.9l-2-1.7 1.6-2.8 2.5.9c.5-.4 1-.7 1.6-.9L10.4 2Zm1.6 6.5A3.5 3.5 0 1 0 12 15.5 3.5 3.5 0 0 0 12 8.5Z"
-                fill="currentColor"
-              />
-            </svg>
+            <Icon name="settings" size={16} />
           </button>
         </div>
       </div>
@@ -204,6 +191,8 @@ export default function Sidebar() {
             bumpModelRefreshKey()
           }}
           testConnection={api.testModel}
+          extensions={extensions}
+          onRefreshExtensions={refreshExtensionData}
         />
       )}
     </div>

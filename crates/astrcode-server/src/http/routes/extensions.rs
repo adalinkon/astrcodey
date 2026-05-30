@@ -121,12 +121,10 @@ async fn collect_extensions(state: &HttpState) -> Vec<ExtensionStateDto> {
                 "unknown"
             };
             ExtensionStateDto {
-                enabled: effective
-                    .extensions
-                    .extension_states
-                    .get(&extension_id)
-                    .copied()
-                    .unwrap_or(true),
+                enabled: astrcode_bundled_extensions::extension_enabled(
+                    &effective.extensions.extension_states,
+                    &extension_id,
+                ),
                 loaded: loaded_set.contains(&extension_id),
                 extension_id,
                 source: source.to_string(),

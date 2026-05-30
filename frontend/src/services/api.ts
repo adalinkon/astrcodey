@@ -9,8 +9,11 @@ import {
   decodeCreateSessionResponse,
   decodeCurrentModelInfo,
   decodeDeleteProjectResponse,
+  decodeExtensionListResponse,
+  decodeExtensionReloadResponse,
   decodeModelTestResult,
   decodePromptSubmitResponse,
+  decodeSetExtensionEnabledResponse,
   decodeSlashCommandListResponse,
   decodeSessionListResponse,
 } from './protocol'
@@ -24,6 +27,7 @@ import type {
   AvailableModel,
   ModelTestResult,
   SlashCommandListResponse,
+  ExtensionStateView,
 } from './types'
 
 let baseUrl = ''
@@ -232,5 +236,28 @@ export async function listModels(): Promise<AvailableModel[]> {
 export async function testModel(): Promise<ModelTestResult> {
   return decodeModelTestResult(
     await request('/api/models/test', { method: 'POST' })
+  )
+}
+
+export async function listExtensions(): Promise<ExtensionStateView[]> {
+  const response = decodeExtensionListResponse(await request('/api/extensions'))
+  return response.extensions
+}
+
+export async function reloadExtensions(): Promise<{ reloadErrors: string[] }> {
+  return decodeExtensionReloadResponse(
+    await request('/api/extensions/reload', { method: 'POST' })
+  )
+}
+
+export async function setExtensionEnabled(
+  extensionId: string,
+  enabled: boolean
+): Promise<{ success: boolean; reloadErrors: string[] }> {
+  return decodeSetExtensionEnabledResponse(
+    await request('/api/extensions/set-enabled', {
+      method: 'POST',
+      body: JSON.stringify({ extensionId, enabled }),
+    })
   )
 }
