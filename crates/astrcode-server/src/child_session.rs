@@ -159,7 +159,7 @@ impl ChildSessionCoordinator {
                 .session_manager
                 .read_model(&current)
                 .await
-                .map_err(|e| SessionApiError::internal(e))?;
+                .map_err(SessionApiError::internal)?;
             match model.parent_session_id {
                 Some(parent) => {
                     depth += 1;
