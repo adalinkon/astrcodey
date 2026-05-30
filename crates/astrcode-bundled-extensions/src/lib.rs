@@ -96,8 +96,8 @@ pub fn bundled_extension_ids() -> Vec<&'static str> {
 }
 
 fn is_enabled(extension_states: &BTreeMap<String, bool>, extension_id: &str) -> bool {
-    // memory 扩展默认关闭，其他扩展默认启用
-    let default = extension_id != "astrcode.memory";
+    // memory、channels 扩展默认关闭，其他扩展默认启用
+    let default = !matches!(extension_id, "astrcode.memory" | "astrcode-channels");
     extension_states
         .get(extension_id)
         .copied()

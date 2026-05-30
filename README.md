@@ -163,18 +163,20 @@ MCP servers start at extension initialization and persist across turns via a lon
 
 ### Extension Configuration
 
-Extensions can be enabled or disabled via `~/.astrcode/config.json`. By default, all extensions are enabled except `memory`, which is disabled by default.
+Extensions can be enabled or disabled via `~/.astrcode/config.json`. By default, all extensions are enabled except `memory` and `channels`, which are disabled by default.
 
 ```json
 {
   "version": "1",
   "extensionStates": {
-    "astrcode.memory": true
+    "astrcode.memory": true,
+    "astrcode-channels": true
   }
 }
 ```
 
 To enable the memory extension, add `"astrcode.memory": true` to `extensionStates`.
+To enable the channels extension, add `"astrcode-channels": true` to `extensionStates` and configure Telegram under `extensions`.
 Telegram channels are configured under `extensions.astrcode-channels.telegram`; keep
 `allowedChatIds` populated unless you explicitly set `allowAllChats` to `true`.
 
@@ -205,7 +207,7 @@ First-party extensions are wired through [`astrcode-bundled-extensions`](crates/
 | **Todo Tool** | `astrcode-extension-todo-tool` | Progress tracking todo list tool |
 | **Agent Tools** | `astrcode-extension-agent-tools` | Sub-agent delegation, agent discovery |
 | **Memory** | `astrcode-extension-memory` | Project-scoped markdown memory storage (disabled by default) |
-| **Channels** | `astrcode-extension-channels` | Telegram channel bridge for using AstrCode from an external chat |
+| **Channels** | `astrcode-extension-channels` | Telegram channel bridge for using AstrCode from an external chat (disabled by default) |
 
 ## Quick Start
 
