@@ -36,11 +36,11 @@ use astrcode_support::hostpaths::astrcode_dir;
 // ─── 内置常量 ──────────────────────────────────────────────────────────
 
 pub const DEFAULT_IDENTITY: &str =
-    "You are Astrcode. An agent that helps users with engineering tasks.\nWhen faced with \
-     ambiguity, reason from evidence rather than guessing. When unsure, say so rather than \
-     fabricating results. Present well-justified perspectives, not neutral summaries. Keep \
-     interactions substantive and precise — avoid being dogmatic, dismissive, or speculative \
-     without basis.";
+    "You are Astrcode, an agent that helps users with engineering tasks.\nReason calmly from \
+     evidence; when something is unclear, say so openly rather than guessing.\nShare \
+     well-considered perspectives grounded in facts and careful thinking—not neutral \
+     summaries.\nCommunicate naturally and warmly: straightforward when simple, thoughtful and \
+     precise when not.\nKeep interactions helpful, honest, and easy to follow.";
 
 const MAX_IDENTITY_SIZE: usize = 8192;
 
@@ -62,9 +62,7 @@ const TASK_GUIDELINES: &str =
      need extra configurability.\n- Validate at system boundaries (user input, external APIs, \
      file I/O). Trust internal consistency. Don't add error handling for scenarios that can't \
      happen internally.\n- Comment only where the WHY is non-obvious. If removing the comment \
-     wouldn't confuse a future reader, don't write it. Don't restate what naming conveys.\n- In \
-     general, do not propose changes to code you haven't read. If a user asks about or wants you \
-     to modify a file, read it first.\n\n## Verification\n- Verify before claiming completion. If \
+     wouldn't confuse a future reader, don't write it. Don't restate what naming conveys.\n\n## Verification\n- Verify before claiming completion. If \
      you cannot verify, say so explicitly — never manufacture passing results.\n- Complete all \
      edits before reporting success.\n\n## Risk judgment\nConsider the reversibility and blast \
      radius of actions. Freely take local, reversible actions like editing files or running \
@@ -106,11 +104,6 @@ const TOOL_SECTION_EXTERNAL_MCP: &str = "External MCP Tools";
 const TOOL_SECTION_EXTENSION: &str = "Extension Tools";
 
 const TOOL_AGENT_COLLABORATION_GUIDANCE: &str = "- Types: [Agents]. Follow Delegation rules above.";
-
-const TOOL_EXTENSION_GUIDANCE: &str = "- Extension tools are already present in the \
-                                       provider-visible tool list. Call them directly with their \
-                                       exposed schema; `tool_search_tool` is for MCP discovery, \
-                                       not extension-tool discovery.";
 
 // ─── PromptEngine ───────────────────────────────────────────────────────
 
@@ -661,11 +654,7 @@ fn tool_summary_section(input: &SystemPromptInput) -> Option<String> {
         .filter(|tool| is_extension_tool(tool))
         .collect();
     if !extension_tools.is_empty() {
-        push_tool_section(
-            &mut lines,
-            TOOL_SECTION_EXTENSION,
-            Some(TOOL_EXTENSION_GUIDANCE),
-        );
+        push_tool_section(&mut lines, TOOL_SECTION_EXTENSION, None);
         push_tool_list_entries(&mut lines, &extension_tools, false);
     }
 
@@ -1132,7 +1121,6 @@ mod tests {
         assert!(prompt.contains(TOOL_SECTION_EXTERNAL_MCP));
         assert!(prompt.contains("- `mcp__demo__search`"));
         assert!(prompt.contains(TOOL_SECTION_EXTENSION));
-        assert!(prompt.contains(TOOL_EXTENSION_GUIDANCE));
         assert!(prompt.contains("- `extension_lookup`"));
         assert!(prompt.contains("[SystemPromptInstruction]\n  extra hint"));
         assert!(prompt.contains("[Skills]\n  skill a"));
@@ -1228,7 +1216,6 @@ mod tests {
 
         assert!(prompt.contains("Extension Tools"));
         assert!(prompt.contains("- `extension_lookup`"));
-        assert!(prompt.contains("not extension-tool discovery"));
         assert!(!prompt.contains("External MCP Tools"));
     }
 
