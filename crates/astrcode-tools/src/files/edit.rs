@@ -159,7 +159,7 @@ fn edit_file_tool_definition() -> &'static ToolDefinition {
             "- New files → `write`\n",
             "- Multi-file changes → `patch`\n",
             "- Large rewrites of an existing file\n\n",
-            "When to use:\n",
+            "Tips:\n",
             "- Single-file, small, precise edits after `read`",
         ).into(),
         origin: ToolOrigin::Builtin,

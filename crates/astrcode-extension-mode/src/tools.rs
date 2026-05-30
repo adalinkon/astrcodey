@@ -29,9 +29,8 @@ pub fn switch_mode_tool_definition() -> ToolDefinition {
         description: ("Switch agent mode: \"code\" (default, full execution) or \"plan\" \
                        (read-only planning).\n\nWhen NOT to switch to plan:\n- Single-file \
                        fixes, bug fixes with clear cause, small config changes\n- Task scope and \
-                       target files are already clear\n\nWhen to switch to plan (proactive, not \
-                       only when asked):\n- New feature or multi-file change (6+ files likely \
-                       affected)\n- Ambiguous scope: unclear modules or approach\n- User says \
+                       target files are already clear\n\nTips:\n- New feature or multi-file \
+                       change\n- Ambiguous scope: unclear modules or approach\n- User says \
                        \"plan\", \"design\", \"how would you approach\", \"think about\", or \
                        describes work without \"just do it\"\n- Risky changes: shared \
                        infrastructure, migrations, public APIs\n\nSet `requireApproval: true` \

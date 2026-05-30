@@ -107,10 +107,10 @@ const AGENT_TOOL_DESCRIPTION: &str =
     "Launch a specialized subagent. Types: [Agents].\n\nWhen NOT to use:\n- Simple tasks you can \
      finish quickly in the current mode\n- Known file path → `read`\n- Known symbol, class, or \
      pattern → `grep`/`glob`\n- Needle queries or anything doable in a few direct tool \
-     calls\n\nWhen to use:\n- Multi-step work that matches an [Agents] type\n- \
-     `subagentType=explore` only when ≥2 independent areas each need multi-step search\n- \
-     Parallel `agent` calls when concerns split cleanly (same tool \
-     block)\n\n`waitForResult=false` runs in background.";
+     calls\n\nTips:\n- Often useful for multi-step work that fits an [Agents] type (explore / \
+     reviewer / execute)\n- Parallel or serial calls are your choice; split prompts by concern \
+     when running several\n- Give each subagent a self-contained prompt (goal, scope, expected \
+     output)\n- `waitForResult=false` runs in background and notifies when done";
 
 const AGENT_TOOL_PARAMETERS: &str = r#"{"type":"object","properties":{"description":{"type":"string","description":"3-5 word task summary."},"prompt":{"type":"string","description":"Full task description for the subagent, with all context it needs."},"subagentType":{"type":"string","description":"Agent name from [Agents] section."},"waitForResult":{"type":"boolean","default":true,"description":"true: block until done. false: run in background, continue immediately."}},"required":["prompt","description"]}"#;
 
@@ -378,8 +378,8 @@ fn agent_tool_metadata()
         astrcode_extension_sdk::tool::ToolPromptMetadata::new(String::new())
             .example("Needle query (\"where is X defined?\") → `grep`/`glob`, not `agent`.")
             .example(
-                "≥2 independent areas, each needing multi-step search → `subagentType=explore`; \
-                 parallel calls when split cleanly.",
+                "Multi-area exploration → `subagentType=explore`; parallel or serial as you see \
+                 fit.",
             )
             .caveat("Don't duplicate work you delegate — stop the same searches yourself.")
             .caveat("Unknown `subagentType` → pick from [Agents]; do not invent agent names.")
@@ -474,6 +474,9 @@ mod tests {
             .as_object()
             .expect("tool schema properties");
 
+        assert!(definition.description.contains("When NOT to use"));
+        assert!(definition.description.contains("Tips"));
+        assert!(!definition.description.contains("When to use"));
         assert!(properties.contains_key("waitForResult"));
         assert_eq!(
             properties["waitForResult"]["default"],

@@ -200,7 +200,7 @@ fn apply_patch_tool_definition() -> &'static ToolDefinition {
             "Apply a unified diff across one or more files.\n\n",
             "When NOT to use:\n",
             "- Single small replacement → `edit`\n\n",
-            "When to use:\n",
+            "Tips:\n",
             "- One diff touching multiple files",
         )
         .into(),

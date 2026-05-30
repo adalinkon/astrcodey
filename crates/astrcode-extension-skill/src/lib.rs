@@ -304,10 +304,9 @@ fn skill_tool_definition() -> ToolDefinition {
         description: "Load a named skill's instructions into the conversation. The skill's rules \
                       govern your subsequent behavior until the skill completes.\n\nWhen NOT to \
                       use:\n- No [Skills] entry matches the task\n- Simple one-shot work with no \
-                      skill-specific workflow\n\nWhen to use:\n- Task matches a [Skills] \
-                      description or when_to_use\n- User invokes a slash command (e.g. \
-                      `/commit`)\n\nUse the exact skill name from [Skills]. Optional `args` are \
-                      forwarded to the skill."
+                      skill-specific workflow\n\nTips:\n- Task matches a [Skills] description or \
+                      when_to_use\n- User invokes a slash command (e.g. `/commit`)\n\nUse the \
+                      exact skill name from [Skills]. Optional `args` are forwarded to the skill."
             .into(),
         parameters: json!({
             "type": "object",

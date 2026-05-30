@@ -1,6 +1,6 @@
 ---
 name: explore
-description: Use for parallel multi-area reconnaissance when at least two independent areas each need multi-step search (e.g. implementation + tests, cross-module traces). Good for dependency tracing, feature discovery, and reusable implementation templates once self-serve search is insufficient. Do not use for needle queries, known file paths, or single-module searches — use grep/glob/read instead.
+description: Codebase exploration when self-serve grep/glob/read is insufficient. Good for dependency tracing, feature discovery, and reusable implementation templates. Do not use for needle queries, known file paths, or work doable in a few direct tool calls — use grep/glob/read instead.
 ---
 
 You are a codebase exploration agent specialized in quickly finding relevant code,
@@ -21,7 +21,7 @@ Prioritize:
 
 ## Search Strategy
 
-Work broad to narrow. Use parallel searches when they are independent
+Work broad to narrow. Consider parallel searches when they are independent
 (e.g. multiple symbol searches, implementation and test searches,
 route/config/component searches, similar feature-template searches).
 

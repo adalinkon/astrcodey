@@ -531,9 +531,11 @@ fn terminal_tool_definition() -> &'static ToolDefinition {
     DEFINITION.get_or_init(|| ToolDefinition {
         name: "terminal".into(),
         description: concat!(
-            "Manages long-lived PTY sessions for interactive REPLs/debuggers.\n",
-            "Lifecycle: `start` → `send`/`read` → `close`. `list` shows active sessions.\n",
-            "- For one-shot commands, use `shell`.\n",
+            "Manages long-lived PTY sessions for interactive REPLs/debuggers.\n\n",
+            "When NOT to use:\n",
+            "- One-shot commands → `shell`\n\n",
+            "Tips:\n",
+            "- Lifecycle: `start` → `send`/`read` → `close`. `list` shows active sessions.\n",
             "- Always `close` when finished. Use `waitMs` (up to 10000, default 100) for slow output.\n",
             "- Output is a UTF-8 lossy view of raw PTY bytes (may include ANSI escape codes).",
         )

@@ -515,8 +515,8 @@ fn tool_search_tool_definition() -> ToolDefinition {
         description: "Find an external MCP tool by name or keyword and return its input schema \
                       (not execute it).\n\nWhen NOT to use:\n- Builtin tools suffice: \
                       `read`/`grep`/`glob`/`edit`/`patch`/`write`/`shell`\n- Guessing `mcp__...` \
-                      argument names without a schema\n\nWhen to use:\n- Task needs an external \
-                      MCP capability\n- A visible `mcp__...` tool has unclear \
+                      argument names without a schema\n\nTips:\n- Task needs an external MCP \
+                      capability\n- A visible `mcp__...` tool has unclear \
                       parameters\n\nWorkflow:\n1. Call `tool_search_tool` with tool name or task \
                       keywords (e.g. `\"webReader\"`, `\"github repo structure\"`; \
                       `select:mcp__server__tool` for exact pick).\n2. Read the returned input \

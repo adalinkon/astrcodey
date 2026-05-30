@@ -97,8 +97,8 @@ const TOOL_GUIDANCE: &str =
      `tool_search_tool` (not for builtin tools like `glob`) | Delegate → `agent`\n\n## \
      Delegation\nDo not use `agent` for narrow queries — handle them directly:\n- Known file path \
      → `read`\n- Specific symbol, class, function, or string → `grep`/`glob`\n- Anything doable \
-     in a few direct tool calls → do it yourself\nUse `agent` only for genuinely multi-step work \
-     or parallel exploration across independent areas.";
+     in a few direct tool calls → do it yourself\nConsider `agent` when multi-step exploration or \
+     specialized subagent work would help. Parallel vs serial is your call.";
 
 const TOOL_SECTION_BUILTIN: &str = "Builtin Tools";
 const TOOL_SECTION_AGENT_COLLABORATION: &str = "Agent Collaboration Tools";

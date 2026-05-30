@@ -138,7 +138,9 @@ fn file_tool_descriptions_separate_search_read_and_write_roles() {
 
     assert!(glob_tool.description.contains("glob pattern"));
     assert!(glob_tool.description.contains("When NOT to use"));
+    assert!(glob_tool.description.contains("Tips"));
     assert!(grep.description.contains("When NOT to use"));
+    assert!(grep.description.contains("Tips"));
     assert!(grep.description.contains("`glob`"));
     assert!(
         grep.parameters["properties"]["outputMode"]["description"]
@@ -148,6 +150,7 @@ fn file_tool_descriptions_separate_search_read_and_write_roles() {
     );
     assert!(read_file.description.contains("Read a file"));
     assert!(read_file.description.contains("When NOT to use"));
+    assert!(read_file.description.contains("Tips"));
     assert!(
         write_file
             .description
@@ -155,6 +158,7 @@ fn file_tool_descriptions_separate_search_read_and_write_roles() {
     );
     assert!(edit_file.description.contains("string replacement"));
     assert!(edit_file.description.contains("When NOT to use"));
+    assert!(edit_file.description.contains("Tips"));
 }
 
 #[tokio::test]

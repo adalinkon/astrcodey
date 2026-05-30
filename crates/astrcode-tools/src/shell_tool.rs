@@ -237,10 +237,13 @@ fn shell_tool_definition(timeout_secs: u64) -> ToolDefinition {
         description: format!(
             concat!(
                 "Executes a {shell} command and returns output. Working directory persists, shell \
-                 state does not.\n",
-                "- Prefer `read`/`grep`/`glob` over shell for file search.\n",
-                "- Timeout: up to 600s, default {timeout_secs}s.\n",
-                "- Independent commands: call in parallel. Dependent: chain with `&&`.\n",
+                 state does not.\n\n",
+                "When NOT to use:\n",
+                "- File search or reading files → `grep`/`glob`/`read`\n",
+                "- Interactive REPL or debugger sessions → `terminal`\n\n",
+                "Tips:\n",
+                "- One-shot commands with timeout up to 600s (default {timeout_secs}s)\n",
+                "- Independent commands may run together; chain dependent ones with `&&`\n",
                 "- Set `cwd` instead of using `cd`. Use `stdin` to pipe data.\n",
                 "- Non-zero exit codes produce errors.",
             ),

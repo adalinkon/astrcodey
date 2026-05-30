@@ -173,10 +173,9 @@ fn glob_tool_definition() -> &'static ToolDefinition {
             "Match file and directory paths by glob pattern (not file contents).\n\n",
             "When NOT to use:\n",
             "- Searching inside file contents → `grep`\n\n",
-            "When to use:\n",
+            "Tips:\n",
             "- Unknown path locations (e.g. `**/*.rs`, `src/**/*.ts`)\n",
-            "- Independent patterns can run in parallel",
-            "- More as you want",
+            "- Multiple patterns may run together when helpful",
         )
         .into(),
         origin: ToolOrigin::Builtin,

@@ -129,7 +129,7 @@ fn write_file_tool_definition() -> &'static ToolDefinition {
             "Create or completely overwrite a file.\n\n",
             "When NOT to use:\n",
             "- Incremental edits to an existing file → `edit`\n\n",
-            "When to use:\n",
+            "Tips:\n",
             "- New files\n",
             "- Full-file rewrite after `read`",
         )
