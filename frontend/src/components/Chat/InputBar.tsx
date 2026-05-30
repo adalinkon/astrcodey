@@ -14,7 +14,10 @@ import type { SlashCommandInfo } from '../../services/types'
 
 function isExecutionPhase(phase: string): boolean {
   return (
-    phase === 'thinking' || phase === 'streaming' || phase === 'calling_tool'
+    phase === 'thinking' ||
+    phase === 'streaming' ||
+    phase === 'calling_tool' ||
+    phase === 'compacting'
   )
 }
 
@@ -33,8 +36,9 @@ export default function InputBar() {
   const [value, setValue] = useState('')
   const [isComposing, setIsComposing] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const isCompacting = phase === 'compacting' || compactSubmitting
   const isBusy = isExecutionPhase(phase) || compactSubmitting
-  const canSubmit = !!activeSessionId && !compactSubmitting
+  const canSubmit = !!activeSessionId && !isCompacting
 
   // Abort 防抖：防止快速多次点击
   const abortDebounceRef = useRef<number | null>(null)
@@ -306,9 +310,9 @@ export default function InputBar() {
                         className={composerInterruptButton}
                         type="button"
                         onClick={handleAbort}
-                        disabled={compactSubmitting}
+                        disabled={isCompacting}
                       >
-                        {compactSubmitting ? (
+                        {isCompacting ? (
                           <span className="inline-flex items-center gap-1.5">
                             <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
                             压缩中...

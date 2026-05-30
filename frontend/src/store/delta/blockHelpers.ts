@@ -12,6 +12,17 @@ export function phaseFromControl(
   return control?.phase ?? 'idle'
 }
 
+/** 合并本地 compact 提交态与后端 control.compacting，避免 snapshot 刷新冲掉压缩中 UI。 */
+export function resolvePhase(
+  control: ConversationControlState | null,
+  compactSubmitting: boolean
+): Phase {
+  if (compactSubmitting || control?.compacting) {
+    return 'compacting'
+  }
+  return phaseFromControl(control)
+}
+
 export function mergeBlock(
   current: ConversationBlock,
   incoming: ConversationBlock

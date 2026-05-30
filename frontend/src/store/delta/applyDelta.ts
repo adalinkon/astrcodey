@@ -2,7 +2,7 @@ import type { ConversationDelta } from '../../services/types'
 import type { AppState } from '../types'
 import {
   mergeAgentSession,
-  phaseFromControl,
+  resolvePhase,
   upsertBlock,
 } from './blockHelpers'
 
@@ -71,9 +71,7 @@ export function applyDeltaToState(
     case 'updateControlState':
       set({
         control: delta.control,
-        phase: get().compactSubmitting
-          ? 'compacting'
-          : phaseFromControl(delta.control),
+        phase: resolvePhase(delta.control, get().compactSubmitting),
       })
       break
 

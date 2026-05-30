@@ -6,7 +6,7 @@ import { applyDeltaToState } from './delta/applyDelta'
 import {
   commandNoteBlock,
   isCompactCommand,
-  phaseFromControl,
+  resolvePhase,
   withTimeout,
 } from './delta/blockHelpers'
 import { connectSse } from './stream'
@@ -168,7 +168,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         blocks: snapshot.blocks,
         control: snapshot.control,
         cursor: snapshot.cursor.value,
-        phase: phaseFromControl(snapshot.control),
+        phase: resolvePhase(snapshot.control, false),
         activeSessionTitle: snapshot.sessionTitle,
         workingDir: sessionItem?.workingDir ?? null,
         agentSessions: snapshot.agentSessions ?? [],
@@ -191,7 +191,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         blocks: snapshot.blocks,
         control: snapshot.control,
         cursor: snapshot.cursor.value,
-        phase: phaseFromControl(snapshot.control),
+        phase: resolvePhase(snapshot.control, get().compactSubmitting),
         activeSessionTitle: snapshot.sessionTitle,
         agentSessions: snapshot.agentSessions ?? [],
       })
@@ -265,7 +265,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const current = get()
         set({
           compactSubmitting: false,
-          phase: phaseFromControl(current.control),
+          phase: resolvePhase(current.control, false),
         })
       }
     }
