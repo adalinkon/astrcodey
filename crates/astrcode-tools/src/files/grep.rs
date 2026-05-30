@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-use astrcode_core::tool::*;
+use astrcode_core::{tool::*, tool_access::ResourceAccess};
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{
     BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind, SinkMatch,
@@ -117,9 +117,24 @@ impl Tool for GrepTool {
         grep_tool_definition().clone()
     }
 
-    fn execution_mode(&self) -> ExecutionMode {
-        ExecutionMode::Parallel
+    fn resource_accesses(
+        &self,
+        arguments: &serde_json::Value,
+        working_dir: &Path,
+    ) -> Result<Vec<ResourceAccess>, ToolError> {
+        let args: GrepArgs = serde_json::from_value(arguments.clone())
+            .map_err(|e| ToolError::InvalidArguments(format!("invalid grep args: {e}")))?;
+        let root = match args.path {
+            Some(ref raw) => match resolve_sandboxed_path(working_dir, raw) {
+                Ok(path) => path,
+                Err(_) => return Ok(vec![ResourceAccess::all()]),
+            },
+            None => working_dir.to_path_buf(),
+        };
+        let recursive = args.recursive.unwrap_or_else(|| root.is_dir());
+        Ok(vec![ResourceAccess::search_file(root, recursive)])
     }
+
     /// 执行内容搜索：解析参数 → 编译正则 → 遍历文件 → 收集匹配 → 格式化输出。
     async fn execute(
         &self,

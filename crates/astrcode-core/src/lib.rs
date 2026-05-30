@@ -30,4 +30,5 @@ pub mod prompt;
 pub mod render;
 pub mod storage;
 pub mod tool;
+pub mod tool_access;
 pub mod types;

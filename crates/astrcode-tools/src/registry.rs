@@ -1,6 +1,10 @@
 //! Tool registry for managing built-in and extension-registered tools.
 
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use astrcode_core::{
     extension::ChildToolPolicy,
@@ -8,6 +12,7 @@ use astrcode_core::{
         ExecutionMode, Tool, ToolDefinition, ToolError, ToolExecutionContext, ToolPromptMetadata,
         ToolResult,
     },
+    tool_access::ResourceAccess,
 };
 
 /// 单个已注册工具的全部元数据与实例。
@@ -98,6 +103,19 @@ impl ToolRegistry {
             .get(name)
             .map(|entry| entry.definition.execution_mode)
             .unwrap_or(ExecutionMode::Sequential)
+    }
+
+    /// 解析指定工具调用的资源访问声明。
+    pub fn resource_accesses(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        working_dir: &Path,
+    ) -> Result<Vec<ResourceAccess>, ToolError> {
+        match self.tools.get(name) {
+            Some(entry) => entry.tool.resource_accesses(args, working_dir),
+            None => Err(ToolError::NotFound(name.into())),
+        }
     }
 
     /// 按名称查找工具定义，未找到返回 `None`。
@@ -232,19 +250,52 @@ mod tests {
     }
 
     #[test]
-    fn readonly_builtins_are_marked_parallel() {
+    fn builtins_declare_resource_accesses() {
         let mut registry = ToolRegistry::new();
         for tool in builtin_tools(std::path::PathBuf::from("."), 30) {
             registry.register(tool);
         }
 
-        for name in ["glob", "grep", "read"] {
-            let definition = registry.find_definition(name).unwrap();
-            assert_eq!(definition.execution_mode, ExecutionMode::Parallel);
+        let read_access = registry
+            .resource_accesses(
+                "read",
+                &serde_json::json!({"path": "src/main.rs"}),
+                Path::new("."),
+            )
+            .unwrap();
+        assert_eq!(read_access.len(), 1);
+        assert!(matches!(
+            read_access[0],
+            ResourceAccess::File {
+                operation: astrcode_core::tool_access::FileOperation::Read,
+                ..
+            }
+        ));
+
+        let shell_access = registry
+            .resource_accesses(
+                "shell",
+                &serde_json::json!({"command": "echo hi"}),
+                Path::new("."),
+            )
+            .unwrap();
+        assert_eq!(shell_access, vec![ResourceAccess::all()]);
+    }
+
+    #[test]
+    fn builtins_are_marked_parallel() {
+        let mut registry = ToolRegistry::new();
+        for tool in builtin_tools(std::path::PathBuf::from("."), 30) {
+            registry.register(tool);
         }
-        for name in ["edit", "patch", "shell", "write"] {
-            let definition = registry.find_definition(name).unwrap();
-            assert_eq!(definition.execution_mode, ExecutionMode::Sequential);
+
+        for definition in registry.list_definitions() {
+            assert_eq!(
+                definition.execution_mode,
+                ExecutionMode::Parallel,
+                "tool '{}' should be parallel; conflict graph scheduler handles ordering",
+                definition.name
+            );
         }
     }
 

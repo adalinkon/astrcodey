@@ -1,26 +1,28 @@
-//! Tool execution pipeline — preprocessing, parallel/sequential scheduling,
+//! Tool execution pipeline — preprocessing, conflict-graph scheduling,
 //! result commit, and persistence.
 
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use astrcode_core::{
     event::EventPayload,
     extension::{PostToolUseContext, PostToolUseResult, PreToolUseContext, PreToolUseResult},
     storage::ToolResultArtifactReader,
-    tool::{ExecutionMode, ToolDefinition, ToolResult},
+    tool::{ToolDefinition, ToolResult},
+    tool_access::ResourceAccess,
 };
 use astrcode_extensions::runner::ExtensionRunner;
 use astrcode_tools::registry::ToolRegistry;
-use tokio::task::JoinSet;
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use super::{
     deferred_tools::{discovered_deferred_tool_names, tool_is_visible, unavailable_tool_guidance},
     tool_exec::{ToolCallRuntimeContext, TurnToolContext, execute_tool_call},
     tool_json_repair::parse_and_repair_json,
+    tool_scheduler::ToolScheduler,
     tool_types::{
-        CommitToolResults, ExecutableToolCall, ExecuteToolCalls, PendingCommittedToolResult,
-        PendingToolCall, PreparedToolCall, PreparedToolOutcome, ToolExecutionStep,
+        CommitToolResults, ExecuteToolCalls, PendingCommittedToolResult, PendingToolCall,
+        PreparedToolCall, PreparedToolOutcome,
     },
     turn_context::{SharedTurnContext, TurnError},
     turn_publish::TurnEvents,
@@ -100,7 +102,7 @@ impl ToolCalls {
     /// 1. 解析 JSON 参数（解析失败时尝试修复，仍失败则使用空对象并记录警告）。
     /// 2. 检查工具白名单，不在白名单中的工具直接标记为 `Blocked`。
     /// 3. 分发 `PreToolUse` 扩展钩子，允许扩展修改输入或阻止执行。
-    /// 4. 根据工具注册表确定执行模式（并行 / 串行）。
+    /// 4. 解析资源访问声明，供冲突图调度器判定并行性。
     pub async fn prepare_tool_calls(
         &self,
         tool_calls: &[PendingToolCall],
@@ -132,7 +134,7 @@ impl ToolCalls {
                     call_id: tc.call_id.clone(),
                     name: tc.name.clone(),
                     tool_input: args,
-                    mode: ExecutionMode::Sequential,
+                    accesses: Vec::new(),
                     outcome: PreparedToolOutcome::Blocked(blocked_result),
                 });
                 continue;
@@ -172,9 +174,16 @@ impl ToolCalls {
 
             send_tool_requested(publisher, tc, &tool_input).await?;
 
-            let mode = match &outcome {
-                PreparedToolOutcome::Ready => self.tool_registry.execution_mode(&tc.name),
-                PreparedToolOutcome::Blocked(_) => ExecutionMode::Sequential,
+            let accesses = match &outcome {
+                PreparedToolOutcome::Ready => self
+                    .tool_registry
+                    .resource_accesses(
+                        &tc.name,
+                        &tool_input,
+                        Path::new(&self.turn.shared.working_dir),
+                    )
+                    .unwrap_or_else(|_| vec![ResourceAccess::all()]),
+                PreparedToolOutcome::Blocked(_) => Vec::new(),
             };
 
             prepared.push(PreparedToolCall {
@@ -182,7 +191,7 @@ impl ToolCalls {
                 call_id: tc.call_id.clone(),
                 name: tc.name.clone(),
                 tool_input,
-                mode,
+                accesses,
                 outcome,
             });
         }
@@ -192,153 +201,12 @@ impl ToolCalls {
 
     /// 执行已预处理的工具调用。
     ///
-    /// 按顺序遍历预处理结果，根据执行模式决定调度方式：
-    /// - **Blocked**：先提交已完成的并行批次，再提交预处理阶段的阻止结果。
-    /// - **Parallel**：加入当前并行批次，由 `flush_parallel_batch` 统一调度。
-    /// - **Sequential**：先提交当前并行批次，再单独执行并提交当前调用。
+    /// 所有 Ready 调用提交给冲突图调度器；调度器基于资源访问声明决定并行/串行。
+    /// 结果按 LLM 返回的原始顺序依次 commit。
     pub async fn execute_and_commit(
         &self,
-        mut input: ExecuteToolCalls<'_>,
+        input: ExecuteToolCalls<'_>,
     ) -> Result<Vec<String>, TurnError> {
-        let mut discovered_tools = Vec::new();
-        let mut parallel_batch = Vec::new();
-        let mut parallel_batch_start = None;
-
-        for position in 0..input.prepared.len() {
-            if self.cancellation_token.is_cancelled() {
-                return Err(TurnError::Aborted);
-            }
-            let step = {
-                let call = &input.prepared[position];
-                match &call.outcome {
-                    PreparedToolOutcome::Blocked(result) => {
-                        ToolExecutionStep::Blocked(result.clone())
-                    },
-                    PreparedToolOutcome::Ready if call.mode == ExecutionMode::Parallel => {
-                        ToolExecutionStep::Parallel(call.to_executable())
-                    },
-                    PreparedToolOutcome::Ready => {
-                        ToolExecutionStep::Sequential(call.to_executable())
-                    },
-                }
-            };
-
-            match step {
-                ToolExecutionStep::Blocked(result) => {
-                    discovered_tools.extend(
-                        self.flush_and_commit_parallel_batch(
-                            &mut parallel_batch,
-                            &mut parallel_batch_start,
-                            &mut input,
-                        )
-                        .await?,
-                    );
-                    let mut results = HashMap::new();
-                    results.insert(input.prepared[position].index, result);
-                    discovered_tools.extend(
-                        self.commit_tool_results(CommitToolResults {
-                            prepared: &input.prepared[position..position + 1],
-                            results,
-                            state: input.state,
-                            publisher: Arc::clone(&input.publisher),
-                        })
-                        .await?,
-                    );
-                },
-                ToolExecutionStep::Parallel(executable) => {
-                    if parallel_batch_start.is_none() {
-                        parallel_batch_start = Some(position);
-                    }
-                    parallel_batch.push(executable);
-                },
-                ToolExecutionStep::Sequential(executable) => {
-                    discovered_tools.extend(
-                        self.flush_and_commit_parallel_batch(
-                            &mut parallel_batch,
-                            &mut parallel_batch_start,
-                            &mut input,
-                        )
-                        .await?,
-                    );
-                    let publisher = Arc::clone(&input.publisher);
-                    let (index, result) = execute_tool_call(
-                        Arc::clone(&self.tool_registry),
-                        self.make_runtime_context(input.tools, Arc::clone(&publisher)),
-                        executable,
-                    )
-                    .await;
-                    let mut results = HashMap::new();
-                    results.insert(index, result);
-                    discovered_tools.extend(
-                        self.commit_tool_results(CommitToolResults {
-                            prepared: &input.prepared[position..position + 1],
-                            results,
-                            state: input.state,
-                            publisher,
-                        })
-                        .await?,
-                    );
-                },
-            }
-        }
-
-        discovered_tools.extend(
-            self.flush_and_commit_parallel_batch(
-                &mut parallel_batch,
-                &mut parallel_batch_start,
-                &mut input,
-            )
-            .await?,
-        );
-
-        Ok(discovered_tools)
-    }
-
-    async fn flush_and_commit_parallel_batch(
-        &self,
-        parallel_batch: &mut Vec<ExecutableToolCall>,
-        parallel_batch_start: &mut Option<usize>,
-        input: &mut ExecuteToolCalls<'_>,
-    ) -> Result<Vec<String>, TurnError> {
-        let Some(batch_start) = parallel_batch_start.take() else {
-            return Ok(Vec::new());
-        };
-        let batch_len = parallel_batch.len();
-        let batch_end = batch_start + batch_len;
-        let mut results = HashMap::new();
-
-        self.flush_parallel_batch(
-            parallel_batch,
-            input.tools,
-            Arc::clone(&input.publisher),
-            &mut results,
-        )
-        .await?;
-
-        self.commit_tool_results(CommitToolResults {
-            prepared: &input.prepared[batch_start..batch_end],
-            results,
-            state: input.state,
-            publisher: Arc::clone(&input.publisher),
-        })
-        .await
-    }
-
-    /// 刷新并行工具调用批次。
-    ///
-    /// 使用 `JoinSet` 同时启动最多 `agent.tool_max_parallel_calls` 个工具调用任务，
-    /// 每当一个任务完成后立即补充下一个待执行调用，保持并发水位不变。
-    async fn flush_parallel_batch(
-        &self,
-        batch: &mut Vec<ExecutableToolCall>,
-        tools: &[ToolDefinition],
-        publisher: Arc<TurnEvents>,
-        results: &mut HashMap<usize, ToolResult>,
-    ) -> Result<(), TurnError> {
-        if batch.is_empty() {
-            return Ok(());
-        }
-
         let max_parallel = self
             .session
             .caps()
@@ -346,57 +214,66 @@ impl ToolCalls {
             .agent
             .tool_max_parallel_calls
             .max(1);
-        let batch_len = batch.len();
-        let batch_started_at = Instant::now();
-        tracing::debug!(batch_len, max_parallel, "flushing parallel tool batch");
+        let mut scheduler = ToolScheduler::new(max_parallel);
+        let mut discovered_tools = Vec::new();
 
-        let mut pending = std::mem::take(batch).into_iter();
-        let mut join_set = JoinSet::new();
-
-        for _ in 0..max_parallel {
-            let Some(call) = pending.next() else { break };
-            self.spawn_tool_call(&mut join_set, call, tools, Arc::clone(&publisher));
+        enum ResultSource {
+            Blocked(ToolResult),
+            Scheduled(oneshot::Receiver<(usize, ToolResult)>),
         }
 
-        loop {
-            let joined = tokio::select! {
-                _ = self.cancellation_token.cancelled() => {
-                    join_set.abort_all();
-                    return Err(TurnError::Aborted);
+        let mut sources = Vec::with_capacity(input.prepared.len());
+        for call in input.prepared {
+            if self.cancellation_token.is_cancelled() {
+                return Err(TurnError::Aborted);
+            }
+            match &call.outcome {
+                PreparedToolOutcome::Blocked(result) => {
+                    sources.push(ResultSource::Blocked(result.clone()));
                 },
-                joined = join_set.join_next() => joined,
-            };
-            let Some(joined) = joined else {
-                break;
-            };
-            let (index, result) = joined?;
-            results.insert(index, result);
-
-            if let Some(call) = pending.next() {
-                self.spawn_tool_call(&mut join_set, call, tools, Arc::clone(&publisher));
+                PreparedToolOutcome::Ready => {
+                    let executable = call.to_executable();
+                    let accesses = call.accesses.clone();
+                    let tool_registry = Arc::clone(&self.tool_registry);
+                    let ctx = self.make_runtime_context(input.tools, Arc::clone(&input.publisher));
+                    let rx = scheduler.submit(accesses, move || async move {
+                        execute_tool_call(tool_registry, ctx, executable).await
+                    });
+                    sources.push(ResultSource::Scheduled(rx));
+                },
             }
         }
 
-        tracing::debug!(
-            batch_len,
-            duration_ms = batch_started_at.elapsed().as_millis() as u64,
-            "parallel tool batch flushed"
-        );
-        Ok(())
-    }
+        for (position, source) in sources.into_iter().enumerate() {
+            if self.cancellation_token.is_cancelled() {
+                return Err(TurnError::Aborted);
+            }
 
-    /// 将单个工具调用封装为异步任务并加入 `JoinSet`。
-    fn spawn_tool_call(
-        &self,
-        join_set: &mut JoinSet<(usize, ToolResult)>,
-        call: ExecutableToolCall,
-        tools: &[ToolDefinition],
-        publisher: Arc<TurnEvents>,
-    ) {
-        let tool_registry = Arc::clone(&self.tool_registry);
-        let ctx = self.make_runtime_context(tools, publisher);
+            let result = match source {
+                ResultSource::Blocked(result) => result,
+                ResultSource::Scheduled(rx) => {
+                    let (_index, result) = scheduler
+                        .await_result(rx)
+                        .await
+                        .map_err(|_| TurnError::Aborted)?;
+                    result
+                },
+            };
 
-        join_set.spawn(async move { execute_tool_call(tool_registry, ctx, call).await });
+            let mut results = HashMap::new();
+            results.insert(input.prepared[position].index, result);
+            discovered_tools.extend(
+                self.commit_tool_results(CommitToolResults {
+                    prepared: &input.prepared[position..position + 1],
+                    results,
+                    state: input.state,
+                    publisher: Arc::clone(&input.publisher),
+                })
+                .await?,
+            );
+        }
+
+        Ok(discovered_tools)
     }
 
     /// 提交工具执行结果。
@@ -651,67 +528,5 @@ fn missing_tool_result(call: &PreparedToolCall) -> ToolResult {
         error: Some(message),
         metadata: Default::default(),
         duration_ms: None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use astrcode_core::tool::ExecutionMode;
-
-    use super::*;
-    use crate::tool_types::{PreparedToolCall, PreparedToolOutcome};
-
-    fn execution_plan(prepared: &[PreparedToolCall]) -> Vec<&'static str> {
-        prepared
-            .iter()
-            .map(|call| match &call.outcome {
-                PreparedToolOutcome::Blocked(_) => "blocked",
-                PreparedToolOutcome::Ready if call.mode == ExecutionMode::Parallel => "parallel",
-                PreparedToolOutcome::Ready => "sequential",
-            })
-            .collect()
-    }
-
-    fn sample_call(index: usize, mode: ExecutionMode, blocked: bool) -> PreparedToolCall {
-        PreparedToolCall {
-            index,
-            call_id: format!("call-{index}"),
-            name: "tool".into(),
-            tool_input: serde_json::json!({}),
-            mode,
-            outcome: if blocked {
-                PreparedToolOutcome::Blocked(ToolResult {
-                    call_id: format!("call-{index}"),
-                    content: "blocked".into(),
-                    is_error: true,
-                    error: Some("blocked".into()),
-                    metadata: Default::default(),
-                    duration_ms: None,
-                })
-            } else {
-                PreparedToolOutcome::Ready
-            },
-        }
-    }
-
-    #[test]
-    fn execution_plan_preserves_parallel_sequential_blocked_order() {
-        let prepared = vec![
-            sample_call(0, ExecutionMode::Parallel, false),
-            sample_call(1, ExecutionMode::Parallel, false),
-            sample_call(2, ExecutionMode::Sequential, false),
-            sample_call(3, ExecutionMode::Parallel, true),
-            sample_call(4, ExecutionMode::Sequential, false),
-        ];
-        assert_eq!(
-            execution_plan(&prepared),
-            vec![
-                "parallel",
-                "parallel",
-                "sequential",
-                "blocked",
-                "sequential"
-            ]
-        );
     }
 }

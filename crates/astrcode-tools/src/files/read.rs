@@ -1,6 +1,11 @@
-use std::{collections::BTreeMap, path::PathBuf, sync::OnceLock, time::Instant};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::OnceLock,
+    time::Instant,
+};
 
-use astrcode_core::{storage::StorageError, tool::*};
+use astrcode_core::{storage::StorageError, tool::*, tool_access::ResourceAccess};
 use astrcode_support::hostpaths::resolve_path;
 use serde::Deserialize;
 
@@ -49,8 +54,15 @@ impl Tool for ReadFileTool {
         read_file_tool_definition().clone()
     }
 
-    fn execution_mode(&self) -> ExecutionMode {
-        ExecutionMode::Parallel
+    fn resource_accesses(
+        &self,
+        arguments: &serde_json::Value,
+        working_dir: &Path,
+    ) -> Result<Vec<ResourceAccess>, ToolError> {
+        let args: ReadFileArgs = serde_json::from_value(arguments.clone())
+            .map_err(|e| ToolError::InvalidArguments(format!("invalid read args: {e}")))?;
+        let path = resolve_path(working_dir, &args.path);
+        Ok(vec![ResourceAccess::read_file(path)])
     }
 
     /// 执行文件读取：解析路径 → 安全校验 → 读取内容 → 按行编号格式化输出。

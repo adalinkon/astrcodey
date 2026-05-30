@@ -2,7 +2,7 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{Mutex, OnceLock},
     time::Instant,
@@ -11,6 +11,7 @@ use std::{
 use astrcode_core::{
     event::{EventPayload, ToolOutputStream},
     tool::*,
+    tool_access::ResourceAccess,
 };
 use astrcode_support::{
     hostpaths::resolve_path,
@@ -62,8 +63,12 @@ impl Tool for ShellTool {
         shell_tool_definition(self.timeout_secs)
     }
 
-    fn execution_mode(&self) -> ExecutionMode {
-        ExecutionMode::Sequential
+    fn resource_accesses(
+        &self,
+        _arguments: &serde_json::Value,
+        _working_dir: &Path,
+    ) -> Result<Vec<ResourceAccess>, ToolError> {
+        Ok(vec![ResourceAccess::all()])
     }
 
     fn prompt_metadata(&self) -> Option<ToolPromptMetadata> {
@@ -251,7 +256,7 @@ fn shell_tool_definition(timeout_secs: u64) -> ToolDefinition {
             timeout_secs = timeout_secs,
         ),
         origin: ToolOrigin::Builtin,
-        execution_mode: ExecutionMode::Sequential,
+        execution_mode: ExecutionMode::Parallel,
         parameters: serde_json::json!({
             "type": "object",
             "properties": {

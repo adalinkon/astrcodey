@@ -1,6 +1,11 @@
-use std::{collections::BTreeMap, path::PathBuf, sync::OnceLock, time::Instant};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::OnceLock,
+    time::Instant,
+};
 
-use astrcode_core::tool::*;
+use astrcode_core::{tool::*, tool_access::ResourceAccess};
 use serde::Deserialize;
 
 use super::shared::{
@@ -36,8 +41,17 @@ impl Tool for WriteFileTool {
         write_file_tool_definition().clone()
     }
 
-    fn execution_mode(&self) -> ExecutionMode {
-        ExecutionMode::Sequential
+    fn resource_accesses(
+        &self,
+        arguments: &serde_json::Value,
+        working_dir: &Path,
+    ) -> Result<Vec<ResourceAccess>, ToolError> {
+        let args: WriteFileArgs = serde_json::from_value(arguments.clone())
+            .map_err(|e| ToolError::InvalidArguments(format!("invalid write args: {e}")))?;
+        match resolve_sandboxed_path(working_dir, &args.path) {
+            Ok(path) => Ok(vec![ResourceAccess::write_file(path)]),
+            Err(_) => Ok(vec![ResourceAccess::all()]),
+        }
     }
 
     /// 执行文件写入：解析路径 → 安全校验 → 可选创建目录 → 写入文件。
@@ -135,7 +149,7 @@ fn write_file_tool_definition() -> &'static ToolDefinition {
         )
         .into(),
         origin: ToolOrigin::Builtin,
-        execution_mode: ExecutionMode::Sequential,
+        execution_mode: ExecutionMode::Parallel,
         parameters: serde_json::json!({
             "type": "object",
             "properties": {

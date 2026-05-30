@@ -1,11 +1,11 @@
 use std::{
     collections::BTreeMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::OnceLock,
     time::{Instant, SystemTime},
 };
 
-use astrcode_core::tool::*;
+use astrcode_core::{tool::*, tool_access::ResourceAccess};
 use serde::Deserialize;
 
 use super::shared::{
@@ -59,8 +59,21 @@ impl Tool for GlobTool {
         glob_tool_definition().clone()
     }
 
-    fn execution_mode(&self) -> ExecutionMode {
-        ExecutionMode::Parallel
+    fn resource_accesses(
+        &self,
+        arguments: &serde_json::Value,
+        working_dir: &Path,
+    ) -> Result<Vec<ResourceAccess>, ToolError> {
+        let args: GlobArgs = serde_json::from_value(arguments.clone())
+            .map_err(|e| ToolError::InvalidArguments(format!("invalid glob args: {e}")))?;
+        let root = match args.root {
+            Some(ref raw) => match resolve_sandboxed_path(working_dir, raw) {
+                Ok(path) => path,
+                Err(_) => return Ok(vec![ResourceAccess::all()]),
+            },
+            None => working_dir.to_path_buf(),
+        };
+        Ok(vec![ResourceAccess::search_file(root, true)])
     }
 
     async fn execute(

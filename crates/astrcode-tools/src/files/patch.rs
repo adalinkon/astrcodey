@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use astrcode_core::tool::*;
+use astrcode_core::{tool::*, tool_access::ResourceAccess};
 use astrcode_support::hostpaths::{is_path_within, resolve_path};
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -118,9 +118,16 @@ impl Tool for ApplyPatchTool {
         apply_patch_tool_definition().clone()
     }
 
-    fn execution_mode(&self) -> ExecutionMode {
-        ExecutionMode::Sequential
+    fn resource_accesses(
+        &self,
+        arguments: &serde_json::Value,
+        working_dir: &Path,
+    ) -> Result<Vec<ResourceAccess>, ToolError> {
+        let args: ApplyPatchArgs = serde_json::from_value(arguments.clone())
+            .map_err(|e| ToolError::InvalidArguments(format!("invalid patch args: {e}")))?;
+        Ok(patch_resource_accesses(working_dir, &args.patch))
     }
+
     /// 执行补丁应用：解析补丁文本 → 逐文件应用 → 汇总结果。
     ///
     /// 即使部分文件应用失败，已成功的变更也会保留（partial commit）。
@@ -205,7 +212,7 @@ fn apply_patch_tool_definition() -> &'static ToolDefinition {
         )
         .into(),
         origin: ToolOrigin::Builtin,
-        execution_mode: ExecutionMode::Sequential,
+        execution_mode: ExecutionMode::Parallel,
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -218,6 +225,31 @@ fn apply_patch_tool_definition() -> &'static ToolDefinition {
             "additionalProperties": false
         }),
     })
+}
+
+fn patch_resource_accesses(working_dir: &Path, patch: &str) -> Vec<ResourceAccess> {
+    if patch.trim().is_empty() {
+        return vec![ResourceAccess::all()];
+    }
+    let file_patches = match parse_patch(patch) {
+        Ok(file_patches) => file_patches,
+        Err(_) => return vec![ResourceAccess::all()],
+    };
+    let mut accesses = Vec::new();
+    for file_patch in file_patches {
+        for raw_path in [file_patch.old_path, file_patch.new_path]
+            .into_iter()
+            .flatten()
+        {
+            let path = resolve_path(working_dir, Path::new(&raw_path));
+            accesses.push(ResourceAccess::read_write_file(path));
+        }
+    }
+    if accesses.is_empty() {
+        vec![ResourceAccess::all()]
+    } else {
+        accesses
+    }
 }
 
 /// 解析统一差异格式的补丁文本，返回每个文件的补丁列表。

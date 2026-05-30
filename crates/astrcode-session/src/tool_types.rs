@@ -4,7 +4,10 @@
 
 use std::collections::HashMap;
 
-use astrcode_core::tool::{ExecutionMode, ToolDefinition, ToolResult};
+use astrcode_core::{
+    tool::{ToolDefinition, ToolResult},
+    tool_access::ResourceAccess,
+};
 
 use super::turn_publish::TurnEvents;
 use crate::turn_stages::TurnState;
@@ -24,7 +27,7 @@ pub struct PreparedToolCall {
     pub call_id: String,
     pub name: String,
     pub tool_input: serde_json::Value,
-    pub mode: ExecutionMode,
+    pub accesses: Vec<ResourceAccess>,
     pub outcome: PreparedToolOutcome,
 }
 
@@ -48,12 +51,6 @@ pub struct PendingCommittedToolResult {
     pub result: ToolResult,
     pub arguments: String,
     pub arguments_json: serde_json::Value,
-}
-
-pub enum ToolExecutionStep {
-    Blocked(ToolResult),
-    Parallel(ExecutableToolCall),
-    Sequential(ExecutableToolCall),
 }
 
 pub enum PreparedToolOutcome {

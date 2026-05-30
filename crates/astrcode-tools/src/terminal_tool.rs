@@ -22,7 +22,7 @@ use std::{
     time::Duration,
 };
 
-use astrcode_core::tool::*;
+use astrcode_core::{tool::*, tool_access::ResourceAccess};
 use parking_lot::Mutex;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use serde::Deserialize;
@@ -256,8 +256,12 @@ impl Tool for TerminalTool {
         terminal_tool_definition().clone()
     }
 
-    fn execution_mode(&self) -> ExecutionMode {
-        ExecutionMode::Sequential
+    fn resource_accesses(
+        &self,
+        _arguments: &serde_json::Value,
+        _working_dir: &std::path::Path,
+    ) -> Result<Vec<ResourceAccess>, ToolError> {
+        Ok(vec![ResourceAccess::all()])
     }
 
     fn prompt_metadata(&self) -> Option<ToolPromptMetadata> {
@@ -541,7 +545,7 @@ fn terminal_tool_definition() -> &'static ToolDefinition {
         )
             .into(),
         origin: ToolOrigin::Builtin,
-        execution_mode: ExecutionMode::Sequential,
+        execution_mode: ExecutionMode::Parallel,
         parameters: serde_json::json!({
             "type": "object",
             "properties": {

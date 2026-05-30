@@ -10,12 +10,15 @@
 //! - [`ToolExecutionContext`]：每次工具调用的上下文
 //! - [`ToolPromptMetadata`]：结构化工具提示词元数据
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use crate::{event::EventPayload, storage::ToolResultArtifactReader, types::SessionId};
+use crate::{
+    event::EventPayload, storage::ToolResultArtifactReader, tool_access::ResourceAccess,
+    types::SessionId,
+};
 
 /// 工具来源分类，影响诊断日志和策略优先级，不改变执行路径。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -675,6 +678,17 @@ pub trait Tool: Send + Sync {
     /// 返回工具的执行模式偏好。
     fn execution_mode(&self) -> ExecutionMode {
         self.definition().execution_mode
+    }
+
+    /// 声明本次调用将访问的资源，供冲突图调度器判定并行性。
+    ///
+    /// 默认保守返回 [`ResourceAccess::All`]。内置工具应基于参数动态解析路径。
+    fn resource_accesses(
+        &self,
+        _arguments: &serde_json::Value,
+        _working_dir: &Path,
+    ) -> Result<Vec<ResourceAccess>, ToolError> {
+        Ok(vec![ResourceAccess::all()])
     }
 
     /// 返回工具的结构化提示词元数据。
