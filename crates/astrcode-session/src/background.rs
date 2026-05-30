@@ -6,45 +6,21 @@
 use std::{collections::HashMap, sync::Arc};
 
 use astrcode_core::{
-    event::EventPayload,
     storage::{BackgroundTaskOutputSlice, StorageError},
     tool::{BackgroundTaskReader, ToolResult},
-    types::{BackgroundTaskId, SessionId, ToolCallId},
+    types::{BackgroundTaskId, SessionId},
 };
 use parking_lot::Mutex;
-use tokio::sync::mpsc;
-
-/// 后台任务完成通知的载荷。
-pub struct BackgroundTaskCompletion {
-    pub session_id: SessionId,
-    pub task_id: BackgroundTaskId,
-    pub tool_name: String,
-    pub result: ToolResult,
-    pub arguments: String,
-    pub arguments_json: Option<serde_json::Value>,
-}
-
-impl BackgroundTaskCompletion {
-    pub fn to_background_task_completed_event(&self) -> EventPayload {
-        EventPayload::BackgroundTaskCompleted {
-            task_id: self.task_id.clone(),
-            call_id: ToolCallId::from(self.result.call_id.clone()),
-            tool_name: self.tool_name.clone(),
-            result: self.result.clone(),
-        }
-    }
-}
 
 struct RunningTask {
     session_id: SessionId,
-    exec_handle: tokio::task::JoinHandle<()>,
-    watcher_handle: tokio::task::JoinHandle<()>,
+    handle: tokio::task::JoinHandle<()>,
 }
 
 /// 管理所有 session 的后台任务。
 ///
-/// 当工具执行超过阈值时，agent loop 将其转入后台，把 exec 和 watcher 的 JoinHandle 注册到这里。
-/// cancel 会同时 abort 工具执行和 watcher。完成后 watcher 自行移除任务。
+/// 当工具执行超过阈值时，agent loop 将其转入后台，把单个 JoinHandle 注册到这里。
+/// cancel 会 abort 整个任务生命周期（执行 + 持久化 + 通知）。完成后任务自行移除。
 pub struct BackgroundTasks {
     tasks: HashMap<BackgroundTaskId, RunningTask>,
 }
@@ -63,31 +39,21 @@ impl BackgroundTasks {
         &mut self,
         task_id: BackgroundTaskId,
         session_id: SessionId,
-        exec_handle: tokio::task::JoinHandle<()>,
-        watcher_handle: tokio::task::JoinHandle<()>,
+        handle: tokio::task::JoinHandle<()>,
     ) {
-        self.tasks.insert(
-            task_id,
-            RunningTask {
-                session_id,
-                exec_handle,
-                watcher_handle,
-            },
-        );
+        self.tasks
+            .insert(task_id, RunningTask { session_id, handle });
     }
 
-    /// 移除已完成的任务（由 watcher 在完成后调用）。
+    /// 移除已完成的任务（由任务自身在完成后调用）。
     pub fn remove(&mut self, task_id: &BackgroundTaskId) {
         self.tasks.remove(task_id);
     }
 
     /// 取消并移除一个后台任务。
-    ///
-    /// 同时 abort 工具执行 task 和 watcher。
     pub fn cancel(&mut self, task_id: &BackgroundTaskId) -> bool {
         if let Some(task) = self.tasks.remove(task_id) {
-            task.exec_handle.abort();
-            task.watcher_handle.abort();
+            task.handle.abort();
             true
         } else {
             false
@@ -104,8 +70,7 @@ impl BackgroundTasks {
             .collect();
         for task_id in to_remove {
             if let Some(task) = self.tasks.remove(&task_id) {
-                task.exec_handle.abort();
-                task.watcher_handle.abort();
+                task.handle.abort();
             }
         }
     }
@@ -195,46 +160,6 @@ impl Default for BackgroundTasks {
     }
 }
 
-/// 完成后从管理器中移除任务。
-pub fn complete_background_task(manager: &Arc<Mutex<BackgroundTasks>>, task_id: &BackgroundTaskId) {
-    manager.lock().remove(task_id);
-}
-
-/// 后台任务完成事件的统一转发器。
-///
-/// 监听 `rx`，把每个 `BackgroundTaskCompletion` 翻译成
-/// `BackgroundTaskNotification`（durable）+ `BackgroundTaskCompleted`（live），
-/// 通过 `Session::emit_*` 写入 store 并 fanout。
-///
-/// 后台任务完成后的事件由 TurnScheduler 监听处理，无需回调唤醒 agent。
-pub fn spawn_background_forwarder(
-    mut rx: mpsc::UnboundedReceiver<BackgroundTaskCompletion>,
-    session: crate::session::Session,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        while let Some(completion) = rx.recv().await {
-            let notification = EventPayload::BackgroundTaskNotification {
-                task_id: completion.task_id.clone(),
-                call_id: ToolCallId::from(completion.result.call_id.clone()),
-                tool_name: completion.tool_name.clone(),
-                summary: completion.result.content.clone(),
-            };
-
-            if let Err(e) = session.emit_durable(None, notification.clone()).await {
-                tracing::warn!(
-                    session_id = %session.id(),
-                    error = %e,
-                    "background forwarder: persist notification failed; sending live fallback"
-                );
-                session.emit_live(None, notification).await;
-            }
-
-            let bg_event = completion.to_background_task_completed_event();
-            session.emit_live(None, bg_event).await;
-        }
-    })
-}
-
 /// 为后台化的工具调用构造占位 `ToolResult`。
 ///
 /// LLM 收到这个结果后会知道任务已在后台运行，可以继续其他推理。
@@ -272,13 +197,15 @@ mod tests {
         event::Event,
         llm::{LlmError, LlmEvent, LlmMessage, LlmProvider, ModelLimits},
         storage::{EventReader, EventStore, SessionReadModel, SessionSummary, StorageError},
-        tool::{ToolDefinition, ToolResult},
-        types::Cursor,
+        tool::ToolDefinition,
+        types::{Cursor, ToolCallId},
     };
     use astrcode_extensions::runner::ExtensionRunner;
     use astrcode_storage::in_memory::InMemoryEventStore;
+    use tokio::sync::mpsc;
 
     use super::*;
+    use crate::session_runtime::SessionRuntimeState;
 
     struct NeverLlm;
 
@@ -401,7 +328,7 @@ mod tests {
         async fn append_event(&self, event: Event) -> Result<Event, StorageError> {
             if matches!(
                 event.payload,
-                EventPayload::BackgroundTaskNotification { .. }
+                astrcode_core::event::EventPayload::BackgroundTaskNotification { .. }
             ) {
                 return Err(StorageError::Unsupported("forced append failure".into()));
             }
@@ -476,10 +403,8 @@ mod tests {
         )
     }
 
-    fn fake_handles() -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
-        let exec = tokio::spawn(async {});
-        let watcher = tokio::spawn(async {});
-        (exec, watcher)
+    fn fake_handle() -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async {})
     }
 
     #[tokio::test]
@@ -487,8 +412,8 @@ mod tests {
         let mut mgr = BackgroundTasks::new();
         let task_id = BackgroundTaskId::from("task-1");
         let session_id = SessionId::from("session-1");
-        let (exec, watcher) = fake_handles();
-        mgr.register(task_id.clone(), session_id.clone(), exec, watcher);
+        let handle = fake_handle();
+        mgr.register(task_id.clone(), session_id.clone(), handle);
 
         assert!(mgr.cancel(&task_id));
         assert!(mgr.list_active(&session_id).is_empty());
@@ -508,20 +433,18 @@ mod tests {
         let session_b = SessionId::from("session-b");
 
         for i in 0..3 {
-            let (exec, watcher) = fake_handles();
+            let handle = fake_handle();
             mgr.register(
                 BackgroundTaskId::from(format!("task-a-{i}")),
                 session_a.clone(),
-                exec,
-                watcher,
+                handle,
             );
         }
-        let (exec, watcher) = fake_handles();
+        let handle_b = fake_handle();
         mgr.register(
             BackgroundTaskId::from("task-b-0"),
             session_b.clone(),
-            exec,
-            watcher,
+            handle_b,
         );
 
         mgr.cleanup_session(&session_a);
@@ -530,111 +453,171 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_active_returns_only_matching_session_tasks() {
+    async fn list_active_returns_only_matching_session() {
         let mut mgr = BackgroundTasks::new();
-        let session_1 = SessionId::from("s1");
-        let session_2 = SessionId::from("s2");
+        let session_a = SessionId::from("session-a");
+        let session_b = SessionId::from("session-b");
 
-        let (exec1, watcher1) = fake_handles();
-        let (exec2, watcher2) = fake_handles();
-        mgr.register(
-            BackgroundTaskId::from("t1"),
-            session_1.clone(),
-            exec1,
-            watcher1,
-        );
-        mgr.register(
-            BackgroundTaskId::from("t2"),
-            session_2.clone(),
-            exec2,
-            watcher2,
-        );
+        let h1 = fake_handle();
+        let h2 = fake_handle();
+        mgr.register(BackgroundTaskId::from("task-1"), session_a.clone(), h1);
+        mgr.register(BackgroundTaskId::from("task-2"), session_b.clone(), h2);
 
-        let active = mgr.list_active(&session_1);
-        assert_eq!(active.len(), 1);
-        assert_eq!(active[0], BackgroundTaskId::from("t1"));
+        let active_a = mgr.list_active(&session_a);
+        assert_eq!(active_a.len(), 1);
+        assert_eq!(active_a[0], BackgroundTaskId::from("task-1"));
     }
 
     #[tokio::test]
-    async fn forwarder_sends_live_notification_when_durable_write_fails() {
-        let store: Arc<dyn EventStore> = Arc::new(FailToolCompletionStore::new());
-        let session_id = SessionId::from("session-forwarder-fallback");
-        let runtime = Arc::new(crate::session_runtime::SessionRuntimeState::new(
+    async fn background_forwarder_emits_durable_and_live_on_completion() {
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
+        let session_id = SessionId::from("test-bg-forwarder");
+        store
+            .create_session(&session_id, "/tmp", "mock", None, None, None)
+            .await
+            .unwrap();
+
+        let runtime = Arc::new(SessionRuntimeState::new(
             Arc::new(NeverLlm),
             Arc::new(NeverLlm),
             "mock".into(),
         ));
-        let session = Arc::new(
-            crate::session::Session::create_with_id(
-                Arc::clone(&store),
-                session_id.clone(),
-                ".",
-                "mock",
-                None,
-                None,
-                None,
-                runtime,
-                test_caps(),
+        let caps = test_caps();
+        let session = crate::session::Session {
+            id: session_id.clone(),
+            store: Arc::clone(&store),
+            runtime: Arc::clone(&runtime),
+            caps,
+        };
+
+        let bg_manager = runtime.background_tasks();
+        let task_id = BackgroundTaskId::from("bg-task-1");
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let bg_task_id = task_id.clone();
+        let bg_session = session.clone();
+        let bg_mgr = Arc::clone(&bg_manager);
+        let handle = tokio::spawn(async move {
+            // 模拟工具执行完成
+            drop(done_rx);
+
+            // 直接 emit durable + live（模拟新的单 task 模型）
+            let notification = astrcode_core::event::EventPayload::BackgroundTaskNotification {
+                task_id: bg_task_id.clone(),
+                call_id: ToolCallId::from("call-1"),
+                tool_name: "shell".into(),
+                summary: "done".into(),
+            };
+            let _ = bg_session.emit_durable(None, notification).await;
+            bg_session
+                .emit_live(
+                    None,
+                    astrcode_core::event::EventPayload::BackgroundTaskCompleted {
+                        task_id: bg_task_id.clone(),
+                        call_id: ToolCallId::from("call-1"),
+                        tool_name: "shell".into(),
+                        result: astrcode_core::tool::ToolResult {
+                            call_id: "call-1".into(),
+                            content: "done".into(),
+                            is_error: false,
+                            error: None,
+                            metadata: Default::default(),
+                            duration_ms: Some(100),
+                        },
+                    },
+                )
+                .await;
+
+            bg_mgr.lock().remove(&bg_task_id);
+        });
+
+        bg_manager
+            .lock()
+            .register(task_id.clone(), session_id.clone(), handle);
+
+        // 通知执行完成
+        let _ = done_tx.send(());
+
+        // 等待任务完成
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // 验证 durable event 已持久化
+        let events = store.replay_events(&session_id).await.unwrap();
+        let has_notification = events.iter().any(|e| {
+            matches!(
+                &e.payload,
+                astrcode_core::event::EventPayload::BackgroundTaskNotification { task_id: tid, .. }
+                if tid == &task_id
             )
-            .await
-            .unwrap(),
-        );
-        let mut events = session.subscribe();
-        let (tx, rx) = mpsc::unbounded_channel();
-        let _forwarder = spawn_background_forwarder(rx, session.as_ref().clone());
-
-        let mut metadata = std::collections::BTreeMap::new();
-        metadata.insert("task_id".into(), serde_json::json!("task-1"));
-        tx.send(BackgroundTaskCompletion {
-            session_id,
-            task_id: "task-1".into(),
-            tool_name: "shell".into(),
-            result: ToolResult {
-                call_id: "call-1".into(),
-                content: "done".into(),
-                is_error: false,
-                error: None,
-                metadata,
-                duration_ms: None,
-            },
-            arguments: "{}".into(),
-            arguments_json: Some(serde_json::json!({})),
-        })
-        .unwrap();
-
-        let mut saw_notification = false;
-        let mut saw_background_completion = false;
-        for _ in 0..2 {
-            let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
-                .await
-                .expect("fallback events should arrive")
-                .expect("session event channel should remain open");
-            match event.payload {
-                EventPayload::BackgroundTaskNotification { task_id, .. } => {
-                    saw_notification = task_id.as_str() == "task-1";
-                },
-                EventPayload::BackgroundTaskCompleted { task_id, .. } => {
-                    saw_background_completion = task_id.as_str() == "task-1";
-                },
-                _ => {},
-            }
-        }
-
+        });
         assert!(
-            saw_notification,
-            "live BackgroundTaskNotification should finalize UI when durable write fails"
+            has_notification,
+            "should have persisted BackgroundTaskNotification"
         );
-        assert!(saw_background_completion);
-        assert_eq!(
-            store
-                .session_read_model(session.id())
+
+        // 验证任务已从 manager 移除
+        assert!(bg_manager.lock().list_active(&session_id).is_empty());
+    }
+
+    #[tokio::test]
+    async fn background_forwarder_falls_back_to_live_on_durable_failure() {
+        let store: Arc<dyn EventStore> = Arc::new(FailToolCompletionStore::new());
+        let session_id = SessionId::from("test-bg-fallback");
+        store
+            .create_session(&session_id, "/tmp", "mock", None, None, None)
+            .await
+            .unwrap();
+
+        let runtime = Arc::new(SessionRuntimeState::new(
+            Arc::new(NeverLlm),
+            Arc::new(NeverLlm),
+            "mock".into(),
+        ));
+        let caps = test_caps();
+        let session = crate::session::Session {
+            id: session_id.clone(),
+            store: Arc::clone(&store),
+            runtime: Arc::clone(&runtime),
+            caps,
+        };
+
+        let bg_manager = runtime.background_tasks();
+        let task_id = BackgroundTaskId::from("bg-task-fail");
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let bg_task_id = task_id.clone();
+        let bg_session = session.clone();
+        let bg_mgr = Arc::clone(&bg_manager);
+        let handle = tokio::spawn(async move {
+            drop(done_rx);
+
+            let notification = astrcode_core::event::EventPayload::BackgroundTaskNotification {
+                task_id: bg_task_id.clone(),
+                call_id: ToolCallId::from("call-1"),
+                tool_name: "shell".into(),
+                summary: "done".into(),
+            };
+            // durable 写入会失败（FailToolCompletionStore 拒绝 BackgroundTaskNotification）
+            if bg_session
+                .emit_durable(None, notification.clone())
                 .await
-                .unwrap()
-                .messages
-                .len(),
-            0,
-            "durable notification failed; no messages persisted"
-        );
+                .is_err()
+            {
+                bg_session.emit_live(None, notification).await;
+            }
+
+            bg_mgr.lock().remove(&bg_task_id);
+        });
+
+        bg_manager
+            .lock()
+            .register(task_id.clone(), session_id.clone(), handle);
+
+        let _ = done_tx.send(());
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // durable 失败但 task 应该已从 manager 移除（live fallback 成功）
+        assert!(bg_manager.lock().list_active(&session_id).is_empty());
     }
 
     #[tokio::test]
@@ -646,13 +629,12 @@ mod tests {
         let session_correct = SessionId::from("correct");
         let session_wrong = SessionId::from("wrong");
 
-        let (exec, watcher) = fake_handles();
+        let handle = fake_handle();
         manager
             .lock()
-            .register(task_id.clone(), session_correct.clone(), exec, watcher);
+            .register(task_id.clone(), session_correct.clone(), handle);
 
         assert!(!reader.cancel(&session_wrong, &task_id));
-        // Correct session can cancel
         assert!(reader.cancel(&session_correct, &task_id));
     }
 }

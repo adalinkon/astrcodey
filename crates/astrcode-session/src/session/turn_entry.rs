@@ -66,8 +66,6 @@ impl Session {
             },
         };
 
-        self.runtime.ensure_background_forwarder(self.clone());
-
         let session_state = if prompt_changed {
             // refresh_prompt 可能写入了 durable event，需重读 projection。
             self.read_model().await?

@@ -6,18 +6,11 @@ use astrcode_core::{
 use astrcode_support::{event_fanout::EventFanout, sync::lock_parking};
 use astrcode_tools::registry::ToolRegistry;
 use parking_lot::Mutex;
-use tokio::sync::mpsc;
 
 use crate::{
-    background::{BackgroundTaskCompletion, BackgroundTasks, spawn_background_forwarder},
-    compact_circuit_breaker::CompactCircuitBreaker,
+    background::BackgroundTasks, compact_circuit_breaker::CompactCircuitBreaker,
     tool_exec::InMemoryFileObservationStore,
 };
-
-struct BackgroundForwarderState {
-    tx: mpsc::UnboundedSender<BackgroundTaskCompletion>,
-    _handle: tokio::task::JoinHandle<()>,
-}
 
 /// 当前 session 使用的模型绑定；一次替换同时切换 provider 与模型标识。
 #[derive(Clone)]
@@ -84,11 +77,6 @@ pub struct SessionRuntimeState {
     /// 本 session 事件的 fan-out 通道。同一 sid 下所有 Session 实例共享这份 sender，
     /// 通过 SessionRuntimeState 的 Arc 共享保证订阅一致性。
     event_out: Arc<EventFanout<Event>>,
-    /// 后台任务完成通知转发器（session 级，跨 turn 存活）。
-    ///
-    /// 若按 turn 创建 forwarder，turn 结束后 channel 被 drop，晚到的 completion 会静默丢失，
-    /// LLM 永远看不到后台输出。
-    background_forwarder: Mutex<Option<BackgroundForwarderState>>,
 }
 
 impl SessionRuntimeState {
@@ -119,31 +107,7 @@ impl SessionRuntimeState {
                 Duration::from_secs(60),
             )),
             event_out,
-            background_forwarder: Mutex::new(None),
         }
-    }
-
-    /// 确保 session 级后台完成 forwarder 已启动（幂等）。
-    pub(crate) fn ensure_background_forwarder(&self, session: crate::session::Session) {
-        let mut guard = lock_parking(&self.background_forwarder);
-        if guard.is_some() {
-            return;
-        }
-        let (tx, rx) = mpsc::unbounded_channel();
-        let handle = spawn_background_forwarder(rx, session);
-        *guard = Some(BackgroundForwarderState {
-            tx,
-            _handle: handle,
-        });
-    }
-
-    /// 后台 watcher 完成时投递 completion 的 sender；forwarder 未初始化时返回 `None`。
-    pub(crate) fn background_result_sender(
-        &self,
-    ) -> Option<mpsc::UnboundedSender<BackgroundTaskCompletion>> {
-        lock_parking(&self.background_forwarder)
-            .as_ref()
-            .map(|state| state.tx.clone())
     }
 
     /// 返回 provider 与模型标识的一致快照。
@@ -258,6 +222,7 @@ mod tests {
         llm::{LlmError, LlmEvent, LlmMessage, ModelLimits},
         tool::ToolDefinition,
     };
+    use tokio::sync::mpsc;
 
     use super::*;
 

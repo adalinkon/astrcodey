@@ -27,7 +27,7 @@ pub(crate) mod turn_publish;
 pub(crate) mod turn_runner;
 pub(crate) mod turn_stages;
 
-pub use background::{BackgroundTasks, spawn_background_forwarder};
+pub use background::BackgroundTasks;
 pub use payload::{
     agent_session_completed_payload, agent_session_failed_payload, compact_boundary_payload,
     session_continued_from_compaction_payload, system_prompt_configured_payload,

@@ -36,19 +36,11 @@ pub(crate) async fn on_step_end_best_effort(
     }
 }
 
-/// Emit `TurnEnd` before returning an error, preventing extensions from
-/// seeing an unfinished turn.
-pub(crate) async fn end_turn_with_error_typed<T, E>(
-    extension_runner: &ExtensionRunner,
-    shared: &SharedTurnContext,
-    error: E,
-) -> Result<T, TurnError>
+/// Turn 循环内的 typed early-return；`TurnEnd` 由 [`TurnLoop::finalize_turn_on_error`](crate::turn_runner::TurnLoop::finalize_turn_on_error) 统一补发。
+pub(crate) fn end_turn_with_error_typed<T, E>(error: E) -> Result<T, TurnError>
 where
     E: Into<TurnError>,
 {
-    let _ = extension_runner
-        .emit_lifecycle(ExtensionEvent::TurnEnd, shared.lifecycle_ctx())
-        .await;
     Err(error.into())
 }
 
@@ -154,15 +146,3 @@ pub enum TurnError {
     ModelCacheEmpty,
 }
 
-/// 是否应在 turn 失败时补发 `TurnEnd`（已由 `end_turn_with_error_typed` 处理的路径除外）。
-pub(crate) fn turn_error_emits_turn_end(error: &TurnError) -> bool {
-    !matches!(
-        error,
-        TurnError::ProviderBlocked { .. }
-            | TurnError::CompactExhausted
-            | TurnError::Llm(_)
-            | TurnError::Extension(_)
-            | TurnError::Tool(_)
-            | TurnError::Session(_)
-    )
-}

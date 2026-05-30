@@ -9,6 +9,8 @@ mod storage;
 mod tools;
 mod turn_entry;
 
+pub(crate) use compact::normalize_extra_system_prompt;
+
 use std::sync::Arc;
 
 use astrcode_core::{

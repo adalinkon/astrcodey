@@ -1,6 +1,6 @@
 //! 工具调用执行实现。
 //!
-//! 包含阻塞式执行、带后台化能力的执行、以及后台 watcher 逻辑。
+//! 包含阻塞式执行、带后台化能力的执行。
 
 use std::{sync::Arc, time::Instant};
 
@@ -18,7 +18,7 @@ use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    background::{BackgroundTaskCompletion, BackgroundTasks, backgrounded_placeholder_result},
+    background::{BackgroundTasks, backgrounded_placeholder_result},
     deferred_tools::suggest_tool_alias,
     session::Session,
     tool_types::ExecutableToolCall,
@@ -58,9 +58,7 @@ impl TurnToolContext {
 /// 会话级工具运行时能力，从 [`TurnToolContext`] 透传到 [`ToolExecutionContext`]。
 #[derive(Clone)]
 pub(crate) struct ToolRuntimeCapabilities {
-    /// session 运行时（后台 completion 投递、任务管理等）。
-    pub session_runtime: Arc<crate::session_runtime::SessionRuntimeState>,
-    /// 后台任务管理器，用于注册 watcher handle 以支持取消。
+    /// 后台任务管理器，用于注册 handle 以支持取消。
     pub background_tasks: Arc<parking_lot::Mutex<BackgroundTasks>>,
     /// 后台任务只读接口，注入到 ToolExecutionContext 供 TaskTool 使用。
     pub background_task_reader: Option<Arc<dyn BackgroundTaskReader>>,
@@ -79,10 +77,7 @@ pub(crate) struct ToolRuntimeCapabilities {
 }
 
 impl ToolRuntimeCapabilities {
-    fn from_session(
-        session: &Session,
-        shared: &crate::turn_context::SharedTurnContext,
-    ) -> Self {
+    fn from_session(session: &Session, shared: &crate::turn_context::SharedTurnContext) -> Self {
         let runtime = Arc::clone(&session.runtime);
         let caps = session.caps();
         let background_task_reader: Option<Arc<dyn BackgroundTaskReader>> =
@@ -94,7 +89,6 @@ impl ToolRuntimeCapabilities {
         let main_model_id = shared.model_id.clone();
         let small_model_id = effective.small_llm.model_id.clone();
         Self {
-            session_runtime: Arc::clone(&runtime),
             background_tasks: runtime.background_tasks(),
             background_task_reader,
             file_observation_store: Some(runtime.file_observation_store()),
@@ -116,6 +110,7 @@ pub(crate) struct ToolCallRuntimeContext {
     pub tool_result_reader: Option<Arc<dyn ToolResultArtifactReader>>,
     pub publisher: Arc<TurnEvents>,
     pub cancellation_token: CancellationToken,
+    pub session: Session,
 }
 
 fn error_tool_result(
@@ -348,8 +343,8 @@ async fn execute_tool_call_blocking(
 
 /// 带后台化能力的工具执行。
 ///
-/// spawn 工具执行 task 后，用共享结果槽等待结果或阈值超时。
-/// 超时则保留 task 继续在后台执行，watcher 从共享槽读取最终结果并通知 handler。
+/// spawn 单个 async task 完成执行 → 写磁盘 → 发事件 → 从 manager 移除的全生命周期。
+/// 超时则保留 task 继续在后台执行，返回占位结果。
 async fn execute_tool_call_with_background(
     tool_registry: Arc<ToolRegistry>,
     runtime: ToolCallRuntimeContext,
@@ -361,11 +356,8 @@ async fn execute_tool_call_with_background(
     let call_id = call.call_id.clone();
     let call_index = call.index;
 
-    // 构造工具执行所需的上下文
-    let tool_event_tx = {
-        let (tool_tx, _bridge_handle) = spawn_event_bridge(Arc::clone(&runtime.publisher));
-        Some(tool_tx)
-    };
+    let tool_event_bridge = spawn_event_bridge(Arc::clone(&runtime.publisher));
+    let tool_event_tx = Some(tool_event_bridge.0.clone());
 
     let tool_ctx = ToolExecutionContext {
         session_id: runtime.turn.shared.session_id.clone(),
@@ -375,165 +367,46 @@ async fn execute_tool_call_with_background(
         capabilities: tool_capabilities_from_runtime(&runtime),
     };
 
-    // 共享结果槽：exec task 写入，主线程或 watcher 读取
+    // 共享结果槽：task 写入，主线程读取（仅用于快速路径）
     let result_slot = Arc::new(Mutex::new(
         None::<Result<ToolResult, astrcode_core::tool::ToolError>>,
     ));
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
-    let (exec_complete_tx, exec_complete_rx) = tokio::sync::oneshot::channel::<()>();
+    let (backgrounded_tx, backgrounded_rx) = tokio::sync::oneshot::channel::<()>();
 
     let name = call.name.clone();
     let tool_input = call.tool_input.clone();
     let slot_writer = Arc::clone(&result_slot);
-    let exec_handle = tokio::spawn(async move {
-        let result = tool_registry.execute(&name, tool_input, &tool_ctx).await;
-        *slot_writer.lock() = Some(result);
-        let _ = done_tx.send(());
-        let _ = exec_complete_tx.send(());
-    });
 
-    // 用 timeout 等待完成通知或超时
-    let wait_result = tokio::select! {
-        _ = runtime.cancellation_token.cancelled() => {
-            exec_handle.abort();
-            return (
-                call_index,
-                interrupted_tool_result(call_id.clone(), &tool_name, started_at.elapsed()),
-            );
-        },
-        result = tokio::time::timeout(std::time::Duration::from_secs(threshold_secs), done_rx) => result,
-    };
-
-    match wait_result {
-        Ok(Ok(())) => {
-            // 在阈值内完成
-            match result_slot.lock().take() {
-                Some(Ok(mut r)) => {
-                    r.call_id = call_id.clone();
-                    r.duration_ms = Some(started_at.elapsed().as_millis() as u64);
-                    tracing::debug!(
-                        tool_name,
-                        call_id,
-                        duration_ms = r.duration_ms.unwrap_or_default(),
-                        "tool execution completed (before background threshold)"
-                    );
-                    (call_index, r)
-                },
-                Some(Err(e)) => (
-                    call_index,
-                    error_tool_result(call_id.clone(), &tool_name, e, started_at.elapsed()),
-                ),
-                None => {
-                    // done_tx 发送成功但 result_slot 为空 — 任务在写入结果前异常终止
-                    tracing::error!(
-                        tool_name,
-                        call_id,
-                        "done_tx sent but no result available in slot"
-                    );
-                    (
-                        call_index,
-                        error_tool_result(
-                            call_id.clone(),
-                            &tool_name,
-                            ToolError::Execution(
-                                "tool task completed but no result available".into(),
-                            ),
-                            started_at.elapsed(),
-                        ),
-                    )
-                },
-            }
-        },
-        Ok(Err(_)) => {
-            // done_tx dropped — task panicked or was cancelled
-            if let Err(join_err) = exec_handle.await {
-                tracing::error!(
-                    tool_name,
-                    call_id,
-                    panic = %join_err,
-                    "tool execution task panicked"
-                );
-            }
-            (
-                call_index,
-                error_tool_result(
-                    call_id.clone(),
-                    &tool_name,
-                    ToolError::Execution("tool task panicked before completion".into()),
-                    started_at.elapsed(),
-                ),
-            )
-        },
-        Err(_) => {
-            // 超时，转入后台。exec_handle 继续运行。
-            background_tool_call(
-                exec_handle,
-                exec_complete_rx,
-                result_slot,
-                runtime,
-                call,
-                threshold_secs,
-                started_at,
-            )
-            .await
-        },
-    }
-}
-
-/// 将已超时的工具执行转为后台运行，返回占位结果。
-async fn background_tool_call(
-    exec_handle: tokio::task::JoinHandle<()>,
-    exec_complete_rx: tokio::sync::oneshot::Receiver<()>,
-    result_slot: Arc<Mutex<Option<Result<ToolResult, astrcode_core::tool::ToolError>>>>,
-    runtime: ToolCallRuntimeContext,
-    call: ExecutableToolCall,
-    threshold_secs: u64,
-    started_at: Instant,
-) -> (usize, ToolResult) {
-    let tool_name = call.name;
-    let call_id = call.call_id;
-    let call_index = call.index;
-    let task_id = new_background_task_id();
-
-    tracing::info!(
-        tool_name,
-        call_id,
-        task_id = %task_id,
-        threshold_secs,
-        "tool execution moved to background"
-    );
-
-    let bg_reason: String = match threshold_secs {
-        0 => "explicit".into(),
-        _ => "auto_threshold".into(),
-    };
-    runtime
-        .publisher
-        .live(EventPayload::ToolCallBackgrounded {
-            call_id: ToolCallId::from(call_id.as_str()),
-            tool_name: tool_name.clone(),
-            task_id: task_id.clone(),
-            reason: bg_reason,
-        })
-        .await;
-
-    // 闭包专用的变量，之后由 watcher move 消费
+    // 准备后台路径所需的变量
+    let bg_task_id = new_background_task_id();
+    let bg_task_id_for_cancel = bg_task_id.clone();
+    let bg_task_id_for_closure = bg_task_id.clone();
+    let bg_session = runtime.session.clone();
+    let bg_manager = runtime.turn.capabilities.background_tasks.clone();
+    let bg_store_dir = runtime.turn.capabilities.session_store_dir.clone();
     let bg_call_id = call_id.clone();
     let bg_tool_name = tool_name.clone();
-    let bg_task_id = task_id.clone();
-    let bg_session_id = runtime.turn.shared.session_id.clone();
-    let bg_session_runtime = Arc::clone(&runtime.turn.capabilities.session_runtime);
-    let bg_manager = runtime.turn.capabilities.background_tasks.clone();
-    let register_task_id = task_id.clone();
-    let bg_store_dir = runtime.turn.capabilities.session_store_dir.clone();
-    let bg_arguments = call.tool_input.to_string();
-    let bg_arguments_json = Some(call.tool_input.clone());
+    let bg_tool_name_for_event = tool_name.clone();
+    let register_task_id = bg_task_id.clone();
+    let register_session_id = runtime.turn.shared.session_id.clone();
 
-    let watcher_handle = tokio::spawn(async move {
-        // 等待 exec 完成（或被 cancel abort 导致 oneshot 断开）
-        let _ = exec_complete_rx.await;
+    let handle = tokio::spawn(async move {
+        let bg_task_id = bg_task_id_for_closure;
+        // Phase 1: 执行工具
+        let result = tool_registry.execute(&name, tool_input, &tool_ctx).await;
+        *slot_writer.lock() = Some(result);
 
-        let raw = result_slot.lock().take();
+        // 通知主线程执行完成（用于快速路径检测）
+        let _ = done_tx.send(());
+
+        // 仅在实际转入后台后继续 Phase 2；快速路径会 drop sender，此处收到 Err 后直接退出。
+        if backgrounded_rx.await.is_err() {
+            return;
+        }
+
+        // Phase 2: 后台路径 — 持久化 + 发事件 + 移除
+        let raw = slot_writer.lock().take();
         let mut result = match raw {
             Some(Ok(mut r)) => {
                 r.call_id = bg_call_id.clone();
@@ -551,12 +424,12 @@ async fn background_tool_call(
             ),
         };
 
-        // 在结果元数据中标记后台来源，快照重建时可据此恢复 task_id
+        // 在结果元数据中标记后台来源
         result
             .metadata
             .insert("task_id".into(), serde_json::json!(bg_task_id.to_string()));
 
-        // 持久化输出到磁盘，让 LLM 按 task_id 按需读取
+        // 持久化输出到磁盘
         let original_content = result.content.clone();
         let output_bytes = if let Some(ref dir) = bg_store_dir {
             let bg_dir = dir.join("background-tasks");
@@ -564,6 +437,7 @@ async fn background_tool_call(
                 &bg_dir,
                 bg_task_id.as_str(),
                 &original_content,
+                astrcode_storage::tool_artifacts::DEFAULT_BG_TASK_OUTPUT_LIMIT,
             ) {
                 Ok(bytes) => {
                     tracing::debug!(
@@ -616,52 +490,152 @@ async fn background_tool_call(
             "background task completed"
         );
 
-        // 通过 session 级 forwarder 通知持久化和广播（turn 结束后 channel 仍有效）
-        if let Some(tx) = bg_session_runtime.background_result_sender() {
-            if tx
-                .send(BackgroundTaskCompletion {
-                    session_id: bg_session_id,
-                    task_id: bg_task_id.clone(),
-                    tool_name: bg_tool_name,
-                    result,
-                    arguments: bg_arguments,
-                    arguments_json: bg_arguments_json,
-                })
-                .is_err()
-            {
-                tracing::warn!(
-                    task_id = %bg_task_id,
-                    "background completion channel closed; notification dropped"
-                );
-            }
-        } else {
+        // 发出 BackgroundTaskNotification（durable）+ BackgroundTaskCompleted（live）
+        let notification = EventPayload::BackgroundTaskNotification {
+            task_id: bg_task_id.clone(),
+            call_id: ToolCallId::from(result.call_id.clone()),
+            tool_name: bg_tool_name.clone(),
+            summary: result.content.clone(),
+        };
+
+        if let Err(e) = bg_session.emit_durable(None, notification.clone()).await {
             tracing::warn!(
-                task_id = %bg_task_id,
-                "background forwarder not initialized; completion notification dropped"
+                session_id = %bg_session.id(),
+                error = %e,
+                "background task: persist notification failed; sending live fallback"
             );
+            bg_session.emit_live(None, notification).await;
         }
 
-        // 完成后从管理器移除
-        crate::background::complete_background_task(&bg_manager, &bg_task_id);
+        bg_session
+            .emit_live(
+                None,
+                EventPayload::BackgroundTaskCompleted {
+                    task_id: bg_task_id.clone(),
+                    call_id: ToolCallId::from(result.call_id.clone()),
+                    tool_name: bg_tool_name,
+                    result,
+                },
+            )
+            .await;
+
+        // 从管理器移除自身
+        bg_manager.lock().remove(&bg_task_id);
     });
 
-    // 注册到后台任务管理器，支持中途取消（exec_handle + watcher_handle 都可 abort）
-    let mut mgr = runtime.turn.capabilities.background_tasks.lock();
-    mgr.register(
-        register_task_id,
-        runtime.turn.shared.session_id.clone(),
-        exec_handle,
-        watcher_handle,
-    );
+    // 注册到后台任务管理器
+    {
+        let mut mgr = runtime.turn.capabilities.background_tasks.lock();
+        mgr.register(register_task_id, register_session_id, handle);
+    }
 
-    // 返回占位结果
-    let command = call
-        .tool_input
-        .get("command")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let placeholder = backgrounded_placeholder_result(&call_id, &task_id, command.as_deref());
-    (call_index, placeholder)
+    // 用 timeout 等待完成通知或超时
+    let wait_result = tokio::select! {
+        _ = runtime.cancellation_token.cancelled() => {
+            // 取消：通过 task_id 从 manager abort
+            runtime.turn.capabilities.background_tasks.lock().cancel(&bg_task_id_for_cancel);
+            return (
+                call_index,
+                interrupted_tool_result(call_id.clone(), &tool_name, started_at.elapsed()),
+            );
+        },
+        result = tokio::time::timeout(std::time::Duration::from_secs(threshold_secs), done_rx) => result,
+    };
+
+    match wait_result {
+        Ok(Ok(())) => {
+            // 在阈值内完成 — 快速路径：通知 task 不要跑 Phase 2，取走结果并注销。
+            drop(backgrounded_tx);
+            runtime
+                .turn
+                .capabilities
+                .background_tasks
+                .lock()
+                .remove(&bg_task_id);
+            match result_slot.lock().take() {
+                Some(Ok(mut r)) => {
+                    r.call_id = call_id.clone();
+                    r.duration_ms = Some(started_at.elapsed().as_millis() as u64);
+                    tracing::debug!(
+                        tool_name,
+                        call_id,
+                        duration_ms = r.duration_ms.unwrap_or_default(),
+                        "tool execution completed (before background threshold)"
+                    );
+                    (call_index, r)
+                },
+                Some(Err(e)) => (
+                    call_index,
+                    error_tool_result(call_id.clone(), &tool_name, e, started_at.elapsed()),
+                ),
+                None => {
+                    tracing::error!(
+                        tool_name,
+                        call_id,
+                        "done_tx sent but no result available in slot"
+                    );
+                    (
+                        call_index,
+                        error_tool_result(
+                            call_id.clone(),
+                            &tool_name,
+                            ToolError::Execution(
+                                "tool task completed but no result available".into(),
+                            ),
+                            started_at.elapsed(),
+                        ),
+                    )
+                },
+            }
+        },
+        Ok(Err(_)) => {
+            // done_tx dropped — task panicked
+            tracing::error!(tool_name, call_id, "tool execution task panicked");
+            (
+                call_index,
+                error_tool_result(
+                    call_id.clone(),
+                    &tool_name,
+                    ToolError::Execution("tool task panicked before completion".into()),
+                    started_at.elapsed(),
+                ),
+            )
+        },
+        Err(_) => {
+            // 超时 — 后台路径。通知 task 在 Phase 1 完成后进入 Phase 2。
+            let _ = backgrounded_tx.send(());
+            tracing::info!(
+                tool_name,
+                call_id,
+                task_id = %bg_task_id,
+                threshold_secs,
+                "tool execution moved to background"
+            );
+
+            let bg_reason: String = match threshold_secs {
+                0 => "explicit".into(),
+                _ => "auto_threshold".into(),
+            };
+            runtime
+                .publisher
+                .live(EventPayload::ToolCallBackgrounded {
+                    call_id: ToolCallId::from(call_id.as_str()),
+                    tool_name: bg_tool_name_for_event,
+                    task_id: bg_task_id.clone(),
+                    reason: bg_reason,
+                })
+                .await;
+
+            let command = call
+                .tool_input
+                .get("command")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let placeholder =
+                backgrounded_placeholder_result(&call_id, &bg_task_id, command.as_deref());
+            (call_index, placeholder)
+        },
+    }
 }
 
 // ─── File observation store ──────────────────────────────────────────────────
@@ -689,9 +663,281 @@ impl FileObservationStore for InMemoryFileObservationStore {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::tool::{BackgroundPolicy, ToolError};
+    use std::sync::Arc;
+
+    use astrcode_core::{
+        config::{ContextSettings, EffectiveConfig, ExtensionSettings, LlmSettings, OpenAiApiMode},
+        event::EventPayload,
+        llm::{LlmError, LlmEvent, LlmMessage, LlmProvider, ModelLimits},
+        storage::EventStore,
+        tool::{
+            BackgroundPolicy, ExecutionMode, Tool, ToolDefinition, ToolError, ToolOrigin,
+            ToolResult,
+        },
+        types::{ToolCallId, new_session_id, new_turn_id},
+    };
+    use astrcode_extensions::runner::ExtensionRunner;
+    use astrcode_storage::in_memory::InMemoryEventStore;
+    use astrcode_tools::registry::ToolRegistry;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
 
     use super::*;
+    use crate::{
+        session::{Session, SessionCreateParams},
+        session_runtime::SessionRuntimeState,
+        session_runtime_services::SessionRuntimeServices,
+        tool_types::ExecutableToolCall,
+    };
+
+    struct UnusedLlm;
+
+    #[async_trait::async_trait]
+    impl LlmProvider for UnusedLlm {
+        async fn generate(
+            &self,
+            _messages: Vec<LlmMessage>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<mpsc::UnboundedReceiver<LlmEvent>, LlmError> {
+            unreachable!()
+        }
+
+        fn model_limits(&self) -> ModelLimits {
+            ModelLimits {
+                max_input_tokens: 1024,
+                max_output_tokens: 1024,
+            }
+        }
+    }
+
+    fn test_caps() -> Arc<SessionRuntimeServices> {
+        let llm: Arc<dyn LlmProvider> = Arc::new(UnusedLlm);
+        let extension_runner = Arc::new(ExtensionRunner::new(std::time::Duration::from_secs(1)));
+        let context_assembler = Arc::new(
+            astrcode_context::context_assembler::LlmContextAssembler::new(
+                ContextSettings::default(),
+            ),
+        );
+        let effective = EffectiveConfig {
+            llm: LlmSettings {
+                provider_kind: "mock".into(),
+                base_url: String::new(),
+                api_key: String::new(),
+                api_mode: OpenAiApiMode::ChatCompletions,
+                model_id: "mock-model".into(),
+                max_tokens: 1024,
+                context_limit: 1024,
+                connect_timeout_secs: 1,
+                read_timeout_secs: 1,
+                max_retries: 0,
+                retry_base_delay_ms: 0,
+                supports_prompt_cache_key: false,
+                prompt_cache_retention: None,
+                reasoning: false,
+                thinking_level: None,
+            },
+            small_llm: LlmSettings {
+                provider_kind: "mock".into(),
+                base_url: String::new(),
+                api_key: String::new(),
+                api_mode: OpenAiApiMode::ChatCompletions,
+                model_id: "mock-model".into(),
+                max_tokens: 1024,
+                context_limit: 1024,
+                connect_timeout_secs: 1,
+                read_timeout_secs: 1,
+                max_retries: 0,
+                retry_base_delay_ms: 0,
+                supports_prompt_cache_key: false,
+                prompt_cache_retention: None,
+                reasoning: false,
+                thinking_level: None,
+            },
+            context: ContextSettings::default(),
+            agent: Default::default(),
+            extensions: ExtensionSettings::default(),
+        };
+        Arc::new(SessionRuntimeServices::new(
+            llm.clone(),
+            llm,
+            extension_runner,
+            context_assembler,
+            effective,
+        ))
+    }
+
+    async fn test_session(store: Arc<dyn EventStore>) -> Session {
+        let caps = test_caps();
+        let sid = new_session_id();
+        let runtime = Arc::new(SessionRuntimeState::new(
+            caps.llm(),
+            caps.small_llm(),
+            "mock-model".into(),
+        ));
+        Session::create_with_params(SessionCreateParams {
+            store,
+            sid,
+            working_dir: std::env::temp_dir().to_string_lossy().into_owned(),
+            model_id: "mock-model".into(),
+            parent: None,
+            tool_policy: None,
+            source_extension: None,
+            runtime,
+            caps,
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn runtime_context(session: &Session) -> ToolCallRuntimeContext {
+        let model = session.read_model().await.unwrap();
+        let store_dir = session.session_store_dir().await;
+        let turn = TurnToolContext::for_turn(session, &model, store_dir);
+        let turn_id = new_turn_id();
+        ToolCallRuntimeContext {
+            turn,
+            tools: vec![],
+            tool_result_reader: Some(Arc::new(session.clone()) as Arc<dyn ToolResultArtifactReader>),
+            publisher: Arc::new(TurnEvents::new(session.clone(), turn_id, None)),
+            cancellation_token: CancellationToken::new(),
+            session: session.clone(),
+        }
+    }
+
+    struct ImmediateBackgroundTool;
+
+    #[async_trait::async_trait]
+    impl Tool for ImmediateBackgroundTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "immediate_bg".into(),
+                description: String::new(),
+                parameters: serde_json::json!({"type": "object"}),
+                origin: ToolOrigin::Builtin,
+                execution_mode: ExecutionMode::Sequential,
+            }
+        }
+
+        fn background_policy(&self) -> BackgroundPolicy {
+            BackgroundPolicy::AutoAfter { threshold_secs: 60 }
+        }
+
+        async fn execute(
+            &self,
+            _arguments: serde_json::Value,
+            _ctx: &ToolExecutionContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult {
+                call_id: String::new(),
+                content: "fast-ok".into(),
+                is_error: false,
+                error: None,
+                metadata: Default::default(),
+                duration_ms: None,
+            })
+        }
+    }
+
+    struct SlowBackgroundTool {
+        delay: std::time::Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for SlowBackgroundTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "slow_bg".into(),
+                description: String::new(),
+                parameters: serde_json::json!({"type": "object"}),
+                origin: ToolOrigin::Builtin,
+                execution_mode: ExecutionMode::Sequential,
+            }
+        }
+
+        fn background_policy(&self) -> BackgroundPolicy {
+            BackgroundPolicy::AutoAfter { threshold_secs: 0 }
+        }
+
+        async fn execute(
+            &self,
+            _arguments: serde_json::Value,
+            _ctx: &ToolExecutionContext,
+        ) -> Result<ToolResult, ToolError> {
+            tokio::time::sleep(self.delay).await;
+            Ok(ToolResult {
+                call_id: String::new(),
+                content: "slow-done".into(),
+                is_error: false,
+                error: None,
+                metadata: Default::default(),
+                duration_ms: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn background_tool_fast_path_returns_inline_result_without_notification() {
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
+        let session = test_session(Arc::clone(&store)).await;
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(ImmediateBackgroundTool));
+        let registry = Arc::new(registry);
+
+        let runtime = runtime_context(&session).await;
+        let call = ExecutableToolCall {
+            index: 0,
+            call_id: "call-fast".into(),
+            name: "immediate_bg".into(),
+            tool_input: serde_json::json!({}),
+        };
+
+        let (_idx, result) = execute_tool_call(registry, runtime, call).await;
+        assert_eq!(result.content, "fast-ok");
+        assert!(!result.is_error);
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let events = store.replay_events(session.id()).await.unwrap();
+        assert!(!events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::BackgroundTaskNotification { .. }
+        )));
+    }
+
+    #[tokio::test]
+    async fn background_tool_timeout_path_emits_notification_on_completion() {
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
+        let session = test_session(Arc::clone(&store)).await;
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(SlowBackgroundTool {
+            delay: std::time::Duration::from_millis(200),
+        }));
+        let registry = Arc::new(registry);
+
+        let runtime = runtime_context(&session).await;
+        let call = ExecutableToolCall {
+            index: 0,
+            call_id: "call-slow".into(),
+            name: "slow_bg".into(),
+            tool_input: serde_json::json!({}),
+        };
+
+        let (_idx, result) = execute_tool_call(registry, runtime, call).await;
+        assert!(result.content.contains("Task moved to background"));
+        assert_eq!(
+            result.metadata.get("backgrounded"),
+            Some(&serde_json::json!(true))
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let events = store.replay_events(session.id()).await.unwrap();
+        assert!(events.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::BackgroundTaskNotification {
+                call_id,
+                ..
+            } if call_id == &ToolCallId::from("call-slow")
+        )));
+    }
 
     #[test]
     fn resolve_effective_policy_explicit_true() {

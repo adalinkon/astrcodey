@@ -102,28 +102,35 @@ impl TurnEvents {
         })
         .await;
     }
-
-    pub(crate) async fn publish(&self, payload: EventPayload) -> Result<(), TurnError> {
-        if payload.is_durable() {
-            self.durable(payload).await
-        } else {
-            self.live(payload).await;
-            Ok(())
-        }
-    }
 }
 
 /// 将扩展/钩子侧的 `event_tx.send` 转发到 [`TurnEvents`]（durable / live 由 payload 决定）。
 pub(crate) fn spawn_event_bridge(
     publisher: Arc<TurnEvents>,
 ) -> (TurnEventTx, tokio::task::JoinHandle<()>) {
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let handle = tokio::spawn(async move {
-        while let Some(payload) = rx.recv().await {
-            if let Err(error) = publisher.publish(payload).await {
-                tracing::error!(error = %error, "extension event publish failed");
+    let (tx, mut rx) = mpsc::unbounded_channel::<EventPayload>();
+    let (durable_tx, mut durable_rx) = mpsc::unbounded_channel::<EventPayload>();
+    let durable_publisher = Arc::clone(&publisher);
+    let durable_worker = tokio::spawn(async move {
+        while let Some(payload) = durable_rx.recv().await {
+            if let Err(error) = durable_publisher.durable(payload).await {
+                tracing::error!(error = %error, "event bridge durable publish failed");
             }
         }
+    });
+    let handle = tokio::spawn(async move {
+        while let Some(payload) = rx.recv().await {
+            // durable 写入（磁盘 I/O）不阻塞同 bridge 上的 live delta 转发，但保持顺序。
+            if payload.is_durable() {
+                if durable_tx.send(payload).is_err() {
+                    tracing::error!("event bridge durable worker unavailable");
+                }
+            } else {
+                publisher.live(payload).await;
+            }
+        }
+        drop(durable_tx);
+        let _ = durable_worker.await;
     });
     (tx, handle)
 }

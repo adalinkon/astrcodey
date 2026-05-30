@@ -235,7 +235,8 @@ impl TurnScheduler {
         self.start_execution(session_id, text).await
     }
 
-    /// 低层启动：注册 registry 并返回 handle。调用方须走 [`Self::finish_and_maybe_start_next`] 收尾。
+    /// 低层启动：注册 registry 并返回 handle。调用方须走 [`Self::finish_and_maybe_start_next`]
+    /// 收尾。
     pub(crate) async fn start_execution(
         &self,
         session_id: SessionId,
@@ -273,7 +274,8 @@ impl TurnScheduler {
         Ok(StartedExecution { turn_id, handle })
     }
 
-    /// Turn 收尾：registry 清理、sync、子 session drain；若队列非空且 session 空闲则启动下一条 turn。
+    /// Turn 收尾：registry 清理、sync、子 session drain；若队列非空且 session 空闲则启动下一条
+    /// turn。
     pub async fn finish_and_maybe_start_next(
         &self,
         completion: CompletionParams,
@@ -309,7 +311,8 @@ impl TurnScheduler {
         }
     }
 
-    /// 若 [`Self::finish_and_maybe_start_next`] 已启动队列中的下一条 execution，挂上 detached watcher。
+    /// 若 [`Self::finish_and_maybe_start_next`] 已启动队列中的下一条 execution，挂上 detached
+    /// watcher。
     pub(crate) fn watch_queued_if_any(
         &self,
         session_id: SessionId,

@@ -17,6 +17,8 @@ use astrcode_extensions::runner::ExtensionRunner;
 use astrcode_support::{hash::hex_fingerprint, shell::resolve_shell};
 use astrcode_tools::registry::{ToolRegistry, builtin_tools};
 
+use crate::session::normalize_extra_system_prompt;
+
 /// 构建一个工作目录绑定的工具表快照。
 ///
 /// 每次新建/恢复 session 时调用一次；工具执行期间只读取这份快照，
@@ -167,10 +169,7 @@ pub async fn build_system_prompt_snapshot(
     )
     .await?;
 
-    let extra_instructions = extra_system_prompt.and_then(|s| {
-        let trimmed = s.trim();
-        (!trimmed.is_empty()).then(|| trimmed.to_string())
-    });
+    let extra_instructions = normalize_extra_system_prompt(extra_system_prompt);
 
     let prompt_input = SystemPromptInput {
         working_dir: working_dir.to_string(),

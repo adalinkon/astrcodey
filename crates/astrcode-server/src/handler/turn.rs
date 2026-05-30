@@ -6,9 +6,7 @@ use astrcode_core::types::*;
 use tokio::sync::mpsc;
 
 use super::{CommandHandler, CommandMessage, HandlerError, errors::turn_schedule_error_for_client};
-use crate::turn_scheduler::{
-    CompletionParams, StartedExecution, TurnScheduleError, TurnScheduler,
-};
+use crate::turn_scheduler::{CompletionParams, StartedExecution, TurnScheduleError, TurnScheduler};
 
 /// Turn 完成结果，通过 oneshot 通道发送。
 #[derive(Debug, Clone)]

@@ -27,7 +27,6 @@ use crate::{
     tool_types::ExecuteToolCalls,
     turn_context::{
         SharedTurnContext, TurnError, end_turn_with_error_typed, on_step_end_best_effort,
-        turn_error_emits_turn_end,
     },
     turn_publish::{ExtensionEvents, TurnEvents},
     turn_stages::{PreparedProviderRequest, TurnState},
@@ -219,22 +218,18 @@ impl TurnLoop {
         let result = self
             .process_prompt_inner(user_text, turn_id, publisher)
             .await;
-        event_bridge.shutdown(self.tools.shared_mut()).await;
-        if let Err(error) = &result {
-            self.finalize_turn_on_error(&extension_runner, error).await;
+        if result.is_err() {
+            self.finalize_turn_on_error(&extension_runner).await;
         }
+        event_bridge.shutdown(self.tools.shared_mut()).await;
         result
     }
 
-    /// 未走 `end_turn_with_error_typed` 的失败路径补发 `TurnEnd`（如 durable 写入失败）。
+    /// Turn 失败时统一补发 `TurnEnd`，避免 `?` 旁路错误漏掉扩展生命周期钩子。
     async fn finalize_turn_on_error(
         &self,
         extension_runner: &astrcode_extensions::runner::ExtensionRunner,
-        error: &TurnError,
     ) {
-        if !turn_error_emits_turn_end(error) {
-            return;
-        }
         if let Err(hook_error) = extension_runner
             .emit_lifecycle(ExtensionEvent::TurnEnd, self.shared().lifecycle_ctx())
             .await
@@ -260,7 +255,7 @@ impl TurnLoop {
         );
         turn_start_res?;
         if let Err(e) = prompt_submit_res {
-            return end_turn_with_error_typed(&extension_runner, self.shared(), e).await;
+            return end_turn_with_error_typed(e);
         }
 
         let mut state = TurnState::new(all_tools);
@@ -278,7 +273,7 @@ impl TurnLoop {
                 .await?;
             let visible_tools = state.visible_tools();
             let outcome = match self
-                .llm_stage(&extension_runner, prepared, &visible_tools, publisher)
+                .llm_stage(prepared, &visible_tools, publisher)
                 .await
             {
                 Ok(outcome) => outcome,
@@ -298,22 +293,12 @@ impl TurnLoop {
                         .run_reactive_compaction(&host, &state, turn_id, publisher)
                         .await?
                     {
-                        return end_turn_with_error_typed(
-                            &extension_runner,
-                            self.shared(),
-                            TurnError::CompactExhausted,
-                        )
-                        .await;
+                        return end_turn_with_error_typed(TurnError::CompactExhausted);
                     }
                     continue;
                 },
                 Err(TurnError::Llm(LlmError::PromptTooLong(_))) => {
-                    return end_turn_with_error_typed(
-                        &extension_runner,
-                        self.shared(),
-                        TurnError::CompactExhausted,
-                    )
-                    .await;
+                    return end_turn_with_error_typed(TurnError::CompactExhausted);
                 },
                 Err(error) => return Err(error),
             };
@@ -441,7 +426,6 @@ impl TurnLoop {
 
     async fn llm_stage(
         &self,
-        extension_runner: &astrcode_extensions::runner::ExtensionRunner,
         prepared: PreparedProviderRequest,
         tools: &[ToolDefinition],
         publisher: &TurnEvents,
@@ -449,7 +433,6 @@ impl TurnLoop {
         let rx = self
             .start_provider_stream(
                 &prepared.llm,
-                extension_runner,
                 prepared.messages,
                 tools,
                 publisher,
@@ -458,10 +441,8 @@ impl TurnLoop {
         let message_id = new_message_id();
         match consume_llm_stream(rx, publisher, message_id, &self.cancellation_token).await {
             Ok(outcome) => Ok(outcome),
-            Err(TurnError::Llm(LlmError::PromptTooLong(message))) => {
-                Err(TurnError::Llm(LlmError::PromptTooLong(message)))
-            },
-            Err(error) => end_turn_with_error_typed(extension_runner, self.shared(), error).await,
+            Err(e @ TurnError::Llm(LlmError::PromptTooLong(_))) => Err(e),
+            Err(error) => end_turn_with_error_typed(error),
         }
     }
 
@@ -483,7 +464,7 @@ impl TurnLoop {
         {
             Ok(prepared_tool_calls) => prepared_tool_calls,
             Err(error) => {
-                return end_turn_with_error_typed(extension_runner, self.shared(), error).await;
+                return end_turn_with_error_typed(error);
             },
         };
 
@@ -499,7 +480,7 @@ impl TurnLoop {
         {
             Ok(discovered_tools) => discovered_tools,
             Err(error) => {
-                return end_turn_with_error_typed(extension_runner, self.shared(), error).await;
+                return end_turn_with_error_typed(error);
             },
         };
         state.activate_deferred_tools(discovered_tools);
@@ -541,12 +522,7 @@ impl TurnLoop {
             )
             .await?
         {
-            ProviderResult::Block { reason } => {
-                extension_runner
-                    .emit_lifecycle(ExtensionEvent::TurnEnd, self.shared().lifecycle_ctx())
-                    .await?;
-                Err(TurnError::ProviderBlocked { reason })
-            },
+            ProviderResult::Block { reason } => Err(TurnError::ProviderBlocked { reason }),
             ProviderResult::ReplaceMessages { messages } => {
                 tracing::debug!(
                     message_count = messages.len(),
@@ -572,7 +548,6 @@ impl TurnLoop {
     async fn start_provider_stream(
         &self,
         llm: &Arc<dyn astrcode_core::llm::LlmProvider>,
-        extension_runner: &astrcode_extensions::runner::ExtensionRunner,
         send_messages: Vec<LlmMessage>,
         tools: &[ToolDefinition],
         publisher: &TurnEvents,
@@ -588,7 +563,7 @@ impl TurnLoop {
             },
             Err(e) => {
                 publisher.live_error(-32603, e.to_string(), false).await;
-                end_turn_with_error_typed(extension_runner, self.shared(), e).await
+                end_turn_with_error_typed(e)
             },
         }
     }
@@ -604,7 +579,7 @@ impl TurnLoop {
             )
             .await
         {
-            return end_turn_with_error_typed(extension_runner, self.shared(), e).await;
+            return end_turn_with_error_typed(e);
         }
         Ok(())
     }

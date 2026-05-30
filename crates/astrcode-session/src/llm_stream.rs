@@ -149,9 +149,7 @@ pub async fn consume_llm_stream(
             LlmEvent::Error { message } => {
                 let recoverable = is_prompt_too_long_message(&message);
                 if recoverable {
-                    publisher
-                        .live_error(-32603, message.clone(), true)
-                        .await;
+                    publisher.live_error(-32603, message.clone(), true).await;
                     return Err(TurnError::Llm(LlmError::PromptTooLong(message)));
                 }
                 publisher
