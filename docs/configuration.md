@@ -175,12 +175,18 @@ Project overrides are merged with the global config, with project values taking 
 
 Extensions can store their own data on a **per-project basis** in `~/.astrcode/projects/<project_key>/extension_data/<extension-id>/`.
 
-For example, the memory extension stores for each project:
-- `MEMORY.md` - Clean markdown file with persistent memories (project-scoped)
-- `contexts/` - Historical context files extracted from past sessions (project-scoped)
-- `processed_sessions.json` - Track which sessions have been processed (project-scoped)
+For example, the memory extension uses two scopes:
 
-**Note**: Memory and other extension data are now isolated per project. Each project has its own separate memory store.
+**User memory (shared across all projects)** — `~/.astrcode/memory/`:
+- `MEMORY.md` — user preferences (`user_pref`)
+- `memory_index.json` — structured index for recall
+
+**Project memory (per workspace)** — `~/.astrcode/projects/<project_key>/extension_data/astrcode.memory/`:
+- `MEMORY.md` — project context, decisions, general facts
+- `contexts/` — extracted session context files
+- `processed_sessions.json` — pipeline bookkeeping (which rollouts were already processed)
+
+`memory_save` with category `user_pref` writes to user memory; other categories write to the current project.
 
 ## Default Values
 
@@ -210,7 +216,10 @@ You can configure individual extensions via the top-level `extensions` field. Th
   "extensions": {
     "astrcode.memory": {
       "maxContexts": 10,
-      "autoExtract": true
+      "autoExtract": true,
+      "autoExtractAfterSave": true,
+      "maxChangedSessions": 5,
+      "minConversationChars": 200
     },
     "astrcode.mcp": {
       "mcpServers": {

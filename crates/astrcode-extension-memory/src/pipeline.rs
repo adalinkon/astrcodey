@@ -1,8 +1,4 @@
-//! Memory pipeline — 提取管线 + TurnEnd 增量提取。
-//!
-//! SessionStart pipeline: 从符合条件的历史会话中提取记忆，写入 contexts/ 目录。
-//! TurnEnd 增量提取: 召回相关历史上下文辅助当前 turn 提取记忆。
-//! MEMORY.md 不由 pipeline 修改，仅由 LLM 通过工具操作。
+//! Memory pipeline — SessionStart / post-`memory_save` batch extraction from changed rollouts.
 
 use std::sync::Arc;
 
@@ -11,30 +7,15 @@ use astrcode_extension_sdk::{
     llm::{LlmContent, LlmMessage, LlmProvider, LlmRole},
     storage::{EventReader, SessionReadModel, SessionSummary},
 };
-use chrono::{DateTime, Duration, Local, Utc};
+use chrono::{DateTime, Local, Utc};
+use serde::Deserialize;
 
 use crate::{
+    config::MemoryConfig,
     pipeline_prompts,
-    store::{MemoryStore, Phase1Output, ProcessedSession},
+    scope::ScopedMemoryStores,
+    store::{MemoryEntry, MemoryStore, Phase1Output, ProcessedSession},
 };
-
-// ─── Config ─────────────────────────────────────────────────────────────
-
-struct PipelineConfig {
-    max_candidates: usize,
-    min_idle_minutes: i64,
-    max_context_age_days: u64,
-}
-
-impl Default for PipelineConfig {
-    fn default() -> Self {
-        Self {
-            max_candidates: 5,
-            min_idle_minutes: 30,
-            max_context_age_days: 90,
-        }
-    }
-}
 
 #[derive(Clone)]
 struct Candidate {
@@ -42,51 +23,101 @@ struct Candidate {
     updated_at: DateTime<Utc>,
 }
 
-// ─── Pipeline Entry ─────────────────────────────────────────────────────
+#[derive(Debug, Deserialize)]
+struct BatchPhase1Output {
+    #[serde(default)]
+    sessions: Vec<SessionExtraction>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionExtraction {
+    session_id: String,
+    #[serde(default)]
+    memories: Vec<MemoryEntry>,
+}
 
 pub async fn run(
-    store: &MemoryStore,
+    scoped: &ScopedMemoryStores,
     session_read: Arc<dyn EventReader>,
     small_llm: &dyn LlmProvider,
     current_session_id: &str,
+    config: &MemoryConfig,
 ) -> Result<(), ExtensionError> {
-    let config = PipelineConfig::default();
+    let store = scoped.project.as_ref();
 
-    // 清理过期的 contexts/ 文件
     if let Ok(n) = store.cleanup_old_contexts(config.max_context_age_days) {
         if n > 0 {
             tracing::debug!(deleted = n, "cleaned up old context files");
         }
     }
 
-    let candidates = find_candidates(
+    let candidates = find_changed_candidates(
         Arc::clone(&session_read),
         store,
         current_session_id,
-        &config,
+        config.max_changed_sessions,
     )
     .await?;
     if candidates.is_empty() {
         return Ok(());
     }
 
-    let extractions = extract(Arc::clone(&session_read), small_llm, &candidates).await?;
+    let existing_memory = tokio::task::spawn_blocking({
+        let user = scoped.user.clone();
+        let project = scoped.project.clone();
+        move || format_existing_memories(&user, &project, 6000)
+    })
+    .await
+    .map_err(|e| ExtensionError::Internal(e.to_string()))?
+    .map_err(|e| ExtensionError::Internal(e.to_string()))?;
 
-    if extractions.is_empty() {
-        return Ok(());
+    let extractions = extract_batch(
+        Arc::clone(&session_read),
+        small_llm,
+        &candidates,
+        &existing_memory,
+        config.min_conversation_chars,
+    )
+    .await?;
+
+    if !extractions.is_empty() {
+        write_contexts(store, &extractions)?;
+        ingest_pipeline_extractions(scoped, &extractions)?;
+
+        if config.max_contexts > 0 {
+            let _ = scoped.user.memory_index().trim_to_max(config.max_contexts);
+            let _ = store.memory_index().trim_to_max(config.max_contexts);
+        }
     }
 
-    // 写入 contexts/ 目录，不动 MEMORY.md
-    write_contexts(store, &extractions)
+    // Mark every candidate processed (including short conversations skipped by
+    // `extract_batch` and sessions that returned empty memories) to avoid re-running LLM.
+    mark_processed(store, &candidates)?;
+    Ok(())
 }
 
-// ─── Candidate Selection ────────────────────────────────────────────────
+fn format_existing_memories(
+    user: &MemoryStore,
+    project: &MemoryStore,
+    max_chars: usize,
+) -> std::io::Result<String> {
+    let user_md = user.read_memory().unwrap_or_default();
+    let project_md = project.read_memory().unwrap_or_default();
+    let combined = format!("### User memory\n{user_md}\n\n### Project memory\n{project_md}");
+    if combined.len() <= max_chars {
+        return Ok(combined);
+    }
+    Ok(format!(
+        "{}…",
+        crate::store::truncate_to_char_boundary(&combined, max_chars)
+    ))
+}
 
-async fn find_candidates(
+async fn find_changed_candidates(
     session_read: Arc<dyn EventReader>,
     store: &MemoryStore,
     current_session_id: &str,
-    config: &PipelineConfig,
+    max_candidates: usize,
 ) -> Result<Vec<Candidate>, ExtensionError> {
     let summaries = session_read
         .list_session_summaries()
@@ -95,7 +126,6 @@ async fn find_candidates(
     let processed = store
         .list_processed()
         .map_err(|e| ExtensionError::Internal(e.to_string()))?;
-    let cutoff = Utc::now() - Duration::minutes(config.min_idle_minutes);
 
     let mut candidates: Vec<Candidate> = summaries
         .into_iter()
@@ -113,33 +143,28 @@ async fn find_candidates(
                 return None;
             }
             let updated = DateTime::parse_from_rfc3339(&s.updated_at).ok()?;
-            let updated_utc = updated.with_timezone(&Utc);
-            let idle_enough = updated_utc < cutoff;
-            let has_enough_content = s.first_user_message.as_ref().is_some_and(|m| m.len() >= 50);
-            if !idle_enough && !has_enough_content {
-                return None;
-            }
             Some(Candidate {
                 summary: s,
-                updated_at: updated_utc,
+                updated_at: updated.with_timezone(&Utc),
             })
         })
         .collect();
 
     candidates.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
-    candidates.truncate(config.max_candidates);
-
+    candidates.truncate(max_candidates);
     Ok(candidates)
 }
 
-// ─── Phase 1: Extraction ────────────────────────────────────────────────
-
-async fn extract(
+async fn extract_batch(
     session_read: Arc<dyn EventReader>,
     small_llm: &dyn LlmProvider,
     candidates: &[Candidate],
+    existing_memories: &str,
+    min_conversation_chars: usize,
 ) -> Result<Vec<(Candidate, Phase1Output)>, ExtensionError> {
-    let mut results = Vec::new();
+    let mut blocks = Vec::new();
+    let mut eligible = Vec::new();
+
     for candidate in candidates {
         let session_id = &candidate.summary.session_id;
         let read_model = session_read
@@ -148,58 +173,83 @@ async fn extract(
             .map_err(|e| ExtensionError::Internal(e.to_string()))?;
 
         let conversation = extract_conversation(&read_model);
-        if conversation.is_empty() {
-            results.push((
-                candidate.clone(),
-                Phase1Output {
-                    memories: Vec::new(),
-                },
-            ));
+        if conversation.chars().count() < min_conversation_chars {
             continue;
         }
 
-        let current_date = Local::now().format("%Y-%m-%d").to_string();
-        let prompt = pipeline_prompts::phase1_user_prompt(&conversation, &current_date);
-        let messages = vec![LlmMessage {
-            role: astrcode_extension_sdk::llm::LlmRole::User,
-            content: vec![LlmContent::Text {
-                text: format!("{}\n\n{}", pipeline_prompts::PHASE1_SYSTEM, prompt),
-            }],
-            name: None,
-            reasoning_content: None,
-        }];
+        blocks.push(format!(
+            "### session_id: {}\n{conversation}",
+            session_id.as_ref()
+        ));
+        eligible.push(candidate.clone());
+    }
 
-        let rx = small_llm
-            .generate(messages, vec![])
-            .await
-            .map_err(|e| ExtensionError::Internal(e.to_string()))?;
+    if blocks.is_empty() {
+        return Ok(Vec::new());
+    }
 
-        let text = astrcode_extension_sdk::llm::collect_stream_text(rx)
-            .await
-            .unwrap_or_default();
-        match parse_phase1_output(&text) {
-            Ok(output) if output.memories.is_empty() => {
-                results.push((candidate.clone(), output));
-            },
-            Ok(output) => {
-                results.push((candidate.clone(), output));
-            },
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    session_id = %session_id,
-                    "memory pipeline: failed to parse extraction"
-                );
-            },
+    let current_date = Local::now().format("%Y-%m-%d").to_string();
+    let user_prompt =
+        pipeline_prompts::batch_user_prompt(&blocks.join("\n\n"), &current_date, existing_memories);
+    let messages = vec![LlmMessage {
+        role: LlmRole::User,
+        content: vec![LlmContent::Text {
+            text: format!("{}\n\n{}", pipeline_prompts::EXTRACT_SYSTEM, user_prompt),
+        }],
+        name: None,
+        reasoning_content: None,
+    }];
+
+    let rx = small_llm
+        .generate(messages, vec![])
+        .await
+        .map_err(|e| ExtensionError::Internal(e.to_string()))?;
+
+    let text = astrcode_extension_sdk::llm::collect_stream_text(rx)
+        .await
+        .unwrap_or_default();
+
+    let batch = parse_batch_output(&text)?;
+    map_batch_to_candidates(&eligible, batch)
+}
+
+fn parse_batch_output(text: &str) -> Result<BatchPhase1Output, ExtensionError> {
+    let text = text.trim();
+    let json_str = text
+        .strip_prefix("```json")
+        .and_then(|s| s.strip_suffix("```"))
+        .map(|s| s.trim())
+        .unwrap_or(text);
+    serde_json::from_str(json_str)
+        .map_err(|e| ExtensionError::Internal(format!("parse batch extraction: {e}")))
+}
+
+fn map_batch_to_candidates(
+    candidates: &[Candidate],
+    batch: BatchPhase1Output,
+) -> Result<Vec<(Candidate, Phase1Output)>, ExtensionError> {
+    let mut by_id: std::collections::BTreeMap<String, Vec<MemoryEntry>> =
+        std::collections::BTreeMap::new();
+    for session in batch.sessions {
+        if session.memories.is_empty() {
+            by_id.insert(session.session_id, Vec::new());
+        } else {
+            by_id.insert(session.session_id, session.memories);
         }
+    }
+
+    let mut results = Vec::new();
+    for candidate in candidates {
+        let sid = candidate.summary.session_id.as_ref();
+        let memories = by_id.remove(sid).unwrap_or_default();
+        results.push((candidate.clone(), Phase1Output { memories }));
     }
     Ok(results)
 }
 
 fn extract_conversation(model: &SessionReadModel) -> String {
-    // Collect all text turns first, then apply middle truncation.
-    const MAX_BYTES: usize = 4000; // ~1000 tokens at 4 bytes/token
-    const MAX_TURNS: usize = 30;
+    const MAX_BYTES: usize = 2000;
+    const MAX_TURNS: usize = 15;
 
     let turns: Vec<String> = model
         .messages
@@ -238,7 +288,6 @@ fn extract_conversation(model: &SessionReadModel) -> String {
         return turns.join("\n\n");
     }
 
-    // Middle truncation: split budget 50/50 between head and tail.
     let budget = MAX_BYTES / 2;
     let mut head = Vec::new();
     let mut head_bytes = 0;
@@ -272,39 +321,36 @@ fn extract_conversation(model: &SessionReadModel) -> String {
     result.join("\n\n")
 }
 
-fn parse_phase1_output(text: &str) -> Result<Phase1Output, ExtensionError> {
-    let text = text.trim();
-    let json_str = text
-        .strip_prefix("```json")
-        .and_then(|s| s.strip_suffix("```"))
-        .map(|s| s.trim())
-        .unwrap_or(text);
-    serde_json::from_str(json_str)
-        .map_err(|e| ExtensionError::Internal(format!("parse extraction: {e}")))
-}
-
-// ─── Write Contexts ────────────────────────────────────────────────────
-
-/// 将提取结果写入 contexts/ 目录，不动 MEMORY.md。
-fn write_contexts(
-    store: &MemoryStore,
-    extractions: &[(Candidate, Phase1Output)],
-) -> Result<(), ExtensionError> {
-    let processed: Vec<ProcessedSession> = extractions
+fn mark_processed(store: &MemoryStore, candidates: &[Candidate]) -> Result<(), ExtensionError> {
+    let processed: Vec<ProcessedSession> = candidates
         .iter()
-        .map(|(c, _)| ProcessedSession {
+        .map(|c| ProcessedSession {
             session_id: c.summary.session_id.as_ref().to_string(),
             updated_at: c.summary.updated_at.clone(),
         })
         .collect();
+    store
+        .commit_pipeline_result(&processed, &[])
+        .map_err(|e| ExtensionError::Internal(e.to_string()))
+}
 
+fn write_contexts(
+    store: &MemoryStore,
+    extractions: &[(Candidate, Phase1Output)],
+) -> Result<(), ExtensionError> {
     let context_files: Vec<(String, String)> = extractions
         .iter()
-        .filter(|(_, output)| !output.memories.is_empty())
+        .filter(|(_, output)| {
+            output
+                .memories
+                .iter()
+                .any(|m| m.category != crate::scope::USER_CATEGORY)
+        })
         .map(|(candidate, output)| {
             let memories: String = output
                 .memories
                 .iter()
+                .filter(|m| m.category != crate::scope::USER_CATEGORY)
                 .map(|m| format!("- [{}] {}", m.category, m.content))
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -317,103 +363,28 @@ fn write_contexts(
         })
         .collect();
 
+    if context_files.is_empty() {
+        return Ok(());
+    }
+
     store
-        .commit_pipeline_result(&processed, &context_files)
+        .commit_pipeline_result(&[], &context_files)
         .map_err(|e| ExtensionError::Internal(e.to_string()))?;
 
     Ok(())
 }
 
-// ─── TurnEnd Incremental Extraction ────────────────────────────────────
-
-/// TurnEnd 增量提取：读取已有记忆 → 召回历史上下文 → 小模型提取 → 写入 contexts/。
-pub async fn extract_turn(
-    store: Arc<MemoryStore>,
-    small_llm: &dyn LlmProvider,
-    session_id: &str,
-    user_message: &str,
-    assistant_message: &str,
-    recalled_contexts: &[String],
+fn ingest_pipeline_extractions(
+    scoped: &ScopedMemoryStores,
+    extractions: &[(Candidate, Phase1Output)],
 ) -> Result<(), ExtensionError> {
-    // 读取已有 MEMORY.md 用于 prompt 内去重
-    let existing_memory = tokio::task::spawn_blocking({
-        let store = store.clone();
-        move || store.read_memory()
-    })
-    .await
-    .map_err(|e| ExtensionError::Internal(e.to_string()))?
-    .unwrap_or_default();
-
-    let prompt = pipeline_prompts::turn_extract_prompt(
-        user_message,
-        assistant_message,
-        &existing_memory,
-        recalled_contexts,
-        &Local::now().format("%Y-%m-%d").to_string(),
-    );
-
-    let messages = vec![LlmMessage {
-        role: LlmRole::User,
-        content: vec![LlmContent::Text { text: prompt }],
-        name: None,
-        reasoning_content: None,
-    }];
-
-    let rx = small_llm
-        .generate(messages, vec![])
-        .await
-        .map_err(|e| ExtensionError::Internal(e.to_string()))?;
-
-    let text = astrcode_extension_sdk::llm::collect_stream_text(rx)
-        .await
-        .unwrap_or_default();
-    let output = parse_phase1_output(&text)?;
-
-    if output.memories.is_empty() {
-        return Ok(());
+    for (_, output) in extractions {
+        if output.memories.is_empty() {
+            continue;
+        }
+        scoped
+            .ingest_extracted_entries(&output.memories, crate::index::MemorySource::Pipeline, None)
+            .map_err(|e| ExtensionError::Internal(e.to_string()))?;
     }
-
-    // Hash 去重：精确匹配兜底
-    let existing_hashes = tokio::task::spawn_blocking({
-        let store = store.clone();
-        move || store.existing_entry_hashes()
-    })
-    .await
-    .map_err(|e| ExtensionError::Internal(e.to_string()))?
-    .map_err(|e| ExtensionError::Internal(e.to_string()))?;
-
-    let new_memories: Vec<_> = output
-        .memories
-        .into_iter()
-        .filter(|m| {
-            let normalized = m.content.to_lowercase();
-            let normalized = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
-            let hash = astrcode_support::hash::fnv1a_hash_bytes(normalized.as_bytes());
-            !existing_hashes.contains(&hash)
-        })
-        .collect();
-
-    if new_memories.is_empty() {
-        return Ok(());
-    }
-
-    // 写入 contexts/ 文件
-    let filename = format!(
-        "{session_id}-turn-{}.md",
-        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-    );
-    let memories_text: String = new_memories
-        .iter()
-        .map(|m| format!("- [{}] {}", m.category, m.content))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let content =
-        format!("# Session {session_id} (incremental)\n\n## Extracted Memories\n{memories_text}");
-
-    tokio::task::spawn_blocking(move || store.commit_pipeline_result(&[], &[(filename, content)]))
-        .await
-        .map_err(|e| ExtensionError::Internal(e.to_string()))?
-        .map_err(|e| ExtensionError::Internal(e.to_string()))?;
-
     Ok(())
 }

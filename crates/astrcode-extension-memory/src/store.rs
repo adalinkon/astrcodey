@@ -1,20 +1,16 @@
 //! MemoryStore — MEMORY.md / contexts/ 文件读写。
 //!
-//! MEMORY.md 使用干净的 markdown section 格式，按类别组织条目。
-//! Pipeline 从历史会话提取的不相关上下文写入 contexts/ 目录。
+//! - **用户记忆**：`~/.astrcode/memory/`（`user_pref`，跨项目共享）
+//! - **项目记忆**：`~/.astrcode/projects/<key>/extension_data/astrcode.memory/` （`project_ctx` /
+//!   `decision` / `general`、contexts/、pipeline 状态）
 
-use std::{
-    collections::{BTreeMap, HashSet},
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::SystemTime};
 
-use astrcode_support::{
-    hash::fnv1a_hash_bytes,
-    hostpaths::{self, ensure_dir},
-};
+use astrcode_support::hostpaths::{self, ensure_dir};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+
+use crate::index::{MemoryIndex, MemorySource};
 
 const MEMORY_FILE: &str = "MEMORY.md";
 const CONTEXTS_DIR: &str = "contexts";
@@ -23,8 +19,9 @@ const HEADER: &str = "# Memory\n";
 
 // ─── Section names (markdown headers → internal category keys) ──────
 
-const SECTIONS: &[(&str, &str)] = &[
-    ("user_pref", "## User Preferences"),
+const USER_SECTIONS: &[(&str, &str)] = &[("user_pref", "## User Preferences")];
+
+const PROJECT_SECTIONS: &[(&str, &str)] = &[
     ("project_ctx", "## Project Context"),
     ("decision", "## Decisions"),
     ("general", "## General"),
@@ -32,17 +29,38 @@ const SECTIONS: &[(&str, &str)] = &[
 
 const VALID_CATEGORIES: &[&str] = &["user_pref", "project_ctx", "decision", "general"];
 
-fn category_to_header(category: &str) -> &'static str {
-    SECTIONS
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MemoryStoreScope {
+    User,
+    Project,
+}
+
+impl MemoryStoreScope {
+    fn sections(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Self::User => USER_SECTIONS,
+            Self::Project => PROJECT_SECTIONS,
+        }
+    }
+}
+
+fn category_to_header(scope: MemoryStoreScope, category: &str) -> &'static str {
+    scope
+        .sections()
         .iter()
         .find(|(key, _)| *key == category)
         .map(|(_, header)| *header)
-        .unwrap_or("## General")
+        .unwrap_or(if scope == MemoryStoreScope::User {
+            "## User Preferences"
+        } else {
+            "## General"
+        })
 }
 
-fn header_to_category(header: &str) -> Option<&'static str> {
+fn header_to_category(scope: MemoryStoreScope, header: &str) -> Option<&'static str> {
     let trimmed = header.trim();
-    SECTIONS
+    scope
+        .sections()
         .iter()
         .find(|(_, h)| *h == trimmed)
         .map(|(key, _)| *key)
@@ -60,6 +78,14 @@ pub(crate) struct Phase1Output {
 pub(crate) struct MemoryEntry {
     pub content: String,
     pub category: String,
+    #[serde(default)]
+    pub entities: Vec<String>,
+    /// `add` (default), `update`, or `delete`.
+    #[serde(default)]
+    pub action: String,
+    /// When updating/deleting, substring to match an existing memory line.
+    #[serde(default)]
+    pub replaces: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,17 +102,18 @@ struct ParsedMemory {
     preamble: Vec<String>,
     /// 按 section header 排序的条目。key 是 category（如 "user_pref"）。
     sections: Vec<(String, Vec<String>)>,
+    scope: MemoryStoreScope,
 }
 
 impl ParsedMemory {
-    fn parse(content: &str) -> Self {
+    fn parse(scope: MemoryStoreScope, content: &str) -> Self {
         let mut preamble = Vec::new();
         let mut sections: Vec<(String, Vec<String>)> = Vec::new();
         let mut current_category: Option<String> = None;
         let mut current_entries: Vec<String> = Vec::new();
 
         for line in content.lines() {
-            if let Some(cat) = header_to_category(line) {
+            if let Some(cat) = header_to_category(scope, line) {
                 // 遇到新 section，先保存旧的
                 if let Some(cat) = current_category.take() {
                     sections.push((cat, std::mem::take(&mut current_entries)));
@@ -108,20 +135,24 @@ impl ParsedMemory {
         }
 
         // 确保所有 section 都存在（即使为空）
-        for &(key, _) in SECTIONS {
+        for &(key, _) in scope.sections() {
             if !sections.iter().any(|(k, _)| k == key) {
                 sections.push((key.to_string(), Vec::new()));
             }
         }
-        // 按 SECTIONS 定义的顺序排列
         sections.sort_by_key(|(key, _)| {
-            SECTIONS
+            scope
+                .sections()
                 .iter()
                 .position(|(k, _)| k == key)
                 .unwrap_or(usize::MAX)
         });
 
-        ParsedMemory { preamble, sections }
+        ParsedMemory {
+            preamble,
+            sections,
+            scope,
+        }
     }
 
     fn render(&self) -> String {
@@ -131,7 +162,7 @@ impl ParsedMemory {
             out.push('\n');
         }
         for (category, entries) in &self.sections {
-            let header = category_to_header(category);
+            let header = category_to_header(self.scope, category);
             out.push('\n');
             out.push_str(header);
             out.push('\n');
@@ -149,6 +180,30 @@ impl ParsedMemory {
         if let Some(section) = self.sections.iter_mut().find(|(k, _)| k == category) {
             section.1.push(line);
         }
+    }
+
+    fn replace_or_add_entry(&mut self, category: &str, previous: &str, new_content: &str) -> bool {
+        let prev_norm = crate::index::normalize_content(previous);
+        let pattern_lower = previous.to_lowercase();
+        for (cat, entries) in &mut self.sections {
+            if cat != category {
+                continue;
+            }
+            for entry in entries.iter_mut() {
+                let line_body = entry.strip_prefix("- ").unwrap_or(entry.as_str());
+                let line_norm = crate::index::normalize_content(line_body);
+                if line_norm == prev_norm
+                    || line_body.to_lowercase().contains(&pattern_lower)
+                    || (prev_norm.len() >= 8
+                        && (line_norm.contains(&prev_norm) || prev_norm.contains(&line_norm)))
+                {
+                    *entry = format!("- {}", sanitize_content(new_content));
+                    return true;
+                }
+            }
+        }
+        self.add_entry(category, new_content);
+        false
     }
 
     fn remove_entries_returning_content(&mut self, pattern: &str) -> Vec<String> {
@@ -172,35 +227,65 @@ impl ParsedMemory {
 
 // ─── MemoryStore ────────────────────────────────────────────────────
 
+struct PreferenceLinesCache {
+    memory_mtime: Option<SystemTime>,
+    lines: Vec<String>,
+}
+
 pub(crate) struct MemoryStore {
     dir: PathBuf,
     write_lock: Mutex<()>,
+    scope: MemoryStoreScope,
+    preference_lines_cache: Mutex<Option<PreferenceLinesCache>>,
 }
 
 impl MemoryStore {
-    pub(crate) fn new(project_path: Option<&str>) -> std::io::Result<Self> {
-        let dir = if let Some(proj_path) = project_path {
-            // 基于项目路径创建唯一的存储目录
-            let project_key = astrcode_extension_sdk::types::project_key_from_path(
-                std::path::Path::new(proj_path),
-            );
-            hostpaths::astrcode_dir()
-                .join("projects")
-                .join(project_key)
-                .join("extension_data")
-                .join("astrcode.memory")
-        } else {
-            // 全局存储（向后兼容）
-            hostpaths::extensions_data_dir("astrcode.memory")
-        };
+    pub(crate) fn memory_index(&self) -> MemoryIndex {
+        MemoryIndex::new(&self.dir)
+    }
 
+    fn append_unlocked(&self, category: &str, content: &str) -> std::io::Result<()> {
+        let safe_category = if VALID_CATEGORIES.contains(&category) {
+            category
+        } else {
+            "general"
+        };
+        let mut parsed = self.read_parsed()?;
+        parsed.add_entry(safe_category, content);
+        atomic_write(&self.memory_path(), &parsed.render())
+    }
+
+    pub(crate) fn new_user() -> std::io::Result<Self> {
+        let dir = hostpaths::memory_dir();
         ensure_dir(&dir)?;
         let store = Self {
             dir,
             write_lock: Mutex::new(()),
+            scope: MemoryStoreScope::User,
+            preference_lines_cache: Mutex::new(None),
         };
-        let path = store.memory_path();
-        if !path.exists() {
+        if !store.memory_path().exists() {
+            store.init_memory_file()?;
+        }
+        Ok(store)
+    }
+
+    pub(crate) fn new_project(working_dir: &str) -> std::io::Result<Self> {
+        let project_key =
+            astrcode_extension_sdk::types::project_key_from_path(std::path::Path::new(working_dir));
+        let dir = hostpaths::astrcode_dir()
+            .join("projects")
+            .join(project_key)
+            .join("extension_data")
+            .join("astrcode.memory");
+        ensure_dir(&dir)?;
+        let store = Self {
+            dir,
+            write_lock: Mutex::new(()),
+            scope: MemoryStoreScope::Project,
+            preference_lines_cache: Mutex::new(None),
+        };
+        if !store.memory_path().exists() {
             store.init_memory_file()?;
         }
         Ok(store)
@@ -220,13 +305,13 @@ impl MemoryStore {
 
     /// 初始化 MEMORY.md，写入 header + 空 sections。
     fn init_memory_file(&self) -> std::io::Result<()> {
-        let content = Self::empty_memory_content();
+        let content = self.empty_memory_content();
         atomic_write(&self.memory_path(), &content)
     }
 
-    fn empty_memory_content() -> String {
+    fn empty_memory_content(&self) -> String {
         let mut out = String::from(HEADER);
-        for &(_, header) in SECTIONS {
+        for &(_, header) in self.scope.sections() {
             out.push('\n');
             out.push_str(header);
             out.push('\n');
@@ -240,10 +325,47 @@ impl MemoryStore {
         std::fs::read_to_string(self.memory_path())
     }
 
+    fn memory_file_mtime(&self) -> std::io::Result<Option<SystemTime>> {
+        let path = self.memory_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        Ok(std::fs::metadata(path)?.modified().ok())
+    }
+
+    /// 返回 MEMORY.md 中 `user_pref` 类别的前几条，用于 PromptBuild 稳定注入。
+    pub(crate) fn global_preference_lines(&self, limit: usize) -> std::io::Result<Vec<String>> {
+        let mtime = self.memory_file_mtime()?;
+        if let Some(cache) = self.preference_lines_cache.lock().as_ref() {
+            if cache.memory_mtime == mtime && cache.lines.len() >= limit {
+                return Ok(cache.lines.iter().take(limit).cloned().collect());
+            }
+        }
+
+        let parsed = self.read_parsed()?;
+        let mut lines = Vec::new();
+        for (category, items) in &parsed.sections {
+            if category != "user_pref" {
+                continue;
+            }
+            for item in items {
+                lines.push(item.clone());
+            }
+        }
+
+        *self.preference_lines_cache.lock() = Some(PreferenceLinesCache {
+            memory_mtime: mtime,
+            lines: lines.clone(),
+        });
+
+        lines.truncate(limit);
+        Ok(lines)
+    }
+
     /// 读取并解析 MEMORY.md。
     fn read_parsed(&self) -> std::io::Result<ParsedMemory> {
         let content = self.read_memory()?;
-        Ok(ParsedMemory::parse(&content))
+        Ok(ParsedMemory::parse(self.scope, &content))
     }
 
     // ─── Write ─────────────────────────────────────────────────────
@@ -251,14 +373,10 @@ impl MemoryStore {
     /// 在指定 category section 追加一条记忆。
     pub(crate) fn append(&self, category: &str, content: &str) -> std::io::Result<()> {
         let _guard = self.write_lock.lock();
-        let safe_category = if VALID_CATEGORIES.contains(&category) {
-            category
-        } else {
-            "general"
-        };
-        let mut parsed = self.read_parsed()?;
-        parsed.add_entry(safe_category, content);
-        atomic_write(&self.memory_path(), &parsed.render())
+        self.append_unlocked(category, content)?;
+        self.memory_index()
+            .add_record(content, category, MemorySource::Manual, None, &[])?;
+        Ok(())
     }
 
     /// 按内容子串匹配删除条目，返回被删除的条目列表。
@@ -269,12 +387,22 @@ impl MemoryStore {
         if !removed.is_empty() {
             atomic_write(&self.memory_path(), &parsed.render())?;
         }
-        Ok(removed)
+        let mut index_removed = self.memory_index().delete_by_content_match(pattern)?;
+        if removed.is_empty() {
+            Ok(index_removed)
+        } else {
+            index_removed.extend(removed);
+            Ok(index_removed)
+        }
     }
 
     // ─── List / Search (for /memory command) ───────────────────────
 
     pub(crate) fn list_entries(&self, limit: usize) -> std::io::Result<Vec<String>> {
+        let index_entries = self.memory_index().list_display(limit)?;
+        if !index_entries.is_empty() {
+            return Ok(index_entries);
+        }
         let parsed = self.read_parsed()?;
         let mut entries = Vec::new();
         for (category, items) in &parsed.sections {
@@ -289,15 +417,42 @@ impl MemoryStore {
     }
 
     pub(crate) fn search(&self, query: &str, limit: usize) -> std::io::Result<Vec<String>> {
+        let mut results = self.memory_index().search_substring(query, limit)?;
+        if results.len() < limit {
+            for line in self.memory_index().records_for_entity_boost(query)? {
+                if !results.contains(&line) {
+                    results.push(line);
+                    if results.len() >= limit {
+                        return Ok(results);
+                    }
+                }
+            }
+        }
+        if results.len() >= limit {
+            return Ok(results);
+        }
         let parsed = self.read_parsed()?;
         let query_lower = query.to_lowercase();
-        let mut results = Vec::new();
         for (category, items) in &parsed.sections {
             for item in items {
                 if item.to_lowercase().contains(&query_lower) {
-                    results.push(format!("[{category}] {item}"));
+                    let line = format!("[{category}] {item}");
+                    if !results.iter().any(|r| r == &line) {
+                        results.push(line);
+                    }
                     if results.len() >= limit {
                         return Ok(results);
+                    }
+                }
+            }
+        }
+        if results.len() < limit {
+            for chunk in self.search_contexts(query, limit - results.len(), 600)? {
+                let line = format!("[context] {chunk}");
+                if !results.iter().any(|r| r == &line) {
+                    results.push(line);
+                    if results.len() >= limit {
+                        break;
                     }
                 }
             }
@@ -306,19 +461,6 @@ impl MemoryStore {
     }
 
     // ─── Processed Sessions ────────────────────────────────────────
-
-    /// 返回 MEMORY.md 中所有条目的 hash 集合（用于去重）。
-    pub(crate) fn existing_entry_hashes(&self) -> std::io::Result<HashSet<u64>> {
-        let parsed = self.read_parsed()?;
-        let mut hashes = HashSet::new();
-        for (_, entries) in &parsed.sections {
-            for entry in entries {
-                let normalized = normalize_for_hash(entry);
-                hashes.insert(fnv1a_hash_bytes(normalized.as_bytes()));
-            }
-        }
-        Ok(hashes)
-    }
 
     /// 搜索 contexts/ 目录，返回与 query 相关的内容片段。
     ///
@@ -496,6 +638,78 @@ impl MemoryStore {
 
         Ok(())
     }
+
+    /// Ingest extracted memories: similar entries update index + MEMORY.md; `delete` removes
+    /// matches.
+    pub(crate) fn ingest_extracted_entries(
+        &self,
+        entries: &[MemoryEntry],
+        source: MemorySource,
+        session_id: Option<&str>,
+    ) -> std::io::Result<usize> {
+        use crate::index::UpsertResult;
+
+        let _guard = self.write_lock.lock();
+        let index = self.memory_index();
+        let mut changed = 0;
+        for entry in entries {
+            let action = entry.action.as_str();
+            if action == "delete" {
+                let pattern = entry
+                    .replaces
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(entry.content.as_str());
+                if pattern.trim().is_empty() {
+                    continue;
+                }
+                let removed_idx = index.delete_by_content_match(pattern)?;
+                let removed_md = self.delete_by_content_unlocked(pattern)?;
+                changed += removed_idx.len().max(removed_md.len());
+                continue;
+            }
+
+            let category = if VALID_CATEGORIES.contains(&entry.category.as_str()) {
+                entry.category.as_str()
+            } else {
+                "general"
+            };
+
+            match index.upsert_record(
+                &entry.content,
+                category,
+                source.clone(),
+                session_id,
+                &entry.entities,
+                entry.replaces.as_deref(),
+            )? {
+                UpsertResult::Unchanged => {},
+                UpsertResult::Added(_) => {
+                    self.append_unlocked(category, &entry.content)?;
+                    changed += 1;
+                },
+                UpsertResult::Updated {
+                    previous_content, ..
+                } => {
+                    let mut parsed = self.read_parsed()?;
+                    parsed.replace_or_add_entry(category, &previous_content, &entry.content);
+                    atomic_write(&self.memory_path(), &parsed.render())?;
+                    changed += 1;
+                },
+            }
+        }
+        Ok(changed)
+    }
+
+    fn delete_by_content_unlocked(&self, pattern: &str) -> std::io::Result<Vec<String>> {
+        let mut parsed = self.read_parsed()?;
+        let removed = parsed.remove_entries_returning_content(pattern);
+        if !removed.is_empty() {
+            atomic_write(&self.memory_path(), &parsed.render())?;
+        }
+        let _ = self.memory_index().delete_by_content_match(pattern);
+        Ok(removed)
+    }
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -506,17 +720,6 @@ fn sanitize_content(content: &str) -> String {
         .replace('\r', "")
         .trim()
         .to_string()
-}
-
-/// 标准化用于 hash 去重：lowercase + collapse whitespace。
-fn normalize_for_hash(s: &str) -> String {
-    s.trim()
-        .strip_prefix("- ")
-        .unwrap_or(s.trim())
-        .to_lowercase()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 pub(crate) fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
@@ -549,9 +752,9 @@ fn atomic_write(path: &std::path::Path, content: &str) -> std::io::Result<()> {
 
 // ─── MemoryStorePool ───────────────────────────────────────────────────
 
-/// 管理多个项目级 MemoryStore 的池。
-///
-/// 每个项目有独立的存储目录，通过 working_dir 获取对应的 store。
+const USER_STORE_KEY: &str = "__user_memory__";
+
+/// 管理用户级 + 项目级 MemoryStore。
 #[derive(Clone)]
 pub(crate) struct MemoryStorePool {
     stores: Arc<Mutex<BTreeMap<String, Arc<MemoryStore>>>>,
@@ -564,19 +767,31 @@ impl MemoryStorePool {
         }
     }
 
-    /// 根据 working_dir 获取对应的 MemoryStore。
-    ///
-    /// 如果该 working_dir 的 store 不存在，则自动创建。
-    pub(crate) fn get(&self, working_dir: &str) -> std::io::Result<Arc<MemoryStore>> {
+    fn user_store(&self) -> std::io::Result<Arc<MemoryStore>> {
         let mut stores = self.stores.lock();
-
-        if let Some(store) = stores.get(working_dir) {
+        if let Some(store) = stores.get(USER_STORE_KEY) {
             return Ok(store.clone());
         }
-
-        let store = Arc::new(MemoryStore::new(Some(working_dir))?);
-        stores.insert(working_dir.to_string(), store.clone());
+        let store = Arc::new(MemoryStore::new_user()?);
+        stores.insert(USER_STORE_KEY.to_string(), store.clone());
         Ok(store)
+    }
+
+    /// 用户记忆（`~/.astrcode/memory/`）+ 当前项目记忆。
+    pub(crate) fn get_scoped(
+        &self,
+        working_dir: &str,
+    ) -> std::io::Result<crate::scope::ScopedMemoryStores> {
+        let user = self.user_store()?;
+        let mut stores = self.stores.lock();
+        let project = if let Some(store) = stores.get(working_dir) {
+            store.clone()
+        } else {
+            let store = Arc::new(MemoryStore::new_project(working_dir)?);
+            stores.insert(working_dir.to_string(), store.clone());
+            store
+        };
+        Ok(crate::scope::ScopedMemoryStores { user, project })
     }
 }
 
@@ -588,18 +803,10 @@ impl Default for MemoryStorePool {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_for_hash, truncate_to_char_boundary};
+    use super::truncate_to_char_boundary;
 
     #[test]
     fn truncate_to_char_boundary_does_not_split_utf8() {
         assert_eq!(truncate_to_char_boundary("你好 world", 4), "你");
-    }
-
-    #[test]
-    fn normalize_for_hash_ignores_markdown_bullet_prefix() {
-        assert_eq!(
-            normalize_for_hash("- The user prefers Rust"),
-            normalize_for_hash("the user prefers rust")
-        );
     }
 }
