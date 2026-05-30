@@ -1,38 +1,44 @@
 //! astrcode-extension-memory — 持久化记忆扩展。
 //!
-//! 提供跨会话的持久化记忆：
-//! - MEMORY.md 干净 markdown 存储，人类可读可编辑
-//! - PromptBuild 注入 MEMORY.md 内容到系统提示词
-//! - LLM 可主动 save / delete
-//! - SessionStart 时后台运行提取管线：从历史会话提取记忆到 contexts/
-//! - TurnEnd 时召回历史上下文辅助增量提取记忆
+//! - **用户记忆**（跨项目）：`~/.astrcode/memory/`（`user_pref`）
+//! - **项目记忆**：`~/.astrcode/projects/<key>/extension_data/astrcode.memory/`
+//! - `memory_index.json`：结构化索引（BM25/子串搜索；相似条目 upsert）
+//! - **SessionStart** / **`memory_save` 后**：从有变化的 rollout 批量提取，更新 MEMORY.md
+//! - LLM 工具：`memory_save` / `memory_delete`
 
+mod config;
 mod handlers;
+mod index;
 mod pipeline;
 mod pipeline_prompts;
+mod scope;
 mod store;
 
 use std::sync::{Arc, OnceLock};
 
 use astrcode_extension_sdk::extension::{
-    Extension, ExtensionCapability, ExtensionCtx, ExtensionError, ExtensionEvent,
+    Extension, ExtensionCapability, ExtensionConfig, ExtensionCtx, ExtensionError, ExtensionEvent,
     ExtensionHostServices, ExtensionTasks, HookMode, Registrar, StopReason,
 };
 use handlers::{
     MemoryCommandHandler, MemoryDeleteHandler, MemoryRecallHandler, MemorySaveHandler,
-    MemorySessionStartHandler, MemoryTurnEndHandler,
+    MemorySessionStartHandler,
 };
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use store::MemoryStorePool;
+
+use crate::config::MemoryConfig;
 
 /// 返回记忆扩展；所需宿主能力在标准 `start()` 生命周期中取得。
 pub fn extension() -> Arc<dyn Extension> {
     let store_pool = Arc::new(MemoryStorePool::new());
+    let pipeline = Arc::new(handlers::MemoryPipelineCoordinator::default());
     Arc::new(MemoryExtension {
         store_pool,
         services: Arc::new(OnceLock::new()),
-        pipeline: Arc::new(handlers::MemoryPipelineCoordinator::default()),
+        pipeline,
         tasks: Arc::new(Mutex::new(None)),
+        config: Arc::new(RwLock::new(MemoryConfig::default())),
     })
 }
 
@@ -43,6 +49,7 @@ struct MemoryExtension {
     services: MemoryServices,
     pipeline: Arc<handlers::MemoryPipelineCoordinator>,
     tasks: Arc<Mutex<Option<ExtensionTasks>>>,
+    config: Arc<RwLock<MemoryConfig>>,
 }
 
 #[async_trait::async_trait]
@@ -77,6 +84,12 @@ impl Extension for MemoryExtension {
             ExtensionError::Internal("memory extension services already initialized".into())
         })?;
         *self.tasks.lock() = Some(ctx.tasks().clone());
+        *self.config.write() = MemoryConfig::from_extension_config(&ctx.config);
+        Ok(())
+    }
+
+    async fn on_config_changed(&self, config: ExtensionConfig) -> Result<(), ExtensionError> {
+        *self.config.write() = MemoryConfig::from_extension_config(&config);
         Ok(())
     }
 
@@ -95,6 +108,10 @@ impl Extension for MemoryExtension {
             handlers::memory_save_definition(),
             Arc::new(MemorySaveHandler {
                 store_pool: self.store_pool.clone(),
+                services: self.services.clone(),
+                tasks: self.tasks.clone(),
+                pipeline: self.pipeline.clone(),
+                config: self.config.clone(),
             }),
         );
         reg.tool(
@@ -118,17 +135,7 @@ impl Extension for MemoryExtension {
                 services: self.services.clone(),
                 pipeline: self.pipeline.clone(),
                 tasks: self.tasks.clone(),
-            }),
-        );
-        reg.on_event(
-            ExtensionEvent::TurnEnd,
-            HookMode::NonBlocking,
-            0,
-            Arc::new(MemoryTurnEndHandler {
-                store_pool: self.store_pool.clone(),
-                services: self.services.clone(),
-                tasks: self.tasks.clone(),
-                extract_state: Default::default(),
+                config: self.config.clone(),
             }),
         );
         reg.command(

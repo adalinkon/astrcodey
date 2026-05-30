@@ -162,6 +162,11 @@ pub fn logs_dir() -> PathBuf {
     astrcode_dir().join("logs")
 }
 
+/// 获取跨项目共享的用户记忆目录：`~/.astrcode/memory/`。
+pub fn memory_dir() -> PathBuf {
+    astrcode_dir().join("memory")
+}
+
 /// 获取测试专用目录。
 ///
 /// 该目录位于系统临时目录下，调用方负责在测试前后清理。
