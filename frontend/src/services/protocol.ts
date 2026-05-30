@@ -106,14 +106,8 @@ function decodePhase(value: unknown): Phase {
   throw new ProtocolDecodeError(`invalid phase ${String(value)}`)
 }
 
-function decodeBlockStatus(
-  value: unknown
-): 'streaming' | 'complete' | 'error' {
-  if (
-    value === 'streaming' ||
-    value === 'complete' ||
-    value === 'error'
-  ) {
+function decodeBlockStatus(value: unknown): 'streaming' | 'complete' | 'error' {
+  if (value === 'streaming' || value === 'complete' || value === 'error') {
     return value
   }
   throw new ProtocolDecodeError(`invalid block status ${String(value)}`)
