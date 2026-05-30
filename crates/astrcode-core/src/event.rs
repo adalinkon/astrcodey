@@ -385,62 +385,6 @@ pub enum EventPayload {
         data: serde_json::Value,
     },
 
-    /// 工具调用已转入后台执行。
-    ///
-    /// 当工具执行超过其声明的后台化阈值时，agent loop 自动将调用
-    /// 从同步等待转为后台运行，并返回占位结果给 LLM 继续推理。
-    ToolCallBackgrounded {
-        /// 工具调用唯一标识。
-        call_id: ToolCallId,
-        /// 工具名称。
-        tool_name: String,
-        /// 后台任务 ID，用于后续查询和取消。
-        task_id: crate::types::BackgroundTaskId,
-        /// 后台化原因（如 "auto_threshold"）。
-        reason: String,
-    },
-
-    /// 后台任务的输出增量（stdout/stderr 流）。
-    ///
-    /// 这是 live 事件，不持久化到事件日志。
-    BackgroundTaskOutput {
-        /// 后台任务 ID。
-        task_id: crate::types::BackgroundTaskId,
-        /// 原始工具调用 ID，用于客户端将输出关联到对应的 tool-call block。
-        call_id: ToolCallId,
-        /// 输出流类型。
-        stream: ToolOutputStream,
-        /// 本次增量输出文本。
-        delta: String,
-    },
-
-    /// 后台任务完成通知（durable）。
-    ///
-    /// 替代之前 forwarder 发射的第二次 ToolCallCompleted。
-    /// Projection 将其追加为带 `source: "background_task"` 的 User 消息。
-    BackgroundTaskNotification {
-        /// 后台任务 ID。
-        task_id: crate::types::BackgroundTaskId,
-        /// 原始工具调用 ID。
-        call_id: ToolCallId,
-        /// 工具名称。
-        tool_name: String,
-        /// 给 LLM 和 UI 的完成摘要。
-        summary: String,
-    },
-
-    /// 后台任务已完成。
-    BackgroundTaskCompleted {
-        /// 后台任务 ID。
-        task_id: crate::types::BackgroundTaskId,
-        /// 原始工具调用 ID。
-        call_id: ToolCallId,
-        /// 工具名称。
-        tool_name: String,
-        /// 工具执行的最终结果。
-        result: ToolResult,
-    },
-
     /// 插件命名空间事件。
     ///
     /// 由 [`crate::extension::ExtensionEventSink`] 发出，`extension_id` 由 runtime
@@ -473,9 +417,6 @@ impl EventPayload {
                 | Self::ToolOutputDelta { .. }
                 | Self::AgentRunStarted
                 | Self::AgentRunCompleted { .. }
-                | Self::ToolCallBackgrounded { .. }
-                | Self::BackgroundTaskOutput { .. }
-                | Self::BackgroundTaskCompleted { .. }
                 | Self::CompactionStarted
                 | Self::CompactionCompleted { .. }
                 | Self::CompactionSkipped { .. }
@@ -657,33 +598,6 @@ mod tests {
             }
             .is_durable(),
             "ToolCallStarted is live UI state only"
-        );
-        assert!(
-            !EventPayload::ToolCallBackgrounded {
-                call_id: "c1".into(),
-                tool_name: "shell".into(),
-                task_id: "t1".into(),
-                reason: "auto_threshold".into(),
-            }
-            .is_durable(),
-            "ToolCallBackgrounded is live UI state only"
-        );
-        assert!(
-            !EventPayload::BackgroundTaskCompleted {
-                task_id: "t1".into(),
-                call_id: "c1".into(),
-                tool_name: "shell".into(),
-                result: ToolResult {
-                    call_id: "c1".into(),
-                    content: "ok".into(),
-                    is_error: false,
-                    error: None,
-                    metadata: BTreeMap::new(),
-                    duration_ms: Some(10),
-                },
-            }
-            .is_durable(),
-            "BackgroundTaskCompleted is live UI state only"
         );
         assert!(
             EventPayload::CompactBoundaryCreated {

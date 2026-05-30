@@ -18,7 +18,6 @@ use std::{
 
 use astrcode_core::{
     event::{EventPayload, Phase},
-    llm::{LlmContent, LlmRole},
     storage::SessionReadModel,
     types::*,
 };
@@ -411,18 +410,11 @@ impl TurnScheduler {
         Ok(())
     }
 
-    /// 已完成 turn 的 registry / 队列 / 后台任务清理（不 abort、不写 `TurnCompleted`）。
+    /// 已完成 turn 的 registry / 队列清理（不 abort、不写 `TurnCompleted`）。
     ///
     /// 用于 child session 正常结束后的 recycle；turn 终态已由 runner 写入事件日志。
     pub async fn release_completed_execution(&self, session_id: &SessionId) {
         self.registry.remove(session_id);
-        if let Ok(session) = self.session_manager.open(session_id.clone()).await {
-            session
-                .runtime()
-                .background_tasks()
-                .lock()
-                .cleanup_session(session_id);
-        }
         let removed = self.pending_queues.lock().remove(session_id);
         if removed.is_some() {
             tracing::debug!(
@@ -436,21 +428,8 @@ impl TurnScheduler {
     pub async fn abort_and_cleanup(&self, session_id: &SessionId) {
         if self.registry.active_is_finished(session_id) {
             self.registry.remove(session_id);
-            if let Ok(session) = self.session_manager.open(session_id.clone()).await {
-                session
-                    .runtime()
-                    .background_tasks()
-                    .lock()
-                    .cleanup_session(session_id);
-            }
         } else if let Some((turn_id, session)) = self.registry.force_kill_current(session_id) {
             self.emit_turn_aborted(&turn_id, &session, session_id).await;
-        } else if let Ok(session) = self.session_manager.open(session_id.clone()).await {
-            session
-                .runtime()
-                .background_tasks()
-                .lock()
-                .cleanup_session(session_id);
         }
         let removed = self.pending_queues.lock().remove(session_id);
         if removed.is_some() {
@@ -480,12 +459,6 @@ impl TurnScheduler {
     }
 
     async fn emit_turn_aborted(&self, turn_id: &TurnId, session: &Session, session_id: &SessionId) {
-        session
-            .runtime()
-            .background_tasks()
-            .lock()
-            .cleanup_session(session_id);
-
         let tool_protocol_settled = match session.read_model().await {
             Ok(state) => {
                 match emit_interrupted_tool_results(session, &state, Some(turn_id)).await {
@@ -589,7 +562,6 @@ impl TurnScheduler {
             repair_stale_phase_for_state(session_id, &session, &state).await?;
         }
 
-        repair_stale_background_tasks_for_state(session_id, &session, &state).await?;
         repair_stale_runs_for_state(self, &session, &state).await?;
 
         self.session_manager.sync_durable_events(session_id).await;
@@ -692,52 +664,6 @@ async fn emit_turn_aborted_context(
     Ok(())
 }
 
-async fn repair_stale_background_tasks_for_state(
-    session_id: &SessionId,
-    session: &Session,
-    state: &SessionReadModel,
-) -> Result<(), TurnScheduleError> {
-    let active_tasks: std::collections::HashSet<_> = session
-        .runtime()
-        .background_tasks()
-        .lock()
-        .list_active(session_id)
-        .into_iter()
-        .collect();
-
-    for (call_id, background) in &state.background_tool_calls {
-        if background.completed || active_tasks.contains(&background.task_id) {
-            continue;
-        }
-        let Some((tool_name, _arguments_json)) = find_tool_call_history(state, call_id) else {
-            tracing::warn!(
-                session_id = %session_id,
-                call_id = %call_id,
-                task_id = %background.task_id,
-                "stale background task has no matching tool call history"
-            );
-            continue;
-        };
-        let summary = format!(
-            "Background task interrupted before completion (task: {})",
-            background.task_id
-        );
-        session
-            .emit_durable(
-                None,
-                EventPayload::BackgroundTaskNotification {
-                    task_id: background.task_id.clone(),
-                    call_id: call_id.clone(),
-                    tool_name,
-                    summary,
-                },
-            )
-            .await
-            .map_err(TurnScheduleError::EventEmit)?;
-    }
-    Ok(())
-}
-
 async fn repair_stale_runs_for_state(
     scheduler: &TurnScheduler,
     session: &Session,
@@ -775,24 +701,3 @@ async fn repair_stale_runs_for_state(
     Ok(())
 }
 
-fn find_tool_call_history(
-    state: &SessionReadModel,
-    target_call_id: &ToolCallId,
-) -> Option<(String, serde_json::Value)> {
-    state.messages.iter().find_map(|message| {
-        if message.message.role != LlmRole::Assistant {
-            return None;
-        }
-        message.message.content.iter().find_map(|content| {
-            let LlmContent::ToolCall {
-                call_id,
-                name,
-                arguments,
-            } = content
-            else {
-                return None;
-            };
-            (call_id == target_call_id.as_str()).then(|| (name.clone(), arguments.clone()))
-        })
-    })
-}

@@ -91,8 +91,7 @@ const TOOL_GUIDANCE: &str =
      stay inside the working directory.\nAvoid `shell` when a dedicated tool exists.\n\n## Tool \
      Selection\n- Read file → `read`\n- Search file contents → `grep` | Match file paths by glob \
      → `glob` (required `pattern`, e.g. `**/*.rs`)\n- Edit file → `edit` | New file → `write` | \
-     Multi-file → `patch`\n- Commands → `shell` | Background → `shell(runInBackground=true)` | \
-     Interactive → `terminal`\n- Progress → `todoWrite` | Plan/Code mode → `switchMode` | Skill → \
+     Multi-file → `patch`\n- Commands → `shell` | Interactive → `terminal`\n- Progress → `todoWrite` | Plan/Code mode → `switchMode` | Skill → \
      `Skill`\n- External MCP only → `tool_search_tool` (not for builtin tools like `glob`) | \
      Delegate → `agent`";
 
@@ -734,12 +733,11 @@ fn tool_summary_rank(name: &str) -> u8 {
         "grep" => 2,
         "shell" => 3,
         "tool_search_tool" => 4,
-        "task" => 5,
-        "Skill" => 6,
-        "todoWrite" => 7,
-        "switchMode" => 8,
-        "upsertSessionPlan" => 9,
-        "agent" => 10,
+        "Skill" => 5,
+        "todoWrite" => 6,
+        "switchMode" => 7,
+        "upsertSessionPlan" => 8,
+        "agent" => 9,
         "patch" => 90,
         "edit" => 91,
         "write" => 92,
@@ -754,7 +752,6 @@ fn tool_short_description(name: &str) -> &'static str {
         "glob" => "match file paths by glob pattern",
         "grep" => "search file contents by regex or literal text",
         "shell" => "execute shell commands",
-        "task" => "manage background shell tasks",
         "terminal" => "manage interactive PTY sessions",
         "tool_search_tool" => "find MCP tools by name or keyword",
         "Skill" => "load a named skill's instructions",

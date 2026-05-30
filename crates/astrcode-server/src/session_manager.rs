@@ -559,12 +559,7 @@ impl SessionRuntimeRegistry {
     }
 
     fn cleanup_runtime(&self, session_id: &SessionId) {
-        if let Some(runtime) = self.states.lock().remove(session_id) {
-            runtime
-                .background_tasks()
-                .lock()
-                .cleanup_session(session_id);
-        }
+        let _ = self.states.lock().remove(session_id);
     }
 }
 

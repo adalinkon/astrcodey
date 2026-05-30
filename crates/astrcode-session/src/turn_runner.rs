@@ -7,7 +7,7 @@
 use std::{sync::Arc, time::Duration};
 
 use astrcode_core::{
-    event::{Event, EventPayload},
+    event::EventPayload,
     extension::{ExtensionEvent, ProviderEvent, ProviderResult},
     llm::{LlmError, LlmEvent, LlmMessage, provider_visible_messages},
     storage::SessionReadModel,
@@ -54,108 +54,6 @@ pub(crate) struct TurnLoop {
     cancellation_token: CancellationToken,
     tools: ToolCalls,
     compaction: Compaction,
-}
-
-const BACKGROUND_TASK_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
-
-fn has_active_background_tasks(session: &Session) -> bool {
-    !session
-        .runtime()
-        .background_tasks()
-        .lock()
-        .list_active(session.id())
-        .is_empty()
-}
-
-fn has_unsettled_background_tool_calls(model: &SessionReadModel) -> bool {
-    model
-        .background_tool_calls
-        .values()
-        .any(|view| !view.completed)
-}
-
-fn ends_with_background_notification(model: &SessionReadModel) -> bool {
-    model
-        .messages
-        .last()
-        .is_some_and(|msg| msg.source.as_deref() == Some("background_task"))
-}
-
-fn is_background_settlement_event(payload: &EventPayload) -> bool {
-    matches!(
-        payload,
-        EventPayload::BackgroundTaskNotification { .. }
-            | EventPayload::BackgroundTaskCompleted { .. }
-    )
-}
-
-/// 等待后台任务从 manager 移除且读模型中的 placeholder 已被 notification 结算。
-async fn wait_for_background_settlement(
-    session: &Session,
-    event_rx: &mut mpsc::Receiver<Event>,
-    cancellation_token: &CancellationToken,
-) -> Result<(), TurnError> {
-    let deadline = tokio::time::Instant::now() + BACKGROUND_TASK_WAIT_TIMEOUT;
-    loop {
-        if cancellation_token.is_cancelled() {
-            return Err(TurnError::Aborted);
-        }
-        let model = session.read_model().await?;
-        if !has_active_background_tasks(session) && !has_unsettled_background_tool_calls(&model) {
-            return Ok(());
-        }
-
-        let event = tokio::select! {
-            _ = cancellation_token.cancelled() => return Err(TurnError::Aborted),
-            event = tokio::time::timeout_at(deadline, event_rx.recv()) => event,
-        };
-
-        match event {
-            Ok(Some(event)) if is_background_settlement_event(&event.payload) => {},
-            Ok(Some(_)) => {},
-            Ok(None) => {
-                tracing::warn!(
-                    session_id = %session.id(),
-                    "session event stream closed while waiting for background settlement"
-                );
-                return Ok(());
-            },
-            Err(_) => {
-                tracing::warn!(
-                    session_id = %session.id(),
-                    "timed out waiting for background settlement; ending wait"
-                );
-                return Ok(());
-            },
-        }
-    }
-}
-
-/// LLM 宣告 turn 完成时，判断是否应继续 agent loop 以处理后台任务结果。
-async fn background_work_requires_agent_continue(
-    session: &Session,
-    event_rx: &mut mpsc::Receiver<Event>,
-    cancellation_token: &CancellationToken,
-) -> Result<bool, TurnError> {
-    let model = session.read_model().await?;
-    if has_active_background_tasks(session) || has_unsettled_background_tool_calls(&model) {
-        tracing::info!(
-            session_id = %session.id(),
-            active = has_active_background_tasks(session),
-            unsettled = has_unsettled_background_tool_calls(&model),
-            "LLM completed but background work unsettled; waiting for settlement"
-        );
-        wait_for_background_settlement(session, event_rx, cancellation_token).await?;
-        return Ok(true);
-    }
-    if ends_with_background_notification(&model) {
-        tracing::info!(
-            session_id = %session.id(),
-            "LLM completed with pending background notification; continuing agent loop"
-        );
-        return Ok(true);
-    }
-    Ok(false)
 }
 
 impl TurnLoop {
@@ -322,17 +220,6 @@ impl TurnLoop {
                         }
                     }
                     on_step_end_best_effort(&extension_runner, &lifecycle_ctx).await;
-
-                    let mut event_rx = self.session().subscribe();
-                    if background_work_requires_agent_continue(
-                        self.session(),
-                        &mut event_rx,
-                        &self.cancellation_token,
-                    )
-                    .await?
-                    {
-                        continue;
-                    }
 
                     return self
                         .postprocess_complete_stage(

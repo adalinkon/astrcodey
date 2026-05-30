@@ -171,10 +171,7 @@ fn build_test_ops_with_llm(
         Arc::clone(&child_sessions),
     ));
     child_sessions.spawn_completion_watcher(Arc::clone(&scheduler));
-    let event_bus = Arc::new(ServerEventBus::new(
-        Arc::new(EventFanout::new(1024)),
-        Arc::clone(&scheduler),
-    ));
+    let event_bus = Arc::new(ServerEventBus::new(Arc::new(EventFanout::new(1024))));
     session_manager.bind_event_bus(event_bus);
     Arc::new(ServerSessionOperations {
         session_manager,

@@ -255,25 +255,6 @@ pub struct ToolResultArtifactSlice {
     pub content: String,
 }
 
-/// 后台任务输出的分页读取结果。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BackgroundTaskOutputSlice {
-    /// 后台任务 ID。
-    pub task_id: String,
-    /// 输出正文 UTF-8 字节数。
-    pub bytes: usize,
-    /// 本次读取的字符偏移。
-    pub char_offset: usize,
-    /// 本次返回的字符数。
-    pub returned_chars: usize,
-    /// 下一次读取的字符偏移；没有更多内容时为 `None`。
-    pub next_char_offset: Option<usize>,
-    /// 是否还有更多内容。
-    pub has_more: bool,
-    /// 本次读取的正文片段。
-    pub content: String,
-}
-
 /// 子 Agent 会话的运行状态。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -324,15 +305,6 @@ pub struct AgentSessionLinkView {
     pub current_tool: Option<String>,
 }
 
-/// 后台化工具调用在会话投影中的状态。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BackgroundToolCallView {
-    /// 后台任务 ID。
-    pub task_id: BackgroundTaskId,
-    /// 最终结果是否已经到达。
-    pub completed: bool,
-}
-
 /// compact boundary 在会话投影中的元数据。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CompactBoundaryView {
@@ -368,7 +340,6 @@ pub struct SequencedLlmMessage {
     /// 消息来源标记，用于前端区分渲染。
     ///
     /// - `None`：正常消息（用户输入、LLM 回复等）
-    /// - `Some("background_task")`：后台任务完成通知（前端隐藏或特殊渲染）
     /// - `Some("turn_aborted")`：上一轮中断标记（仅 provider 可见）
     ///
     /// `source` 本身不进入 LLM payload；对应 `.message` 会作为 User 消息送入 provider。
@@ -497,9 +468,6 @@ pub struct SessionReadModel {
     pub system_prompt_fingerprint: Option<String>,
     /// 尚未完成的工具调用。
     pub pending_tool_calls: HashSet<ToolCallId>,
-    /// 后台化工具调用状态，用于从快照恢复 UI 状态。
-    #[serde(default)]
-    pub background_tool_calls: HashMap<ToolCallId, BackgroundToolCallView>,
     /// 创建时间（ISO 8601）。
     pub created_at: String,
     /// 更新时间（ISO 8601）。
@@ -542,7 +510,6 @@ impl SessionReadModel {
             extra_system_prompt: None,
             system_prompt_fingerprint: None,
             pending_tool_calls: HashSet::new(),
-            background_tool_calls: HashMap::new(),
             created_at: String::new(),
             updated_at: String::new(),
             parent_session_id: None,

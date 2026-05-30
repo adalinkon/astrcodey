@@ -5,8 +5,8 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use astrcode_core::{
     extension::ChildToolPolicy,
     tool::{
-        BackgroundPolicy, ExecutionMode, Tool, ToolDefinition, ToolError, ToolExecutionContext,
-        ToolPromptMetadata, ToolResult,
+        ExecutionMode, Tool, ToolDefinition, ToolError, ToolExecutionContext, ToolPromptMetadata,
+        ToolResult,
     },
 };
 
@@ -105,14 +105,6 @@ impl ToolRegistry {
         self.tools.get(name).map(|entry| entry.definition.clone())
     }
 
-    /// 按名称查询工具的后台化策略，未找到返回 `Never`。
-    pub fn background_policy(&self, name: &str) -> BackgroundPolicy {
-        self.tools
-            .get(name)
-            .map(|entry| entry.tool.background_policy())
-            .unwrap_or(BackgroundPolicy::Never)
-    }
-
     /// Drain all registered tools into a Vec (consumes the registry).
     pub fn into_tools(self) -> Vec<std::sync::Arc<dyn Tool>> {
         self.tools.into_values().map(|entry| entry.tool).collect()
@@ -193,7 +185,6 @@ pub fn builtin_tools(working_dir: PathBuf, timeout_secs: u64) -> Vec<Arc<dyn Too
             timeout_secs,
         }) as Arc<dyn Tool>,
         Arc::new(super::terminal_tool::TerminalTool { working_dir }) as Arc<dyn Tool>,
-        Arc::new(super::task_tool::TaskTool) as Arc<dyn Tool>,
     ]
 }
 

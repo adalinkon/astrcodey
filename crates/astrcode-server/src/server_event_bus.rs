@@ -1,7 +1,6 @@
-//! 客户端事件 fan-out 与 internal session event reactor。
+//! 客户端事件 fan-out。
 //!
-//! - **Client Event Bus**：`Session` live 事件 → `ClientNotification::Event`，维护 streaming 快照。
-//! - **Internal Event Reactor**：background task 完成等 server 编排副作用（与 fan-out 解耦）。
+//! `Session` live 事件 → `ClientNotification::Event`，维护 streaming 快照。
 
 use std::{
     collections::{HashMap, HashSet},
@@ -17,8 +16,6 @@ use astrcode_session::Session;
 use astrcode_support::event_fanout::EventFanout;
 use parking_lot::Mutex;
 
-use crate::turn_scheduler::{InputDelivery, TurnScheduler};
-
 pub(crate) struct StreamingSnapshot {
     pub message_id: String,
     pub text: String,
@@ -30,19 +27,15 @@ type StreamingState = parking_lot::Mutex<Option<(MessageId, String, String)>>;
 pub struct ServerEventBus {
     tx: Arc<EventFanout<ClientNotification>>,
     attached: Mutex<HashSet<SessionId>>,
-    reactor_attached: Mutex<HashSet<SessionId>>,
     streaming: Mutex<HashMap<SessionId, Arc<StreamingState>>>,
-    scheduler: Arc<TurnScheduler>,
 }
 
 impl ServerEventBus {
-    pub fn new(tx: Arc<EventFanout<ClientNotification>>, scheduler: Arc<TurnScheduler>) -> Self {
+    pub fn new(tx: Arc<EventFanout<ClientNotification>>) -> Self {
         Self {
             tx,
             attached: Mutex::new(HashSet::new()),
-            reactor_attached: Mutex::new(HashSet::new()),
             streaming: Mutex::new(HashMap::new()),
-            scheduler,
         }
     }
 
@@ -56,7 +49,6 @@ impl ServerEventBus {
 
     pub fn attach(&self, session: &Session) {
         self.attach_client_fanout(session);
-        self.attach_internal_reactor(session);
     }
 
     fn attach_client_fanout(&self, session: &Session) {
@@ -80,41 +72,8 @@ impl ServerEventBus {
         });
     }
 
-    fn attach_internal_reactor(&self, session: &Session) {
-        let session_id = session.id().clone();
-        if !self.reactor_attached.lock().insert(session_id.clone()) {
-            return;
-        }
-        let mut rx = session.subscribe();
-        let scheduler = Arc::clone(&self.scheduler);
-        tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                if !matches!(event.payload, EventPayload::BackgroundTaskCompleted { .. }) {
-                    continue;
-                }
-                let scheduler = Arc::clone(&scheduler);
-                let sid = session_id.clone();
-                tokio::spawn(async move {
-                    let marker =
-                        r#"<system type="background_completed" source="task">"#.to_string();
-                    if let Err(e) = scheduler
-                        .deliver_input(sid.clone(), marker, InputDelivery::InjectIfRunningElseStart)
-                        .await
-                    {
-                        tracing::warn!(
-                            session_id = %sid,
-                            error = %e,
-                            "failed to notify background completion (step path)"
-                        );
-                    }
-                });
-            }
-        });
-    }
-
     pub fn detach(&self, session_id: &SessionId) {
         self.attached.lock().remove(session_id);
-        self.reactor_attached.lock().remove(session_id);
         self.streaming.lock().remove(session_id);
     }
 

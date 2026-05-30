@@ -17,34 +17,6 @@ use tokio::sync::mpsc;
 
 use crate::{event::EventPayload, storage::ToolResultArtifactReader, types::SessionId};
 
-// Re-export BackgroundTaskReader from astrcode-tools via a forward declaration.
-// The actual trait lives in astrcode-tools::task_tool, but ToolExecutionContext
-// references it by Arc<dyn>. We use a minimal local trait to avoid the dependency.
-
-/// 后台任务的只读查询能力。
-///
-/// 工具通过此 trait 查询当前会话的后台任务状态。
-/// 由 agent loop 在构建 ToolExecutionContext 时注入。
-pub trait BackgroundTaskReader: Send + Sync {
-    /// 列出指定会话的所有活跃后台任务 ID。
-    fn list_active(&self, session_id: &SessionId) -> Vec<crate::types::BackgroundTaskId>;
-
-    /// 取消指定任务。返回 true 表示成功取消。
-    fn cancel(&self, session_id: &SessionId, task_id: &crate::types::BackgroundTaskId) -> bool;
-
-    /// 读取后台任务输出的分页切片。
-    ///
-    /// 返回 `Err(StorageError::NotFound)` 如果任务输出文件不存在
-    /// （任务可能仍在运行，或 task_id 无效）。
-    fn read_output(
-        &self,
-        session_id: &SessionId,
-        task_id: &crate::types::BackgroundTaskId,
-        char_offset: usize,
-        max_chars: usize,
-    ) -> Result<crate::storage::BackgroundTaskOutputSlice, crate::storage::StorageError>;
-}
-
 /// 工具来源分类，影响诊断日志和策略优先级，不改变执行路径。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -237,20 +209,6 @@ pub enum ExecutionMode {
     Sequential,
     /// 并行执行——与其他并行模式工具同时执行。
     Parallel,
-}
-
-/// 工具的后台化策略。
-///
-/// 由 agent loop 的工具执行调度层查询，决定是否在执行超过阈值后
-/// 将工具调用自动转入后台，不阻塞 agent loop 继续推进。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BackgroundPolicy {
-    /// 不自动后台化（默认）。
-    #[default]
-    Never,
-    /// 执行超过阈值秒数后自动后台化。
-    AutoAfter { threshold_secs: u64 },
 }
 
 /// 文件观察快照，用于 read-before-edit 的乐观并发保护。
@@ -502,8 +460,6 @@ pub struct ToolCapabilities {
     pub available_tools: Option<Vec<ToolDefinition>>,
     /// 当前 session 的工具结果 artifact 读取能力（仅 `read` 工具需要）。
     pub tool_result_reader: Option<Arc<dyn ToolResultArtifactReader>>,
-    /// 当前 session 的后台任务查询能力（仅 `task` 工具需要）。
-    pub background_task_reader: Option<Arc<dyn BackgroundTaskReader>>,
     /// 当前 session 的文件观察存储（`read` 和 `edit` 工具协作使用）。
     pub file_observation_store: Option<Arc<dyn FileObservationStore>>,
     /// 会话原子操作能力（仅子 agent 工具需要）。
@@ -587,10 +543,6 @@ impl std::fmt::Debug for ToolCapabilities {
                 "tool_result_reader",
                 &self.tool_result_reader.as_ref().map(|_| "<reader>"),
             )
-            .field(
-                "background_task_reader",
-                &self.background_task_reader.as_ref().map(|_| "<bg_reader>"),
-            )
             .finish()
     }
 }
@@ -604,14 +556,6 @@ pub trait Tool: Send + Sync {
     /// 返回工具的执行模式偏好。
     fn execution_mode(&self) -> ExecutionMode {
         self.definition().execution_mode
-    }
-
-    /// 返回工具的后台化策略。
-    ///
-    /// 默认为 [`BackgroundPolicy::Never`]。工具可以覆写此方法声明
-    /// 自己在执行时间过长时可以自动转入后台。
-    fn background_policy(&self) -> BackgroundPolicy {
-        BackgroundPolicy::Never
     }
 
     /// 返回工具的结构化提示词元数据。

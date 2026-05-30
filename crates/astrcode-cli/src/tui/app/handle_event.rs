@@ -453,16 +453,6 @@ fn apply_event(app: &mut App, event: &Event) {
             }
             app.child_session_map.remove(child_session_id.as_str());
         },
-        EventPayload::ToolCallBackgrounded {
-            tool_name, task_id, ..
-        } => {
-            app.status_text = format!("{} → background ({})", tool_name, task_id);
-        },
-        EventPayload::BackgroundTaskCompleted {
-            task_id, tool_name, ..
-        } => {
-            app.status_text = format!("{} background done ({})", tool_name, task_id);
-        },
         EventPayload::Custom { name, data } => {
             // 将自定义事件作为带 custom_type 的消息推入 scrollback。
             // 如果 MessageRendererRegistry 中有匹配的渲染器，渲染时会分发给它；

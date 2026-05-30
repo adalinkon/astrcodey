@@ -66,13 +66,6 @@ impl Tool for ShellTool {
         ExecutionMode::Sequential
     }
 
-    /// Shell 命令执行超过 timeout 一半时间后自动后台化。
-    fn background_policy(&self) -> BackgroundPolicy {
-        BackgroundPolicy::AutoAfter {
-            threshold_secs: (self.timeout_secs / 2).max(30),
-        }
-    }
-
     fn prompt_metadata(&self) -> Option<ToolPromptMetadata> {
         Some(ToolPromptMetadata::new("").prompt_tag(ToolPromptTag::System))
     }
@@ -201,7 +194,15 @@ impl Tool for ShellTool {
 
         let is_error = timed_out || exit != 0;
         let error = if timed_out {
-            Some(format!("shell command timed out after {timeout_secs}s"))
+            let timeout_msg = format!("shell command timed out after {timeout_secs}s");
+            // LLM 历史只携带 content；超时说明必须写入正文。
+            if output == "(no output)" {
+                output = timeout_msg.clone();
+            } else {
+                output.push_str("\n\n");
+                output.push_str(&timeout_msg);
+            }
+            Some(timeout_msg)
         } else if exit == 0 {
             None
         } else {
@@ -238,11 +239,9 @@ fn shell_tool_definition(timeout_secs: u64) -> ToolDefinition {
                 "Executes a {shell} command and returns output. Working directory persists, shell \
                  state does not.\n",
                 "- Timeout: up to 600s, default {timeout_secs}s.\n",
-                "- Background: `runInBackground=true` (handled by session orchestration before \
-                 shell runs). Track with `task`.\n",
                 "- Independent commands: call in parallel. Dependent: chain with `&&`.\n",
                 "- Set `cwd` instead of using `cd`. Use `stdin` to pipe data.\n",
-                "- Non-zero exit codes produce errors. Do NOT `sleep`; use `task action=list`.",
+                "- Non-zero exit codes produce errors.",
             ),
             shell = shell.name,
             timeout_secs = timeout_secs,
@@ -270,11 +269,6 @@ fn shell_tool_definition(timeout_secs: u64) -> ToolDefinition {
                 "stdin": {
                     "type": "string",
                     "description": "Pipe data into stdin (jq, wc, python, etc.)."
-                },
-                "runInBackground": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Run in background. Use for dev servers, watchers, builds."
                 }
             },
             "required": ["command"],
@@ -594,7 +588,16 @@ mod tests {
 
         assert!(result.is_error);
         assert!(result.content.contains("before"));
-        assert!(!result.content.contains("after"));
+        assert!(
+            !result.content.lines().any(|line| line.trim() == "after"),
+            "command output after the sleep should not appear: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("timed out after 5s"),
+            "timeout reason must be in content for the LLM: {}",
+            result.content
+        );
         assert_eq!(result.metadata["timedOut"], serde_json::json!(true));
         assert_eq!(result.metadata["streamed"], serde_json::json!(true));
     }

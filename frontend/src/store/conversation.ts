@@ -89,8 +89,6 @@ function mergeBlock(
         ? incoming.arguments
         : current.arguments,
       text: incoming.text.trim() ? incoming.text : current.text,
-      // taskId 不随 FinalizeBlock 返回，保留当前值
-      taskId: incoming.taskId ?? current.taskId,
       metadata: incoming.metadata ?? current.metadata,
       // argumentsJson 不随 FinalizeBlock 返回，保留当前值
       argumentsJson: incoming.argumentsJson ?? current.argumentsJson,
@@ -802,26 +800,6 @@ export const useAppStore = create<ConversationState>((set, get) => ({
         } else {
           void get().switchSession(delta.newSessionId)
         }
-        break
-      }
-
-      case 'toolCallBackgrounded': {
-        set((current) => {
-          const idx = current.blocks.findIndex(
-            (b) => b.kind === 'toolCall' && b.id === delta.callId
-          )
-          if (idx === -1) return {}
-          const block = current.blocks[idx]
-          if (block.kind !== 'toolCall') return {}
-          const next = [...current.blocks]
-          next[idx] = {
-            ...block,
-            text: `Task moved to background (task: ${delta.taskId}). Result will arrive when done.`,
-            status: 'backgrounded',
-            taskId: delta.taskId,
-          }
-          return { blocks: next }
-        })
         break
       }
 

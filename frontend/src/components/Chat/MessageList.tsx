@@ -100,9 +100,6 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
       []
     for (let i = 0; i < blocks.length; i++) {
       const block = blocks[i]
-      if (block.kind === 'user' && block.source === 'background_task') {
-        continue
-      }
       items.push({ type: 'block', block, index: i })
     }
     return items

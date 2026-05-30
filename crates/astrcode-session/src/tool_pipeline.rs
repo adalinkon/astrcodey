@@ -91,7 +91,6 @@ impl ToolCalls {
             ),
             publisher,
             cancellation_token: self.cancellation_token.clone(),
-            session: self.session.clone(),
         }
     }
 

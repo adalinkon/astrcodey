@@ -1,12 +1,11 @@
 //! 把 LLM message 历史与 EventPayload 投影成 ConversationBlockDto。
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use astrcode_core::{
     event::{Event, EventPayload},
     llm::{LlmContent, LlmMessage, LlmRole, TURN_ABORTED_SOURCE},
-    storage::{BackgroundToolCallView, CompactBoundaryView, SequencedLlmMessage},
-    types::ToolCallId,
+    storage::{CompactBoundaryView, SequencedLlmMessage},
 };
 use astrcode_protocol::http::{ConversationBlockDto, ConversationBlockStatusDto};
 
@@ -80,11 +79,6 @@ pub(in crate::http) fn completed_block_from_payload(event: &Event) -> Option<Con
                 } else {
                     ConversationBlockStatusDto::Complete
                 },
-                task_id: result
-                    .metadata
-                    .get("task_id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string()),
                 metadata,
                 arguments_json: arguments_json.clone(),
             })
@@ -112,21 +106,11 @@ pub(in crate::http) fn completed_block_from_payload(event: &Event) -> Option<Con
             id: event.id.to_string(),
             text: text.clone(),
         }),
-        EventPayload::BackgroundTaskNotification { summary, .. } => {
-            Some(ConversationBlockDto::User {
-                id: event.id.to_string(),
-                text: summary.clone(),
-                source: Some("background_task".into()),
-            })
-        },
         _ => None,
     }
 }
 
-pub(in crate::http) fn messages_to_blocks(
-    messages: &[SequencedLlmMessage],
-    background_tool_calls: &HashMap<ToolCallId, BackgroundToolCallView>,
-) -> Vec<ConversationBlockDto> {
+pub(in crate::http) fn messages_to_blocks(messages: &[SequencedLlmMessage]) -> Vec<ConversationBlockDto> {
     let mut blocks = Vec::new();
     let mut tool_block_indices = BTreeMap::new();
 
@@ -169,20 +153,15 @@ pub(in crate::http) fn messages_to_blocks(
                         arguments: format_args_inline(name, arguments),
                         text: String::new(),
                         status: ConversationBlockStatusDto::Streaming,
-                        task_id: None,
                         metadata: None,
                         arguments_json: Some(arguments.clone()),
                     });
                     tool_block_indices.insert(call_id.clone(), block_index);
                 }
             },
-            LlmRole::Tool => push_tool_result_block(
-                &mut blocks,
-                &tool_block_indices,
-                background_tool_calls,
-                message,
-                id,
-            ),
+            LlmRole::Tool => {
+                push_tool_result_block(&mut blocks, &tool_block_indices, message, id);
+            },
             LlmRole::System => blocks.push(ConversationBlockDto::SystemNote {
                 id,
                 text: visible_message_text(message),
@@ -196,7 +175,6 @@ pub(in crate::http) fn messages_to_blocks(
 fn push_tool_result_block(
     blocks: &mut Vec<ConversationBlockDto>,
     tool_block_indices: &BTreeMap<String, usize>,
-    background_tool_calls: &HashMap<ToolCallId, BackgroundToolCallView>,
     message: &LlmMessage,
     fallback_id: String,
 ) {
@@ -212,11 +190,7 @@ fn push_tool_result_block(
         else {
             continue;
         };
-        let background_call_id = ToolCallId::from(tool_call_id.as_str());
-        let background_task = background_tool_calls.get(&background_call_id);
-        let status = if background_task.is_some_and(|task| !task.completed) {
-            ConversationBlockStatusDto::Backgrounded
-        } else if *is_error {
+        let status = if *is_error {
             ConversationBlockStatusDto::Error
         } else {
             ConversationBlockStatusDto::Complete
@@ -225,13 +199,11 @@ fn push_tool_result_block(
             if let Some(ConversationBlockDto::ToolCall {
                 text,
                 status: block_status,
-                task_id,
                 ..
             }) = blocks.get_mut(*block_index)
             {
                 *text = content.clone();
                 *block_status = status;
-                *task_id = background_task.map(|task| task.task_id.to_string());
                 pushed_result = true;
                 continue;
             }
@@ -242,7 +214,6 @@ fn push_tool_result_block(
             arguments: String::new(),
             text: content.clone(),
             status,
-            task_id: background_task.map(|task| task.task_id.to_string()),
             metadata: None,
             arguments_json: None,
         });
@@ -256,7 +227,6 @@ fn push_tool_result_block(
             arguments: String::new(),
             text: visible_message_text(message),
             status: ConversationBlockStatusDto::Complete,
-            task_id: None,
             metadata: None,
             arguments_json: None,
         });
@@ -299,7 +269,7 @@ mod tests {
             },
         ];
 
-        let blocks = messages_to_blocks(&messages, &HashMap::new());
+        let blocks = messages_to_blocks(&messages);
 
         assert_eq!(blocks.len(), 1);
         assert!(matches!(

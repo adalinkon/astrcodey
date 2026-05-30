@@ -40,7 +40,6 @@ pub(in crate::http) fn event_to_deltas(
                     arguments: String::new(),
                     text: String::new(),
                     status: ConversationBlockStatusDto::Streaming,
-                    task_id: None,
                     metadata: None,
                     arguments_json: None,
                 },
@@ -50,18 +49,6 @@ pub(in crate::http) fn event_to_deltas(
             call_id,
             stream,
             delta,
-        } => vec![ConversationDeltaDto::ToolOutput {
-            call_id: call_id.to_string(),
-            stream: *stream,
-            delta: delta.clone(),
-        }],
-
-        // BackgroundTaskOutput — same as ToolOutputDelta but from a backgrounded task
-        EventPayload::BackgroundTaskOutput {
-            call_id,
-            stream,
-            delta,
-            ..
         } => vec![ConversationDeltaDto::ToolOutput {
             call_id: call_id.to_string(),
             stream: *stream,
@@ -120,53 +107,11 @@ pub(in crate::http) fn event_to_deltas(
         // Phase transitions
         EventPayload::TurnStarted
         | EventPayload::AgentRunStarted
-        | EventPayload::CompactionStarted
-        | EventPayload::BackgroundTaskCompleted { .. } => {
+        | EventPayload::CompactionStarted => {
             vec![ConversationDeltaDto::UpdateControlState {
                 control: control_from_phase(projected_phase(&event.payload), has_messages),
             }]
         },
-        EventPayload::ToolCallBackgrounded {
-            call_id, task_id, ..
-        } => {
-            vec![
-                ConversationDeltaDto::UpdateControlState {
-                    control: control_from_phase(projected_phase(&event.payload), has_messages),
-                },
-                ConversationDeltaDto::ToolCallBackgrounded {
-                    call_id: call_id.to_string(),
-                    task_id: task_id.to_string(),
-                },
-            ]
-        },
-        EventPayload::BackgroundTaskNotification {
-            call_id,
-            summary,
-            tool_name,
-            ..
-        } => vec![
-            // Append notification as User block with source marker (frontend hides)
-            ConversationDeltaDto::AppendBlock {
-                block: ConversationBlockDto::User {
-                    id: event.id.to_string(),
-                    text: summary.clone(),
-                    source: Some("background_task".into()),
-                },
-            },
-            // Finalize the Tool block: update status Backgrounded → Complete
-            ConversationDeltaDto::FinalizeBlock {
-                block: ConversationBlockDto::ToolCall {
-                    id: call_id.to_string(),
-                    name: tool_name.clone(),
-                    arguments: String::new(),
-                    text: String::new(),
-                    status: ConversationBlockStatusDto::Complete,
-                    task_id: None,
-                    metadata: None,
-                    arguments_json: None,
-                },
-            },
-        ],
         EventPayload::TurnCompleted { .. } | EventPayload::AgentRunCompleted { .. } => {
             vec![ConversationDeltaDto::UpdateControlState {
                 control: control_from_phase(Phase::Idle, has_messages),
@@ -268,8 +213,7 @@ fn projected_phase(payload: &EventPayload) -> Phase {
         | EventPayload::ToolCallArgumentsDelta { .. }
         | EventPayload::ToolCallRequested { .. }
         | EventPayload::ToolOutputDelta { .. }
-        | EventPayload::ToolCallCompleted { .. }
-        | EventPayload::ToolCallBackgrounded { .. } => Phase::CallingTool,
+        | EventPayload::ToolCallCompleted { .. } => Phase::CallingTool,
         EventPayload::CompactionStarted => Phase::Compacting,
         EventPayload::ErrorOccurred { .. } => Phase::Error,
         _ => Phase::Idle,

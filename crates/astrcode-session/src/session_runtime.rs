@@ -7,10 +7,7 @@ use astrcode_support::{event_fanout::EventFanout, sync::lock_parking};
 use astrcode_tools::registry::ToolRegistry;
 use parking_lot::Mutex;
 
-use crate::{
-    background::BackgroundTasks, compact_circuit_breaker::CompactCircuitBreaker,
-    tool_exec::InMemoryFileObservationStore,
-};
+use crate::{compact_circuit_breaker::CompactCircuitBreaker, tool_exec::InMemoryFileObservationStore};
 
 /// 当前 session 使用的模型绑定；一次替换同时切换 provider 与模型标识。
 #[derive(Clone)]
@@ -38,7 +35,6 @@ impl SessionModelBinding {
 struct ToolResources {
     file_observation_store: Arc<dyn FileObservationStore>,
     registry: Mutex<Arc<ToolRegistry>>,
-    background_tasks: Arc<Mutex<BackgroundTasks>>,
 }
 
 /// 参与每次 turn 装配的可变配置与其派生缓存。
@@ -95,7 +91,6 @@ impl SessionRuntimeState {
             tools: ToolResources {
                 file_observation_store: Arc::new(InMemoryFileObservationStore::default()),
                 registry: Mutex::new(Arc::new(ToolRegistry::new())),
-                background_tasks: Arc::new(Mutex::new(BackgroundTasks::new())),
             },
             configuration: TurnConfiguration {
                 extra_system_prompt: Mutex::new(None),
@@ -157,10 +152,6 @@ impl SessionRuntimeState {
 
     pub(crate) fn install_tool_registry(&self, registry: Arc<ToolRegistry>) {
         *lock_parking(&self.tools.registry) = registry;
-    }
-
-    pub fn background_tasks(&self) -> Arc<Mutex<BackgroundTasks>> {
-        Arc::clone(&self.tools.background_tasks)
     }
 
     pub fn child_tool_policy(&self) -> Option<ChildToolPolicy> {

@@ -89,10 +89,6 @@ fn payload_type(payload: &EventPayload) -> &'static str {
         EventPayload::SessionForked { .. } => "session_forked",
         EventPayload::ErrorOccurred { .. } => "error_occurred",
         EventPayload::Custom { .. } => "custom",
-        EventPayload::ToolCallBackgrounded { .. } => "tool_call_backgrounded",
-        EventPayload::BackgroundTaskOutput { .. } => "background_task_output",
-        EventPayload::BackgroundTaskNotification { .. } => "background_task_notification",
-        EventPayload::BackgroundTaskCompleted { .. } => "background_task_completed",
         EventPayload::ExtensionEvent { .. } => "extension_event",
     }
 }
@@ -138,15 +134,7 @@ fn payload_details(payload: &EventPayload) -> String {
         | EventPayload::ToolCallCompleted {
             call_id, tool_name, ..
         }
-        | EventPayload::ToolCallBackgrounded {
-            call_id, tool_name, ..
-        }
-        | EventPayload::BackgroundTaskCompleted {
-            call_id, tool_name, ..
-        }
-        | EventPayload::BackgroundTaskNotification {
-            call_id, tool_name, ..
-        } => {
+        => {
             format!("tool={tool_name} call={call_id}")
         },
         EventPayload::ToolOutputDelta {
@@ -155,18 +143,6 @@ fn payload_details(payload: &EventPayload) -> String {
             delta,
         } => {
             format!("call={call_id} stream={stream:?} bytes={}", delta.len())
-        },
-        EventPayload::BackgroundTaskOutput {
-            task_id,
-            call_id,
-            stream,
-            delta,
-            ..
-        } => {
-            format!(
-                "task={task_id} call={call_id} stream={stream:?} bytes={}",
-                delta.len()
-            )
         },
         EventPayload::AssistantTextDelta { delta, .. }
         | EventPayload::ThinkingDelta { delta, .. }

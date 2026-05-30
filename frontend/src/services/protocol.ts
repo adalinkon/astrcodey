@@ -108,12 +108,11 @@ function decodePhase(value: unknown): Phase {
 
 function decodeBlockStatus(
   value: unknown
-): 'streaming' | 'complete' | 'error' | 'backgrounded' {
+): 'streaming' | 'complete' | 'error' {
   if (
     value === 'streaming' ||
     value === 'complete' ||
-    value === 'error' ||
-    value === 'backgrounded'
+    value === 'error'
   ) {
     return value
   }
@@ -159,7 +158,6 @@ export function decodeConversationBlock(value: unknown): ConversationBlock {
         arguments: requiredString(object, 'arguments'),
         text: requiredString(object, 'text'),
         status: decodeBlockStatus(object.status),
-        taskId: optionalString(object, 'taskId'),
         metadata: optionalObject(object, 'metadata'),
         argumentsJson:
           object.argumentsJson && typeof object.argumentsJson === 'object'
@@ -248,12 +246,6 @@ export function decodeConversationDelta(value: unknown): ConversationDelta {
           object.argumentsJson && typeof object.argumentsJson === 'object'
             ? (object.argumentsJson as Record<string, unknown>)
             : undefined,
-      }
-    case 'toolCallBackgrounded':
-      return {
-        kind,
-        callId: requiredString(object, 'callId'),
-        taskId: requiredString(object, 'taskId'),
       }
     case 'agentSessionUpdated':
       return {

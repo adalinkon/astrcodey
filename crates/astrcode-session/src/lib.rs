@@ -2,7 +2,6 @@
 //!
 //! 负责 Session 生命周期、Turn 执行、工具管线、事件发射和 compact。
 
-pub mod background;
 pub mod compact;
 pub(crate) mod compact_circuit_breaker;
 pub(crate) mod compaction_coordinator;
@@ -27,7 +26,6 @@ pub(crate) mod turn_publish;
 pub(crate) mod turn_runner;
 pub(crate) mod turn_stages;
 
-pub use background::BackgroundTasks;
 pub use payload::{
     agent_session_completed_payload, agent_session_failed_payload, compact_boundary_payload,
     session_continued_from_compaction_payload, system_prompt_configured_payload,

@@ -23,10 +23,7 @@ pub fn spawn_server_system(
 ) -> ServerSystem {
     let scheduler = Arc::clone(runtime.scheduler());
 
-    let event_bus = Arc::new(ServerEventBus::new(
-        Arc::clone(&event_tx),
-        Arc::clone(&scheduler),
-    ));
+    let event_bus = Arc::new(ServerEventBus::new(Arc::clone(&event_tx)));
 
     runtime
         .session_manager()

@@ -6,7 +6,7 @@ use astrcode_core::{
     event::{Event, EventPayload, Phase},
     llm::{LlmContent, LlmMessage, LlmRole, TURN_ABORTED_SOURCE, turn_aborted_context_message},
     storage::{
-        AgentSessionLinkView, AgentSessionStatus, BackgroundToolCallView, CompactBoundaryView,
+        AgentSessionLinkView, AgentSessionStatus, CompactBoundaryView,
         SequencedLlmMessage, SessionReadModel,
     },
     types::SessionId,
@@ -60,7 +60,6 @@ pub fn reduce(event: &Event, model: &mut SessionReadModel) {
             model.extra_system_prompt = None;
             model.system_prompt_fingerprint = None;
             model.pending_tool_calls.clear();
-            model.background_tool_calls.clear();
             model.compact_boundaries.clear();
             model.agent_sessions.clear();
             model.extension_events = Default::default();
@@ -221,28 +220,6 @@ pub fn reduce(event: &Event, model: &mut SessionReadModel) {
         } => {
             model.pending_tool_calls.remove(call_id);
 
-            // 后台任务 bookkeeping：仅记录 placeholder（backgrounded=true）
-            if let Some(task_id) = result
-                .metadata
-                .get("task_id")
-                .and_then(serde_json::Value::as_str)
-            {
-                let is_placeholder = result
-                    .metadata
-                    .get("backgrounded")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                if is_placeholder {
-                    model.background_tool_calls.insert(
-                        call_id.clone(),
-                        BackgroundToolCallView {
-                            task_id: task_id.into(),
-                            completed: false,
-                        },
-                    );
-                }
-            }
-
             // 始终 push（不再 update-in-place）
             model.messages.push(SequencedLlmMessage {
                 message: LlmMessage {
@@ -379,21 +356,6 @@ pub fn reduce(event: &Event, model: &mut SessionReadModel) {
                 Phase::CallingTool
             };
         },
-        EventPayload::BackgroundTaskNotification {
-            call_id, summary, ..
-        } => {
-            // append-only：追加 User 消息，不修改已有消息
-            model.messages.push(SequencedLlmMessage {
-                message: LlmMessage::user(summary.clone()),
-                updated_seq: event_seq,
-                source: Some("background_task".into()),
-            });
-
-            // 标记后台任务已完成，UI 据此将 Tool block 状态从 Backgrounded → Complete
-            if let Some(view) = model.background_tool_calls.get_mut(call_id) {
-                view.completed = true;
-            }
-        },
         EventPayload::Custom { .. } => {},
         EventPayload::RecapGenerated { .. } => {},
         EventPayload::ExtensionEvent {
@@ -417,10 +379,7 @@ pub fn reduce(event: &Event, model: &mut SessionReadModel) {
         | EventPayload::ToolCallArgumentsDelta { .. }
         | EventPayload::ToolOutputDelta { .. }
         | EventPayload::AgentRunStarted
-        | EventPayload::AgentRunCompleted { .. }
-        | EventPayload::ToolCallBackgrounded { .. }
-        | EventPayload::BackgroundTaskOutput { .. }
-        | EventPayload::BackgroundTaskCompleted { .. } => {},
+        | EventPayload::AgentRunCompleted { .. } => {},
     }
 }
 
@@ -614,92 +573,6 @@ mod tests {
         assert_eq!(
             link.status,
             astrcode_core::storage::AgentSessionStatus::Completed
-        );
-    }
-
-    #[test]
-    fn background_task_notification_appends_user_message_and_marks_completed() {
-        use astrcode_core::types::{BackgroundTaskId, ToolCallId};
-
-        let session_id = SessionId::from("session-bg-notification");
-        let call_id = ToolCallId::from("call-1");
-        let task_id = BackgroundTaskId::from("task-1");
-
-        let events = vec![
-            event(
-                1,
-                &session_id,
-                EventPayload::SessionStarted {
-                    working_dir: ".".into(),
-                    model_id: "mock".into(),
-                    parent_session_id: None,
-                    tool_policy: None,
-                    source_extension: None,
-                },
-            ),
-            // placeholder ToolCallCompleted with backgrounded=true
-            event(
-                2,
-                &session_id,
-                EventPayload::ToolCallCompleted {
-                    call_id: call_id.clone(),
-                    tool_name: "shell".into(),
-                    result: astrcode_core::tool::ToolResult {
-                        call_id: "call-1".into(),
-                        content: "Task moved to background".into(),
-                        is_error: false,
-                        error: None,
-                        metadata: {
-                            let mut m = std::collections::BTreeMap::new();
-                            m.insert("backgrounded".into(), serde_json::json!(true));
-                            m.insert("task_id".into(), serde_json::json!("task-1"));
-                            m
-                        },
-                        duration_ms: None,
-                    },
-                    arguments: String::new(),
-                    arguments_json: None,
-                },
-            ),
-            // BackgroundTaskNotification — the new append-only event
-            event(
-                3,
-                &session_id,
-                EventPayload::BackgroundTaskNotification {
-                    task_id: task_id.clone(),
-                    call_id: call_id.clone(),
-                    tool_name: "shell".into(),
-                    summary: "Background task completed (task: task-1, output: 42 bytes).".into(),
-                },
-            ),
-        ];
-
-        let model = replay(session_id, &events);
-
-        // Two messages: Tool (placeholder) + User (notification)
-        assert_eq!(model.messages.len(), 2);
-
-        // First message: Tool result (placeholder, unchanged)
-        assert_eq!(model.messages[0].message.role, LlmRole::Tool);
-        assert_eq!(model.messages[0].source, None);
-
-        // Second message: User (notification, with source marker)
-        assert_eq!(model.messages[1].message.role, LlmRole::User);
-        assert_eq!(
-            model.messages[1].source,
-            Some("background_task".into()),
-            "notification messages should carry source=background_task"
-        );
-
-        // background_tool_calls should show completed=true
-        let bg_view = model
-            .background_tool_calls
-            .get(&call_id)
-            .expect("call_id should be tracked");
-        assert_eq!(bg_view.task_id, task_id);
-        assert!(
-            bg_view.completed,
-            "BackgroundTaskNotification should mark the task as completed"
         );
     }
 

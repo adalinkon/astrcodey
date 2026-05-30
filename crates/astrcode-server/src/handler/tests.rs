@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     fs, future,
     path::{Path, PathBuf},
     sync::{
@@ -19,7 +18,7 @@ use astrcode_core::{
     },
     llm::{LlmContent, LlmError, LlmEvent, LlmMessage, LlmProvider, LlmRole, ModelLimits},
     storage::EventStore,
-    tool::{ToolDefinition, ToolResult},
+    tool::ToolDefinition,
     types::{SessionId, ToolCallId, new_session_id},
 };
 use astrcode_protocol::{commands::ClientCommand, events::ClientNotification};
@@ -823,11 +822,8 @@ async fn recv_event(event_rx: &mut mpsc::Receiver<ClientNotification>) -> Client
 fn test_event_bus(
     runtime: &Arc<crate::bootstrap::ServerRuntime>,
     event_tx: Arc<EventFanout<ClientNotification>>,
-    scheduler: Arc<crate::turn_scheduler::TurnScheduler>,
 ) -> Arc<crate::server_event_bus::ServerEventBus> {
-    let event_bus = Arc::new(crate::server_event_bus::ServerEventBus::new(
-        event_tx, scheduler,
-    ));
+    let event_bus = Arc::new(crate::server_event_bus::ServerEventBus::new(event_tx));
     runtime
         .session_manager()
         .bind_event_bus(Arc::clone(&event_bus));
@@ -842,7 +838,7 @@ fn spawn_test_actor(
     CommandHandler::spawn_actor(
         Arc::clone(&runtime),
         Arc::clone(&scheduler),
-        test_event_bus(&runtime, event_tx, scheduler),
+        test_event_bus(&runtime, event_tx),
     )
 }
 
@@ -1353,7 +1349,7 @@ async fn stale_pending_tool_calls_are_repaired_on_explicit_repair() {
     let handler = CommandHandler::new(
         Arc::clone(&runtime),
         Arc::clone(&scheduler),
-        test_event_bus(&runtime, event_tx, scheduler),
+        test_event_bus(&runtime, event_tx),
         actor_tx,
     );
 
@@ -1436,7 +1432,7 @@ async fn repair_stale_session_settles_dangling_tool_call_after_aborted_turn() {
     let handler = CommandHandler::new(
         Arc::clone(&runtime),
         Arc::clone(&scheduler),
-        test_event_bus(&runtime, event_tx, scheduler),
+        test_event_bus(&runtime, event_tx),
         actor_tx,
     );
 
@@ -1467,115 +1463,6 @@ async fn repair_stale_session_settles_dangling_tool_call_after_aborted_turn() {
             .iter()
             .any(|message| { message.joined_display_text("").contains("<turn_aborted>") })
     );
-}
-
-#[tokio::test]
-async fn repair_stale_background_tasks_even_when_phase_is_idle() {
-    let runtime = test_runtime();
-    let sid = new_session_id();
-    runtime
-        .event_store()
-        .create_session(&sid, ".", "mock", None, None, None)
-        .await
-        .unwrap();
-    runtime
-        .event_store()
-        .append_event(Event::new(
-            sid.clone(),
-            Some("turn-1".into()),
-            EventPayload::ToolCallRequested {
-                call_id: "call-bg".into(),
-                tool_name: "shell".into(),
-                arguments: serde_json::json!({ "command": "long-running" }),
-            },
-        ))
-        .await
-        .unwrap();
-    let mut metadata = BTreeMap::new();
-    metadata.insert("task_id".into(), serde_json::json!("task-bg"));
-    metadata.insert("backgrounded".into(), serde_json::json!(true));
-    runtime
-        .event_store()
-        .append_event(Event::new(
-            sid.clone(),
-            Some("turn-1".into()),
-            EventPayload::ToolCallCompleted {
-                call_id: "call-bg".into(),
-                tool_name: "shell".into(),
-                result: ToolResult {
-                    call_id: "call-bg".into(),
-                    content: "Task moved to background (task: task-bg).".into(),
-                    is_error: false,
-                    error: None,
-                    metadata,
-                    duration_ms: None,
-                },
-                arguments: "long-running".into(),
-                arguments_json: Some(serde_json::json!({ "command": "long-running" })),
-            },
-        ))
-        .await
-        .unwrap();
-    runtime
-        .event_store()
-        .append_event(Event::new(
-            sid.clone(),
-            Some("turn-1".into()),
-            EventPayload::TurnCompleted {
-                finish_reason: "stop".into(),
-            },
-        ))
-        .await
-        .unwrap();
-
-    let stale_state = runtime
-        .event_store()
-        .session_read_model(&sid)
-        .await
-        .unwrap();
-    assert_eq!(stale_state.phase, Phase::Idle);
-    assert!(
-        !stale_state
-            .background_tool_calls
-            .get(&ToolCallId::from("call-bg"))
-            .unwrap()
-            .completed
-    );
-
-    let event_tx = Arc::new(EventFanout::new(1024));
-    let (actor_tx, _actor_rx) = mpsc::channel(super::actor::COMMAND_ACTOR_CAPACITY);
-    let scheduler = test_scheduler(&runtime);
-    let handler = CommandHandler::new(
-        Arc::clone(&runtime),
-        Arc::clone(&scheduler),
-        test_event_bus(&runtime, event_tx, scheduler),
-        actor_tx,
-    );
-
-    handler.repair_stale_session(&sid).await.unwrap();
-
-    let state = runtime
-        .event_store()
-        .session_read_model(&sid)
-        .await
-        .unwrap();
-    assert!(
-        state
-            .background_tool_calls
-            .get(&ToolCallId::from("call-bg"))
-            .unwrap()
-            .completed
-    );
-    // repair emits BackgroundTaskNotification → projection appends User message
-    assert!(state.messages.iter().any(|message| {
-        message.source.as_deref() == Some("background_task")
-            && message.message.content.iter().any(|content| {
-                matches!(
-                    content,
-                    LlmContent::Text { text } if text.contains("interrupted")
-                )
-            })
-    }));
 }
 
 #[tokio::test]
@@ -1615,7 +1502,7 @@ async fn repair_stale_runs_marks_child_without_active_execution_interrupted() {
     let handler = CommandHandler::new(
         Arc::clone(&runtime),
         Arc::clone(&scheduler),
-        test_event_bus(&runtime, event_tx, scheduler),
+        test_event_bus(&runtime, event_tx),
         actor_tx,
     );
 
@@ -1686,39 +1573,6 @@ async fn queue_input_started_from_idle_is_cleaned_up() {
             sid.clone(),
             "queued-after-race".into(),
             crate::turn_scheduler::InputDelivery::QueueIfRunningElseStart,
-        )
-        .await
-        .unwrap();
-
-    assert!(matches!(
-        outcome,
-        crate::turn_scheduler::DeliveryOutcome::Started { .. }
-    ));
-    wait_until_no_active_turn(&scheduler, &sid).await;
-    assert_eq!(
-        runtime
-            .event_store()
-            .session_read_model(&sid)
-            .await
-            .unwrap()
-            .phase,
-        Phase::Idle
-    );
-}
-
-#[tokio::test]
-async fn background_step_started_from_idle_is_cleaned_up() {
-    let runtime = test_runtime_with_llm(Arc::new(MockLlm));
-    let scheduler = test_scheduler(&runtime);
-    let created = runtime.session_manager().create(".").await.unwrap();
-    let sid = created.session.id().clone();
-
-    let marker = r#"<system type="background_completed" source="task">"#;
-    let outcome = scheduler
-        .deliver_input(
-            sid.clone(),
-            marker.into(),
-            crate::turn_scheduler::InputDelivery::InjectIfRunningElseStart,
         )
         .await
         .unwrap();
