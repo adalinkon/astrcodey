@@ -633,6 +633,7 @@ impl LifecycleHandler for S5rLifecycleHandler {
             "session_id": ctx.session_id,
             "working_dir": ctx.working_dir,
             "model": ctx.model,
+            "mid_turn_user_messages_synced": ctx.mid_turn_user_messages_synced,
         });
         let hid = handler_id(&self.ext_id, "hook", &self.on);
         let resp = self

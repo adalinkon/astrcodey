@@ -216,6 +216,38 @@ async fn concurrent_prompt_accepts_one_and_queues_one() {
     );
 }
 
+#[tokio::test]
+async fn inject_route_writes_mid_turn_user_message() {
+    let runtime = runtime(Arc::new(PendingLlm));
+    let event_tx = Arc::new(EventFanout::new(1024));
+    let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
+    let session_id = create_session(app.clone(), &token).await;
+
+    let prompt_uri = format!("/api/sessions/{session_id}/prompt");
+    let inject_uri = format!("/api/sessions/{session_id}/inject");
+    let _first = post_json(app.clone(), &prompt_uri, r#"{"text":"first"}"#, &token).await;
+
+    let inject = post_json(app, &inject_uri, r#"{"text":"steer me"}"#, &token).await;
+    assert_eq!(inject.status(), StatusCode::OK);
+    let body: PromptSubmitResponse = serde_json::from_slice(&body_bytes(inject).await).unwrap();
+    assert!(matches!(
+        body,
+        PromptSubmitResponse::Handled { message, .. }
+            if message == "injected into active turn"
+    ));
+}
+
+#[tokio::test]
+async fn inject_route_without_active_turn_returns_client_error() {
+    let runtime = runtime(Arc::new(ImmediateLlm));
+    let event_tx = Arc::new(EventFanout::new(1024));
+    let (app, token) = router(Arc::clone(&runtime), event_tx).unwrap();
+    let session_id = create_session(app.clone(), &token).await;
+    let inject_uri = format!("/api/sessions/{session_id}/inject");
+
+    let response = post_json(app, &inject_uri, r#"{"text":"too early"}"#, &token).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
 
 #[tokio::test]
 async fn create_snapshot_then_stream_receives_live_prompt_delta() {

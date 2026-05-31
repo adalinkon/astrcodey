@@ -66,6 +66,7 @@ pub fn router(
         )
         .route("/api/sessions/{id}/stream", get(stream::session_stream))
         .route("/api/sessions/{id}/prompt", post(sessions::submit_prompt))
+        .route("/api/sessions/{id}/inject", post(sessions::inject_message))
         .route("/api/sessions/{id}/commands", get(sessions::list_commands))
         .route(
             "/api/sessions/{id}/compact",

@@ -74,14 +74,12 @@ export function connectSse(
 
     if (textDeltas.length > 0) {
       set((current) => {
-        const { blocks: newBlocks, queuedMessages } = applyCoalescedDeltas(
+        const { blocks: newBlocks } = applyCoalescedDeltas(
           current.blocks,
-          textDeltas,
-          current.queuedMessages
+          textDeltas
         )
         return {
           blocks: newBlocks,
-          queuedMessages,
           ...(cursorUpdate ?? {}),
         }
       })

@@ -96,6 +96,47 @@ pub(in crate::http) async fn conversation_snapshot(
     }
 }
 
+pub(in crate::http) async fn inject_message(
+    State(state): State<HttpState>,
+    Path(session_id): Path<String>,
+    Json(request): Json<PromptRequest>,
+) -> Response {
+    tracing::info!(
+        session_id = %session_id,
+        text_len = request.text.len(),
+        "POST inject"
+    );
+    let session_id = SessionId::from(session_id);
+    match state
+        .handler
+        .inject_input_for_session(session_id.clone(), request.text)
+        .await
+    {
+        Ok(PromptSubmission::Handled { message }) => Json(PromptSubmitResponse::Handled {
+            session_id: session_id.into_string(),
+            message,
+        })
+        .into_response(),
+        Ok(PromptSubmission::Accepted { turn_id }) => {
+            tracing::info!(session_id = %session_id, turn_id = %turn_id, "inject started turn");
+            Json(PromptSubmitResponse::Accepted {
+                session_id: session_id.into_string(),
+                turn_id: turn_id.into_string(),
+                branched_from_session_id: None,
+            })
+            .into_response()
+        },
+        Err(HandlerError::NoActiveTurn) => {
+            tracing::warn!(session_id = %session_id, "inject rejected: no active turn");
+            handler_error_response(HandlerError::NoActiveTurn, "inject_failed")
+        },
+        Err(error) => {
+            tracing::error!(session_id = %session_id, error = %error, "inject failed");
+            handler_error_response(error, "inject_failed")
+        },
+    }
+}
+
 pub(in crate::http) async fn submit_prompt(
     State(state): State<HttpState>,
     Path(session_id): Path<String>,

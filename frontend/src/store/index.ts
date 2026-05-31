@@ -10,6 +10,7 @@ import {
   withTimeout,
 } from './delta/blockHelpers'
 import { connectSse } from './stream'
+import { isExecutionPhase } from './phaseHelpers'
 import type { AppState } from './types'
 
 function resetSessionView(): Partial<AppState> {
@@ -23,7 +24,8 @@ function resetSessionView(): Partial<AppState> {
     compactSubmitting: false,
     workingDir: null,
     agentSessions: [],
-    queuedMessages: [],
+    pendingMessages: [],
+    composerDeliveryMode: 'queued',
     slashCommands: [],
     keybindings: [],
     statusItems: {},
@@ -51,7 +53,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   slashCommands: [],
   extensions: [],
   transientHint: null,
-  queuedMessages: [],
+  pendingMessages: [],
+  composerDeliveryMode: 'queued',
 
   initServer: async () => {
     set({ connectionStatus: 'connecting', connectionError: null })
@@ -153,7 +156,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       compactSubmitting: false,
       agentSessions: [],
       transientHint: null,
-      queuedMessages: [],
+      pendingMessages: [],
+      composerDeliveryMode: 'queued',
       slashCommands: [],
       keybindings: [],
       statusItems: {},
@@ -230,7 +234,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   submitPrompt: async (text: string) => {
-    const { activeSessionId } = get()
+    const state = get()
+    const { activeSessionId } = state
     if (!activeSessionId) {
       return false
     }
@@ -240,7 +245,34 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ compactSubmitting: true, phase: 'compacting' })
     }
 
+    const busy = isExecutionPhase(state.phase, state.compactSubmitting)
+
     try {
+      if (busy && !compactCommand) {
+        if (state.composerDeliveryMode === 'inject') {
+          const response = await api.injectMessage(activeSessionId, text)
+          if (
+            response.kind === 'handled' &&
+            get().activeSessionId !== response.sessionId
+          ) {
+            return true
+          }
+          return true
+        }
+
+        set((current) => ({
+          pendingMessages: [
+            ...current.pendingMessages,
+            {
+              id: crypto.randomUUID(),
+              text,
+              delivery: 'queued',
+            },
+          ],
+        }))
+        return true
+      }
+
       const response = await api.submitPrompt(activeSessionId, text)
       if (response.kind === 'handled') {
         if (get().activeSessionId !== response.sessionId) {
@@ -249,10 +281,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (response.message === 'compact accepted') {
           await get().refreshSessions()
           await get().switchSession(response.sessionId)
-        } else if (response.message === 'queued for next turn') {
-          set((current) => ({
-            queuedMessages: [...current.queuedMessages, text],
-          }))
         } else if (response.message.trim()) {
           set((current) => ({
             blocks: [...current.blocks, commandNoteBlock(response.message)],
@@ -260,6 +288,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
       return true
+    } catch (err) {
+      console.error('submitPrompt failed:', err)
+      set({
+        transientHint:
+          err instanceof Error ? err.message : '发送失败，请重试',
+      })
+      return false
     } finally {
       if (compactCommand) {
         const current = get()
@@ -267,6 +302,95 @@ export const useAppStore = create<AppState>((set, get) => ({
           compactSubmitting: false,
           phase: resolvePhase(current.control, false),
         })
+      }
+    }
+  },
+
+  toggleComposerDeliveryMode: () => {
+    set((current) => ({
+      composerDeliveryMode:
+        current.composerDeliveryMode === 'queued' ? 'inject' : 'queued',
+    }))
+  },
+
+  togglePendingDelivery: async (id: string) => {
+    const state = get()
+    const message = state.pendingMessages.find((item) => item.id === id)
+    if (!message || !state.activeSessionId) return
+
+    const nextDelivery = message.delivery === 'queued' ? 'inject' : 'queued'
+
+    set((current) => ({
+      pendingMessages: current.pendingMessages.map((item) =>
+        item.id === id ? { ...item, delivery: nextDelivery } : item
+      ),
+    }))
+
+    if (
+      nextDelivery === 'inject' &&
+      isExecutionPhase(state.phase, state.compactSubmitting)
+    ) {
+      try {
+        await api.injectMessage(state.activeSessionId, message.text)
+        set((current) => ({
+          pendingMessages: current.pendingMessages.filter(
+            (item) => item.id !== id
+          ),
+        }))
+      } catch (err) {
+        console.error('injectMessage failed:', err)
+        set((current) => ({
+          pendingMessages: current.pendingMessages.map((item) =>
+            item.id === id ? { ...item, delivery: 'queued' as const } : item
+          ),
+          transientHint:
+            err instanceof Error ? err.message : '注入失败，请重试',
+        }))
+      }
+    }
+  },
+
+  removePendingMessage: (id: string) => {
+    set((current) => ({
+      pendingMessages: current.pendingMessages.filter((item) => item.id !== id),
+    }))
+  },
+
+  restorePendingMessage: (id: string) => {
+    const state = get()
+    const message = state.pendingMessages.find((item) => item.id === id)
+    if (!message) return null
+    get().removePendingMessage(id)
+    return message.text
+  },
+
+  flushPendingQueued: async () => {
+    const state = get()
+    const { activeSessionId, phase, compactSubmitting } = state
+    if (!activeSessionId) return
+    if (isExecutionPhase(phase, compactSubmitting)) return
+
+    const normalized = state.pendingMessages.map((item) =>
+      item.delivery === 'inject'
+        ? { ...item, delivery: 'queued' as const }
+        : item
+    )
+    const toFlush = normalized.filter((item) => item.delivery === 'queued')
+    if (toFlush.length === 0) return
+
+    set({ pendingMessages: [] })
+
+    for (const message of toFlush) {
+      try {
+        await api.submitPrompt(activeSessionId, message.text)
+      } catch (err) {
+        console.error('flushPendingQueued failed:', err)
+        set((current) => ({
+          pendingMessages: [...current.pendingMessages, message],
+          transientHint:
+            err instanceof Error ? err.message : '排队消息发送失败',
+        }))
+        break
       }
     }
   },

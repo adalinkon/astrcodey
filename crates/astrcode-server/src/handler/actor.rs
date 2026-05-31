@@ -92,6 +92,22 @@ impl CommandHandle {
         Self::recv(rx).await?
     }
 
+    /// 向活跃 turn 注入 mid-turn 消息（steer）。
+    pub async fn inject_input_for_session(
+        &self,
+        session_id: SessionId,
+        text: String,
+    ) -> Result<PromptSubmission, HandlerError> {
+        let (reply, rx) = oneshot::channel();
+        self.post(CommandMessage::InjectInputForSession {
+            session_id,
+            text,
+            reply,
+        })
+        .await?;
+        Self::recv(rx).await?
+    }
+
     /// 手动压缩指定会话。
     pub async fn compact_session(
         &self,
@@ -185,6 +201,12 @@ pub(in crate::handler) enum CommandMessage {
     },
     /// 提交输入
     SubmitInputForSession {
+        session_id: SessionId,
+        text: String,
+        reply: oneshot::Sender<Result<PromptSubmission, HandlerError>>,
+    },
+    /// Mid-turn 注入（steer）
+    InjectInputForSession {
         session_id: SessionId,
         text: String,
         reply: oneshot::Sender<Result<PromptSubmission, HandlerError>>,
@@ -399,6 +421,13 @@ impl CommandHandler {
                     self.submit_input_for_session(session_id, text).await
                 };
                 let _ = reply.send(result);
+            },
+            CommandMessage::InjectInputForSession {
+                session_id,
+                text,
+                reply,
+            } => {
+                let _ = reply.send(self.inject_input_for_session(session_id, text).await);
             },
             CommandMessage::CompactSession {
                 session_id,

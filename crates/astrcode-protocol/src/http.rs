@@ -22,7 +22,7 @@ pub struct CreateSessionResponseDto {
     pub session_id: String,
 }
 
-/// 提交 prompt 请求。
+/// 提交 prompt 或 mid-turn 注入请求（二者共用 `text` 字段）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptRequest {

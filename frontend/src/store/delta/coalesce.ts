@@ -121,10 +121,9 @@ function findOrCreateToolCallIdx(
 
 export function applyCoalescedDeltas(
   blocks: ConversationBlock[],
-  coalesced: CoalescedDelta[],
-  queuedMessages: string[]
-): { blocks: ConversationBlock[]; queuedMessages: string[] } {
-  if (coalesced.length === 0) return { blocks, queuedMessages }
+  coalesced: CoalescedDelta[]
+): { blocks: ConversationBlock[] } {
+  if (coalesced.length === 0) return { blocks }
 
   const mutations = new Map<number, ConversationBlock>()
   let needsNewBlocks = false
@@ -223,7 +222,7 @@ export function applyCoalescedDeltas(
     }
   }
 
-  return { blocks: newBlocks, queuedMessages }
+  return { blocks: newBlocks }
 }
 
 export function isDeferrableDelta(delta: ConversationDelta): boolean {

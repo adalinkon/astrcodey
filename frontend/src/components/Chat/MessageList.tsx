@@ -3,7 +3,6 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import type { ConversationBlock } from '../../services/types'
 import { cn } from '../../lib/utils'
 import { emptyStateSurface } from '../../lib/styles'
-import { useAppStore } from '../../store/conversation'
 import AssistantMessage from './AssistantMessage'
 import UserMessage from './UserMessage'
 import ToolCallBlock from './ToolCallBlock'
@@ -79,7 +78,6 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
   const lastScrollTopRef = useRef(0)
   const ignoreScrollRef = useRef(false)
   const touchStartYRef = useRef<number | null>(null)
-  const queuedMessages = useAppStore((s) => s.queuedMessages)
 
   const scrollContainerToBottom = useCallback(
     (behavior: ScrollBehavior = 'auto') => {
@@ -105,13 +103,12 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
     return items
   }, [blocks])
 
-  const totalItemCount = allItems.length + queuedMessages.length
+  const totalItemCount = allItems.length
 
   const virtualizer = useVirtualizer({
     count: totalItemCount,
     getScrollElement: () => listRef.current,
     estimateSize: (index) => {
-      if (index >= allItems.length) return 80 // queued message
       const block = allItems[index].block
       if (block.kind === 'user') return 80
       if (block.kind === 'systemNote') return 60
@@ -121,12 +118,7 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
       return 120
     },
     overscan: 5,
-    getItemKey: (index) => {
-      if (index < allItems.length) {
-        return allItems[index].block.id
-      }
-      return `queued-${index - allItems.length}`
-    },
+    getItemKey: (index) => allItems[index].block.id,
   })
 
   const virtualizerRef = useRef(virtualizer)
@@ -309,30 +301,11 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
           }}
         >
           {virtualItems.map((virtualItem) => {
-            const queueStartIndex = allItems.length
-            let content: React.ReactNode
-
-            if (virtualItem.index < queueStartIndex) {
-              const { block, index } = allItems[virtualItem.index]
-              const prevBlock = index > 0 ? blocks[index - 1] : null
-              content = <BlockRenderer block={block} prevBlock={prevBlock} />
-            } else {
-              const qi = virtualItem.index - queueStartIndex
-              const text = queuedMessages[qi]
-              content =
-                text !== undefined ? (
-                  <div className="mx-auto w-[min(100%,var(--layout-content-max-width))] min-w-0">
-                    <div className="flex justify-end">
-                      <div className="max-w-[80%] rounded-2xl rounded-br-md border border-dashed border-border bg-user-bubble/60 px-4 py-3 text-[15px] leading-[1.7] text-text-primary">
-                        <span className="mr-2 text-[11px] text-text-secondary">
-                          排队中
-                        </span>
-                        {text}
-                      </div>
-                    </div>
-                  </div>
-                ) : null
-            }
+            const { block, index } = allItems[virtualItem.index]
+            const prevBlock = index > 0 ? blocks[index - 1] : null
+            const content = (
+              <BlockRenderer block={block} prevBlock={prevBlock} />
+            )
 
             // First item has no top gap; subsequent items get gap via padding
             const topPadding = virtualItem.index === 0 ? 0 : BLOCK_GAP_PX

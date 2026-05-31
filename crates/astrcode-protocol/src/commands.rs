@@ -76,10 +76,11 @@ pub enum ClientCommand {
         attachments: Vec<Attachment>,
     },
 
-    /// 向正在执行的 turn 注入中途消息。
+    /// 向正在执行的 turn 注入中途消息（steer）。
     ///
-    /// 仅在 session 有 active turn 时有效。消息通过 `emit_durable` 持久化后
-    /// 由 TurnRunner 在下一个 step boundary 消费并注入 LLM 上下文。
+    /// 仅在 session 有 active turn 时有效（HTTP 等价：`POST /api/sessions/{id}/inject`）。
+    /// 消息经 `TurnScheduler` 的 `InjectIfRunningElseStart` 立即写入 durable `UserMessage`，
+    /// 由 TurnRunner 在下一个 agent step 并入 LLM 上下文。
     ///
     /// # 参数
     /// - `text`: 要注入的消息文本

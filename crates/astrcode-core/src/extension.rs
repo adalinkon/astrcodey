@@ -411,11 +411,12 @@ pub enum ExtensionEvent {
 
     // ── Step 级别 ──
     /// Step 开始（loop 迭代顶部，prepare_stage 之前）。
+    ///
+    /// 若本 step 前有 mid-turn inject 刚并入上下文，见
+    /// [`LifecycleContext::mid_turn_user_messages_synced`]。
     StepStart,
     /// Step 结束（loop 迭代末尾，tool_calls 执行完毕或 LLM 返回 Complete 后）。
     StepEnd,
-    /// 本 step 开始前检测到新的中途用户输入（steer）已并入上下文。
-    SteerFlush,
 
     // ── 工具级别（主要钩子点） ──
     /// 工具执行前。
@@ -998,6 +999,16 @@ pub struct LifecycleContext {
     pub extension_event_sink: Option<std::sync::Arc<dyn ExtensionEventSink>>,
     /// 仅 TurnEnd 事件填充：当轮最后一条 user 和 assistant 消息文本。
     pub last_exchange: Option<ExchangeSummary>,
+    /// 仅 StepStart 填充：自上一 agent step 以来新并入上下文的 mid-turn user 消息条数。
+    pub mid_turn_user_messages_synced: u32,
+}
+
+impl LifecycleContext {
+    /// 构造 StepStart 用 ctx，携带本 step 前 sync 的 mid-turn user 消息数。
+    pub fn for_step_start(mut self, mid_turn_user_messages_synced: u32) -> Self {
+        self.mid_turn_user_messages_synced = mid_turn_user_messages_synced;
+        self
+    }
 }
 
 impl std::fmt::Debug for LifecycleContext {
@@ -1009,6 +1020,10 @@ impl std::fmt::Debug for LifecycleContext {
                 &self.extension_event_sink.as_ref().map(|_| "<sink>"),
             )
             .field("last_exchange", &self.last_exchange)
+            .field(
+                "mid_turn_user_messages_synced",
+                &self.mid_turn_user_messages_synced,
+            )
             .finish_non_exhaustive()
     }
 }

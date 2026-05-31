@@ -372,6 +372,7 @@ async fn extension_context_snapshot_works_for_nonblocking() {
         event_tx: None,
         extension_event_sink: None,
         last_exchange: None,
+        mid_turn_user_messages_synced: 0,
     };
 
     runner
@@ -394,6 +395,7 @@ async fn dispatch_with_no_registered_extensions_is_noop() {
         event_tx: None,
         extension_event_sink: None,
         last_exchange: None,
+        mid_turn_user_messages_synced: 0,
     };
     runner
         .emit_lifecycle(astrcode_core::extension::ExtensionEvent::SessionStart, ctx)
@@ -420,6 +422,7 @@ async fn extension_subscribes_only_to_matching_events() {
         event_tx: None,
         extension_event_sink: None,
         last_exchange: None,
+        mid_turn_user_messages_synced: 0,
     };
     // SessionStart should pass through without blocking.
     runner

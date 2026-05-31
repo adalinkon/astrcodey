@@ -396,7 +396,7 @@ async fn submit_current_input(app: &mut App, client: &Arc<Client>) -> io::Result
         }
         app.remember_input(&input);
         app.push_user(&input);
-        app.status_text = "Message queued".into();
+        app.status_text = "Injected into active turn".into();
         client
             .send_command(&ClientCommand::InjectMessage { text: input })
             .await

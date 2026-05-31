@@ -124,6 +124,19 @@ export async function getConversation(
   )
 }
 
+/** Mid-turn steer: requires an active turn (unlike `submitPrompt`, which queues while busy). */
+export async function injectMessage(
+  sessionId: string,
+  text: string
+): Promise<PromptSubmitResponse> {
+  return decodePromptSubmitResponse(
+    await request(`/api/sessions/${encodeURIComponent(sessionId)}/inject`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    })
+  )
+}
+
 export async function submitPrompt(
   sessionId: string,
   text: string

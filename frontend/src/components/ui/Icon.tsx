@@ -11,6 +11,8 @@ export type IconName =
   | 'users'
   | 'copy'
   | 'retry'
+  | 'chevron-down'
+  | 'trash'
 
 type IconProps = SVGProps<SVGSVGElement> & {
   name: IconName
@@ -91,6 +93,23 @@ const icons: Record<
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
       <path d="M1 4v6h6" strokeWidth="2" />
       <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" strokeWidth="2" />
+    </svg>
+  ),
+  'chevron-down': (props) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
+      <polyline points="6 9 12 15 18 9" strokeWidth="2" />
+    </svg>
+  ),
+  trash: (props) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
+      <polyline points="3 6 5 6 21 6" strokeWidth="2" />
+      <path
+        d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"
+        strokeWidth="2"
+      />
+      <path d="M10 11v6" strokeWidth="2" />
+      <path d="M14 11v6" strokeWidth="2" />
+      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" strokeWidth="2" />
     </svg>
   ),
 }

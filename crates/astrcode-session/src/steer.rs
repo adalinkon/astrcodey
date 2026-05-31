@@ -1,4 +1,8 @@
-//! 中途用户输入（steer）在 step 边界的显式 flush。
+//! Mid-turn 用户输入在 agent step 边界的同步检测。
+//!
+//! 消息由 `TurnScheduler::inject_internal` 立即写入 durable `UserMessage`（无内存 buffer）。
+//! 本模块在每个 step 开始前统计读模型中的 user 条数；增量写入
+//! [`LifecycleContext::mid_turn_user_messages_synced`] 并随 [`ExtensionEvent::StepStart`] 派发。
 
 use astrcode_context::compaction::is_synthetic_context_message;
 use astrcode_core::{llm::LlmRole, storage::SessionReadModel};

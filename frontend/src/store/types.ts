@@ -9,6 +9,14 @@ import type {
   SlashCommandInfo,
 } from '../services/types'
 
+export type MessageDelivery = 'queued' | 'inject'
+
+export interface PendingMessage {
+  id: string
+  text: string
+  delivery: MessageDelivery
+}
+
 export interface AppState {
   serverPort: number | null
   connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -33,7 +41,8 @@ export interface AppState {
   slashCommands: SlashCommandInfo[]
   extensions: ExtensionStateView[]
   transientHint: string | null
-  queuedMessages: string[]
+  pendingMessages: PendingMessage[]
+  composerDeliveryMode: MessageDelivery
 
   initServer: () => Promise<void>
   refreshSessions: () => Promise<void>
@@ -49,4 +58,9 @@ export interface AppState {
   abortCurrentTurn: () => Promise<void>
   applyDelta: (delta: import('../services/types').ConversationDelta) => void
   clearTransientHint: () => void
+  toggleComposerDeliveryMode: () => void
+  togglePendingDelivery: (id: string) => Promise<void>
+  removePendingMessage: (id: string) => void
+  restorePendingMessage: (id: string) => string | null
+  flushPendingQueued: () => Promise<void>
 }

@@ -4,22 +4,16 @@ import {
   composerShell,
   composerSubmitButton,
   composerInterruptButton,
+  ghostIconButton,
 } from '../../lib/styles'
 import { cn } from '../../lib/utils'
 import ModelSelector from './ModelSelector'
 import CommandSelector from './CommandSelector'
+import PendingMessagesPanel from './PendingMessagesPanel'
 import { Icon } from '../ui'
 import * as api from '../../services/api'
 import type { SlashCommandInfo } from '../../services/types'
-
-function isExecutionPhase(phase: string): boolean {
-  return (
-    phase === 'thinking' ||
-    phase === 'streaming' ||
-    phase === 'calling_tool' ||
-    phase === 'compacting'
-  )
-}
+import { isExecutionPhase } from '../../store/phaseHelpers'
 
 export default function InputBar() {
   const submitPrompt = useAppStore((s) => s.submitPrompt)
@@ -31,14 +25,26 @@ export default function InputBar() {
   const bumpModelRefreshKey = useAppStore((s) => s.bumpModelRefreshKey)
   const compactSubmitting = useAppStore((s) => s.compactSubmitting)
   const statusItems = useAppStore((s) => s.statusItems)
-  const queuedMessages = useAppStore((s) => s.queuedMessages)
+  const pendingMessages = useAppStore((s) => s.pendingMessages)
+  const composerDeliveryMode = useAppStore((s) => s.composerDeliveryMode)
+  const toggleComposerDeliveryMode = useAppStore((s) => s.toggleComposerDeliveryMode)
+  const flushPendingQueued = useAppStore((s) => s.flushPendingQueued)
 
   const [value, setValue] = useState('')
   const [isComposing, setIsComposing] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isCompacting = phase === 'compacting' || compactSubmitting
-  const isBusy = isExecutionPhase(phase) || compactSubmitting
+  const isBusy = isExecutionPhase(phase, compactSubmitting)
   const canSubmit = !!activeSessionId && !isCompacting
+  const canInject = isBusy
+  const submitModeLabel =
+    composerDeliveryMode === 'queued' ? 'Queued' : 'Inject'
+  const submitActionLabel =
+    isBusy
+      ? composerDeliveryMode === 'queued'
+        ? '加入队列'
+        : '注入当前 turn'
+      : '发送消息'
 
   // Abort 防抖：防止快速多次点击
   const abortDebounceRef = useRef<number | null>(null)
@@ -240,6 +246,11 @@ export default function InputBar() {
     })
   }, [abortCurrentTurn])
 
+  useEffect(() => {
+    if (isBusy) return
+    void flushPendingQueued()
+  }, [isBusy, flushPendingQueued, pendingMessages.length])
+
   return (
     <div className="shrink-0 bg-panel-bg px-[var(--layout-page-padding-x)] pb-4.5 pt-4">
       <div className="mx-auto w-full max-w-[var(--layout-content-max-width)] translate-x-[var(--chat-assistant-center-shift)]">
@@ -263,6 +274,19 @@ export default function InputBar() {
             )}
             <div className="relative">
               <div className="flex flex-col px-[var(--chat-composer-shell-padding-x)] py-3">
+                <PendingMessagesPanel
+                  canInject={canInject}
+                  onEdit={(text) => {
+                    setValue(text)
+                    requestAnimationFrame(() => {
+                      const textarea = textareaRef.current
+                      if (!textarea) return
+                      textarea.focus()
+                      textarea.style.height = 'auto'
+                      textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`
+                    })
+                  }}
+                />
                 <textarea
                   ref={textareaRef}
                   className="mb-3 max-h-60 min-h-12.5 w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-[15px] leading-[1.75] text-text-primary placeholder:text-text-muted focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
@@ -298,13 +322,38 @@ export default function InputBar() {
                           {text}
                         </span>
                       ))}
-                    {queuedMessages.length > 0 && (
+                    {pendingMessages.length > 0 && (
                       <span className="text-[11px] text-text-secondary">
-                        {queuedMessages.length} 条排队中
+                        {pendingMessages.length} 条待发送
                       </span>
                     )}
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
+                    {isBusy && (
+                      <button
+                        type="button"
+                        className={cn(
+                          ghostIconButton,
+                          'gap-1 rounded-xl px-2 py-1.5 text-[11px] font-medium',
+                          composerDeliveryMode === 'inject' &&
+                            'bg-accent-strong/10 text-accent-strong'
+                        )}
+                        onClick={toggleComposerDeliveryMode}
+                        aria-label={
+                          composerDeliveryMode === 'queued'
+                            ? '切换为 Inject'
+                            : '切换为 Queued'
+                        }
+                        title={
+                          composerDeliveryMode === 'queued'
+                            ? '切换为 Inject'
+                            : '切换为 Queued'
+                        }
+                      >
+                        <Icon name="send" size={14} />
+                        <span>{submitModeLabel}</span>
+                      </button>
+                    )}
                     {isBusy && (
                       <button
                         className={composerInterruptButton}
@@ -327,8 +376,8 @@ export default function InputBar() {
                       type="button"
                       onClick={() => void submit()}
                       disabled={!value.trim() || !activeSessionId || !canSubmit}
-                      aria-label={isBusy ? '加入队列' : '发送消息'}
-                      title={isBusy ? '加入队列' : '发送消息'}
+                      aria-label={submitActionLabel}
+                      title={submitActionLabel}
                     >
                       <Icon name="send" size={16} />
                     </button>

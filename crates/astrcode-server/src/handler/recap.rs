@@ -81,6 +81,7 @@ impl CommandHandler {
             event_tx: None,
             extension_event_sink: None,
             last_exchange: None,
+            mid_turn_user_messages_synced: 0,
         };
         if let Err(e) = self
             .runtime

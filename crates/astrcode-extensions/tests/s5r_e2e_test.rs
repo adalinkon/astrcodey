@@ -411,6 +411,7 @@ async fn s5r_turn_end_continuations_and_pipeline() {
                 event_tx: None,
                 extension_event_sink: None,
                 last_exchange: None,
+                mid_turn_user_messages_synced: 0,
             },
         )
         .await

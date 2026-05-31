@@ -212,7 +212,6 @@ pub fn event_from_name(name: &str) -> Option<ExtensionEvent> {
         "turn_aborted" => Some(ExtensionEvent::TurnAborted),
         "step_start" => Some(ExtensionEvent::StepStart),
         "step_end" => Some(ExtensionEvent::StepEnd),
-        "steer_flush" => Some(ExtensionEvent::SteerFlush),
         "pre_tool_use" => Some(ExtensionEvent::PreToolUse),
         "post_tool_use" => Some(ExtensionEvent::PostToolUse),
         "post_tool_use_failure" => Some(ExtensionEvent::PostToolUseFailure),
@@ -247,7 +246,6 @@ pub fn event_to_name(event: &ExtensionEvent) -> &'static str {
         ExtensionEvent::TurnAborted => "turn_aborted",
         ExtensionEvent::StepStart => "step_start",
         ExtensionEvent::StepEnd => "step_end",
-        ExtensionEvent::SteerFlush => "steer_flush",
         ExtensionEvent::PreToolUse => "pre_tool_use",
         ExtensionEvent::PostToolUse => "post_tool_use",
         ExtensionEvent::PostToolUseFailure => "post_tool_use_failure",
@@ -264,7 +262,24 @@ pub fn event_to_name(event: &ExtensionEvent) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use astrcode_core::extension::LifecycleContext;
+
     use super::*;
+
+    #[test]
+    fn lifecycle_context_for_step_start_carries_sync_count() {
+        let ctx = LifecycleContext {
+            session_id: "s1".into(),
+            working_dir: "/tmp".into(),
+            model: astrcode_core::config::ModelSelection::simple("m"),
+            event_tx: None,
+            extension_event_sink: None,
+            last_exchange: None,
+            mid_turn_user_messages_synced: 0,
+        };
+        let step = ctx.for_step_start(2);
+        assert_eq!(step.mid_turn_user_messages_synced, 2);
+    }
 
     #[test]
     fn continue_after_stop_event_roundtrip() {

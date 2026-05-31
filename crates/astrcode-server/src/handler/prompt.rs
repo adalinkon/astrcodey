@@ -3,6 +3,7 @@
 use astrcode_core::types::SessionId;
 
 use super::{CommandHandler, HandlerError, PromptSubmission, slash};
+use crate::turn_scheduler::{DeliveryOutcome, InputDelivery};
 
 impl CommandHandler {
     pub(super) async fn submit_prompt(&mut self, text: String) -> Result<(), HandlerError> {
@@ -39,15 +40,33 @@ impl CommandHandler {
             self.send_error(40400, "No active turn");
             return Err(HandlerError::NoActiveTurn);
         }
-        self.scheduler
-            .deliver_input(
-                sid.clone(),
-                text,
-                crate::turn_scheduler::InputDelivery::InjectIfRunningElseStart,
-            )
-            .await
-            .map_err(HandlerError::from)?;
-        Ok(())
+        match self.inject_input_for_session(sid.clone(), text).await? {
+            PromptSubmission::Handled { .. } => Ok(()),
+            PromptSubmission::Accepted { .. } => Ok(()),
+        }
+    }
+
+    /// Mid-turn 注入：要求当前 session 有活跃 turn，经 [`InputDelivery::InjectIfRunningElseStart`]
+    /// 写入 durable `UserMessage`，由 `TurnRunner` 在下一 agent step 并入 LLM 上下文。
+    pub async fn inject_input_for_session(
+        &self,
+        sid: SessionId,
+        text: String,
+    ) -> Result<PromptSubmission, HandlerError> {
+        if !self.scheduler.registry().has_active(&sid) {
+            return Err(HandlerError::NoActiveTurn);
+        }
+        match self
+            .scheduler
+            .deliver_input(sid, text, InputDelivery::InjectIfRunningElseStart)
+            .await?
+        {
+            DeliveryOutcome::Injected { .. } => Ok(PromptSubmission::Handled {
+                message: "injected into active turn".into(),
+            }),
+            DeliveryOutcome::Started { turn_id } => Ok(PromptSubmission::Accepted { turn_id }),
+            DeliveryOutcome::Queued { .. } => unreachable!("inject delivery never enqueues"),
+        }
     }
 
     pub async fn submit_input_for_session(

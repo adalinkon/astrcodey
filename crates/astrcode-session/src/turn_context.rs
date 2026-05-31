@@ -83,6 +83,7 @@ impl SharedTurnContext {
             event_tx: self.turn_event_tx.clone(),
             extension_event_sink: None,
             last_exchange: None,
+            mid_turn_user_messages_synced: 0,
         }
     }
 
@@ -102,6 +103,7 @@ impl SharedTurnContext {
                 user_message,
                 assistant_message,
             }),
+            mid_turn_user_messages_synced: 0,
         }
     }
 

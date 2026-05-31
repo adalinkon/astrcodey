@@ -19,10 +19,6 @@ export function applyDeltaToState(
             : current.blocks
         return {
           blocks: upsertBlock(baseBlocks, delta.block),
-          queuedMessages:
-            delta.block.kind === 'user' && current.queuedMessages.length > 0
-              ? current.queuedMessages.slice(1)
-              : current.queuedMessages,
         }
       })
       if (delta.block.kind === 'user') {

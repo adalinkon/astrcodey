@@ -169,16 +169,13 @@ impl TurnLoop {
         loop {
             self.check_aborted()?;
             state.tool_deduplicator_mut().begin_step();
-            self.flush_steered_inputs_at_step_start(
-                &extension_runner,
-                &lifecycle_ctx,
-                publisher,
-                &mut state,
-            )
-            .await?;
+            let mid_turn_synced = self
+                .sync_mid_turn_user_messages_at_step_start(publisher, &mut state)
+                .await?;
+            let step_ctx = lifecycle_ctx.clone().for_step_start(mid_turn_synced);
 
             extension_runner
-                .emit_lifecycle(ExtensionEvent::StepStart, lifecycle_ctx.clone())
+                .emit_lifecycle(ExtensionEvent::StepStart, step_ctx)
                 .await?;
 
             let prepared = self
@@ -506,32 +503,27 @@ impl TurnLoop {
         }
     }
 
-    /// 每个 agent step 开始前：重载读模型，检测并 flush 中途注入的 user 消息（steer）。
-    async fn flush_steered_inputs_at_step_start(
+    /// 每个 agent step 开始前：重载读模型，返回自上次 step 以来新增的 durable user 消息条数。
+    async fn sync_mid_turn_user_messages_at_step_start(
         &self,
-        extension_runner: &astrcode_extensions::runner::ExtensionRunner,
-        lifecycle_ctx: &astrcode_core::extension::LifecycleContext,
         publisher: &Arc<TurnEvents>,
         state: &mut TurnState,
-    ) -> Result<(), TurnError> {
+    ) -> Result<u32, TurnError> {
         publisher.invalidate_model_cache().await;
         let model = publisher.snapshot_model().await?;
         let current = count_visible_user_messages(&model);
         let previous = state.tracked_user_message_count();
-        if current > previous {
-            let flushed = current - previous;
+        let synced = current.saturating_sub(previous) as u32;
+        if synced > 0 {
             tracing::debug!(
-                flushed,
+                synced,
                 previous,
                 current,
-                "steer buffer flush: mid-turn user inputs merged into context"
+                "mid-turn user messages synced into context for next step"
             );
-            extension_runner
-                .emit_lifecycle(ExtensionEvent::SteerFlush, lifecycle_ctx.clone())
-                .await?;
         }
         state.set_tracked_user_message_count(current);
-        Ok(())
+        Ok(synced)
     }
 
     async fn should_continue_after_stop(
