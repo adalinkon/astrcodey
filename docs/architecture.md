@@ -82,10 +82,19 @@ session-A (root)
 | 进程 | `TurnRegistry` | 当前是否有活跃 turn 任务（优化索引，需 `repair_stale` 对齐） |
 | 传输 | `CommandHandler.active_session_id` | stdio/ACP 的「当前会话」；HTTP 在 path 中带 `session_id` |
 
-### 下一 turn 输入队列（唯一）
+### 输入投递（`TurnScheduler::deliver_input`）
 
-所有「当前 turn 运行中，稍后处理」的输入走 `TurnScheduler::deliver_input(..., QueueIfRunningElseStart)` → `pending_queues`。
-Turn 结束后由 `finish_execution` **FIFO 每次弹出一条** 并 `submit`，与 HTTP 连发 prompt 行为一致。
+运行中的 session 收到用户文本时，由**调用方**选择 [`InputDelivery`](crates/astrcode-server/src/turn_scheduler.rs) 策略，调度层统一执行：
+
+| 策略 | turn 运行中 | turn 空闲 | 典型入口 |
+|------|-------------|-------------|----------|
+| `InjectIfRunningElseStart` | 立即 durable `UserMessage`（绑定当前 `turn_id`）；下一 agent step 进入 LLM 上下文（steer） | 开新 turn | TUI `InjectMessage`、HTTP `POST /api/sessions/{id}/inject`、`SessionOperations::inject_message` |
+| `QueueIfRunningElseStart` | `pending_queues` FIFO，不打断当前 turn | 开新 turn | HTTP/ACP `submit_input`（连发 prompt） |
+| `StartNew` | 拒绝（busy） | 开新 turn | 必须独占 turn 的内部路径 |
+
+Turn 结束后，`finish_and_maybe_start_next` 从队列 **FIFO 弹出一条** 并 `start_execution`（与 HTTP 连发 `prompt` 的 queue 语义一致）。
+
+stdio `SubmitPrompt` 在 busy 时 fallback 到 inject（交互式 steer）；HTTP `prompt` 使用 queue（程序化连发）。二者都走同一 `deliver_input` gateway，只是策略不同。
 
 ### 启动顺序
 
@@ -100,7 +109,7 @@ bootstrap_with → ChildSessionCoordinator + TurnScheduler + TurnRegistry
 ### 命令路径
 
 - **写**：`ClientCommand` / HTTP POST → `CommandHandle` → `CommandHandler`（Actor 串行）
-- **Turn**：`start_turn` → `TurnScheduler::submit`；连发 prompt → `deliver_input(QueueIfRunningElseStart)`
+- **Turn**：`start_turn` → `start_execution`；HTTP 连发 prompt → `deliver_input(QueueIfRunningElseStart)`；mid-turn 补充 → `deliver_input(InjectIfRunningElseStart)` 或 `InjectMessage`
 - **读（HTTP）**：`ServerRuntime::session_manager()` / `event_store()` → projection DTO
 
 ---
