@@ -278,6 +278,8 @@ pub enum EventPayload {
     ToolApprovalResolved {
         call_id: ToolCallId,
         decision: crate::permission::ApprovalDecision,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
 
     /// 工具调用已完成。

@@ -56,11 +56,7 @@ export function CodePreview({
   const content = previewText(text)
   const color = tone === 'stderr' ? 'text-danger' : 'text-code-text'
   const children =
-    tone === 'diff' ? (
-      <DiffCodeLines text={content} />
-    ) : (
-      <code>{content}</code>
-    )
+    tone === 'diff' ? <DiffCodeLines text={content} /> : <code>{content}</code>
 
   return (
     <pre
@@ -115,7 +111,9 @@ export function ReadContentPreview({ text }: { text: string }) {
             <span className="select-none text-right tabular-nums text-text-muted">
               {item?.number ?? ''}
             </span>
-            <code className="whitespace-pre">{(item?.code ?? line) || ' '}</code>
+            <code className="whitespace-pre">
+              {(item?.code ?? line) || ' '}
+            </code>
           </div>
         )
       })}

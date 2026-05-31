@@ -1,7 +1,10 @@
 import { useState } from 'react'
 import { cn } from '../../lib/utils'
 import { submitToolGateApproval } from '../../services/api'
-import { stringValue, type JsonRecord } from '../../components/Chat/tools/helpers'
+import {
+  stringValue,
+  type JsonRecord,
+} from '../../components/Chat/tools/helpers'
 
 type GateApprovalMeta = {
   pending?: boolean
@@ -38,10 +41,7 @@ function approvalHeadline(toolName: string, prompt?: string): string {
   return `${toolName} 需要你的确认`
 }
 
-function resolveCommand(
-  args: JsonRecord,
-  prompt?: string
-): string | undefined {
+function resolveCommand(args: JsonRecord, prompt?: string): string | undefined {
   const fromArgs = stringValue(args, 'command')
   if (fromArgs) return fromArgs
   return commandFromPrompt(prompt)
@@ -117,9 +117,7 @@ export function GateApprovalCard({
         <p className="text-[13px] text-text-secondary">{gate.prompt}</p>
       ) : null}
 
-      {error ? (
-        <p className={cn('text-[12px] text-danger')}>{error}</p>
-      ) : null}
+      {error ? <p className={cn('text-[12px] text-danger')}>{error}</p> : null}
 
       <div className="flex flex-wrap items-center gap-2">
         <button
@@ -144,7 +142,15 @@ export function GateApprovalCard({
           className={dangerButton}
           onClick={() => void decide('deny_once')}
         >
-          拒绝
+          拒绝一次
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          className={dangerButton}
+          onClick={() => void decide('deny_always')}
+        >
+          始终拒绝
         </button>
       </div>
     </div>

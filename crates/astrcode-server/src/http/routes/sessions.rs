@@ -144,7 +144,10 @@ pub(in crate::http) async fn resolve_tool_approval(
 ) -> Response {
     let session_id_str = session_id.clone();
     let Some(ops) = state.runtime.capabilities().session_ops() else {
-        return internal_error_response("session_ops_unavailable", "session operations unavailable");
+        return internal_error_response(
+            "session_ops_unavailable",
+            "session operations unavailable",
+        );
     };
     match ops
         .resolve_tool_approval(&session_id_str, &request.call_id, request.decision)

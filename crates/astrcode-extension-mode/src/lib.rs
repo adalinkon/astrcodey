@@ -22,10 +22,9 @@ mod prompts;
 mod store;
 mod tools;
 
-pub use ask_user::{ASK_USER_TOOL_NAME, ask_user_tool_definition, handle_ask_user};
-
 use std::{path::PathBuf, sync::Arc};
 
+pub use ask_user::{ASK_USER_TOOL_NAME, ask_user_tool_definition, handle_ask_user};
 use astrcode_extension_sdk::{
     extension::{
         CommandContext, CommandHandler, Extension, ExtensionCapability, ExtensionCommandResult,

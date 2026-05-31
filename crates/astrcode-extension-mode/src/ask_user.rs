@@ -4,8 +4,8 @@
 //! 前端只提供通用 `QuestionnaireApprovalCard`，**不**在前端注册 askUser。
 
 use astrcode_extension_sdk::tool::{
-    ExecutionMode, ToolApprovalUiWire, ToolDefinition, ToolOrigin, ToolResult, ToolUiWire,
-    TOOL_UI_METADATA_KEY, TOOL_UI_PHASE_METADATA_KEY, tool_metadata,
+    ExecutionMode, TOOL_UI_METADATA_KEY, TOOL_UI_PHASE_METADATA_KEY, ToolApprovalUiWire,
+    ToolDefinition, ToolOrigin, ToolResult, ToolUiWire, tool_metadata,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -84,15 +84,13 @@ pub fn ask_user_tool_ui_map() -> std::collections::HashMap<String, ToolUiWire> {
 pub fn ask_user_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: ASK_USER_TOOL_NAME.into(),
-        description: (
-            "Ask the user one to four multiple-choice questions to clarify requirements, \
-             choose between approaches, or confirm decisions.\n\n\
-             Plan mode: use BEFORE finalizing the plan to gather preferences. Do NOT use to ask \
-             \"is the plan ready?\" — present the plan via upsertSessionPlan, then confirm exit \
-             with askUser or switchMode to code.\n\n\
-             Users can always pick Other (custom text). Use multiSelect for non-exclusive choices."
-        )
-        .into(),
+        description: ("Ask the user one to four multiple-choice questions to clarify \
+                       requirements, choose between approaches, or confirm decisions.\n\nPlan \
+                       mode: use BEFORE finalizing the plan to gather preferences. Do NOT use to \
+                       ask \"is the plan ready?\" — present the plan via upsertSessionPlan, then \
+                       confirm exit with askUser or switchMode to code.\n\nUsers can always pick \
+                       Other (custom text). Use multiSelect for non-exclusive choices.")
+            .into(),
         parameters: json!({
             "type": "object",
             "additionalProperties": false,

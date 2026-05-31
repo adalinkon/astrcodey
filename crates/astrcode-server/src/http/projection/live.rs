@@ -259,9 +259,7 @@ fn active_turn_id_for_event(event: &Event) -> Option<String> {
 
 fn control_from_event(event: &Event, has_messages: bool) -> ConversationControlStateDto {
     let phase = match &event.payload {
-        EventPayload::TurnCompleted { .. } | EventPayload::AgentRunCompleted { .. } => {
-            Phase::Idle
-        },
+        EventPayload::TurnCompleted { .. } | EventPayload::AgentRunCompleted { .. } => Phase::Idle,
         EventPayload::CompactionCompleted { .. }
         | EventPayload::CompactionSkipped { .. }
         | EventPayload::CompactionFailed { .. } => {

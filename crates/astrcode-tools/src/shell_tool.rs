@@ -250,7 +250,10 @@ fn shell_tool_definition(timeout_secs: u64) -> ToolDefinition {
                 "- One-shot commands with timeout up to 600s (default {timeout_secs}s)\n",
                 "- Independent commands may run together; chain dependent ones with `&&`\n",
                 "- Set `cwd` instead of using `cd`. Use `stdin` to pipe data.\n",
-                "- Non-zero exit codes produce errors.",
+                "- Non-zero exit codes produce errors.\n",
+                "- Very large output may be persisted to tool-results/; use `read` with \
+                 charOffset and maxChars to paginate the saved path (do not re-run the command \
+                 for more output).",
             ),
             shell = shell.name,
             timeout_secs = timeout_secs,

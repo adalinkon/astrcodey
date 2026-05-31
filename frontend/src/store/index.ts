@@ -329,8 +329,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (err) {
       console.error('submitPrompt failed:', err)
       set({
-        transientHint:
-          err instanceof Error ? err.message : '发送失败，请重试',
+        transientHint: err instanceof Error ? err.message : '发送失败，请重试',
       })
       return false
     } finally {

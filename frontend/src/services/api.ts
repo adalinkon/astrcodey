@@ -68,7 +68,10 @@ export function initBaseUrl(): void {
   }
 }
 
-async function formatRequestError(response: Response, body: string): Promise<string> {
+async function formatRequestError(
+  response: Response,
+  body: string
+): Promise<string> {
   try {
     const parsed = JSON.parse(body) as { code?: string; message?: string }
     if (parsed.code === 'no_active_turn') {

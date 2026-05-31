@@ -135,7 +135,7 @@ pub(in crate::http) async fn update_active_selection(
                     request.approval_mode
                 ),
             );
-        }
+        },
     };
 
     let mut candidate = state.runtime.config_manager().raw_config_snapshot();

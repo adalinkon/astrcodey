@@ -7,11 +7,12 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
+    path::Path,
     sync::{Arc, RwLock as StdRwLock},
     time::Duration,
 };
 
-use astrcode_core::event::EventPayload;
+use astrcode_core::{event::EventPayload, tool_access::ResourceAccess};
 use astrcode_extension_sdk::{
     extension::*,
     tool::{
@@ -1283,6 +1284,22 @@ impl Tool for HandlerTool {
         self.prompt_metadata.clone()
     }
 
+    fn resource_accesses(
+        &self,
+        _arguments: &serde_json::Value,
+        _working_dir: &Path,
+    ) -> Result<Vec<ResourceAccess>, ToolError> {
+        // SessionControl 工具（如 agent）在父 turn 内只编排子 session，不直接碰文件；
+        // 若声明 ResourceAccess::All，冲突图会把同批 agent 调用串行化。
+        if self
+            .capabilities
+            .contains(&ExtensionCapability::SessionControl)
+        {
+            return Ok(Vec::new());
+        }
+        Ok(vec![ResourceAccess::all()])
+    }
+
     async fn execute(
         &self,
         arguments: serde_json::Value,
@@ -1397,6 +1414,7 @@ fn extension_error_result(tool_name: &str, extension_id: &str, err: ExtensionErr
 #[cfg(test)]
 mod tests {
     use std::{
+        path::Path,
         sync::{
             Arc, Mutex,
             atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -1404,7 +1422,7 @@ mod tests {
         time::Duration,
     };
 
-    use astrcode_core::event::EventPayload;
+    use astrcode_core::{event::EventPayload, tool_access::ResourceAccess};
     use astrcode_extension_sdk::{
         extension::{
             Extension, ExtensionCapability, ExtensionCtx, ExtensionError, Registrar, StopReason,
@@ -1794,5 +1812,46 @@ mod tests {
             let result = tool.execute(json!({}), &ctx).await.unwrap();
             assert_eq!(result.content, expected);
         }
+    }
+
+    #[tokio::test]
+    async fn session_control_tools_declare_no_resource_conflicts() {
+        let runner = ExtensionRunner::new(Duration::from_secs(1));
+        runner
+            .register(Arc::new(SmallModelProbeExtension {
+                small_model_allowed: false,
+                session_control_allowed: true,
+            }))
+            .await
+            .unwrap();
+        let session_control_tool = runner
+            .collect_tool_adapters_typed("D:/workspace")
+            .await
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(
+            session_control_tool
+                .resource_accesses(&json!({}), Path::new("D:/workspace"))
+                .unwrap()
+                .is_empty()
+        );
+
+        runner
+            .register(Arc::new(StateProbeExtension { allowed: false }))
+            .await
+            .unwrap();
+        let default_tool = runner
+            .collect_tool_adapters_typed("D:/workspace")
+            .await
+            .into_iter()
+            .find(|tool| tool.definition().name == "stateProbe")
+            .unwrap();
+        assert_eq!(
+            default_tool
+                .resource_accesses(&json!({}), Path::new("D:/workspace"))
+                .unwrap(),
+            vec![ResourceAccess::all()]
+        );
     }
 }

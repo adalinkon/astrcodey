@@ -90,15 +90,16 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-function answerForQuestion(q: AskUserQuestion, st: QuestionState): string | null {
+function answerForQuestion(
+  q: AskUserQuestion,
+  st: QuestionState
+): string | null {
   if (st.useOther) {
     const t = st.otherText.trim()
     return t || null
   }
   if (q.multiSelect) {
-    return st.selectedLabels.length > 0
-      ? st.selectedLabels.join(', ')
-      : null
+    return st.selectedLabels.length > 0 ? st.selectedLabels.join(', ') : null
   }
   return st.selectedLabels[0] ?? null
 }
@@ -325,9 +326,7 @@ export function QuestionnaireApprovalCard({ ctx }: { ctx: ToolUiContext }) {
           </button>
         )}
       </div>
-      {submitError && (
-        <p className="text-[12px] text-red-500">{submitError}</p>
-      )}
+      {submitError && <p className="text-[12px] text-red-500">{submitError}</p>}
     </div>
   )
 }

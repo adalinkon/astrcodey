@@ -11,8 +11,15 @@ import {
   toolApprovalSummary,
   type ToolUiContext,
 } from '../../tool-ui'
-import { GateApprovalCard, readGateApproval } from '../../tool-ui/components/GateApprovalCard'
-import { chevronIcon, toolPanelPaddingX, toolPanelScrollViewport } from '../../lib/styles'
+import {
+  GateApprovalCard,
+  readGateApproval,
+} from '../../tool-ui/components/GateApprovalCard'
+import {
+  chevronIcon,
+  toolPanelPaddingX,
+  toolPanelScrollViewport,
+} from '../../lib/styles'
 import { RenderSpecViewer } from './RenderSpecViewer'
 import './tools/builtinRenderers'
 import {
@@ -94,8 +101,7 @@ function ToolCallBlock({ block, sessionId }: ToolCallBlockProps) {
 
   const gateApproval = readGateApproval(block.metadata)
   const gatePending = gateApproval?.pending === true
-  const autoExpand =
-    toolApprovalShouldAutoExpand(toolUiCtx) || gatePending
+  const autoExpand = toolApprovalShouldAutoExpand(toolUiCtx) || gatePending
 
   const displayStatus = gatePending ? '待审批' : statusLabel(block.status)
 

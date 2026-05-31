@@ -36,8 +36,9 @@ use crate::{
     session::Session,
     tool_results::{
         MAX_TOOL_RESULTS_PER_MESSAGE_CHARS, TOOL_RESULT_PREVIEW_CHARS,
-        is_tool_result_artifact_path, persisted_tool_result_summary, should_persist_tool_result,
-        tool_result_inline_limit, tool_result_preview,
+        is_persisted_tool_result_summary, is_tool_result_artifact_path,
+        persisted_tool_result_summary, should_persist_tool_result, tool_result_inline_limit,
+        tool_result_preview,
     },
 };
 
@@ -288,7 +289,14 @@ impl ToolCalls {
                     source: ApprovalSource::Core,
                 }
             },
-            PermissionDecision::Pass => PreparedToolOutcome::Ready,
+            PermissionDecision::Pass => PreparedToolOutcome::Blocked(ToolResult {
+                call_id: call_id.to_string(),
+                content: "permission chain returned Pass without resolution".into(),
+                is_error: true,
+                error: Some("permission chain returned Pass without resolution".into()),
+                metadata: Default::default(),
+                duration_ms: None,
+            }),
         }
     }
 
@@ -402,19 +410,26 @@ impl ToolCalls {
                     source,
                 } => {
                     let call = &input.prepared[position];
-                    let decision =
+                    let (decision, resolution_detail) =
                         match tokio::time::timeout(Duration::from_secs(APPROVAL_TIMEOUT_SECS), rx)
                             .await
                         {
-                            Ok(Ok(decision)) => decision,
-                            Ok(Err(_)) => ApprovalDecision::DenyOnce,
-                            Err(_) => ApprovalDecision::DenyOnce,
+                            Ok(Ok(decision)) => (decision, None),
+                            Ok(Err(_)) => (
+                                ApprovalDecision::DenyOnce,
+                                Some("approval receiver dropped".into()),
+                            ),
+                            Err(_) => (
+                                ApprovalDecision::DenyOnce,
+                                Some(format!("approval timed out after {APPROVAL_TIMEOUT_SECS}s")),
+                            ),
                         };
                     input
                         .publisher
                         .durable(EventPayload::ToolApprovalResolved {
                             call_id: call.call_id.clone().into(),
                             decision,
+                            detail: resolution_detail.clone(),
                         })
                         .await?;
                     if matches!(
@@ -452,8 +467,13 @@ impl ToolCalls {
                             .map_err(|_| TurnError::Aborted)?;
                         result
                     } else {
-                        let reason =
-                            format!("Tool execution denied by user ({source:?}): {prompt}");
+                        let reason = resolution_detail
+                            .map(|detail| {
+                                format!("Tool execution denied ({detail}, {source:?}): {prompt}")
+                            })
+                            .unwrap_or_else(|| {
+                                format!("Tool execution denied by user ({source:?}): {prompt}")
+                            });
                         ToolResult {
                             call_id: call.call_id.clone(),
                             content: reason.clone(),
@@ -618,6 +638,9 @@ impl ToolCalls {
         let Some(inline_limit) = tool_result_inline_limit(tool_name) else {
             return Ok(());
         };
+        if is_persisted_tool_result_summary(&result.content) {
+            return Ok(());
+        }
         if !should_persist_tool_result(&result.content, inline_limit) {
             return Ok(());
         }
@@ -643,6 +666,9 @@ impl ToolCalls {
             .and_then(|value| value.as_str())
             .is_some_and(is_tool_result_artifact_path)
         {
+            return Ok(());
+        }
+        if is_persisted_tool_result_summary(&result.content) {
             return Ok(());
         }
         let original_content = result.content.clone();
@@ -693,6 +719,7 @@ impl ToolCalls {
                         should_persist_tool_result(&pending.result.content, limit)
                     }) && !pending.result.metadata.contains_key("persistedToolResult")
                         && !is_artifact_read(&pending.result)
+                        && !is_persisted_tool_result_summary(&pending.result.content)
                         && !pending
                             .result
                             .metadata

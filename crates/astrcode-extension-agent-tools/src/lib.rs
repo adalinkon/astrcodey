@@ -18,8 +18,7 @@ use astrcode_extension_sdk::{
     render::{RenderKeyValue, RenderSpec, RenderTone, UI_RENDER_METADATA_KEY},
     tool::{
         CreateSessionRequest, ExecutionMode, SessionAccess, SubmitTurnRequest, ToolDefinition,
-        ToolOrigin,
-        ToolResult, tool_metadata,
+        ToolOrigin, ToolResult, tool_metadata,
     },
 };
 use astrcode_support::text::compact_inline;
@@ -266,10 +265,7 @@ impl ToolHandler for AgentToolHandler {
             .map_err(|e| ExtensionError::Internal(format!("create_session: {e}")))?;
 
         // 2. 提交 turn
-        let child_access = SessionAccess::new(
-            ctx.session_id.as_str(),
-            handle.session_id.as_str(),
-        );
+        let child_access = SessionAccess::new(ctx.session_id.as_str(), handle.session_id.as_str());
         let submit = session_ops
             .submit_turn(
                 SubmitTurnRequest::for_child(
@@ -282,8 +278,8 @@ impl ToolHandler for AgentToolHandler {
                     None
                 } else {
                     Some(
-                        "[A background agent task has completed. Review the tool result above \
-                         and present the findings to the user.]"
+                        "[A background agent task has completed. Review the tool result above and \
+                         present the findings to the user.]"
                             .into(),
                     )
                 })
@@ -292,8 +288,7 @@ impl ToolHandler for AgentToolHandler {
             )
             .await;
         if let Err(ref e) = submit {
-            if let Err(recycle_err) = session_ops.recycle_session(child_access).await
-            {
+            if let Err(recycle_err) = session_ops.recycle_session(child_access).await {
                 tracing::warn!(
                     child_session_id = %handle.session_id,
                     error = %recycle_err,
@@ -312,8 +307,7 @@ impl ToolHandler for AgentToolHandler {
         match result {
             astrcode_extension_sdk::tool::SubmitTurnResult::Completed { content } => {
                 // 同步路径：turn 完成后回收 ephemeral 子 session
-                if let Err(e) = session_ops.recycle_session(child_access).await
-                {
+                if let Err(e) = session_ops.recycle_session(child_access).await {
                     tracing::warn!(
                         child_session_id = %handle.session_id,
                         error = %e,

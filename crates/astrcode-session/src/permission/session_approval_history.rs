@@ -89,25 +89,30 @@ impl PermissionPolicy for SessionApprovalHistoryPolicy {
     }
 
     fn evaluate(&self, ctx: &PermissionContext<'_>) -> PermissionDecision {
-        let Some(rule_key) = infer_rule_key(ctx) else {
-            return PermissionDecision::Pass;
-        };
         let inner = self.store.inner.lock();
-        if inner.allowed_always.contains(&rule_key) {
-            return PermissionDecision::Allow;
+        for rule_key in history_lookup_keys(ctx) {
+            if inner.allowed_always.contains(&rule_key) {
+                return PermissionDecision::Allow;
+            }
         }
-        if inner.denied_always.contains(&rule_key) {
-            return PermissionDecision::Deny {
-                reason: format!("Denied by session approval memory ({rule_key})"),
-            };
+        for rule_key in history_lookup_keys(ctx) {
+            if inner.denied_always.contains(&rule_key) {
+                return PermissionDecision::Deny {
+                    reason: format!("Denied by session approval memory ({rule_key})"),
+                };
+            }
         }
         PermissionDecision::Pass
     }
 }
 
-fn infer_rule_key(ctx: &PermissionContext<'_>) -> Option<String> {
-    // 历史记忆按 tool 级 rule_key 匹配；具体 Ask 规则键由链上策略写入。
-    Some(format!("tool:{}", ctx.tool_name))
+/// 与链上 Ask 策略写入的 rule_key 对齐的候选键（按优先级顺序）。
+fn history_lookup_keys(ctx: &PermissionContext<'_>) -> [String; 3] {
+    [
+        format!("shell:{}", ctx.tool_name),
+        format!("configured:{}", ctx.tool_name),
+        format!("tool:{}", ctx.tool_name),
+    ]
 }
 
 #[cfg(test)]
@@ -120,6 +125,25 @@ mod tests {
     fn allow_always_short_circuits() {
         let store = Arc::new(ApprovalHistoryStore::default());
         store.record_decision(Some("tool:shell"), ApprovalDecision::AllowAlways);
+        let policy = SessionApprovalHistoryPolicy::new(store);
+        let input = serde_json::json!({});
+        let ctx = PermissionContext {
+            tool_name: "shell",
+            tool_input: &input,
+            working_dir: std::path::Path::new("/tmp"),
+            resource_accesses: &[],
+            approval_mode: ApprovalMode::Manual,
+            session_id: "s",
+            is_child_session: false,
+            child_tool_policy: None,
+        };
+        assert_eq!(policy.evaluate(&ctx), PermissionDecision::Allow);
+    }
+
+    #[test]
+    fn shell_rule_key_short_circuits() {
+        let store = Arc::new(ApprovalHistoryStore::default());
+        store.record_decision(Some("shell:shell"), ApprovalDecision::AllowAlways);
         let policy = SessionApprovalHistoryPolicy::new(store);
         let input = serde_json::json!({});
         let ctx = PermissionContext {

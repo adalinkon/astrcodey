@@ -22,13 +22,20 @@ export function renderToolApprovalUi(ctx: ToolUiContext): ReactNode | null {
 
 export function toolApprovalSummary(ctx: ToolUiContext): string | undefined {
   const wire = readToolUi(ctx.meta)
-  if (wire?.approval?.kind === 'builtin' && wire.approval.variant === 'questionnaire') {
+  if (
+    wire?.approval?.kind === 'builtin' &&
+    wire.approval.variant === 'questionnaire'
+  ) {
     const args = ctx.block.argumentsJson ?? ctx.args
     const questions = args?.questions
     if (Array.isArray(questions) && questions.length > 0) {
       const first = questions[0] as { header?: string }
       const n = questions.length
-      return [ctx.block.name, first?.header, n > 1 ? `${n} questions` : '1 question']
+      return [
+        ctx.block.name,
+        first?.header,
+        n > 1 ? `${n} questions` : '1 question',
+      ]
         .filter(Boolean)
         .join(' · ')
     }
@@ -38,7 +45,10 @@ export function toolApprovalSummary(ctx: ToolUiContext): string | undefined {
 
 export function toolApprovalShouldAutoExpand(ctx: ToolUiContext): boolean {
   const wire = readToolUi(ctx.meta)
-  if (wire?.approval?.kind !== 'builtin' || wire.approval.variant !== 'questionnaire') {
+  if (
+    wire?.approval?.kind !== 'builtin' ||
+    wire.approval.variant !== 'questionnaire'
+  ) {
     return false
   }
   return (

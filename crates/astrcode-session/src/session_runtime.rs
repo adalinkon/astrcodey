@@ -14,6 +14,15 @@ use crate::{
     tool_exec::InMemoryFileObservationStore,
 };
 
+/// 解析挂起工具审批时的错误。
+#[derive(Debug, thiserror::Error)]
+pub enum ToolApprovalResolveError {
+    #[error("no pending approval for call_id {call_id}")]
+    NotPending { call_id: ToolCallId },
+    #[error("approval receiver dropped for call_id {call_id}")]
+    ReceiverDropped { call_id: ToolCallId },
+}
+
 /// 当前 session 使用的模型绑定；一次替换同时切换 provider 与模型标识。
 #[derive(Clone)]
 pub struct SessionModelBinding {
@@ -228,15 +237,17 @@ impl SessionRuntimeState {
         &self,
         call_id: &ToolCallId,
         decision: ApprovalDecision,
-    ) -> Result<(), String> {
-        let sender = self
-            .pending_approvals
-            .lock()
-            .remove(call_id)
-            .ok_or_else(|| format!("no pending approval for call_id {call_id}"))?;
+    ) -> Result<(), ToolApprovalResolveError> {
+        let sender = self.pending_approvals.lock().remove(call_id).ok_or(
+            ToolApprovalResolveError::NotPending {
+                call_id: call_id.clone(),
+            },
+        )?;
         sender
             .send(decision)
-            .map_err(|_| format!("approval receiver dropped for call_id {call_id}"))
+            .map_err(|_| ToolApprovalResolveError::ReceiverDropped {
+                call_id: call_id.clone(),
+            })
     }
 
     pub fn cancel_pending_approvals(&self) {

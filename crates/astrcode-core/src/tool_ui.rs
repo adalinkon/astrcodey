@@ -51,7 +51,5 @@ pub enum ToolApprovalUiWire {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ToolResultUiWire {
-    Builtin {
-        variant: String,
-    },
+    Builtin { variant: String },
 }

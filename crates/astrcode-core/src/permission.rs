@@ -4,10 +4,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    extension::ChildToolPolicy,
-    tool_access::ResourceAccess,
-};
+use crate::{extension::ChildToolPolicy, tool_access::ResourceAccess};
 
 /// 工具审批模式（全局配置）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -21,11 +18,20 @@ pub enum ApprovalMode {
 }
 
 impl ApprovalMode {
+    /// 解析配置/API 中的审批模式字符串。
     pub fn parse(raw: &str) -> Option<Self> {
+        raw.parse().ok()
+    }
+}
+
+impl std::str::FromStr for ApprovalMode {
+    type Err = ();
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "manual" => Some(Self::Manual),
-            "yolo" => Some(Self::Yolo),
-            _ => None,
+            "manual" => Ok(Self::Manual),
+            "yolo" => Ok(Self::Yolo),
+            _ => Err(()),
         }
     }
 }
@@ -34,7 +40,9 @@ impl ApprovalMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PermissionDecision {
     Allow,
-    Deny { reason: String },
+    Deny {
+        reason: String,
+    },
     Ask {
         prompt: String,
         rule_key: Option<String>,
@@ -86,7 +94,7 @@ pub trait PermissionPolicy: Send + Sync {
     fn evaluate(&self, ctx: &PermissionContext<'_>) -> PermissionDecision;
 }
 
-/// 按 priority 升序评估，第一条非 Pass 结果胜出。
+/// 按 priority 升序评估，第一条非 Pass 结果胜出；全部 Pass 时拒绝（fail-closed）。
 pub struct PermissionChain {
     policies: Vec<Box<dyn PermissionPolicy>>,
 }
@@ -104,7 +112,9 @@ impl PermissionChain {
                 return decision;
             }
         }
-        PermissionDecision::Pass
+        PermissionDecision::Deny {
+            reason: "no permission policy matched".into(),
+        }
     }
 }
 
@@ -186,9 +196,22 @@ mod tests {
     }
 
     #[test]
-    fn approval_mode_parse() {
-        assert_eq!(ApprovalMode::parse("yolo"), Some(ApprovalMode::Yolo));
-        assert_eq!(ApprovalMode::parse("MANUAL"), Some(ApprovalMode::Manual));
-        assert!(ApprovalMode::parse("unknown").is_none());
+    fn chain_all_pass_without_allow_policy_denies() {
+        let input = serde_json::json!({});
+        let chain = PermissionChain::new(vec![Box::new(FixedPolicy {
+            priority: 10,
+            decision: PermissionDecision::Pass,
+        })]);
+        assert!(matches!(
+            chain.decide(&empty_ctx(&input)),
+            PermissionDecision::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn approval_mode_from_str() {
+        assert_eq!("yolo".parse(), Ok(ApprovalMode::Yolo));
+        assert_eq!("MANUAL".parse(), Ok(ApprovalMode::Manual));
+        assert!("unknown".parse::<ApprovalMode>().is_err());
     }
 }

@@ -18,8 +18,11 @@ pub const READ_TOOL_RESULT_INLINE_LIMIT: Option<usize> = None;
 /// 同一轮工具结果进入 LLM history 的总预算。
 pub const MAX_TOOL_RESULTS_PER_MESSAGE_CHARS: usize = 200_000;
 
-/// 摘要中保留的预览字符数。
-pub const TOOL_RESULT_PREVIEW_CHARS: usize = 600;
+/// 摘要中保留的预览字符数（与 Claude Code PREVIEW_SIZE_BYTES ≈ 2000 对齐）。
+pub const TOOL_RESULT_PREVIEW_CHARS: usize = 2_000;
+
+/// 持久化摘要正文的前缀，用于识别已是 artifact 引用的内容。
+const PERSISTED_SUMMARY_PREFIX: &str = "Tool result was persisted because it is large";
 
 /// 工具结果摘要预览。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +36,11 @@ pub struct ToolResultPreview {
 /// 判断工具结果是否应该持久化为 artifact。
 pub fn should_persist_tool_result(content: &str, inline_limit: usize) -> bool {
     content.len() > inline_limit
+}
+
+/// 内容是否已是持久化 artifact 的 LLM Facing 摘要（避免二次 persist）。
+pub fn is_persisted_tool_result_summary(content: &str) -> bool {
+    content.starts_with(PERSISTED_SUMMARY_PREFIX)
 }
 
 /// 路径是否指向 session 的 tool-results artifact 文件。
@@ -128,6 +136,16 @@ mod tests {
 
         assert_eq!(preview.content, "abc");
         assert!(preview.has_more);
+    }
+
+    #[test]
+    fn detects_persisted_summary_prefix() {
+        assert!(is_persisted_tool_result_summary(
+            "Tool result was persisted because it is large (999 bytes).\nFull output saved to: /x"
+        ));
+        assert!(!is_persisted_tool_result_summary(
+            "Tool result was truncated"
+        ));
     }
 
     #[test]

@@ -221,9 +221,12 @@ export function applyDeltaToState(
           ...(block.metadata ?? {}),
           ...metadata,
           toolGateApproval: {
-            ...((block.metadata?.toolGateApproval as Record<string, unknown> | undefined) ??
-              {}),
-            ...((metadata.toolGateApproval as Record<string, unknown> | undefined) ?? {}),
+            ...((block.metadata?.toolGateApproval as
+              | Record<string, unknown>
+              | undefined) ?? {}),
+            ...((metadata.toolGateApproval as
+              | Record<string, unknown>
+              | undefined) ?? {}),
           },
         }
         const next = [...current.blocks]

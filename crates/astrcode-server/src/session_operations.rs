@@ -244,10 +244,14 @@ impl SessionOperations for ServerSessionOperations {
             .map_err(|_| SessionApiError::NotFound("session not found".into()))?;
         session
             .runtime()
-            .resolve_tool_approval(
-                &astrcode_core::types::ToolCallId::from(call_id),
-                decision,
-            )
-            .map_err(SessionApiError::internal_msg)
+            .resolve_tool_approval(&astrcode_core::types::ToolCallId::from(call_id), decision)
+            .map_err(|error| match error {
+                astrcode_session::session_runtime::ToolApprovalResolveError::NotPending {
+                    ..
+                } => SessionApiError::NotFound(error.to_string()),
+                astrcode_session::session_runtime::ToolApprovalResolveError::ReceiverDropped {
+                    ..
+                } => SessionApiError::SessionBusy(error.to_string()),
+            })
     }
 }

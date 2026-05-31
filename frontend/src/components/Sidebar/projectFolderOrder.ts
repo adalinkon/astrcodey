@@ -47,6 +47,16 @@ export function syncProjectFolderOrder(
   return next
 }
 
+/** 最近使用的会话在前（updatedAt 降序，相同时 createdAt 降序）。 */
+export function compareSessionsByLastUsed(
+  a: SessionListItem,
+  b: SessionListItem
+): number {
+  const byUpdated = b.updatedAt.localeCompare(a.updatedAt)
+  if (byUpdated !== 0) return byUpdated
+  return b.createdAt.localeCompare(a.createdAt)
+}
+
 export function groupSessionsByWorkingDir(
   sessions: SessionListItem[]
 ): Map<string, SessionListItem[]> {
@@ -58,6 +68,9 @@ export function groupSessionsByWorkingDir(
     } else {
       groups.set(session.workingDir, [session])
     }
+  }
+  for (const group of groups.values()) {
+    group.sort(compareSessionsByLastUsed)
   }
   return groups
 }

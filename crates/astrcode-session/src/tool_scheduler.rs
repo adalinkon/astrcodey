@@ -241,4 +241,60 @@ mod tests {
         assert_eq!(scheduler.active_count(), 1);
         assert_eq!(scheduler.await_result(write).await.unwrap(), "w");
     }
+
+    #[tokio::test]
+    async fn independent_session_spawn_tools_run_in_parallel() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut scheduler = ToolScheduler::new(4);
+
+        let first = {
+            let counter = Arc::clone(&counter);
+            scheduler.submit(Vec::new(), move || async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                counter.fetch_sub(1, Ordering::SeqCst);
+                "first"
+            })
+        };
+        let second = scheduler.submit(Vec::new(), || async {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            "second"
+        });
+
+        let second_result = scheduler.await_result(second).await.unwrap();
+        assert_eq!(second_result, "second");
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        assert_eq!(scheduler.await_result(first).await.unwrap(), "first");
+    }
+
+    #[tokio::test]
+    async fn resource_all_tools_run_serially() {
+        let order = Arc::new(tokio::sync::Mutex::new(Vec::<&'static str>::new()));
+        let mut scheduler = ToolScheduler::new(4);
+
+        let first = {
+            let order = Arc::clone(&order);
+            scheduler.submit(vec![ResourceAccess::all()], move || async move {
+                order.lock().await.push("first-start");
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                order.lock().await.push("first-end");
+                "first"
+            })
+        };
+        let second = {
+            let order = Arc::clone(&order);
+            scheduler.submit(vec![ResourceAccess::all()], move || async move {
+                order.lock().await.push("second");
+                "second"
+            })
+        };
+
+        let _ = scheduler.await_result(first).await;
+        let _ = scheduler.await_result(second).await;
+
+        assert_eq!(
+            *order.lock().await,
+            vec!["first-start", "first-end", "second"]
+        );
+    }
 }

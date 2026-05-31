@@ -72,7 +72,7 @@ pub struct App {
     pub theme: Theme,
 }
 
-/// 会话列表中的一条会话。
+/// 挂起的工具审批请求。
 #[derive(Debug, Clone)]
 pub struct ToolApprovalPrompt {
     pub call_id: String,

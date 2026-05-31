@@ -10,8 +10,7 @@ use astrcode_core::{
     storage::{AgentSessionStatus, EventStore},
     tool::{
         CreateSessionRequest, SessionAccess, SessionOperations, SubmitTurnRequest,
-        SubmitTurnResult,
-        ToolDefinition,
+        SubmitTurnResult, ToolDefinition,
     },
     types::{SessionId, new_session_id},
 };

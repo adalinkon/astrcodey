@@ -247,7 +247,10 @@ fn apply_event(app: &mut App, event: &Event) {
             app.push_message(
                 MessageRole::System,
                 "Approval".into(),
-                format!("Tool `{tool_name}` requires approval:\n{prompt}\nPress y to allow once, n to deny."),
+                format!(
+                    "Tool `{tool_name}` requires approval:\n{prompt}\nPress y to allow once, n to \
+                     deny."
+                ),
                 false,
                 None,
             );

@@ -259,7 +259,9 @@ fn grep_tool_definition() -> &'static ToolDefinition {
             "- Known file path → `read`\n\n",
             "Tips:\n",
             "- Symbols, strings, classes, or regex patterns across files\n",
-            "- Multiple searches may run together when helpful",
+            "- Multiple searches may run together when helpful\n",
+            "- When hasMore/truncated is true, re-run the same search with offset set to \
+             nextOffset — do not use `read` on tool-results paths",
         ).into(),
         origin: ToolOrigin::Builtin,
         execution_mode: ExecutionMode::Parallel,

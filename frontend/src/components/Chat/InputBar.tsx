@@ -28,7 +28,9 @@ export default function InputBar() {
   const statusItems = useAppStore((s) => s.statusItems)
   const pendingMessages = useAppStore((s) => s.pendingMessages)
   const composerDeliveryMode = useAppStore((s) => s.composerDeliveryMode)
-  const toggleComposerDeliveryMode = useAppStore((s) => s.toggleComposerDeliveryMode)
+  const toggleComposerDeliveryMode = useAppStore(
+    (s) => s.toggleComposerDeliveryMode
+  )
   const flushPendingQueued = useAppStore((s) => s.flushPendingQueued)
 
   const [value, setValue] = useState('')
@@ -38,12 +40,11 @@ export default function InputBar() {
   const isBusy = isExecutionPhase(phase, compactSubmitting)
   const canSubmit = !!activeSessionId && !isCompacting
   const canInject = canInjectMidTurn(control, compactSubmitting)
-  const submitActionLabel =
-    isBusy
-      ? composerDeliveryMode === 'queued'
-        ? '加入队列'
-        : '注入当前 turn'
-      : '发送消息'
+  const submitActionLabel = isBusy
+    ? composerDeliveryMode === 'queued'
+      ? '加入队列'
+      : '注入当前 turn'
+    : '发送消息'
 
   // Abort 防抖：防止快速多次点击
   const abortDebounceRef = useRef<number | null>(null)

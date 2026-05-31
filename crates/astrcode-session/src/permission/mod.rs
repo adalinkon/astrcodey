@@ -4,7 +4,7 @@ mod child_session_deny;
 mod configured;
 mod cwd_outside_write_ask;
 mod default_read_approve;
-mod fallback_ask;
+mod fallback_allow;
 mod git_cwd_write_approve;
 mod git_path_ask;
 mod paths;
@@ -47,7 +47,7 @@ pub fn build_default_chain(
         Box::new(cwd_outside_write_ask::CwdOutsideWriteAskPolicy),
         Box::new(default_read_approve::DefaultReadApprovePolicy),
         Box::new(git_cwd_write_approve::GitCwdWriteApprovePolicy),
-        Box::new(fallback_ask::FallbackAskPolicy),
+        Box::new(fallback_allow::FallbackAllowPolicy),
     ];
 
     Arc::new(PermissionChain::new(policies))
@@ -141,6 +141,25 @@ mod tests {
             working_dir: std::path::Path::new("/project"),
             resource_accesses: &[],
             approval_mode: ApprovalMode::Yolo,
+            session_id: "s1",
+            is_child_session: false,
+            child_tool_policy: None,
+        };
+        assert_eq!(chain.decide(&ctx), PermissionDecision::Allow);
+    }
+
+    #[test]
+    fn manual_unknown_tool_allowed_by_fallback() {
+        let effective = test_effective(ApprovalMode::Manual);
+        let history = Arc::new(ApprovalHistoryStore::default());
+        let chain = build_default_chain(&effective, history);
+        let input = serde_json::json!({"query": "test"});
+        let ctx = PermissionContext {
+            tool_name: "web_search",
+            tool_input: &input,
+            working_dir: std::path::Path::new("/project"),
+            resource_accesses: &[],
+            approval_mode: ApprovalMode::Manual,
             session_id: "s1",
             is_child_session: false,
             child_tool_policy: None,

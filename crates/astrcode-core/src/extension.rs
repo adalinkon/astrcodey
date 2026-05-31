@@ -813,8 +813,12 @@ pub enum HookResult {
 #[derive(Debug, Clone)]
 pub enum PreToolUseResult {
     Allow,
-    Block { reason: String },
-    ModifyInput { tool_input: serde_json::Value },
+    Block {
+        reason: String,
+    },
+    ModifyInput {
+        tool_input: serde_json::Value,
+    },
     /// 请求用户审批后再执行（扩展 Gate Ask）。
     Ask {
         prompt: String,

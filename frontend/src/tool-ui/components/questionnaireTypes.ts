@@ -75,8 +75,7 @@ export function parseAskUserInput(
     .filter((q): q is AskUserQuestion => q != null)
   if (questions.length === 0) return null
   const meta = asRecord(args.metadata)
-  const source =
-    typeof meta.source === 'string' ? meta.source : undefined
+  const source = typeof meta.source === 'string' ? meta.source : undefined
   return {
     questions,
     metadata: source ? { source } : undefined,

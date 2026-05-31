@@ -188,7 +188,9 @@ fn glob_tool_definition() -> &'static ToolDefinition {
             "- Searching inside file contents → `grep`\n\n",
             "Tips:\n",
             "- Unknown path locations (e.g. `**/*.rs`, `src/**/*.ts`)\n",
-            "- Multiple patterns may run together when helpful",
+            "- Multiple patterns may run together when helpful\n",
+            "- When hasMore/truncated is true, re-run with offset set to nextOffset — do not use \
+             `read` on tool-results paths",
         )
         .into(),
         origin: ToolOrigin::Builtin,
