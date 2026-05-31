@@ -1,10 +1,16 @@
-import { memo, useState } from 'react'
+import { memo, useState, type ReactNode } from 'react'
 import type { ConversationBlock } from '../../services/types'
 import { cn } from '../../lib/utils'
 import {
   extractRenderSpec,
   extractRenderSummary,
 } from '../../types/render-spec'
+import {
+  renderToolApprovalUi,
+  toolApprovalShouldAutoExpand,
+  toolApprovalSummary,
+  type ToolUiContext,
+} from '../../tool-ui'
 import { chevronIcon, toolPanelPaddingX, toolPanelScrollViewport } from '../../lib/styles'
 import { RenderSpecViewer } from './RenderSpecViewer'
 import './tools/builtinRenderers'
@@ -23,23 +29,31 @@ import { Icon } from '../ui/Icon'
 
 interface ToolCallBlockProps {
   block: Extract<ConversationBlock, { kind: 'toolCall' }>
+  sessionId: string | null
 }
 
 function ToolDetails({
-  context,
+  toolContext,
+  approvalUi,
   renderer,
 }: {
-  context: ToolRendererContext
+  toolContext: ToolRendererContext
+  approvalUi: ReactNode | null
   renderer?: ToolRenderer
 }) {
-  if (context.renderSpec) return <RenderSpecViewer spec={context.renderSpec} />
-  if (context.agentSpec) return <RenderSpecViewer spec={context.agentSpec} />
-  const rendered = renderer?.render?.(context)
+  if (toolContext.renderSpec) {
+    return <RenderSpecViewer spec={toolContext.renderSpec} />
+  }
+  if (toolContext.agentSpec) {
+    return <RenderSpecViewer spec={toolContext.agentSpec} />
+  }
+  if (approvalUi) return approvalUi
+  const rendered = renderer?.render?.(toolContext)
   if (rendered != null) return rendered
-  return <DefaultToolDetails block={context.block} />
+  return <DefaultToolDetails block={toolContext.block} />
 }
 
-function ToolCallBlock({ block }: ToolCallBlockProps) {
+function ToolCallBlock({ block, sessionId }: ToolCallBlockProps) {
   const [isOpen, setIsOpen] = useState(false)
   const args = toolArgs(block)
   const meta = toolMeta(block)
@@ -49,6 +63,16 @@ function ToolCallBlock({ block }: ToolCallBlockProps) {
     block.name === 'agent' && block.argumentsJson && !renderSpec
       ? buildStreamingAgentSpec(block.argumentsJson)
       : undefined
+
+  const toolUiCtx: ToolUiContext = {
+    block,
+    sessionId,
+    args,
+    meta,
+    renderSpec,
+  }
+  const approvalUi = renderToolApprovalUi(toolUiCtx)
+
   const context: ToolRendererContext = {
     block,
     args,
@@ -60,16 +84,19 @@ function ToolCallBlock({ block }: ToolCallBlockProps) {
 
   const summaryLine = compactLine(
     extractRenderSummary(block.metadata) ||
+      toolApprovalSummary(toolUiCtx) ||
       renderer?.summary?.(context) ||
       block.arguments ||
       block.text ||
       (block.status === 'streaming' ? '等待输出...' : '(无输出)')
   )
 
+  const autoExpand = toolApprovalShouldAutoExpand(toolUiCtx)
+
   return (
     <details
       className="group mb-1 ml-[var(--layout-assistant-indent)] block min-w-0 max-w-full animate-block-enter motion-reduce:animate-none"
-      open={block.status === 'error' || isOpen || !!agentSpec}
+      open={block.status === 'error' || isOpen || !!agentSpec || autoExpand}
       onToggle={(e) => setIsOpen(e.currentTarget.open)}
     >
       <summary className="flex min-w-0 cursor-pointer list-none items-center gap-3 py-2 font-mono text-[13px] leading-relaxed text-text-secondary select-none hover:opacity-90 [&::-webkit-details-marker]:hidden">
@@ -93,7 +120,11 @@ function ToolCallBlock({ block }: ToolCallBlockProps) {
       <div className="mt-1.5 min-w-0 overflow-hidden rounded-xl border border-border bg-code-surface shadow-soft">
         <div className={toolPanelScrollViewport}>
           <div className={cn(toolPanelPaddingX, 'py-3')}>
-            <ToolDetails context={context} renderer={renderer} />
+            <ToolDetails
+              toolContext={context}
+              approvalUi={approvalUi}
+              renderer={renderer}
+            />
           </div>
         </div>
       </div>

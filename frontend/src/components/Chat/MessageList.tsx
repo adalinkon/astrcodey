@@ -22,9 +22,11 @@ function isAssistantLike(block: ConversationBlock): boolean {
 const BlockRenderer = memo(function BlockRenderer({
   block,
   prevBlock,
+  sessionId,
 }: {
   block: ConversationBlock
   prevBlock: ConversationBlock | null
+  sessionId: string | null
 }) {
   const isContinuation =
     prevBlock !== null && isAssistantLike(block) && isAssistantLike(prevBlock)
@@ -44,7 +46,7 @@ const BlockRenderer = memo(function BlockRenderer({
       ) : block.kind === 'user' ? (
         <UserMessage block={block} />
       ) : block.kind === 'toolCall' ? (
-        <ToolCallBlock block={block} />
+        <ToolCallBlock block={block} sessionId={sessionId} />
       ) : block.kind === 'error' ? (
         <ErrorBlock block={block} />
       ) : block.kind === 'systemNote' ? (
@@ -299,7 +301,11 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
             const { block, index } = allItems[virtualItem.index]
             const prevBlock = index > 0 ? blocks[index - 1] : null
             const content = (
-              <BlockRenderer block={block} prevBlock={prevBlock} />
+              <BlockRenderer
+                block={block}
+                prevBlock={prevBlock}
+                sessionId={sessionId}
+              />
             )
 
             // First item has no top gap; subsequent items get gap via padding

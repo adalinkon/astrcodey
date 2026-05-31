@@ -23,6 +23,7 @@ use crate::{
     llm::LlmProvider,
     storage::{EventReader, EventStore},
     tool::{SessionOperations, ToolDefinition, ToolPromptMetadata, ToolResult},
+    tool_ui::ToolUiWire,
 };
 
 // ─── Extension Trait ─────────────────────────────────────────────────────
@@ -1154,6 +1155,7 @@ pub struct Registrar {
     tools: Vec<(ToolDefinition, std::sync::Arc<dyn ToolHandler>)>,
     tool_discovery: Vec<std::sync::Arc<dyn ToolDiscoveryHandler>>,
     tool_metadata: std::collections::HashMap<String, ToolPromptMetadata>,
+    tool_ui: std::collections::HashMap<String, ToolUiWire>,
     commands: Vec<(SlashCommand, std::sync::Arc<dyn CommandHandler>)>,
     command_discovery: Vec<std::sync::Arc<dyn CommandDiscoveryHandler>>,
     keybindings: Vec<Keybinding>,
@@ -1186,6 +1188,7 @@ impl Registrar {
             tools: Vec::new(),
             tool_discovery: Vec::new(),
             tool_metadata: std::collections::HashMap::new(),
+            tool_ui: std::collections::HashMap::new(),
             commands: Vec::new(),
             command_discovery: Vec::new(),
             keybindings: Vec::new(),
@@ -1213,6 +1216,11 @@ impl Registrar {
 
     pub fn tool_metadata(&mut self, meta: std::collections::HashMap<String, ToolPromptMetadata>) {
         self.tool_metadata.extend(meta);
+    }
+
+    /// 注册工具前端贡献（按 tool name；宿主投影到 metadata，不进 LLM）。
+    pub fn tool_ui(&mut self, ui: std::collections::HashMap<String, ToolUiWire>) {
+        self.tool_ui.extend(ui);
     }
 
     pub fn command(&mut self, cmd: SlashCommand, handler: std::sync::Arc<dyn CommandHandler>) {
@@ -1351,6 +1359,10 @@ impl Registrar {
 
     pub fn all_tool_metadata(&self) -> &std::collections::HashMap<String, ToolPromptMetadata> {
         &self.tool_metadata
+    }
+
+    pub fn all_tool_ui(&self) -> &std::collections::HashMap<String, ToolUiWire> {
+        &self.tool_ui
     }
 
     pub fn commands(&self) -> &[(SlashCommand, std::sync::Arc<dyn CommandHandler>)] {

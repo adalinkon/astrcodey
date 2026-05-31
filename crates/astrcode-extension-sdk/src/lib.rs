@@ -39,6 +39,10 @@ pub mod tool {
         ToolPromptMetadata, ToolPromptTag, ToolResult, ToolSessionControl, ToolSessionPaths,
         tool_metadata,
     };
+    pub use astrcode_core::tool_ui::{
+        ToolApprovalUiWire, ToolInputUiWire, ToolResultUiWire, ToolUiWire, TOOL_UI_METADATA_KEY,
+        TOOL_UI_PHASE_METADATA_KEY,
+    };
 }
 
 pub mod types {

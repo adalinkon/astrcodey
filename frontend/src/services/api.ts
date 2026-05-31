@@ -292,3 +292,38 @@ export async function setExtensionEnabled(
     })
   )
 }
+
+/** Tool Approval UI 提交（如 askUser 问卷）。后端 command 待接。 */
+export async function submitToolUiRespond(
+  sessionId: string,
+  callId: string,
+  toolName: string,
+  answers: Record<string, string>
+): Promise<{ accepted: boolean }> {
+  const response = await (
+    await resolveFetch()
+  )(
+    `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/tool-calls/${encodeURIComponent(callId)}/tool-ui/respond`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders(),
+      },
+      body: JSON.stringify({ toolName, answers }),
+    }
+  )
+
+  if (response.status === 404 || response.status === 501) {
+    throw new Error(
+      'Tool UI 提交接口尚未实现（POST …/tool-ui/respond）。见 docs/tool-ui-architecture.md'
+    )
+  }
+
+  if (!response.ok) {
+    const body = await response.text()
+    throw new Error(await formatRequestError(response, body))
+  }
+
+  return (await response.json()) as { accepted: boolean }
+}

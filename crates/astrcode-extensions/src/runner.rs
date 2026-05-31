@@ -169,6 +169,7 @@ struct HandlerIndex {
     // 预计算的 collect 缓存
     tool_metadata:
         std::collections::HashMap<String, astrcode_extension_sdk::tool::ToolPromptMetadata>,
+    tool_ui: std::collections::HashMap<String, astrcode_extension_sdk::tool::ToolUiWire>,
     static_tools: Vec<(
         ToolDefinition,
         Arc<dyn ToolHandler>,
@@ -207,6 +208,7 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
     let mut cas: Vec<PrioritizedHandler<dyn ContinueAfterStopHandler>> = Vec::new();
     let mut lc: Vec<PrioritizedEventHandler<ExtensionEvent, dyn LifecycleHandler>> = Vec::new();
     let mut tool_metadata = std::collections::HashMap::new();
+    let mut tool_ui = std::collections::HashMap::new();
     #[allow(clippy::type_complexity)]
     let mut static_tools: Vec<(
         ToolDefinition,
@@ -256,6 +258,7 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
         }
         // collect 缓存
         tool_metadata.extend(record.reg.all_tool_metadata().clone());
+        tool_ui.extend(record.reg.all_tool_ui().clone());
         for (def, handler) in record.reg.tools().iter() {
             static_tools.push((
                 def.clone(),
@@ -313,6 +316,7 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
         continue_after_stop: cas.into_iter().map(|(_, id, m, h)| (id, m, h)).collect(),
         lifecycle: group_by_event_with_mode(lc),
         tool_metadata,
+        tool_ui,
         static_tools,
         tool_discoveries,
         static_commands,
@@ -436,6 +440,7 @@ impl ExtensionRunner {
                 continue_after_stop: Vec::new(),
                 lifecycle: HashMap::new(),
                 tool_metadata: std::collections::HashMap::new(),
+                tool_ui: std::collections::HashMap::new(),
                 static_tools: Vec::new(),
                 tool_discoveries: Vec::new(),
                 static_commands: Vec::new(),
@@ -1150,6 +1155,12 @@ impl ExtensionRunner {
         &self,
     ) -> std::collections::HashMap<String, astrcode_extension_sdk::tool::ToolPromptMetadata> {
         self.load_index().tool_metadata.clone()
+    }
+
+    pub async fn collect_tool_ui(
+        &self,
+    ) -> std::collections::HashMap<String, astrcode_extension_sdk::tool::ToolUiWire> {
+        self.load_index().tool_ui.clone()
     }
 
     /// 收集所有插件注册的快捷键绑定。
