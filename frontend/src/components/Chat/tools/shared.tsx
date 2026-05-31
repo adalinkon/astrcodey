@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import type { RenderSpec } from '../../../types/render-spec'
 import { cn } from '../../../lib/utils'
+import { toolCodePreviewBleed } from '../../../lib/styles'
 import { DiffCodeLines } from '../DiffCodeLines'
 import { previewText, type ToolCall } from './helpers'
 
@@ -49,7 +50,7 @@ export function CodePreview({
   const color = tone === 'stderr' ? 'text-danger' : 'text-code-text'
   const children =
     tone === 'diff' ? (
-      <DiffCodeLines text={content} lineClassName="-mx-4 px-4" />
+      <DiffCodeLines text={content} />
     ) : (
       <code>{content}</code>
     )
@@ -57,13 +58,19 @@ export function CodePreview({
   return (
     <pre
       className={cn(
-        'm-0 overflow-x-auto whitespace-pre pt-3 font-mono text-[12.5px] leading-relaxed',
+        toolCodePreviewBleed,
+        'm-0 min-w-fit whitespace-pre pt-3 font-mono text-[12.5px] leading-relaxed',
         color
       )}
     >
       {children}
     </pre>
   )
+}
+
+function lineNumberColumnWidth(numbers: string[]): string {
+  const maxLen = numbers.reduce((max, value) => Math.max(max, value.length), 1)
+  return `${maxLen}ch`
 }
 
 export function ReadContentPreview({ text }: { text: string }) {
@@ -78,21 +85,30 @@ export function ReadContentPreview({ text }: { text: string }) {
     return <CodePreview text={text} />
   }
 
+  const lineNumbers = parsed.flatMap((item) => (item ? [item.number] : []))
+  const lineNumWidth = lineNumberColumnWidth(lineNumbers)
+
   return (
-    <div className="overflow-x-auto pt-3 font-mono text-[12.5px] leading-relaxed text-code-text">
+    <div
+      className={cn(
+        toolCodePreviewBleed,
+        'min-w-fit pt-3 font-mono text-[12.5px] leading-relaxed text-code-text'
+      )}
+    >
       {lines.map((line, index) => {
         const item = parsed[index]
         return (
           <div
             key={index}
-            className="grid min-w-fit grid-cols-[4.5rem_minmax(0,1fr)] gap-3"
+            className="grid min-w-fit gap-x-2"
+            style={{
+              gridTemplateColumns: `${lineNumWidth} minmax(0,max-content)`,
+            }}
           >
-            <span className="select-none text-right text-text-muted">
+            <span className="select-none text-right tabular-nums text-text-muted">
               {item?.number ?? ''}
             </span>
-            <code className="min-w-0 whitespace-pre">
-              {(item?.code ?? line) || ' '}
-            </code>
+            <code className="whitespace-pre">{(item?.code ?? line) || ' '}</code>
           </div>
         )
       })}

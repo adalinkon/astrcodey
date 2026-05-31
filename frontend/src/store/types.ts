@@ -23,6 +23,8 @@ export interface AppState {
   connectionError: string | null
 
   sessions: SessionListItem[]
+  /** 文件夹（workingDir）显示顺序；应用启动后首次拉取会话时排序，之后仅追加/移除。 */
+  projectFolderOrder: string[]
   activeSessionId: string | null
   activeSessionTitle: string | null
   workingDir: string | null

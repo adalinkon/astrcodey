@@ -1,6 +1,5 @@
 import { useState, useCallback, useMemo } from 'react'
 import { useAppStore } from '../../store/conversation'
-import type { SessionListItem } from '../../services/types'
 import { cn } from '../../lib/utils'
 import { PHASE_BG_CLASS } from '../../lib/styles'
 import { getHostBridge } from '../../lib/hostBridge'
@@ -9,24 +8,11 @@ import NewProjectModal from './NewProjectModal'
 import SettingsModal from '../Settings/SettingsModal'
 import { Icon } from '../ui'
 import * as api from '../../services/api'
-
-function groupByWorkingDir(
-  sessions: SessionListItem[]
-): Map<string, SessionListItem[]> {
-  const groups = new Map<string, SessionListItem[]>()
-  for (const session of sessions) {
-    const existing = groups.get(session.workingDir)
-    if (existing) {
-      existing.push(session)
-    } else {
-      groups.set(session.workingDir, [session])
-    }
-  }
-  return groups
-}
+import { groupSessionsByWorkingDir } from './projectFolderOrder'
 
 export default function Sidebar() {
   const sessions = useAppStore((s) => s.sessions)
+  const projectFolderOrder = useAppStore((s) => s.projectFolderOrder)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const phase = useAppStore((s) => s.phase)
   const workingDir = useAppStore((s) => s.workingDir)
@@ -42,7 +28,22 @@ export default function Sidebar() {
   const [showSettings, setShowSettings] = useState(false)
 
   const bridge = useMemo(() => getHostBridge(), [])
-  const projectGroups = useMemo(() => groupByWorkingDir(sessions), [sessions])
+  const projectGroups = useMemo(
+    () => groupSessionsByWorkingDir(sessions),
+    [sessions]
+  )
+  const orderedWorkingDirs = useMemo(() => {
+    const active = new Set(projectGroups.keys())
+    const ordered = projectFolderOrder.filter((workingDir) =>
+      active.has(workingDir)
+    )
+    for (const workingDir of active) {
+      if (!ordered.includes(workingDir)) {
+        ordered.push(workingDir)
+      }
+    }
+    return ordered
+  }, [projectFolderOrder, projectGroups])
 
   const handleSelectSession = useCallback(
     (sessionId: string) => {
@@ -115,8 +116,10 @@ export default function Sidebar() {
         <div className="px-2 mb-2 text-[11px] font-semibold text-text-muted tracking-[0.05em]">
           文件夹
         </div>
-        {Array.from(projectGroups.entries()).map(
-          ([workingDir, groupSessions]) => (
+        {orderedWorkingDirs.map((workingDir) => {
+          const groupSessions = projectGroups.get(workingDir)
+          if (!groupSessions) return null
+          return (
             <ProjectGroup
               key={workingDir}
               workingDir={workingDir}
@@ -127,7 +130,7 @@ export default function Sidebar() {
               onDeleteProject={handleDeleteProject}
             />
           )
-        )}
+        })}
       </div>
 
       <div className="px-1 pt-4 border-t border-border shrink-0">

@@ -11,6 +11,10 @@ import {
 } from './delta/blockHelpers'
 import { connectSse } from './stream'
 import { canInjectMidTurn, isExecutionPhase } from './phaseHelpers'
+import {
+  computeInitialProjectFolderOrder,
+  syncProjectFolderOrder,
+} from '../components/Sidebar/projectFolderOrder'
 import type { AppState } from './types'
 
 function resetSessionView(): Partial<AppState> {
@@ -55,6 +59,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   transientHint: null,
   pendingMessages: [],
   composerDeliveryMode: 'queued',
+  projectFolderOrder: [],
 
   initServer: async () => {
     set({ connectionStatus: 'connecting', connectionError: null })
@@ -96,7 +101,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   refreshSessions: async () => {
     try {
       const response = await api.listSessions()
-      set({ sessions: response.sessions })
+      set((current) => ({
+        sessions: response.sessions,
+        projectFolderOrder:
+          current.projectFolderOrder.length === 0
+            ? computeInitialProjectFolderOrder(response.sessions)
+            : syncProjectFolderOrder(
+                current.projectFolderOrder,
+                response.sessions
+              ),
+      }))
     } catch (err) {
       console.error('Failed to refresh sessions:', err)
     }

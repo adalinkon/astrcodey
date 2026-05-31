@@ -56,17 +56,18 @@ const BlockRenderer = memo(function BlockRenderer({
   )
 })
 
-const BLOCK_GAP_PX = 40 // matches Tailwind gap-10 (2.5rem ≈ 40px)
-/** Within this distance from the bottom we treat the user as "following" the stream. */
-const STICK_TO_BOTTOM_THRESHOLD_PX = 64
+import {
+  isNearBottom as isNearBottomPx,
+  nextStickToBottom,
+} from './scrollStickiness'
 
-function isNearBottom(
-  container: HTMLDivElement,
-  threshold = STICK_TO_BOTTOM_THRESHOLD_PX
-) {
-  return (
-    container.scrollHeight - container.scrollTop - container.clientHeight <=
-    threshold
+const BLOCK_GAP_PX = 40 // matches Tailwind gap-10 (2.5rem ≈ 40px)
+
+function isNearBottom(container: HTMLDivElement) {
+  return isNearBottomPx(
+    container.scrollTop,
+    container.scrollHeight,
+    container.clientHeight
   )
 }
 
@@ -79,11 +80,15 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
   const ignoreScrollRef = useRef(false)
   const touchStartYRef = useRef<number | null>(null)
 
-  const scrollContainerToBottom = useCallback(
+  const runProgrammaticScroll = useCallback(
     (behavior: ScrollBehavior = 'auto') => {
       const container = listRef.current
       if (!container) return
       ignoreScrollRef.current = true
+      const itemCount = prevItemCountRef.current
+      if (itemCount > 0) {
+        virtualizerRef.current.scrollToIndex(itemCount - 1, { align: 'end' })
+      }
       container.scrollTo({ top: container.scrollHeight, behavior })
       requestAnimationFrame(() => {
         lastScrollTopRef.current = container.scrollTop
@@ -127,13 +132,9 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
   const followLatest = useCallback(
     (behavior: ScrollBehavior = 'auto') => {
       if (!shouldStickRef.current) return
-      const itemCount = prevItemCountRef.current
-      if (itemCount > 0) {
-        virtualizerRef.current.scrollToIndex(itemCount - 1, { align: 'end' })
-      }
-      scrollContainerToBottom(behavior)
+      runProgrammaticScroll(behavior)
     },
-    [scrollContainerToBottom]
+    [runProgrammaticScroll]
   )
 
   const markUserScrolledUp = useCallback(() => {
@@ -147,18 +148,12 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
     if (!container) return
 
     const scrollTop = container.scrollTop
-
-    // Only react to user-driven scroll direction — do not disable follow when
-    // content grows below the viewport (scrollTop unchanged, distance increases).
-    if (scrollTop < lastScrollTopRef.current - 2) {
-      shouldStickRef.current = false
-    } else if (
-      scrollTop > lastScrollTopRef.current + 2 &&
+    shouldStickRef.current = nextStickToBottom(
+      shouldStickRef.current,
+      scrollTop,
+      lastScrollTopRef.current,
       isNearBottom(container)
-    ) {
-      shouldStickRef.current = true
-    }
-
+    )
     lastScrollTopRef.current = scrollTop
   }, [])
 

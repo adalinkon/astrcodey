@@ -1,10 +1,11 @@
 import { memo, useState } from 'react'
 import type { ConversationBlock } from '../../services/types'
+import { cn } from '../../lib/utils'
 import {
   extractRenderSpec,
   extractRenderSummary,
 } from '../../types/render-spec'
-import { chevronIcon } from '../../lib/styles'
+import { chevronIcon, toolPanelPaddingX, toolPanelScrollViewport } from '../../lib/styles'
 import { RenderSpecViewer } from './RenderSpecViewer'
 import './tools/builtinRenderers'
 import {
@@ -89,9 +90,11 @@ function ToolCallBlock({ block }: ToolCallBlockProps) {
           <Icon name="chevron-right" size={14} />
         </span>
       </summary>
-      <div className="mt-1.5 flex min-w-0 flex-col rounded-xl border border-border bg-code-surface px-4 py-3 shadow-soft">
-        <div className="min-w-0 max-h-[min(58vh,560px)] overflow-y-auto overscroll-contain pr-1">
-          <ToolDetails context={context} renderer={renderer} />
+      <div className="mt-1.5 min-w-0 overflow-hidden rounded-xl border border-border bg-code-surface shadow-soft">
+        <div className={toolPanelScrollViewport}>
+          <div className={cn(toolPanelPaddingX, 'py-3')}>
+            <ToolDetails context={context} renderer={renderer} />
+          </div>
         </div>
       </div>
     </details>

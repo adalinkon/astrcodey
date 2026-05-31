@@ -32,6 +32,13 @@ export const assistantAvatar =
   'inline-flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded bg-linear-to-b from-avatar-surface to-avatar-surface-strong text-avatar-text'
 export const expandableBody = 'mb-3 ml-2 mt-2 border-l-2 border-border pl-4'
 
+/** ToolCallBlock 内容区内边距（与 toolCodePreviewBleed 配套）。 */
+export const toolPanelPaddingX = 'px-4'
+/** 代码预览向卡片内缘延伸，抵消外层 padding，左侧略紧以贴近行号。 */
+export const toolCodePreviewBleed = '-mx-4 pl-3 pr-4'
+export const toolPanelScrollViewport =
+  'min-w-0 max-h-[min(58vh,560px)] overflow-auto overscroll-contain'
+
 // Dialog
 export const overlay =
   'fixed inset-0 z-[10000] flex items-center justify-center bg-overlay-backdrop p-5 backdrop-blur-[8px]'
