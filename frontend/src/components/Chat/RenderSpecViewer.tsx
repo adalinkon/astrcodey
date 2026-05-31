@@ -1,7 +1,6 @@
 import { memo } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import type { RenderSpec, RenderTone } from '../../types/render-spec'
+import { MarkdownContent } from './MarkdownContent'
 import { codeBlockShell, codeBlockContent } from '../../lib/styles'
 import { cn } from '../../lib/utils'
 import { DiffCodeLines } from './DiffCodeLines'
@@ -48,7 +47,7 @@ function RenderSpecViewerInner({ spec, className }: RenderSpecViewerProps) {
             className
           )}
         >
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{spec.text}</ReactMarkdown>
+          <MarkdownContent text={spec.text} />
         </div>
       )
 

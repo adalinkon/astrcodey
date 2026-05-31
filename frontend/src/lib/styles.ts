@@ -1,21 +1,21 @@
 // Shared style constants
 export const pillBase =
-  'inline-flex min-h-[22px] shrink-0 items-center rounded-full px-2.5 text-[11px] font-bold tracking-[0.02em]'
-export const pillNeutral = `${pillBase} bg-surface-muted text-text-secondary`
-export const pillSuccess = `${pillBase} bg-success-soft text-success`
-export const pillDanger = `${pillBase} bg-danger-soft text-danger`
+  'inline-flex min-h-[20px] shrink-0 items-center rounded px-1.5 text-[11px] font-medium tracking-normal'
+export const pillNeutral = `${pillBase} text-text-muted`
+export const pillSuccess = `${pillBase} text-success`
+export const pillDanger = `${pillBase} text-danger`
 
 export const ghostIconButton =
-  'inline-flex items-center justify-center rounded-lg text-text-secondary transition-[background-color,color,opacity,transform] duration-150 ease-out hover:bg-surface-muted hover:text-text-primary active:scale-[0.96]'
+  'inline-flex items-center justify-center rounded-md text-text-muted transition-colors duration-150 hover:bg-surface-muted hover:text-text-primary'
 export const chevronIcon =
-  'inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-text-secondary opacity-60 transition-transform duration-150 ease-out group-open:rotate-90'
+  'inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-text-muted transition-transform duration-150 ease-out group-open:rotate-90'
 
 export const composerShell =
-  'rounded-[24px] border border-border bg-gradient-to-b from-white/95 to-surface-soft shadow-composer-shell transition-[border-color,box-shadow,transform] duration-[180ms] ease-out focus-within:-translate-y-px focus-within:border-accent-strong/30 focus-within:shadow-focus-accent'
+  'rounded-xl border border-border bg-surface transition-[border-color,box-shadow] duration-150 focus-within:border-border-strong focus-within:shadow-[0_0_0_3px_rgba(0,0,0,0.04)]'
 export const composerSubmitButton =
-  'inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-accent-strong text-white shadow-soft transition-[transform,filter,opacity] duration-150 ease-out hover:-translate-y-px hover:scale-105 hover:brightness-95 active:scale-95 active:brightness-90 disabled:cursor-not-allowed disabled:opacity-35 [&_svg]:h-4 [&_svg]:w-4'
+  'inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-text-primary text-white transition-[opacity,transform] duration-150 hover:opacity-90 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-30 [&_svg]:h-3.5 [&_svg]:w-3.5'
 export const composerInterruptButton =
-  'h-9 flex-shrink-0 rounded-xl border border-danger bg-danger-soft px-3.5 text-[13px] font-semibold text-danger transition-[filter,opacity,transform] duration-150 ease-out hover:brightness-98 active:scale-[0.98]'
+  'h-8 flex-shrink-0 rounded-lg px-3 text-[12px] font-medium text-text-secondary transition-colors duration-150 hover:bg-surface-muted hover:text-text-primary'
 
 export const codeBlockShell =
   'group relative my-2 overflow-hidden rounded-lg border border-code-border bg-code-surface'
@@ -25,9 +25,9 @@ export const codeBlockContent =
   'm-0 overflow-x-auto whitespace-pre px-4 pb-4 pt-2 font-mono text-sm leading-relaxed text-code-text'
 
 export const errorSurface =
-  'self-stretch rounded-2xl border border-danger/20 bg-danger-soft px-4 py-3.5 text-danger'
+  'self-stretch rounded-lg border border-danger/15 bg-danger-soft/50 px-4 py-3 text-danger'
 export const emptyStateSurface =
-  'rounded-[18px] border border-dashed border-border bg-surface/60 px-7 py-6 text-center text-sm text-text-secondary'
+  'rounded-lg px-6 py-8 text-center text-sm text-text-muted'
 export const assistantAvatar =
   'inline-flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded bg-linear-to-b from-avatar-surface to-avatar-surface-strong text-avatar-text'
 export const expandableBody = 'mb-3 ml-2 mt-2 border-l-2 border-border pl-4'
@@ -36,16 +36,16 @@ export const expandableBody = 'mb-3 ml-2 mt-2 border-l-2 border-border pl-4'
 export const overlay =
   'fixed inset-0 z-[10000] flex items-center justify-center bg-overlay-backdrop p-5 backdrop-blur-[8px]'
 export const dialogSurface =
-  'rounded-[20px] border border-border bg-surface p-6 shadow-surface-lg w-[460px] max-w-[calc(100vw-32px)]'
+  'rounded-xl border border-border bg-surface p-6 shadow-surface-lg w-[460px] max-w-[calc(100vw-32px)]'
 export const fieldInput =
-  'w-full rounded-xl border border-border bg-surface px-3 py-[11px] text-[13px] text-text-primary outline-none transition-[border-color,box-shadow,background-color] duration-150 ease-out placeholder:text-text-muted focus:border-border-strong focus:shadow-focus-warm'
+  'w-full rounded-lg border border-border bg-surface px-3 py-2.5 text-[13px] text-text-primary outline-none transition-[border-color,box-shadow] duration-150 placeholder:text-text-muted focus:border-border-strong focus:shadow-[0_0_0_3px_rgba(0,0,0,0.04)]'
 export const fieldButton =
-  'flex w-full items-center justify-between gap-3 rounded-xl border border-border bg-surface px-3 py-[11px] text-[13px] text-text-primary transition-[border-color,background-color,box-shadow,transform] duration-150 ease-out hover:bg-white active:scale-[0.98] active:bg-surface-muted focus-visible:border-border-strong focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-55'
+  'flex w-full items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-[13px] text-text-primary transition-colors duration-150 hover:bg-surface-muted focus-visible:border-border-strong focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-55'
 export const btnSecondary =
-  'rounded-xl border border-border bg-surface-soft px-4 py-2.5 text-[13px] font-semibold text-text-secondary transition-[background-color,border-color,color,transform] duration-150 ease-out hover:border-border-strong hover:bg-white hover:text-text-primary active:scale-[0.98] active:bg-surface-muted'
+  'rounded-lg border border-border bg-surface px-4 py-2 text-[13px] font-medium text-text-secondary transition-colors duration-150 hover:bg-surface-muted hover:text-text-primary'
 export const btnPrimary =
-  'rounded-xl border-none bg-accent-strong px-4 py-2.5 text-[13px] font-semibold text-white transition-[filter,opacity,transform] duration-150 ease-out hover:brightness-95 active:scale-[0.98] active:brightness-90 disabled:cursor-not-allowed disabled:opacity-40'
-export const overlayBackdrop = 'rgba(55, 42, 26, 0.18)'
+  'rounded-lg border-none bg-text-primary px-4 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40'
+export const overlayBackdrop = 'rgba(0, 0, 0, 0.24)'
 
 export const PHASE_BG_CLASS: Record<string, string> = {
   idle: 'bg-phase-idle',

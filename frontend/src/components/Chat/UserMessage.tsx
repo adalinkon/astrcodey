@@ -1,6 +1,7 @@
 import { memo } from 'react'
 import type { ConversationBlock } from '../../services/types'
 import { cn } from '../../lib/utils'
+import { MarkdownContent } from './MarkdownContent'
 
 interface UserMessageProps {
   block: Extract<ConversationBlock, { kind: 'user' }>
@@ -11,10 +12,11 @@ function UserMessage({ block }: UserMessageProps) {
     <div className="flex justify-end">
       <div
         className={cn(
-          'max-w-[80%] rounded-2xl rounded-br-md bg-user-bubble px-4 py-3 text-[15px] leading-[1.7] text-text-primary prose-chat'
+          'max-w-[85%] rounded-2xl rounded-br-md border border-user-bubble-border',
+          'bg-user-bubble px-4 py-3 text-[15px] leading-[1.65] text-text-primary prose-chat'
         )}
       >
-        {block.text}
+        <MarkdownContent text={block.text} />
       </div>
     </div>
   )

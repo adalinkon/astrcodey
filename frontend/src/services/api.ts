@@ -68,6 +68,24 @@ export function initBaseUrl(): void {
   }
 }
 
+async function formatRequestError(response: Response, body: string): Promise<string> {
+  try {
+    const parsed = JSON.parse(body) as { code?: string; message?: string }
+    if (parsed.code === 'no_active_turn') {
+      return '当前 turn 已结束，无法 inject（消息会保留在 queue 中）'
+    }
+    if (parsed.message) {
+      return parsed.message
+    }
+  } catch {
+    // ignore JSON parse errors
+  }
+  if (response.status === 404 && !body.trim()) {
+    return '接口不存在，请重新编译并重启 astrcode 服务'
+  }
+  return `${response.status} ${response.statusText}: ${body}`
+}
+
 async function request(path: string, init?: RequestInit): Promise<unknown> {
   const fetchFn = await resolveFetch()
   const headers: Record<string, string> = {
@@ -85,7 +103,7 @@ async function request(path: string, init?: RequestInit): Promise<unknown> {
   })
   if (!response.ok) {
     const body = await response.text().catch(() => '')
-    throw new Error(`${response.status} ${response.statusText}: ${body}`)
+    throw new Error(await formatRequestError(response, body))
   }
   if (response.status === 204) {
     return undefined

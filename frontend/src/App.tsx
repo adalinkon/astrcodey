@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar/Sidebar'
 import ChatView from './components/Chat/ChatView'
 import ConnectingScreen from './components/ConnectingScreen'
 import ErrorBoundary from './components/ErrorBoundary'
+import TransientHintDialog from './components/TransientHintDialog'
 import { useSidebarResize } from './hooks/useSidebarResize'
 
 export default function App() {
@@ -39,6 +40,7 @@ export default function App() {
         )}
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           <ChatView isSidebarOpen={isOpen} onToggleSidebar={toggle} />
+          <TransientHintDialog />
         </div>
       </div>
     </ErrorBoundary>

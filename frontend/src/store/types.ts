@@ -59,7 +59,7 @@ export interface AppState {
   applyDelta: (delta: import('../services/types').ConversationDelta) => void
   clearTransientHint: () => void
   toggleComposerDeliveryMode: () => void
-  togglePendingDelivery: (id: string) => Promise<void>
+  injectPendingMessage: (id: string) => Promise<void>
   removePendingMessage: (id: string) => void
   restorePendingMessage: (id: string) => string | null
   flushPendingQueued: () => Promise<void>

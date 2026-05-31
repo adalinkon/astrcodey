@@ -13,12 +13,13 @@ import PendingMessagesPanel from './PendingMessagesPanel'
 import { Icon } from '../ui'
 import * as api from '../../services/api'
 import type { SlashCommandInfo } from '../../services/types'
-import { isExecutionPhase } from '../../store/phaseHelpers'
+import { canInjectMidTurn, isExecutionPhase } from '../../store/phaseHelpers'
 
 export default function InputBar() {
   const submitPrompt = useAppStore((s) => s.submitPrompt)
   const abortCurrentTurn = useAppStore((s) => s.abortCurrentTurn)
   const phase = useAppStore((s) => s.phase)
+  const control = useAppStore((s) => s.control)
   const workingDir = useAppStore((s) => s.workingDir)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const modelRefreshKey = useAppStore((s) => s.modelRefreshKey)
@@ -36,9 +37,7 @@ export default function InputBar() {
   const isCompacting = phase === 'compacting' || compactSubmitting
   const isBusy = isExecutionPhase(phase, compactSubmitting)
   const canSubmit = !!activeSessionId && !isCompacting
-  const canInject = isBusy
-  const submitModeLabel =
-    composerDeliveryMode === 'queued' ? 'Queued' : 'Inject'
+  const canInject = canInjectMidTurn(control, compactSubmitting)
   const submitActionLabel =
     isBusy
       ? composerDeliveryMode === 'queued'
@@ -252,136 +251,130 @@ export default function InputBar() {
   }, [isBusy, flushPendingQueued, pendingMessages.length])
 
   return (
-    <div className="shrink-0 bg-panel-bg px-[var(--layout-page-padding-x)] pb-4.5 pt-4">
+    <div className="shrink-0 bg-panel-bg px-[var(--layout-page-padding-x)] pb-4 pt-3">
       <div className="mx-auto w-full max-w-[var(--layout-content-max-width)] translate-x-[var(--chat-assistant-center-shift)]">
+        <PendingMessagesPanel
+          canInject={canInject}
+          onEdit={(text) => {
+            setValue(text)
+            requestAnimationFrame(() => {
+              const textarea = textareaRef.current
+              if (!textarea) return
+              textarea.focus()
+              textarea.style.height = 'auto'
+              textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`
+            })
+          }}
+        />
         <div className="relative w-full">
           <div className={composerShell}>
             {workingDir && (
               <div
-                className="flex items-center gap-2 rounded-t-[23px] border-b border-border bg-white/40 px-4 py-2.5 text-text-secondary"
+                className="flex items-center gap-2 border-b border-border px-4 py-2 text-text-muted"
                 title={workingDir}
               >
-                <span
-                  className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center"
-                  aria-hidden="true"
-                >
-                  <Icon name="folder" size={14} />
-                </span>
-                <div className="overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs">
+                <Icon name="folder" size={13} />
+                <div className="overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[11px]">
                   {workingDir}
                 </div>
               </div>
             )}
-            <div className="relative">
-              <div className="flex flex-col px-[var(--chat-composer-shell-padding-x)] py-3">
-                <PendingMessagesPanel
-                  canInject={canInject}
-                  onEdit={(text) => {
-                    setValue(text)
-                    requestAnimationFrame(() => {
-                      const textarea = textareaRef.current
-                      if (!textarea) return
-                      textarea.focus()
-                      textarea.style.height = 'auto'
-                      textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`
-                    })
-                  }}
-                />
-                <textarea
-                  ref={textareaRef}
-                  className="mb-3 max-h-60 min-h-12.5 w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-[15px] leading-[1.75] text-text-primary placeholder:text-text-muted focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-                  placeholder="向 AstrCode 提问..."
-                  value={value}
-                  rows={1}
-                  onChange={handleInput}
-                  onClick={handleCursorActivity}
-                  onKeyDown={handleKeyDown}
-                  onKeyUp={handleCursorActivity}
-                  onCompositionStart={() => setIsComposing(true)}
-                  onCompositionEnd={() => setIsComposing(false)}
-                  disabled={!activeSessionId}
-                />
-                <div className="flex items-center justify-between">
-                  <div className="flex shrink-0 items-center gap-2">
-                    <ModelSelector
-                      refreshKey={modelRefreshKey}
-                      getCurrentModel={api.getCurrentModel}
-                      listAvailableModels={api.listModels}
-                      setModel={async (profileName, model) => {
-                        await api.updateActiveSelection(profileName, model)
-                        bumpModelRefreshKey()
-                      }}
-                    />
-                    {Object.entries(statusItems)
-                      .filter(([, v]) => v)
-                      .map(([id, text]) => (
-                        <span
-                          key={id}
-                          className="text-[11px] text-text-secondary"
-                        >
-                          {text}
-                        </span>
-                      ))}
-                    {pendingMessages.length > 0 && (
-                      <span className="text-[11px] text-text-secondary">
-                        {pendingMessages.length} 条待发送
+            <div className="relative px-[var(--chat-composer-shell-padding-x)] py-3">
+              <textarea
+                ref={textareaRef}
+                className="mb-2 max-h-60 min-h-10 w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-[15px] leading-[1.6] text-text-primary placeholder:text-text-muted focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                placeholder="向 AstrCode 提问..."
+                value={value}
+                rows={1}
+                onChange={handleInput}
+                onClick={handleCursorActivity}
+                onKeyDown={handleKeyDown}
+                onKeyUp={handleCursorActivity}
+                onCompositionStart={() => setIsComposing(true)}
+                onCompositionEnd={() => setIsComposing(false)}
+                disabled={!activeSessionId}
+              />
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 shrink items-center gap-2">
+                  <ModelSelector
+                    refreshKey={modelRefreshKey}
+                    getCurrentModel={api.getCurrentModel}
+                    listAvailableModels={api.listModels}
+                    setModel={async (profileName, model) => {
+                      await api.updateActiveSelection(profileName, model)
+                      bumpModelRefreshKey()
+                    }}
+                  />
+                  {Object.entries(statusItems)
+                    .filter(([, v]) => v)
+                    .map(([id, text]) => (
+                      <span
+                        key={id}
+                        className="truncate text-[11px] text-text-muted"
+                      >
+                        {text}
                       </span>
-                    )}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    {isBusy && (
-                      <button
-                        type="button"
-                        className={cn(
-                          ghostIconButton,
-                          'gap-1 rounded-xl px-2 py-1.5 text-[11px] font-medium',
-                          composerDeliveryMode === 'inject' &&
-                            'bg-accent-strong/10 text-accent-strong'
-                        )}
-                        onClick={toggleComposerDeliveryMode}
-                        aria-label={
-                          composerDeliveryMode === 'queued'
-                            ? '切换为 Inject'
-                            : '切换为 Queued'
-                        }
-                        title={
-                          composerDeliveryMode === 'queued'
-                            ? '切换为 Inject'
-                            : '切换为 Queued'
-                        }
-                      >
-                        <Icon name="send" size={14} />
-                        <span>{submitModeLabel}</span>
-                      </button>
-                    )}
-                    {isBusy && (
-                      <button
-                        className={composerInterruptButton}
-                        type="button"
-                        onClick={handleAbort}
-                        disabled={isCompacting}
-                      >
-                        {isCompacting ? (
-                          <span className="inline-flex items-center gap-1.5">
-                            <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                            压缩中...
-                          </span>
-                        ) : (
-                          '中断'
-                        )}
-                      </button>
-                    )}
+                    ))}
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  {isBusy && (
                     <button
-                      className={cn(composerSubmitButton)}
                       type="button"
-                      onClick={() => void submit()}
-                      disabled={!value.trim() || !activeSessionId || !canSubmit}
-                      aria-label={submitActionLabel}
-                      title={submitActionLabel}
+                      className={cn(
+                        ghostIconButton,
+                        'gap-1 px-2 py-1.5 text-[11px]',
+                        composerDeliveryMode === 'inject' && 'text-accent',
+                        composerDeliveryMode === 'inject' &&
+                          !canInject &&
+                          'opacity-50'
+                      )}
+                      onClick={toggleComposerDeliveryMode}
+                      aria-label={
+                        composerDeliveryMode === 'queued'
+                          ? '切换为 inject'
+                          : '切换为 queue'
+                      }
+                      title={
+                        composerDeliveryMode === 'queued'
+                          ? '下一条：Queue（默认）'
+                          : canInject
+                            ? '下一条：Inject 到当前 turn'
+                            : 'Inject 需要 Agent 正在运行'
+                      }
                     >
-                      <Icon name="send" size={16} />
+                      <Icon name="send" size={13} />
+                      <span className="font-medium">
+                        {composerDeliveryMode === 'queued' ? 'Queue' : 'Inject'}
+                      </span>
                     </button>
-                  </div>
+                  )}
+                  {isBusy && (
+                    <button
+                      className={composerInterruptButton}
+                      type="button"
+                      onClick={handleAbort}
+                      disabled={isCompacting}
+                    >
+                      {isCompacting ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                          压缩中
+                        </span>
+                      ) : (
+                        'Stop'
+                      )}
+                    </button>
+                  )}
+                  <button
+                    className={cn(composerSubmitButton)}
+                    type="button"
+                    onClick={() => void submit()}
+                    disabled={!value.trim() || !activeSessionId || !canSubmit}
+                    aria-label={submitActionLabel}
+                    title={submitActionLabel}
+                  >
+                    <Icon name="send" size={14} />
+                  </button>
                 </div>
               </div>
             </div>
@@ -399,9 +392,9 @@ export default function InputBar() {
           )}
         </div>
       </div>
-      <div className="mx-auto mt-2.5 w-full max-w-[var(--layout-content-max-width)] text-center text-xs text-text-muted">
+      <p className="mx-auto mt-2 w-full max-w-[var(--layout-content-max-width)] text-center text-[11px] text-text-muted">
         AI 可能会产生误导性信息，请核实重要内容
-      </div>
+      </p>
     </div>
   )
 }

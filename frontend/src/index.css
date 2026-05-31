@@ -45,6 +45,7 @@
   --color-terminal-bg-to: var(--terminal-bg-to);
   --color-terminal-text: var(--terminal-text);
   --color-user-bubble: var(--user-bubble);
+  --color-user-bubble-border: var(--user-bubble-border);
   --font-outfit: var(--font-outfit);
   --animate-blink: blink 1s step-end infinite;
   --animate-message-enter: fadeSlideUp 320ms cubic-bezier(0.2, 1, 0.32, 1);
@@ -58,52 +59,51 @@
 }
 
 :root {
-  --app-bg: #f9f6f0;
-  --panel-bg: #fbf9f6;
-  --sidebar-bg: #f7f4ed;
+  --app-bg: #ffffff;
+  --panel-bg: #ffffff;
+  --sidebar-bg: #fafafa;
   --surface: #ffffff;
-  --surface-muted: #e8e2d5;
-  --surface-soft: #f8f6f0;
-  --border: #e5dfd5;
-  --border-strong: #d5cab8;
-  --text-primary: #191919;
-  --text-secondary: #6d6961;
-  --text-muted: #9e998f;
-  --accent: #d97706;
-  --accent-strong: #d97706;
-  --accent-soft: #fbf0df;
-  --success-soft: #eaf7f0;
+  --surface-muted: #f5f5f5;
+  --surface-soft: #fafafa;
+  --border: #e8e8e8;
+  --border-strong: #d4d4d4;
+  --text-primary: #1a1a1a;
+  --text-secondary: #6b6b6b;
+  --text-muted: #9b9b9b;
+  --accent: #c6613f;
+  --accent-strong: #c6613f;
+  --accent-soft: #fdf4f0;
+  --success-soft: #f0fdf4;
   --success: #15803d;
   --danger-soft: #fef2f2;
-  --danger: #b91c1c;
-  --warning-soft: #fef3c7;
+  --danger: #dc2626;
+  --warning-soft: #fffbeb;
   --warning: #b45309;
-  --link: #3b82f6;
-  --overlay-backdrop: rgba(55, 42, 26, 0.18);
-  --code-surface: #f9f7f2;
-  --code-border: #e5dfd5;
-  --code-label: #7c7263;
-  --code-text: #2f2923;
-  --avatar-surface: #f3ece0;
-  --avatar-surface-strong: #e5dfd5;
-  --avatar-text: #7c6e5a;
-  --shadow-soft: 0 4px 20px rgba(92, 79, 61, 0.04);
-  --shadow-composer-shell:
-    0 12px 36px rgba(92, 79, 61, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  --shadow-focus-accent:
-    0 0 0 4px rgba(217, 119, 6, 0.08), 0 20px 48px rgba(92, 79, 61, 0.08);
-  --shadow-surface-lg: 0 24px 64px rgba(92, 79, 61, 0.12);
+  --link: #2563eb;
+  --overlay-backdrop: rgba(0, 0, 0, 0.24);
+  --code-surface: #fafafa;
+  --code-border: #e8e8e8;
+  --code-label: #737373;
+  --code-text: #262626;
+  --avatar-surface: #f5f5f5;
+  --avatar-surface-strong: #e8e8e8;
+  --avatar-text: #525252;
+  --shadow-soft: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-composer-shell: none;
+  --shadow-focus-accent: 0 0 0 3px rgba(0, 0, 0, 0.04);
+  --shadow-surface-lg: 0 8px 32px rgba(0, 0, 0, 0.12);
   --shadow-focus-warm: var(--shadow-focus-accent);
-  --phase-idle: #d97706;
-  --phase-thinking: #b45309;
+  --phase-idle: #a3a3a3;
+  --phase-thinking: #c6613f;
   --phase-calling-tool: #0284c7;
   --phase-streaming: #7c3aed;
   --phase-error: #dc2626;
-  --terminal-border: #d5cab8;
-  --terminal-bg-from: #fdfcfb;
-  --terminal-bg-to: #fbf9f6;
-  --terminal-text: #2f2923;
-  --user-bubble: #f3ece0;
+  --terminal-border: #e8e8e8;
+  --terminal-bg-from: #fafafa;
+  --terminal-bg-to: #ffffff;
+  --terminal-text: #262626;
+  --user-bubble: #f4f4f5;
+  --user-bubble-border: #ececec;
   --font-outfit: 'Outfit', -apple-system, sans-serif;
   /* Layout tokens */
   --layout-page-padding-x: 32px;
@@ -159,13 +159,13 @@ body,
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #d5cabd;
+  background: #d4d4d4;
   border-radius: 999px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #c8bbab;
+  background: #a3a3a3;
   background-clip: padding-box;
 }
 
@@ -276,6 +276,30 @@ pre {
   font-size: 14px !important;
   white-space: break-spaces;
   overflow-wrap: anywhere;
+}
+.prose-chat pre code {
+  background: transparent !important;
+  color: inherit !important;
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  font-size: inherit !important;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+.prose-chat hr {
+  margin: 24px 0;
+  border: none;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+.prose-chat input[type='checkbox'] {
+  margin: 0 8px 0 0;
+  accent-color: var(--accent);
+}
+.prose-chat li:has(> input[type='checkbox']) {
+  list-style: none;
+  margin-left: -24px;
+  padding-left: 4px;
 }
 .prose-chat blockquote {
   margin: 16px 0;

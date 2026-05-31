@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useAppStore } from '../../store/conversation'
 import type { PendingMessage } from '../../store/types'
 import { cn } from '../../lib/utils'
-import { chevronIcon, ghostIconButton, pillNeutral } from '../../lib/styles'
+import { ghostIconButton } from '../../lib/styles'
 import { Icon } from '../ui/Icon'
 import { IconButton } from '../ui/IconButton'
 
@@ -12,20 +12,7 @@ interface PendingMessagesPanelProps {
 }
 
 function pendingSummary(messages: PendingMessage[]): string {
-  const queuedCount = messages.filter((item) => item.delivery === 'queued').length
-  const injectCount = messages.filter((item) => item.delivery === 'inject').length
-
-  if (injectCount === 0) {
-    return `${queuedCount} Queued`
-  }
-  if (queuedCount === 0) {
-    return `${injectCount} Inject`
-  }
-  return `${messages.length} Pending`
-}
-
-function deliveryLabel(delivery: PendingMessage['delivery']): string {
-  return delivery === 'queued' ? 'Queued' : 'Inject'
+  return `${messages.length} queued`
 }
 
 export default function PendingMessagesPanel({
@@ -33,7 +20,7 @@ export default function PendingMessagesPanel({
   canInject,
 }: PendingMessagesPanelProps) {
   const pendingMessages = useAppStore((s) => s.pendingMessages)
-  const togglePendingDelivery = useAppStore((s) => s.togglePendingDelivery)
+  const injectPendingMessage = useAppStore((s) => s.injectPendingMessage)
   const removePendingMessage = useAppStore((s) => s.removePendingMessage)
   const restorePendingMessage = useAppStore((s) => s.restorePendingMessage)
   const [expanded, setExpanded] = useState(true)
@@ -48,45 +35,40 @@ export default function PendingMessagesPanel({
   }
 
   return (
-    <div className="mb-2 rounded-2xl border border-border bg-surface-soft/70 px-3 py-2.5 shadow-soft">
+    <section className="mb-3">
       <button
         type="button"
-        className="group flex w-full items-center gap-2 text-left text-[12px] font-medium text-text-secondary"
+        className="flex items-center gap-1.5 text-[12px] text-text-muted transition-colors hover:text-text-secondary"
         onClick={() => setExpanded((open) => !open)}
         aria-expanded={expanded}
       >
-        <span className={cn(chevronIcon, !expanded && '-rotate-90')}>
-          <Icon name="chevron-down" size={14} />
-        </span>
+        <Icon
+          name="chevron-down"
+          size={12}
+          className={cn(
+            'transition-transform duration-150',
+            !expanded && '-rotate-90'
+          )}
+        />
         <span>{summary}</span>
       </button>
 
       {expanded && (
-        <ul className="mt-2 space-y-1.5">
+        <ul className="mt-1.5 divide-y divide-border/80">
           {pendingMessages.map((message) => (
             <li
               key={message.id}
-              className="flex items-start gap-2 rounded-xl border border-border/70 bg-white/50 px-2.5 py-2"
+              className="group flex items-center gap-3 py-2.5"
             >
-              <span
-                className="mt-1.5 inline-flex h-2 w-2 shrink-0 rounded-full border border-border-strong/60"
-                aria-hidden="true"
-              />
-              <div className="min-w-0 flex-1">
-                <div className="mb-1">
-                  <span className={cn(pillNeutral, 'px-2 py-0.5 text-[10px]')}>
-                    {deliveryLabel(message.delivery)}
-                  </span>
-                </div>
-                <p className="line-clamp-3 text-[13px] leading-[1.6] text-text-primary">
-                  {message.text}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-0.5">
+              <p className="min-w-0 flex-1 truncate text-[14px] leading-snug text-text-primary">
+                {message.text}
+              </p>
+              <div className="flex shrink-0 items-center gap-0.5 opacity-60 transition-opacity group-hover:opacity-100">
                 <IconButton
                   icon="edit"
                   label="编辑"
                   size={14}
+                  className="rounded-md"
                   onClick={() => {
                     const text = restorePendingMessage(message.id)
                     if (text) onEdit(text)
@@ -94,26 +76,15 @@ export default function PendingMessagesPanel({
                 />
                 <button
                   type="button"
-                  className={cn(
-                    ghostIconButton,
-                    'p-1',
-                    message.delivery === 'inject' &&
-                      'text-accent-strong hover:text-accent-strong'
-                  )}
-                  aria-label={
-                    message.delivery === 'queued'
-                      ? '切换为 Inject'
-                      : '切换为 Queued'
-                  }
+                  className={cn(ghostIconButton, 'rounded-md p-1')}
+                  aria-label="Inject 到当前 turn"
                   title={
-                    message.delivery === 'queued'
-                      ? canInject
-                        ? '切换为 Inject'
-                        : '当前无活跃 turn，无法 Inject'
-                      : '切换为 Queued'
+                    canInject
+                      ? 'Inject 到当前 turn'
+                      : 'Agent 未在运行，无法 inject'
                   }
-                  disabled={message.delivery === 'inject' && !canInject}
-                  onClick={() => void togglePendingDelivery(message.id)}
+                  disabled={!canInject}
+                  onClick={() => void injectPendingMessage(message.id)}
                 >
                   <Icon name="send" size={14} />
                 </button>
@@ -121,6 +92,7 @@ export default function PendingMessagesPanel({
                   icon="trash"
                   label="删除"
                   size={14}
+                  className="rounded-md"
                   onClick={() => removePendingMessage(message.id)}
                 />
               </div>
@@ -128,6 +100,6 @@ export default function PendingMessagesPanel({
           ))}
         </ul>
       )}
-    </div>
+    </section>
   )
 }

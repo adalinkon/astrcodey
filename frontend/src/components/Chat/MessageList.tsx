@@ -281,7 +281,7 @@ export default function MessageList({ blocks, sessionId }: MessageListProps) {
               <p className="mb-1 text-[15px] font-medium text-text-primary">
                 向 AstrCode 提问，开始对话
               </p>
-              <p className="text-[13px] text-text-secondary">
+              <p className="text-[13px] text-text-muted">
                 输入问题，或使用 / 查看可用命令
               </p>
             </>

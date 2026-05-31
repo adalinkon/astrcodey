@@ -10,7 +10,7 @@ import {
   withTimeout,
 } from './delta/blockHelpers'
 import { connectSse } from './stream'
-import { isExecutionPhase } from './phaseHelpers'
+import { canInjectMidTurn, isExecutionPhase } from './phaseHelpers'
 import type { AppState } from './types'
 
 function resetSessionView(): Partial<AppState> {
@@ -246,17 +246,28 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     const busy = isExecutionPhase(state.phase, state.compactSubmitting)
+    const injectable = canInjectMidTurn(state.control, state.compactSubmitting)
 
     try {
       if (busy && !compactCommand) {
         if (state.composerDeliveryMode === 'inject') {
-          const response = await api.injectMessage(activeSessionId, text)
-          if (
-            response.kind === 'handled' &&
-            get().activeSessionId !== response.sessionId
-          ) {
+          if (!injectable) {
+            set({
+              transientHint: '当前无法 inject，已改为加入队列',
+            })
+            set((current) => ({
+              pendingMessages: [
+                ...current.pendingMessages,
+                {
+                  id: crypto.randomUUID(),
+                  text,
+                  delivery: 'queued',
+                },
+              ],
+            }))
             return true
           }
+          await api.injectMessage(activeSessionId, text)
           return true
         }
 
@@ -274,7 +285,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       const response = await api.submitPrompt(activeSessionId, text)
-      if (response.kind === 'handled') {
+      if (response.kind === 'accepted') {
+        set((current) => ({
+          phase: 'thinking',
+          control: {
+            phase: 'thinking',
+            canSubmitPrompt: false,
+            canRequestCompact: current.control?.canRequestCompact ?? false,
+            compactPending: current.control?.compactPending ?? false,
+            compacting: false,
+            currentModeId: current.control?.currentModeId,
+            activeTurnId: response.turnId,
+          },
+        }))
+      } else if (response.kind === 'handled') {
         if (get().activeSessionId !== response.sessionId) {
           return true
         }
@@ -313,40 +337,31 @@ export const useAppStore = create<AppState>((set, get) => ({
     }))
   },
 
-  togglePendingDelivery: async (id: string) => {
+  injectPendingMessage: async (id: string) => {
     const state = get()
     const message = state.pendingMessages.find((item) => item.id === id)
     if (!message || !state.activeSessionId) return
 
-    const nextDelivery = message.delivery === 'queued' ? 'inject' : 'queued'
+    if (!canInjectMidTurn(state.control, state.compactSubmitting)) {
+      set({
+        transientHint: '当前 turn 已结束，无法 inject；消息会保留在 queue 中',
+      })
+      return
+    }
 
-    set((current) => ({
-      pendingMessages: current.pendingMessages.map((item) =>
-        item.id === id ? { ...item, delivery: nextDelivery } : item
-      ),
-    }))
-
-    if (
-      nextDelivery === 'inject' &&
-      isExecutionPhase(state.phase, state.compactSubmitting)
-    ) {
-      try {
-        await api.injectMessage(state.activeSessionId, message.text)
-        set((current) => ({
-          pendingMessages: current.pendingMessages.filter(
-            (item) => item.id !== id
-          ),
-        }))
-      } catch (err) {
-        console.error('injectMessage failed:', err)
-        set((current) => ({
-          pendingMessages: current.pendingMessages.map((item) =>
-            item.id === id ? { ...item, delivery: 'queued' as const } : item
-          ),
-          transientHint:
-            err instanceof Error ? err.message : '注入失败，请重试',
-        }))
-      }
+    try {
+      await api.injectMessage(state.activeSessionId, message.text)
+      set((current) => ({
+        pendingMessages: current.pendingMessages.filter(
+          (item) => item.id !== id
+        ),
+      }))
+    } catch (err) {
+      console.error('injectMessage failed:', err)
+      set({
+        transientHint:
+          err instanceof Error ? err.message : 'Inject 失败，请重试',
+      })
     }
   },
 

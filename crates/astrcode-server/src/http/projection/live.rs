@@ -17,14 +17,19 @@ pub(in crate::http) fn event_to_deltas(
 ) -> Vec<ConversationDeltaDto> {
     match &event.payload {
         EventPayload::AssistantMessageStarted { message_id } => {
-            vec![ConversationDeltaDto::AppendBlock {
-                block: ConversationBlockDto::Assistant {
-                    id: message_id.to_string(),
-                    text: String::new(),
-                    reasoning_content: None,
-                    status: ConversationBlockStatusDto::Streaming,
+            vec![
+                ConversationDeltaDto::AppendBlock {
+                    block: ConversationBlockDto::Assistant {
+                        id: message_id.to_string(),
+                        text: String::new(),
+                        reasoning_content: None,
+                        status: ConversationBlockStatusDto::Streaming,
+                    },
                 },
-            }]
+                ConversationDeltaDto::UpdateControlState {
+                    control: control_from_event(event, has_messages),
+                },
+            ]
         },
         EventPayload::AssistantTextDelta { message_id, delta } => {
             vec![ConversationDeltaDto::PatchBlock {
@@ -33,17 +38,22 @@ pub(in crate::http) fn event_to_deltas(
             }]
         },
         EventPayload::ToolCallStarted { call_id, tool_name } => {
-            vec![ConversationDeltaDto::AppendBlock {
-                block: ConversationBlockDto::ToolCall {
-                    id: call_id.to_string(),
-                    name: tool_name.clone(),
-                    arguments: String::new(),
-                    text: String::new(),
-                    status: ConversationBlockStatusDto::Streaming,
-                    metadata: None,
-                    arguments_json: None,
+            vec![
+                ConversationDeltaDto::AppendBlock {
+                    block: ConversationBlockDto::ToolCall {
+                        id: call_id.to_string(),
+                        name: tool_name.clone(),
+                        arguments: String::new(),
+                        text: String::new(),
+                        status: ConversationBlockStatusDto::Streaming,
+                        metadata: None,
+                        arguments_json: None,
+                    },
                 },
-            }]
+                ConversationDeltaDto::UpdateControlState {
+                    control: control_from_event(event, has_messages),
+                },
+            ]
         },
         EventPayload::ToolOutputDelta {
             call_id,
@@ -109,24 +119,19 @@ pub(in crate::http) fn event_to_deltas(
         | EventPayload::AgentRunStarted
         | EventPayload::CompactionStarted => {
             vec![ConversationDeltaDto::UpdateControlState {
-                control: control_from_phase(projected_phase(&event.payload), has_messages),
+                control: control_from_event(event, has_messages),
             }]
         },
         EventPayload::TurnCompleted { .. } | EventPayload::AgentRunCompleted { .. } => {
             vec![ConversationDeltaDto::UpdateControlState {
-                control: control_from_phase(Phase::Idle, has_messages),
+                control: control_from_event(event, has_messages),
             }]
         },
         EventPayload::CompactionCompleted { .. }
         | EventPayload::CompactionSkipped { .. }
         | EventPayload::CompactionFailed { .. } => {
-            let resume_phase = if event.turn_id.is_some() {
-                Phase::Thinking
-            } else {
-                Phase::Idle
-            };
             vec![ConversationDeltaDto::UpdateControlState {
-                control: control_from_phase(resume_phase, has_messages),
+                control: control_from_event(event, has_messages),
             }]
         },
         EventPayload::ThinkingDelta { message_id, delta } => {
@@ -220,9 +225,43 @@ fn projected_phase(payload: &EventPayload) -> Phase {
     }
 }
 
+fn active_turn_id_for_event(event: &Event) -> Option<String> {
+    match &event.payload {
+        EventPayload::TurnCompleted { .. } | EventPayload::AgentRunCompleted { .. } => None,
+        _ => event.turn_id.as_ref().map(|turn_id| turn_id.to_string()),
+    }
+}
+
+fn control_from_event(event: &Event, has_messages: bool) -> ConversationControlStateDto {
+    let phase = match &event.payload {
+        EventPayload::TurnCompleted { .. } | EventPayload::AgentRunCompleted { .. } => {
+            Phase::Idle
+        },
+        EventPayload::CompactionCompleted { .. }
+        | EventPayload::CompactionSkipped { .. }
+        | EventPayload::CompactionFailed { .. } => {
+            if event.turn_id.is_some() {
+                Phase::Thinking
+            } else {
+                Phase::Idle
+            }
+        },
+        _ => projected_phase(&event.payload),
+    };
+    control_from_state(phase, has_messages, active_turn_id_for_event(event))
+}
+
 pub(in crate::http) fn control_from_phase(
     phase: Phase,
     has_messages: bool,
+) -> ConversationControlStateDto {
+    control_from_state(phase, has_messages, None)
+}
+
+fn control_from_state(
+    phase: Phase,
+    has_messages: bool,
+    active_turn_id: Option<String>,
 ) -> ConversationControlStateDto {
     let can_submit_prompt = matches!(phase, Phase::Idle | Phase::Error);
     ConversationControlStateDto {
@@ -232,7 +271,7 @@ pub(in crate::http) fn control_from_phase(
         compact_pending: false,
         compacting: matches!(phase, Phase::Compacting),
         current_mode_id: None,
-        active_turn_id: None,
+        active_turn_id,
     }
 }
 
@@ -399,7 +438,45 @@ mod tests {
         assert!(matches!(
             deltas.as_slice(),
             [ConversationDeltaDto::UpdateControlState { control }]
-                if control.phase == Phase::Thinking && !control.compacting
+                if control.phase == Phase::Thinking
+                    && !control.compacting
+                    && control.active_turn_id.as_deref() == Some("turn-1")
+        ));
+    }
+
+    #[test]
+    fn turn_started_exposes_active_turn_id_for_inject() {
+        let event = Event::new(
+            "session-1".into(),
+            Some("turn-42".into()),
+            EventPayload::TurnStarted,
+        );
+
+        let deltas = event_to_deltas(&event, true);
+
+        assert!(matches!(
+            deltas.as_slice(),
+            [ConversationDeltaDto::UpdateControlState { control }]
+                if control.active_turn_id.as_deref() == Some("turn-42")
+        ));
+    }
+
+    #[test]
+    fn turn_completed_clears_active_turn_id() {
+        let event = Event::new(
+            "session-1".into(),
+            Some("turn-42".into()),
+            EventPayload::TurnCompleted {
+                finish_reason: "stop".into(),
+            },
+        );
+
+        let deltas = event_to_deltas(&event, true);
+
+        assert!(matches!(
+            deltas.as_slice(),
+            [ConversationDeltaDto::UpdateControlState { control }]
+                if control.phase == Phase::Idle && control.active_turn_id.is_none()
         ));
     }
 
