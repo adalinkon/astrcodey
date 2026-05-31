@@ -8,9 +8,7 @@ import {
 } from './components/questionnaireTypes'
 import { readToolUi, readToolUiPhase } from './wire'
 
-function questionnaireApprovalFromArgs(
-  ctx: ToolUiContext
-): ReactNode | null {
+function questionnaireApprovalFromArgs(ctx: ToolUiContext): ReactNode | null {
   const input = parseAskUserInput(ctx.block.argumentsJson ?? ctx.args)
   if (!input || input.questions.length === 0) return null
   if (ctx.block.status === 'error') return null

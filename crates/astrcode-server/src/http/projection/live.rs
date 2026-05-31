@@ -421,8 +421,9 @@ mod tests {
 
     #[test]
     fn tool_interaction_pending_patches_text_and_metadata() {
-        use astrcode_core::tool_ui::{TOOL_UI_METADATA_KEY, TOOL_UI_PHASE_METADATA_KEY};
         use std::collections::BTreeMap;
+
+        use astrcode_core::tool_ui::{TOOL_UI_METADATA_KEY, TOOL_UI_PHASE_METADATA_KEY};
 
         let mut metadata = BTreeMap::new();
         metadata.insert(
@@ -431,7 +432,10 @@ mod tests {
                 "approval": { "kind": "builtin", "variant": "questionnaire" }
             }),
         );
-        metadata.insert(TOOL_UI_PHASE_METADATA_KEY.into(), serde_json::json!("approval"));
+        metadata.insert(
+            TOOL_UI_PHASE_METADATA_KEY.into(),
+            serde_json::json!("approval"),
+        );
 
         let event = Event::new(
             "session-1".into(),

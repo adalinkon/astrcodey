@@ -81,8 +81,8 @@ pub(in crate::http) fn event_to_replay_deltas(
         metadata,
     } = &event.payload
     {
-        let metadata = serde_json::to_value(metadata)
-            .unwrap_or(serde_json::Value::Object(Default::default()));
+        let metadata =
+            serde_json::to_value(metadata).unwrap_or(serde_json::Value::Object(Default::default()));
         return vec![ConversationDeltaDto::PatchToolCall {
             block_id: call_id.to_string(),
             text: content.clone(),

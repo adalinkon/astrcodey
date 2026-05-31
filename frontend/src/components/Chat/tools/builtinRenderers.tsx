@@ -18,10 +18,7 @@ import {
   TerminalToolDetails,
 } from './details'
 import { registerToolRenderer } from './registry'
-import {
-  todoWriteRenderSpec,
-  todoWriteSummaryLine,
-} from './todoWrite'
+import { todoWriteRenderSpec, todoWriteSummaryLine } from './todoWrite'
 import { RenderSpecViewer } from '../RenderSpecViewer'
 
 registerToolRenderer({

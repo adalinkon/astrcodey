@@ -441,7 +441,8 @@ fn apply_pending_tool_interactions(
         else {
             continue;
         };
-        let Some(interaction) = pending.get(&astrcode_core::types::ToolCallId::from(id.as_str())) else {
+        let Some(interaction) = pending.get(&astrcode_core::types::ToolCallId::from(id.as_str()))
+        else {
             continue;
         };
         *text = interaction.content.clone();

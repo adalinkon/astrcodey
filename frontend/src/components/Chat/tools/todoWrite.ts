@@ -21,9 +21,11 @@ function todoStatus(value: unknown): TodoStatus | undefined {
 }
 
 function parseTodoItem(value: unknown): TodoItem | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    return undefined
   const record = value as JsonRecord
-  const content = typeof record.content === 'string' ? record.content.trim() : ''
+  const content =
+    typeof record.content === 'string' ? record.content.trim() : ''
   const activeForm =
     typeof record.activeForm === 'string'
       ? record.activeForm.trim()
@@ -35,7 +37,10 @@ function parseTodoItem(value: unknown): TodoItem | undefined {
   return { content, activeForm, status }
 }
 
-export function todoItemsFromContext(args: JsonRecord, meta: JsonRecord): TodoItem[] {
+export function todoItemsFromContext(
+  args: JsonRecord,
+  meta: JsonRecord
+): TodoItem[] {
   const fromMeta = arrayValue(meta, 'newTodos', 'new_todos')
   const fromArgs = arrayValue(args, 'todos')
   const source = fromMeta.length > 0 ? fromMeta : fromArgs
