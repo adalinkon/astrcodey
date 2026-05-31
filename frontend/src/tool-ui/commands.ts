@@ -4,6 +4,8 @@
  * 见 docs/tool-ui-architecture.md
  */
 
+import { submitToolUiRespond } from '../services/api'
+
 export type ToolApprovalRespondPayload = {
   sessionId: string
   toolCallId: string
@@ -19,7 +21,6 @@ export type ToolApprovalRespondPayload = {
 export async function submitToolApprovalRespond(
   payload: ToolApprovalRespondPayload
 ): Promise<{ accepted: boolean }> {
-  const { submitToolUiRespond } = await import('../services/api')
   return submitToolUiRespond(
     payload.sessionId,
     payload.toolCallId,
