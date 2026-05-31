@@ -851,6 +851,7 @@ fn format_background_agent_notification(
     format!(
         "<background-agent-notification>\n<child-session-id>{child_session_id}</\
          child-session-id>{tool_call_line}\n<status>{status}</status>{error_line}{output_section}\\
+         \
          n<summary>{summary}</summary>\n</background-agent-notification>"
     )
 }
