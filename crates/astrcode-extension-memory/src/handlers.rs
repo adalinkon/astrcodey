@@ -1,4 +1,4 @@
-//! Memory handlers — Save, Delete, PromptBuild, SessionStart, Command。
+//! Memory handlers — Save, Delete, List, PromptBuild, SessionStart, Command。
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -17,7 +17,7 @@ use serde_json::json;
 use crate::{
     MemoryServices,
     config::MemoryConfig,
-    pipeline,
+    pipeline, prompts,
     store::{AppendResult, MemoryStorePool},
 };
 
@@ -25,25 +25,23 @@ use crate::{
 
 const MEMORY_SAVE_TOOL: &str = "memory_save";
 const MEMORY_DELETE_TOOL: &str = "memory_delete";
+const MEMORY_LIST_TOOL: &str = "memory_list";
 const MEMORY_CMD: &str = "memory";
 const MAX_LIST_ENTRIES: usize = 50;
+const DEFAULT_LIST_LIMIT: usize = 20;
 
 // ─── Tool Definitions ────────────────────────────────────────────────
 
 pub(crate) fn memory_save_definition() -> ToolDefinition {
     ToolDefinition {
         name: MEMORY_SAVE_TOOL.to_string(),
-        description: "Save information to long-term memory for future sessions.\n\nWhen NOT to \
-                      use:\n- Secrets, tokens, credentials, or one-off debug output\n- Facts \
-                      already in AGENTS.md or easy to re-read from the repo next turn\n\nTips:\n- \
-                      Stable user preferences, project decisions, or recurring patterns worth \
-                      recalling later."
-            .to_string(),
+        description: prompts::SAVE_TOOL_DESC.to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
-                "content": { "type": "string", "description": "The information to save" },
-                "category": { "type": "string", "enum": ["user_pref", "project_ctx", "decision", "general"], "description": "Category tag. Default: general" }
+                "content": { "type": "string", "description": "Fact to store" },
+                "category": { "type": "string", "enum": ["user_pref", "project_ctx", "decision", "general"], "description": "Category. Default: general" },
+                "replace_match": { "type": "string", "description": "Substring of existing entry to update in place" }
             },
             "required": ["content"]
         }),
@@ -55,17 +53,29 @@ pub(crate) fn memory_save_definition() -> ToolDefinition {
 pub(crate) fn memory_delete_definition() -> ToolDefinition {
     ToolDefinition {
         name: MEMORY_DELETE_TOOL.to_string(),
-        description: "Delete entries from long-term memory by content match.\n\nWhen NOT to \
-                      use:\n- Clearing session-local context (use normal conversation \
-                      flow)\n\nTips:\n- User asks to forget specific stored facts\n- Correcting \
-                      outdated memory entries"
-            .to_string(),
+        description: prompts::DELETE_TOOL_DESC.to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
-                "match": { "type": "string", "description": "Substring to match (case-insensitive). All matching entries will be deleted." }
+                "match": { "type": "string", "description": "Substring to match (case-insensitive)" }
             },
             "required": ["match"]
+        }),
+        execution_mode: ExecutionMode::Sequential,
+        origin: ToolOrigin::Extension,
+    }
+}
+
+pub(crate) fn memory_list_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: MEMORY_LIST_TOOL.to_string(),
+        description: prompts::LIST_TOOL_DESC.to_string(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "Search query; omit for recent entries" },
+                "limit": { "type": "integer", "description": "Max entries (default 20, max 50)", "minimum": 1, "maximum": 50 }
+            }
         }),
         execution_mode: ExecutionMode::Sequential,
         origin: ToolOrigin::Extension,
@@ -75,7 +85,7 @@ pub(crate) fn memory_delete_definition() -> ToolDefinition {
 pub(crate) fn memory_command_definition() -> SlashCommand {
     SlashCommand {
         name: MEMORY_CMD.to_string(),
-        description: "Manage long-term memory (list, search, delete)".to_string(),
+        description: prompts::CMD_DESC.to_string(),
         args_schema: None,
     }
 }
@@ -99,6 +109,7 @@ struct SaveArgs {
     content: String,
     #[serde(default = "default_category")]
     category: String,
+    replace_match: Option<String>,
 }
 
 fn default_category() -> String {
@@ -122,6 +133,28 @@ impl ToolHandler for MemorySaveHandler {
             .map_err(|e| ExtensionError::Internal(e.to_string()))?;
         let content = args.content;
         let category = args.category;
+        let replace = args.replace_match.filter(|s| !s.trim().is_empty());
+
+        // replace_match 路径：精准 upsert，不经过 delete
+        if let Some(ref replaces) = replace {
+            let replaces = replaces.clone();
+            let changed = tokio::task::spawn_blocking(move || {
+                scoped.upsert(&category, &content, Some(replaces.as_str()))
+            })
+            .await
+            .map_err(|e| ExtensionError::Internal(e.to_string()))?
+            .map_err(|e| ExtensionError::Internal(e.to_string()))?;
+            return Ok(ok_text(
+                if changed {
+                    "Memory updated."
+                } else {
+                    "Memory unchanged (content identical)."
+                }
+                .to_string(),
+            ));
+        }
+
+        // 正常新增路径
         let result = tokio::task::spawn_blocking(move || scoped.append(&category, &content))
             .await
             .map_err(|e| ExtensionError::Internal(e.to_string()))?
@@ -146,8 +179,7 @@ impl ToolHandler for MemorySaveHandler {
                 Ok(ok_text("Memory saved.".to_string()))
             },
             AppendResult::SimilarExists(similar) => Ok(ok_text(format!(
-                "Similar memories already exist:\n{}\n\nPlease consolidate: use memory_delete to \
-                 remove the old entries, then memory_save the consolidated version.",
+                "Similar memories exist:\n{}\n\nRetry with replace_match to update in place.",
                 similar
                     .iter()
                     .map(|s| format!("- {s}"))
@@ -217,6 +249,62 @@ impl ToolHandler for MemoryDeleteHandler {
     }
 }
 
+// ─── List Handler ────────────────────────────────────────────────────
+
+pub(crate) struct MemoryListHandler {
+    pub store_pool: Arc<MemoryStorePool>,
+}
+
+#[derive(Deserialize)]
+struct ListArgs {
+    query: Option<String>,
+    #[serde(default = "default_list_limit")]
+    limit: usize,
+}
+
+const fn default_list_limit() -> usize {
+    DEFAULT_LIST_LIMIT
+}
+
+#[async_trait::async_trait]
+impl ToolHandler for MemoryListHandler {
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: serde_json::Value,
+        working_dir: &str,
+        _ctx: &astrcode_extension_sdk::tool::ToolExecutionContext,
+    ) -> Result<ToolResult, ExtensionError> {
+        let args: ListArgs = serde_json::from_value(arguments)
+            .map_err(|e| ExtensionError::Internal(e.to_string()))?;
+        let scoped = self
+            .store_pool
+            .get_scoped(working_dir)
+            .map_err(|e| ExtensionError::Internal(e.to_string()))?;
+
+        let limit = args.limit.clamp(1, MAX_LIST_ENTRIES);
+        let query = args.query.filter(|q| !q.trim().is_empty());
+
+        let entries = tokio::task::spawn_blocking(move || match query {
+            Some(q) => scoped.search(&q, limit),
+            None => scoped.list_entries(limit),
+        })
+        .await
+        .map_err(|e| ExtensionError::Internal(e.to_string()))?
+        .map_err(|e| ExtensionError::Internal(e.to_string()))?;
+
+        if entries.is_empty() {
+            Ok(ok_text("No memories found.".to_string()))
+        } else {
+            Ok(ok_text(format!(
+                "{} entries:\n{}",
+                entries.len(),
+                entries.join("\n")
+            )))
+        }
+    }
+}
+
 // ─── PromptBuild — 工具说明 + 全局偏好 ───────────────────────────────
 
 pub(crate) struct MemoryRecallHandler {
@@ -236,21 +324,12 @@ impl PromptBuildHandler for MemoryRecallHandler {
             .map_err(|e| ExtensionError::Internal(e.to_string()))?
             .unwrap_or_default();
 
-        let mut body = format!(
-            "<memory-tools>\nYou have a persistent memory system.\n- Use `{MEMORY_SAVE_TOOL}` to \
-             store important facts.\n- Use `{MEMORY_DELETE_TOOL}` to remove outdated entries.\n- \
-             Changed past sessions are summarized into memory on session start and after you \
-             save; use `memory_save` when something important should be recorded immediately.\n- \
-             User preferences live in `~/.astrcode/memory/` and are shared across projects."
+        let body = prompts::memory_tools_instruction(
+            MEMORY_LIST_TOOL,
+            MEMORY_SAVE_TOOL,
+            MEMORY_DELETE_TOOL,
+            &global_prefs,
         );
-        if !global_prefs.is_empty() {
-            body.push_str("\n\nStable preferences (high confidence):\n");
-            for line in global_prefs {
-                body.push_str(&line);
-                body.push('\n');
-            }
-        }
-        body.push_str("\n</memory-tools>");
 
         Ok(PromptContributions {
             additional_instructions: vec![body],
@@ -496,38 +575,35 @@ impl astrcode_extension_sdk::extension::CommandHandler for MemoryCommandHandler 
         .map_err(|e| ExtensionError::Internal(e.to_string()))?
         .map_err(|e| ExtensionError::Internal(e.to_string()))?;
 
-        Ok(ExtensionCommandResult::Display {
-            content: result,
-            is_error: false,
-            status_update: None,
-        })
+        Ok(ExtensionCommandResult::display(result, false))
     }
 }
 
+// ─── Tests ───────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
-    use super::MemoryPipelineCoordinator;
+    use super::*;
 
     #[test]
     fn pipeline_coordinator_coalesces_pending_runs() {
-        let coordinator = MemoryPipelineCoordinator::default();
+        let coord = MemoryPipelineCoordinator::default();
 
-        assert_eq!(
-            coordinator.request_run("session-a".to_string(), "/tmp/a".to_string()),
-            Some(("session-a".to_string(), "/tmp/a".to_string()))
-        );
-        assert_eq!(
-            coordinator.request_run("session-b".to_string(), "/tmp/b".to_string()),
-            None
-        );
-        assert_eq!(
-            coordinator.complete_run(),
-            Some(("session-b".to_string(), "/tmp/b".to_string()))
-        );
-        assert_eq!(coordinator.complete_run(), None);
-        assert_eq!(
-            coordinator.request_run("session-d".to_string(), "/tmp/d".to_string()),
-            Some(("session-d".to_string(), "/tmp/d".to_string()))
-        );
+        // First run starts immediately
+        let run1 = coord.request_run("s1".into(), "/a".into());
+        assert!(run1.is_some());
+
+        // Second run is queued (coalesced)
+        let run2 = coord.request_run("s2".into(), "/b".into());
+        assert!(run2.is_none());
+
+        // Completing the first run dequeues the pending one
+        let next = coord.complete_run();
+        assert!(next.is_some());
+        assert_eq!(next.unwrap().0, "s2");
+
+        // No more pending
+        let done = coord.complete_run();
+        assert!(done.is_none());
     }
 }

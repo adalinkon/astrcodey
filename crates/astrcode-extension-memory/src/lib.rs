@@ -10,7 +10,7 @@ mod config;
 mod handlers;
 mod index;
 mod pipeline;
-mod pipeline_prompts;
+mod prompts;
 mod scope;
 mod store;
 
@@ -21,8 +21,8 @@ use astrcode_extension_sdk::extension::{
     ExtensionHostServices, ExtensionTasks, HookMode, Registrar, StopReason,
 };
 use handlers::{
-    MemoryCommandHandler, MemoryDeleteHandler, MemoryRecallHandler, MemorySaveHandler,
-    MemorySessionStartHandler,
+    MemoryCommandHandler, MemoryDeleteHandler, MemoryListHandler, MemoryRecallHandler,
+    MemorySaveHandler, MemorySessionStartHandler,
 };
 use parking_lot::{Mutex, RwLock};
 use store::MemoryStorePool;
@@ -117,6 +117,12 @@ impl Extension for MemoryExtension {
         reg.tool(
             handlers::memory_delete_definition(),
             Arc::new(MemoryDeleteHandler {
+                store_pool: self.store_pool.clone(),
+            }),
+        );
+        reg.tool(
+            handlers::memory_list_definition(),
+            Arc::new(MemoryListHandler {
                 store_pool: self.store_pool.clone(),
             }),
         );

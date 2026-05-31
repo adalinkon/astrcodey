@@ -12,7 +12,7 @@ use serde::Deserialize;
 
 use crate::{
     config::MemoryConfig,
-    pipeline_prompts,
+    prompts,
     scope::ScopedMemoryStores,
     store::{MemoryEntry, MemoryStore, Phase1Output, ProcessedSession},
 };
@@ -190,15 +190,23 @@ async fn extract_batch(
 
     let current_date = Local::now().format("%Y-%m-%d").to_string();
     let user_prompt =
-        pipeline_prompts::batch_user_prompt(&blocks.join("\n\n"), &current_date, existing_memories);
-    let messages = vec![LlmMessage {
-        role: LlmRole::User,
-        content: vec![LlmContent::Text {
-            text: format!("{}\n\n{}", pipeline_prompts::EXTRACT_SYSTEM, user_prompt),
-        }],
-        name: None,
-        reasoning_content: None,
-    }];
+        prompts::batch_user_prompt(&blocks.join("\n\n"), &current_date, existing_memories);
+    let messages = vec![
+        LlmMessage {
+            role: LlmRole::System,
+            content: vec![LlmContent::Text {
+                text: prompts::EXTRACT_SYSTEM.to_string(),
+            }],
+            name: None,
+            reasoning_content: None,
+        },
+        LlmMessage {
+            role: LlmRole::User,
+            content: vec![LlmContent::Text { text: user_prompt }],
+            name: None,
+            reasoning_content: None,
+        },
+    ];
 
     let rx = small_llm
         .generate(messages, vec![])
@@ -378,12 +386,17 @@ fn ingest_pipeline_extractions(
     scoped: &ScopedMemoryStores,
     extractions: &[(Candidate, Phase1Output)],
 ) -> Result<(), ExtensionError> {
-    for (_, output) in extractions {
+    for (candidate, output) in extractions {
         if output.memories.is_empty() {
             continue;
         }
+        let session_id = candidate.summary.session_id.as_ref();
         scoped
-            .ingest_extracted_entries(&output.memories, crate::index::MemorySource::Pipeline, None)
+            .ingest_extracted_entries(
+                &output.memories,
+                crate::index::MemorySource::Pipeline,
+                Some(session_id),
+            )
             .map_err(|e| ExtensionError::Internal(e.to_string()))?;
     }
     Ok(())

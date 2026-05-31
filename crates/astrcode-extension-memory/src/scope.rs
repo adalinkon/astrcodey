@@ -42,6 +42,16 @@ impl ScopedMemoryStores {
         self.store_for_category(category).append(category, content)
     }
 
+    pub(crate) fn upsert(
+        &self,
+        category: &str,
+        content: &str,
+        replaces: Option<&str>,
+    ) -> std::io::Result<bool> {
+        self.store_for_category(category)
+            .upsert(category, content, replaces)
+    }
+
     pub(crate) fn delete_by_content(&self, pattern: &str) -> std::io::Result<Vec<String>> {
         let mut removed = self.user.delete_by_content(pattern)?;
         removed.extend(self.project.delete_by_content(pattern)?);

@@ -392,6 +392,50 @@ impl MemoryStore {
         Ok(AppendResult::Saved)
     }
 
+    /// 精准 upsert：替换匹配 `replaces` 的旧条目，或新增。
+    /// 返回 true 表示实际发生了变更（新增或更新）。
+    pub(crate) fn upsert(
+        &self,
+        category: &str,
+        content: &str,
+        replaces: Option<&str>,
+    ) -> std::io::Result<bool> {
+        use crate::index::{MemorySource, UpsertResult};
+
+        let safe_category = if VALID_CATEGORIES.contains(&category) {
+            category
+        } else {
+            "general"
+        };
+        let _guard = self.write_lock.lock();
+        let index = self.memory_index();
+
+        match index.upsert_record(
+            content,
+            safe_category,
+            MemorySource::Manual,
+            None,
+            &[],
+            replaces,
+        )? {
+            UpsertResult::Unchanged => Ok(false),
+            UpsertResult::Added(_) => {
+                let mut parsed = self.read_parsed()?;
+                parsed.add_entry(safe_category, content);
+                atomic_write(&self.memory_path(), &parsed.render())?;
+                Ok(true)
+            },
+            UpsertResult::Updated {
+                previous_content, ..
+            } => {
+                let mut parsed = self.read_parsed()?;
+                parsed.replace_or_add_entry(safe_category, &previous_content, content);
+                atomic_write(&self.memory_path(), &parsed.render())?;
+                Ok(true)
+            },
+        }
+    }
+
     /// 按内容子串匹配删除条目，返回被删除的条目列表。
     pub(crate) fn delete_by_content(&self, pattern: &str) -> std::io::Result<Vec<String>> {
         let _guard = self.write_lock.lock();
