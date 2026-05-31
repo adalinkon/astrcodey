@@ -71,8 +71,8 @@ pub(crate) const CMD_DESC: &str = "Manage long-term memory (list / search / dele
 pub(crate) fn project_memory_injection(lines: &[String]) -> String {
     format!(
         "<project-memory>\nAuto-recalled project memories from the previous turn. They may NOT \
-         match the current task or repository; use only if clearly relevant.\n\n{}\n\
-         </project-memory>",
+         match the current task or repository; use only if clearly \
+         relevant.\n\n{}\n</project-memory>",
         lines.join("\n")
     )
 }
