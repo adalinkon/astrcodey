@@ -12,9 +12,25 @@ mod tui;
 
 use std::{net::SocketAddr, process::ExitCode, sync::Arc};
 
+use astrcode_core::permission::ApprovalMode;
 use astrcode_protocol::framing::PROTOCOL_VERSION;
-use astrcode_server::bootstrap::ServerRuntime;
+use astrcode_server::bootstrap::{BootstrapOptions, ServerRuntime};
 use clap::{Parser, Subcommand};
+
+fn cli_approval_bootstrap_opts(yolo: bool, manual: bool) -> BootstrapOptions {
+    let approval_mode_override = if yolo {
+        Some(ApprovalMode::Yolo)
+    } else if manual {
+        Some(ApprovalMode::Manual)
+    } else {
+        None
+    };
+    BootstrapOptions {
+        default_approval_mode_if_unset: Some(ApprovalMode::Yolo),
+        approval_mode_override,
+        ..Default::default()
+    }
+}
 
 /// CLI 顶层参数结构。
 #[derive(Parser)]
@@ -28,7 +44,14 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// 启动交互式终端 UI（默认）
-    Tui,
+    Tui {
+        /// 工具审批：跳过 Ask，自动放行（覆盖 config 中的 approvalMode）
+        #[arg(long)]
+        yolo: bool,
+        /// 工具审批：敏感操作需确认（覆盖 config）
+        #[arg(long)]
+        manual: bool,
+    },
     /// 执行单次提示（无头模式）
     Exec {
         /// 提示文本
@@ -39,6 +62,10 @@ enum Commands {
         /// 超时时间（秒）
         #[arg(long, default_value = "600")]
         timeout: u64,
+        #[arg(long)]
+        yolo: bool,
+        #[arg(long)]
+        manual: bool,
     },
     /// 启动 HTTP/SSE 后端服务器
     Server {
@@ -108,50 +135,72 @@ async fn main() -> ExitCode {
 
     // TUI 模式禁用 stderr 日志，避免破坏终端 UI
     let _guard = match &cli.command {
-        Some(Commands::Tui) | None => astrcode_log::init_with(astrcode_log::LogOptions {
+        None | Some(Commands::Tui { .. }) => astrcode_log::init_with(astrcode_log::LogOptions {
             stderr_enabled: false,
             ..astrcode_log::LogOptions::default()
         }),
         _ => astrcode_log::init(),
     };
 
-    match cli.command {
-        None | Some(Commands::Tui) => {
-            if let Err(e) = tui::run().await {
+    let command = cli.command.unwrap_or(Commands::Tui {
+        yolo: false,
+        manual: false,
+    });
+
+    match command {
+        Commands::Tui { yolo, manual } => {
+            if yolo && manual {
+                eprintln!("error: --yolo and --manual are mutually exclusive");
+                return ExitCode::from(2);
+            }
+            if let Err(e) = tui::run(cli_approval_bootstrap_opts(yolo, manual)).await {
                 eprintln!("TUI error: {}", e);
                 return ExitCode::from(1);
             }
         },
-        Some(Commands::Exec {
+        Commands::Exec {
             prompt,
             jsonl,
             timeout,
-        }) => {
-            if let Err(e) = exec::run(&prompt, jsonl, timeout).await {
+            yolo,
+            manual,
+        } => {
+            if yolo && manual {
+                eprintln!("error: --yolo and --manual are mutually exclusive");
+                return ExitCode::from(2);
+            }
+            if let Err(e) = exec::run(
+                &prompt,
+                jsonl,
+                timeout,
+                cli_approval_bootstrap_opts(yolo, manual),
+            )
+            .await
+            {
                 eprintln!("Exec error: {e}");
                 return ExitCode::from(1);
             }
         },
-        Some(Commands::Server { addr }) => {
+        Commands::Server { addr } => {
             let runtime = bootstrap_runtime().await;
             if let Err(e) = astrcode_server::http::run_http_server(runtime, addr).await {
                 tracing::error!("Server failed: {e}");
                 return ExitCode::from(1);
             }
         },
-        Some(Commands::Acp) => {
+        Commands::Acp => {
             let runtime = bootstrap_runtime().await;
             if let Err(e) = astrcode_server::acp::run_acp_server(runtime).await {
                 tracing::error!("ACP server failed: {e}");
                 return ExitCode::from(1);
             }
         },
-        Some(Commands::Version) => {
+        Commands::Version => {
             println!("astrcode v{}", env!("CARGO_PKG_VERSION"));
             println!("protocol version: {PROTOCOL_VERSION}");
         },
         #[cfg(feature = "dev-mode")]
-        Some(Commands::Eval {
+        Commands::Eval {
             cases,
             output,
             format,
@@ -161,7 +210,7 @@ async fn main() -> ExitCode {
             storage,
             server_addr,
             auth_token,
-        }) => {
+        } => {
             let config = astrcode_eval::EvalConfig {
                 cases_dir: cases,
                 concurrency,

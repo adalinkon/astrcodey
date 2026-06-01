@@ -1,14 +1,33 @@
-# Configuration Guide
+# 配置指南
 
-AstrCode uses a hierarchical configuration system with JSON files and environment variables. The configuration is stored in `~/.astrcode/config.json` and supports project-level overrides via `.astrcode/config.json`.
+> 以当前代码为准（`astrcode-core::config`、`astrcode-storage::config_store`、`astrcode-server` 启动流程）。
 
-## Configuration File Location
+AstrCode 使用 **JSON 配置文件 + 环境变量** 管理 LLM、运行时行为、权限与内置扩展参数。所有用户可见字段使用 **camelCase**；未知字段会导致反序列化失败（`deny_unknown_fields`），拼写错误时错误信息会提示可能的 camelCase 写法。
 
-- **Global config**: `~/.astrcode/config.json`
-- **Project override**: `<project>/.astrcode/config.json`
-- **Extension data**: `~/.astrcode/projects/<project_key>/extension_data/<extension-id>/` (project-scoped)
+---
 
-## Configuration Structure
+## 1. 配置文件一览
+
+| 文件 | 路径 | 结构类型 | 说明 |
+|------|------|----------|------|
+| 主配置 | `~/.astrcode/config.json` | [`Config`] | LLM profile、runtime、permissions、`extensions` |
+| 项目覆盖 | `<workspace>/.astrcode/config.json` | [`ConfigOverlay`] | 仅写需覆盖的字段；**服务启动时**按启动工作目录合并进主配置 |
+| 全局 MCP | `~/.astrcode/mcp.json` | `mcpServers` | MCP 客户端（与 `config.json` 分离） |
+| 项目 MCP | `<workspace>/.astrcode/mcp.json` | 同上 | 默认**不加载**；设置 `ASTRCODE_ENABLE_PROJECT_MCP=1` 后启用，同名 server 覆盖全局 |
+| 上次可用快照 | `~/.astrcode/.last-known-good.json` | `Config` | 解析成功时自动写入，启动失败时回退 |
+
+[`Config`]: ../crates/astrcode-core/src/config/raw.rs
+[`ConfigOverlay`]: ../crates/astrcode-core/src/config/raw.rs
+
+**项目覆盖生效范围**：在 `astrcode-server` / CLI 启动时，对 **启动时的工作目录**（默认 `std::env::current_dir()`）读取 `.astrcode/config.json` 并合并。之后在其他目录创建的 session 仍使用已合并后的全局有效配置；若需按仓库分别覆盖，请在该仓库目录下启动进程。
+
+**热更新**：修改 `~/.astrcode/config.json` 后可通过设置页或 `POST` 重载；已运行 session 的 per-session 快照需同步（服务端在重载后会调用 `sync_session_model_bindings`）。扩展通过 `on_config_changed()` 接收 `extensions` 段变更。
+
+---
+
+## 2. 主配置结构示例
+
+以下为接近**内置默认值**的示例（首次运行若不存在 `config.json` 会自动生成类似内容）：
 
 ```json
 {
@@ -27,290 +46,344 @@ AstrCode uses a hierarchical configuration system with JSON files and environmen
     "compactKeepRecentTurns": 1,
     "agentMaxDepth": 2,
     "agentToolMaxParallelCalls": 5,
-    "shellTimeoutSecs": 120
+    "shellTimeoutSecs": 120,
+    "approvalMode": "manual",
+    "extensionStates": {
+      "astrcode.memory": true
+    }
+  },
+  "permissions": {
+    "deny": [],
+    "ask": [],
+    "allow": []
   },
   "profiles": [
     {
-      "name": "openai",
+      "name": "deepseek",
       "providerKind": "openai",
-      "baseUrl": "https://api.openai.com/v1",
-      "apiKey": "env:OPENAI_API_KEY",
+      "baseUrl": "https://api.deepseek.com",
+      "apiKey": "env:DEEPSEEK_API_KEY",
+      "apiMode": "chat_completions",
       "models": [
         {
-          "id": "gpt-4o",
-          "maxTokens": 128000,
-          "contextLimit": 128000,
-          "modelOptions": {
-            "reasoning": false,
-            "thinkingLevel": "medium"
-          }
+          "id": "deepseek-v4-flash",
+          "maxTokens": 393216,
+          "contextLimit": 1000000,
+          "modelOptions": { "reasoning": true }
         }
-      ],
-      "apiMode": "chat_completions"
+      ]
     }
-  ]
+  ],
+  "extensions": {
+    "astrcode-web-tools": {
+      "search": { "provider": "duckduckgo" }
+    }
+  }
 }
 ```
 
-## Configuration Fields
+内置 **profiles**（未自定义时）：`deepseek`、`openai`、`anthropic`、`gemini`（`providerKind`: `google_genai`）。默认激活：`deepseek` / `deepseek-v4-flash`。完整默认常量见 [`defaults.rs`](../crates/astrcode-core/src/config/defaults.rs)。
 
-### Top-level Fields
+---
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `version` | string | Config format version (currently "1") |
-| `activeProfile` | string | Name of the active LLM profile |
-| `activeModel` | string | Model ID to use from the active profile |
-| `activeSmallProfile` | string (optional) | Profile name for small LLM (used by extensions like memory) |
-| `activeSmallModel` | string (optional) | Model ID for small LLM |
-| `runtime` | object | Runtime behavior settings (see below) |
-| `profiles` | array | Available LLM provider configurations |
+## 3. 顶层字段
 
-### Profile Fields
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `version` | string | 配置格式版本，当前 `"1"` |
+| `activeProfile` | string | 当前 profile 名称 |
+| `activeModel` | string | 当前模型 `id`（须存在于该 profile 的 `models`） |
+| `activeSmallProfile` | string? | 小模型 profile；与 `activeSmallModel` **同时**设置才生效 |
+| `activeSmallModel` | string? | 小模型 id（memory 提取、部分扩展宿主能力） |
+| `runtime` | object | 超时、compact、Agent、审批模式、扩展开关，见 §4 |
+| `permissions` | object | Tool Gate DSL，见 §5 |
+| `profiles` | array | LLM 提供者列表，见 §6 |
+| `extensions` | object | 扩展 id → 任意 JSON，见 §8 |
 
-Each profile in `profiles` array represents an LLM provider configuration:
+---
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Profile identifier (referenced by `activeProfile`) |
-| `providerKind` | string | Provider type: `openai`, `anthropic`, `google` / `gemini` |
-| `baseUrl` | string | API endpoint URL. For Anthropic profiles, `/v1/messages` is auto-appended if the URL does not already include a version segment (e.g., `/v1`). So both `https://api.anthropic.com/v1` and `https://api.anthropic.com` work. |
-| `apiKey` | string | API key resolver expression. Supported formats: `"env:VAR_NAME"`, `"!command"`, or a literal key string |
-| `models` | array | Available models for this profile |
-| `apiMode` | string | API mode: `chat_completions` or `responses` (only for `openai` providerKind) |
-| `openaiCapabilities` | object (optional) | OpenAI-specific capabilities: `supportsPromptCacheKey`, `promptCacheRetention`, `supportsStreamUsage` |
+## 4. `runtime` 字段
 
-### Model Fields
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `llmConnectTimeoutSecs` | `10` | LLM 连接超时（秒） |
+| `llmReadTimeoutSecs` | `90` | LLM 读取超时（秒） |
+| `llmMaxRetries` | `2` | 失败重试次数 |
+| `llmRetryBaseDelayMs` | `250` | 指数退避基础延迟（毫秒） |
+| `compactAutoEnabled` | `true` | 上下文占用超阈值时自动 compact |
+| `compactThresholdPercent` | `83.5` | 触发自动 compact 的上下文占用百分比 |
+| `compactMaxRetryAttempts` | `3` | compact LLM 调用最大重试 |
+| `compactMaxOutputTokens` | `20000` | compact 摘要最大输出 token |
+| `compactKeepRecentTurns` | `1` | 自动/反应式 compact 保留的最近完整 user turn 数；可设 `null` 使用默认语义 |
+| `compactCircuitBreakerThreshold` | `3` | 连续 compact 失败后暂停自动 compact |
+| `compactCircuitBreakerCooldownSecs` | `60` | 熔断冷却时间（秒） |
+| `predictiveCompactEnabled` | `false` | 预测性 compact（当前轮可能溢出前提前压缩） |
+| `predictiveCompactBaselineGrowthTokens` | `15000` | 预测增长 token 保底值 |
+| `postCompactMaxFiles` | `5` | compact 后恢复的文件数上限 |
+| `postCompactTokenBudget` | `50000` | 恢复文件总 token 预算 |
+| `postCompactMaxTokensPerFile` | `5000` | 单文件恢复 token 上限 |
+| `agentMaxDepth` | `2` | 子 Agent 最大嵌套深度（root=0） |
+| `agentToolMaxParallelCalls` | `5` | 单轮并行工具调用上限 |
+| `shellTimeoutSecs` | `120` | Shell 工具默认超时（秒）；LLM 可传更短值，上限 600 |
+| `allowApiKeyShellCommand` | `false` | 是否允许 `apiKey` 使用 `!command` 从 shell 读取密钥 |
+| `approvalMode` | `"manual"` | **全局**审批模式：`"manual"` 需确认；`"yolo"` 跳过 Ask。对所有 session 生效（每轮 turn 从有效配置读取，非「每个 session 单独记忆」）。Web 设置页保存后写入本字段。CLI/TUI 进程内启动时，若未设置此项则**默认 yolo**；`astrcode tui --manual` / `--yolo` 可强制覆盖。HTTP `server` 子命令未设置时仍为 `manual`。 |
+| `extensionStates` | `{}` | 扩展启停，见 §7 |
 
-Each model in `models` array:
+---
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | string | Model identifier |
-| `maxTokens` | number | Maximum output tokens |
-| `contextLimit` | number | Context window size |
-| `modelOptions` | object | Model capability options (see below) |
-
-### Model Options (`modelOptions`)
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `reasoning` | boolean (optional) | Enable reasoning mode (provider-dependent) |
-| `thinkingLevel` | `"low" \| "medium" \| "high"` (optional) | Reasoning effort level (currently wired to OpenAI Responses `reasoning.effort`) |
-
-### Runtime Fields
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `llmConnectTimeoutSecs` | number | 10 | LLM connection timeout (seconds) |
-| `llmReadTimeoutSecs` | number | 90 | LLM read timeout (seconds) |
-| `llmMaxRetries` | number | 2 | Maximum retry attempts for failed requests |
-| `llmRetryBaseDelayMs` | number | 250 | Base delay for exponential backoff (milliseconds) |
-| `compactAutoEnabled` | boolean | true | Enable automatic context compaction |
-| `compactThresholdPercent` | number | 83.5 | Trigger auto-compact when context usage exceeds this percentage |
-| `compactMaxRetryAttempts` | number | 3 | Maximum retry attempts for compaction |
-| `compactMaxOutputTokens` | number | 20000 | Maximum tokens for LLM compaction output |
-| `compactKeepRecentTurns` | number or null | 1 | Recent complete user-turn groups to keep for auto/reactive compaction. `null` keeps the default tail, `0` compacts as much history as possible |
-| `compactCircuitBreakerThreshold` | number | 3 | Consecutive auto-compact LLM failures before auto compact is temporarily skipped |
-| `compactCircuitBreakerCooldownSecs` | number | 60 | Cooldown before retrying auto compact after the circuit breaker opens |
-| `predictiveCompactEnabled` | boolean | false | Enable predictive compaction before the current turn is likely to exceed the context window |
-| `predictiveCompactBaselineGrowthTokens` | number | 15000 | Minimum estimated token growth used by predictive compaction |
-| `postCompactMaxFiles` | number | 5 | Maximum files to restore after compaction |
-| `postCompactTokenBudget` | number | 50000 | Token budget for file restoration |
-| `postCompactMaxTokensPerFile` | number | 5000 | Maximum tokens per restored file |
-| `agentMaxDepth` | number | 2 | Maximum sub-agent nesting depth (root=0, child=1, ...) |
-| `agentToolMaxParallelCalls` | number | 5 | Maximum parallel tool calls per turn |
-| `shellTimeoutSecs` | number | 120 | Default timeout for shell tool execution (seconds) |
-| `allowApiKeyShellCommand` | boolean | false | Whether to allow `!command` syntax in API key resolution |
-| `extensionStates` | object or null | null | Extension enable/disable overrides, e.g. `{"astrcode.memory": false}` |
-
-## Environment Variables
-
-API keys can be referenced using `"env:VARIABLE_NAME"` in the `apiKey` field. The system will resolve these from the environment at runtime.
-
-You can also use `"!command"` to run a command and use stdout as the key, for example:
+## 5. `permissions`（Tool Gate）
 
 ```json
-{ "apiKey": "!security find-generic-password -ws 'openai'" }
+{
+  "permissions": {
+    "deny": [{ "tool": "shell", "pattern": "rm -rf *" }],
+    "ask": [{ "tool": "write", "path": "/etc/**" }],
+    "allow": [{ "tool": "read" }]
+  }
+}
 ```
 
-Supported environment variables:
-- `OPENAI_API_KEY` - OpenAI API key
-- `ANTHROPIC_API_KEY` - Anthropic API key
-- `GOOGLE_API_KEY` - Google API key
-- Any custom variable referenced in config
+| 字段 | 说明 |
+|------|------|
+| `deny` / `ask` / `allow` | 规则数组，按链优先级评估（实现见 `astrcode-core::permission`） |
+| 规则.`tool` | 工具名 |
+| 规则.`pattern` | 可选，匹配工具输入 |
+| 规则.`path` | 可选，路径相关工具 |
 
-## Small LLM Configuration
+未匹配任何 allow 且非显式 allow 时 **fail-closed**（拒绝）。
 
-Some extensions (like `astrcode.memory`) require a small LLM for efficient processing. Configure it by setting `activeSmallProfile` and `activeSmallModel`:
+---
+
+## 6. Profile 与模型
+
+### 6.1 Profile
+
+| 字段 | 说明 |
+|------|------|
+| `name` | 唯一标识，供 `activeProfile` 引用 |
+| `providerKind` | `openai`（含 DeepSeek 等兼容端点）、`anthropic`、`google_genai` / `gemini`；未知值按 OpenAI 兼容处理 |
+| `baseUrl` | API 根 URL；Anthropic 若 URL 无 `/v1` 段会自动补全 |
+| `apiKey` | 见 §6.3；可省略，则按 profile 名回退已知环境变量 |
+| `models` | 模型列表 |
+| `apiMode` | 仅 OpenAI 系：`chat_completions`（默认）或 `responses` |
+| `openaiCapabilities` | 可选：`supportsPromptCacheKey`、`promptCacheRetention`（`inMemory` / `24h`）、`supportsStreamUsage` |
+
+### 6.2 模型
+
+| 字段 | 说明 |
+|------|------|
+| `id` | 模型标识 |
+| `maxTokens` | 最大输出 token（缺省解析为 `8192`） |
+| `contextLimit` | 上下文窗口（缺省 `65536`） |
+| `modelOptions.reasoning` | 是否启用推理模式（provider 相关） |
+| `modelOptions.thinkingLevel` | `low` / `medium` / `high`（OpenAI Responses `reasoning.effort`） |
+
+### 6.3 API Key 解析
+
+| 写法 | 行为 |
+|------|------|
+| `"env:VAR_NAME"` | 读取环境变量，缺失则启动解析失败 |
+| `"!command"` | 执行 shell，stdout（trim）为 key；需 `runtime.allowApiKeyShellCommand: true` |
+| 全大写 `VAR_NAME` | 尝试作环境变量；未设置则 **警告** 并把字符串当作明文 key |
+| 其他字符串 | 明文 key（不推荐提交到仓库） |
+
+按 profile 名的环境变量回退：`openai` → `OPENAI_API_KEY`，`deepseek` → `DEEPSEEK_API_KEY`，`anthropic` → `ANTHROPIC_API_KEY`，`gemini` → `GOOGLE_API_KEY` 或 `GEMINI_API_KEY`。
+
+### 6.4 小模型
+
+同时设置 `activeSmallProfile` 与 `activeSmallModel` 时，扩展宿主能力（如 `small_model`）使用独立 provider；否则与主模型相同。
+
+---
+
+## 7. 扩展启停（`runtime.extensionStates`）
+
+| 扩展 ID | 默认 | 说明 |
+|---------|------|------|
+| `astrcode-agent-tools` | 启用 | 子 Agent 工具 |
+| `astrcode-mcp` | 启用 | MCP 客户端 |
+| `astrcode-skill` | 启用 | Skill 斜杠命令 |
+| `astrcode-todo-tool` | 启用 | Todo 工具 |
+| `astrcode-mode` | 启用 | Code / Plan 模式 |
+| `astrcode-web-tools` | 启用 | `web-search` / `fetch-url` |
+| `astrcode.memory` | **关闭** | 项目记忆 |
+| `astrcode-channels` | **关闭** | Telegram 通道 |
+
+```json
+{
+  "runtime": {
+    "extensionStates": {
+      "astrcode.memory": true,
+      "astrcode-mode": false
+    }
+  }
+}
+```
+
+显式 `false` / `true` 覆盖默认策略。与 [`extension-system.md`](extension-system.md) 中的内置扩展表一致。
+
+---
+
+## 8. `extensions` 段（按扩展 id）
+
+键为扩展 ID，值为扩展自行反序列化的 JSON（`ExtensionCtx::config.deserialize()`）。
+
+### 8.1 `astrcode.memory`
+
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `maxContexts` | `10` | 每作用域索引记录上限 |
+| `autoExtract` | `true` | Session 启动时自动提取 |
+| `autoExtractAfterSave` | `true` | `memory_save` 后后台同步变更 session |
+| `maxChangedSessions` | `5` | 单次 pipeline 最多处理 session 数 |
+| `minConversationChars` | `200` | 短于此次数的会话跳过提取 |
+| `maxContextAgeDays` | `90` | `contexts/` 文件保留天数 |
+| `injectProjectMemoriesPerTurn` | `true` | turn 末排名，下轮首包注入 |
+| `maxInjectedProjectMemories` | `5` | 每轮最多注入条数 |
+| `minProjectMemoryScore` | `0.35` | 注入最低相关分（0–1） |
+| `maxInjectedMemoryChars` | `1500` | 注入块总字符上限 |
+| `minRecallQueryChars` | `12` | 过短 exchange 跳过 turn 末召回 |
+
+**数据目录**（与 config 分离）：
+
+- 用户偏好：`~/.astrcode/memory/`（`user_pref` 类别）
+- 项目记忆：`~/.astrcode/projects/<project_key>/extension_data/astrcode.memory/`
+
+### 8.2 `astrcode-web-tools`
+
+| 工具 | 名称 |
+|------|------|
+| 网页搜索 | `web-search` |
+| URL 抓取 | `fetch-url` |
+
+**`search`**
+
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `provider` | `duckduckgo` | `duckduckgo` / `brave` / `serper` |
+| `braveApiKey` / `braveApiKeyEnv` | — | Brave 密钥或环境变量名 |
+| `serperApiKey` / `serperApiKeyEnv` | — | Serper 同上 |
+| `defaultMaxResults` | `5` | 默认条数 |
+| `requestTimeoutSecs` | `30` | 请求超时 |
+
+**`fetch`**
+
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `requestTimeoutSecs` | `60` | 请求超时 |
+| `maxContentBytes` | `10485760` | 响应体上限 |
+| `maxOutputChars` | `100000` | 返回给模型的字符上限 |
+| `userAgent` | AstrCode 默认 UA | HTTP User-Agent |
+| `cacheTtlSecs` | `900` | 缓存 TTL |
+| `cacheMaxEntries` | `64` | 缓存条目数 |
+| `cacheMaxBytes` | `52428800` | 缓存总字节 |
+| `maxRedirects` | `10` | 最大重定向 |
+
+`fetch-url` 阻止 localhost 与私网地址（SSRF 防护）。
+
+### 8.3 `astrcode-channels`
+
+```json
+{
+  "extensions": {
+    "astrcode-channels": {
+      "telegram": {
+        "enabled": true,
+        "botTokenEnv": "TELEGRAM_BOT_TOKEN",
+        "allowedChatIds": ["123456789"],
+        "allowAllChats": false,
+        "registerCommands": false,
+        "streaming": false,
+        "workingDir": "D:/my-project",
+        "requestTimeoutSecs": 30,
+        "pollTimeoutSecs": 25,
+        "maxReplyChars": 3500
+      }
+    }
+  }
+}
+```
+
+未设置 `allowAllChats: true` 时应配置 `allowedChatIds` 白名单。`botToken` 可直接写 token，更推荐 `botTokenEnv`。
+
+### 8.4 MCP（**不在** `extensions` 内）
+
+MCP 服务器仅通过 `mcp.json` 配置，由 `astrcode-mcp` 扩展加载。
+
+**Stdio：**
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/allowed/path"],
+      "env": {},
+      "cwd": "."
+    }
+  }
+}
+```
+
+**HTTP：**
+
+```json
+{
+  "mcpServers": {
+    "remote": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer TOKEN" }
+    }
+  }
+}
+```
+
+`type` 省略时视为 `stdio`。项目级 `cwd` 必须在 workspace 内，否则该 server 被跳过并写入诊断信息。
+
+---
+
+## 9. 项目级覆盖（`ConfigOverlay`）
+
+`<workspace>/.astrcode/config.json` **只需包含要改的字段**：
 
 ```json
 {
   "activeProfile": "openai",
-  "activeModel": "gpt-4o",
-  "activeSmallProfile": "openai",
-  "activeSmallModel": "gpt-4o-mini"
-}
-```
-
-If `activeSmallProfile` is not set, the small LLM will fall back to the main model configuration.
-
-## Project-level Overrides
-
-Create `.astrcode/config.json` in your project directory to override global settings:
-
-```json
-{
-  "activeProfile": "project-specific",
-  "activeModel": "custom-model",
+  "activeModel": "gpt-4.1",
   "runtime": {
-    "llmMaxRetries": 5
-  }
-}
-```
-
-Project overrides are merged with the global config, with project values taking precedence.
-
-## Extension Configuration
-
-Extensions can store their own data on a **per-project basis** in `~/.astrcode/projects/<project_key>/extension_data/<extension-id>/`.
-
-For example, the memory extension uses two scopes:
-
-**User memory (shared across all projects)** — `~/.astrcode/memory/`:
-- `MEMORY.md` — user preferences (`user_pref`)
-- `memory_index.json` — structured index for recall
-
-**Project memory (per workspace)** — `~/.astrcode/projects/<project_key>/extension_data/astrcode.memory/`:
-- `MEMORY.md` — project context, decisions, general facts
-- `contexts/` — extracted session context files
-- `processed_sessions.json` — pipeline bookkeeping (which rollouts were already processed)
-
-`memory_save` with category `user_pref` writes to user memory; other categories write to the current project.
-
-**User preferences** (`user_pref`) are injected in full into the system prompt at PromptBuild and cached for the lifetime of the session (refreshed only when a new session starts).
-
-**Project facts** are ranked at **turn end** from the completed user/assistant exchange, then delivered on the **next** turn's first LLM request. Tune with `injectProjectMemoriesPerTurn`, `minProjectMemoryScore`, and `maxInjectedProjectMemories` under `extensions.astrcode.memory`.
-
-## Default Values
-
-All configuration fields have sensible defaults defined in [`crates/astrcode-core/src/config/defaults.rs`](../crates/astrcode-core/src/config/defaults.rs). Missing fields will be filled with these defaults automatically.
-
-## Config Hot Reload
-
-Configuration changes take effect immediately for new sessions. Existing sessions continue using their original configuration. Use the `/new` command to start a session with updated config.
-
-## Validation
-
-The configuration system validates:
-- Required fields are present
-- Profile and model references exist
-- Numeric values are within acceptable ranges
-- Environment variables can be resolved
-
-Invalid configurations will prevent AstrCode from starting with a descriptive error message.
-
-## Extension Settings (New in v0.1.4)
-
-You can configure individual extensions via the top-level `extensions` field. This allows extensions to receive structured configuration without requiring separate files.
-
-```json
-{
-  "version": "1",
+    "llmMaxRetries": 5,
+    "extensionStates": { "astrcode.memory": true }
+  },
   "extensions": {
-    "astrcode.memory": {
-      "maxContexts": 10,
-      "autoExtract": true,
-      "autoExtractAfterSave": true,
-      "maxChangedSessions": 5,
-      "minConversationChars": 200,
-      "injectProjectMemoriesPerTurn": true,
-      "maxInjectedProjectMemories": 5,
-      "minProjectMemoryScore": 0.35
-    },
-    "astrcode.mcp": {
-      "mcpServers": {
-        "filesystem": {
-          "command": "npx",
-          "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed"]
-        }
-      }
-    },
-    "astrcode.mode": {
-      "defaultMode": "code"
-    },
     "astrcode-web-tools": {
-      "search": {
-        "provider": "duckduckgo",
-        "braveApiKeyEnv": "BRAVE_API_KEY",
-        "serperApiKeyEnv": "SERPER_API_KEY",
-        "defaultMaxResults": 5,
-        "requestTimeoutSecs": 30
-      },
-      "fetch": {
-        "requestTimeoutSecs": 60,
-        "maxContentBytes": 10485760,
-        "maxOutputChars": 100000,
-        "cacheTtlSecs": 900
-      }
+      "search": { "provider": "brave", "braveApiKeyEnv": "BRAVE_API_KEY" }
     }
   }
 }
 ```
 
-Each extension receives its configuration via `ExtensionCtx::config` during `start()` and `on_config_changed()`.
+| 覆盖字段 | 合并方式 |
+|----------|----------|
+| `activeProfile` / `activeModel` / `activeSmall*` | 替换 |
+| `profiles` | **整体替换**列表（非按 name 合并） |
+| `runtime` | **按字段**合并；`extensionStates` 同 key 覆盖 |
+| `permissions` | **整体替换** |
+| `extensions` | 同扩展 id：双方均为 object 时**递归合并** JSON 字段；类型冲突时以覆盖层为准；异 id 保留 |
 
-### Web Tools Extension
+---
 
-The `astrcode-web-tools` extension registers two built-in tools:
+## 10. 解析与校验
 
-| Tool | Description |
-|------|-------------|
-| `web-search` | Search the public web. Default provider is DuckDuckGo (no API key). Set `search.provider` to `brave` or `serper` and configure the corresponding API key. |
-| `fetch-url` | Fetch and extract readable content from a public URL. Blocks localhost and private-network addresses (SSRF guard). Results are cached with configurable TTL and size limits. |
+- `Config::effective_from()` 要求 `activeProfile` / `activeModel` 存在且可解析 API key。
+- 配置 JSON 含未知字段 → **加载失败**（不自动覆盖你的文件）；修正字段名或删除废弃键后重试。成功加载时可能回写文件以补齐新版本字段（不删除已有自定义段）。
+- 解析失败时服务尝试 `.last-known-good.json`，再不行则使用 dummy LLM（HTTP 仍可用，但无法对话直至修复配置）。
 
-Search providers:
+实现入口：[`resolve.rs`](../crates/astrcode-core/src/config/resolve.rs)、启动 [`bootstrap/mod.rs`](../crates/astrcode-server/src/bootstrap/mod.rs)。
 
-| `search.provider` | API key field |
-|---|---|
-| `duckduckgo` (default) | None required |
-| `brave` | `search.braveApiKey` or `search.braveApiKeyEnv` |
-| `serper` | `search.serperApiKey` or `search.serperApiKeyEnv` |
+---
 
-### Hot Reload
+## 11. 相关文档
 
-Extension configuration supports hot reload:
-1. Modify `config.json`
-2. Save the file
-3. Extensions receive `on_config_changed()` callback
-
-Project-level `.astrcode/config.json` can also override extension settings using the same merge rules as other config fields.
-
-### s5r Extension Capabilities
-
-Disk s5r extensions declare required host capabilities via `capabilities` (snake_case, e.g. `small_model`, `emit_events`) in the **`Initialize.metadata`** handshake; undeclared sensitive capabilities are rejected by `HostRouter`.
-
-`extension.json` handles discovery and process launching (**`protocol.s5r`** + **`command`** array); tools / commands / hooks are sent by the worker in its `Initialize.metadata`:
-
-```json
-{
-  "protocol": { "s5r": "1.0" },
-  "command": ["./my-extension"]
-}
-```
-
-Initialize metadata example (excerpt):
-
-```json
-{
-  "extension_id": "my-ext",
-  "protocol": { "s5r": "1.0" },
-  "capabilities": ["session_state"],
-  "tools": [],
-  "commands": [],
-  "hooks": [],
-  "extension_events": []
-}
-```
-
-Declorable capabilities include `session_state`, `session_control`, `small_model`, `session_history`, `emit_events`, `workspace_read`, `process_spawn`, and `network_client`. See [extension-system.md](./extension-system.md) for details.
+- [扩展系统](extension-system.md)
+- [s5r 协议](s5r-protocol.md)（磁盘扩展）
+- [扩展作者指南](extension-author-guide.md)

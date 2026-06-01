@@ -168,15 +168,17 @@ Extensions can be enabled or disabled via `~/.astrcode/config.json`. By default,
 ```json
 {
   "version": "1",
-  "extensionStates": {
-    "astrcode.memory": true,
-    "astrcode-channels": true
+  "runtime": {
+    "extensionStates": {
+      "astrcode.memory": true,
+      "astrcode-channels": true
+    }
   }
 }
 ```
 
-To enable the memory extension, add `"astrcode.memory": true` to `extensionStates`.
-To enable the channels extension, add `"astrcode-channels": true` to `extensionStates` and configure Telegram under `extensions`.
+To enable the memory extension, set `"astrcode.memory": true` under `runtime.extensionStates`.
+To enable the channels extension, set `"astrcode-channels": true` there and configure Telegram under `extensions`. See the [Configuration Guide](docs/configuration.md).
 Telegram channels are configured under `extensions.astrcode-channels.telegram`; keep
 `allowedChatIds` populated unless you explicitly set `allowAllChats` to `true`.
 

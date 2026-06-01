@@ -2,47 +2,55 @@
 //!
 //! # 架构
 //!
-//! 所有配置知识都集中在此模块中：
-//! - `raw.rs`——从磁盘读取的类型（所有字段可选）
-//! - `effective.rs`——已解析的类型（所有字段为具体值）
-//! - `resolve.rs`——`Config::into_effective()` + `resolve_api_key()` + `merge_overlay()`
-//! - `defaults.rs`——所有默认常量
+//! 配置知识集中在本目录，按「磁盘 JSON → 有效配置 → 运行时消费」分层：
 //!
-//! 添加新配置字段只需修改此目录下的 3 个文件：
-//! `raw.rs`（添加 Option 字段）→ `effective.rs`（添加具体字段）
-//! → `resolve.rs`（添加映射行）。
+//! | 模块 | 类型 | 职责 |
+//! |------|------|------|
+//! | [`raw`] | `Config`, `ConfigOverlay`, `Profile`, `RuntimeSection` | 与 `config.json` 字段一一对应的 serde 类型（字段多为 `Option`） |
+//! | [`effective`] | `EffectiveConfig`, `LlmSettings`, … | 解析后的具体值，供 LLM / compact / 扩展加载使用 |
+//! | [`resolve`] | `into_effective()`, `merge_overlay()`, `resolve_api_key()` | 纯函数解析与项目覆盖合并 |
+//! | [`defaults`] | 常量与 serde 默认值函数 | 内置默认 profile、超时、compact 阈值等 |
 //!
-//! # 使用示例
+//! # 配置文件
 //!
-//! ```ignore
-//! let raw: Config = serde_json::from_str(&json)?;
-//! let effective = raw.into_effective()?;
-//! let provider = OpenAiProvider::new(
-//!     LlmClientConfig { base_url: effective.llm.base_url, api_key: effective.llm.api_key, ... },
-//!     effective.llm.api_mode,
-//!     effective.llm.model_id,
-//!     Some(effective.llm.max_tokens),
-//!     Some(effective.llm.context_limit),
-//! );
-//! ```
+//! | 路径 | 格式 | 说明 |
+//! |------|------|------|
+//! | `~/.astrcode/config.json` | [`Config`] | 全局主配置 |
+//! | `<workspace>/.astrcode/config.json` | [`ConfigOverlay`] | 项目覆盖（启动时合并进全局） |
+//! | `~/.astrcode/mcp.json` | MCP 专用 JSON | MCP 服务器（**不**走 `extensions` 段） |
+//! | `<workspace>/.astrcode/mcp.json` | 同上 | 项目 MCP（需 `ASTRCODE_ENABLE_PROJECT_MCP=1`） |
+//!
+//! 持久化由 [`ConfigStore`] trait 抽象；默认实现见 `astrcode-storage::FileConfigStore`。
+//!
+//! # 解析流程
+//!
+//! 1. 加载 `~/.astrcode/config.json`（不存在则写入内置默认）。
+//! 2. 若存在 `<startup_cwd>/.astrcode/config.json`，[`merge_overlay`] 合并 [`ConfigOverlay`]。
+//! 3. [`Config::effective_from()`] 解析主模型 / 小模型、API key、runtime、permissions、extensions。
+//! 4. 解析失败时服务端回退到 `.last-known-good.json` 或内置 dummy LLM（见
+//!    `astrcode-server::bootstrap::config_resolve`）。
+//!
+//! # 新增字段
+//!
+//! 在以下三处同步添加：`raw.rs`（`Option` 字段）→ `effective.rs`（具体字段，若需）
+//! → `resolve.rs`（`build_*` 映射）；项目覆盖若需支持，在 [`ConfigOverlay`] 与 [`merge_overlay`]
+//! 中补充。
+//!
+//! 用户可见说明见仓库根目录 [`docs/configuration.md`](../../../../docs/configuration.md)。
 
 pub mod defaults;
 pub mod effective;
 pub mod raw;
 pub mod resolve;
 
-// 在 config 模块级别重新导出常用类型
 pub use effective::*;
 pub use raw::*;
 pub use resolve::{ResolveError, merge_overlay, profile_has_resolvable_api_key, resolve_api_key};
 
-// ─── ConfigStore trait（IO 抽象）──────────────────────────────────────────
-
 /// 配置持久化 trait。
 ///
-/// 实现类（如 FileConfigStore）负责处理 IO 层。
-/// 服务器 crate 中的 ConfigService 使用此 trait 加载原始配置，
-/// 然后调用 `Config::into_effective()` 进行解析。
+/// 实现类（如 `FileConfigStore`）负责 IO；`ConfigManager` 加载原始配置后调用
+/// [`Config::into_effective()`] 解析。
 #[async_trait::async_trait]
 pub trait ConfigStore: Send + Sync {
     /// 加载完整配置。

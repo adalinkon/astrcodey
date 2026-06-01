@@ -205,8 +205,9 @@ pub struct RuntimeSection {
 
 /// 项目级配置覆盖层。
 ///
-/// 用于 `.astrcode/config.json` 中的项目特定配置，
-/// 可覆盖全局配置中的部分字段。
+/// 用于 `<workspace>/.astrcode/config.json` 中的项目特定配置，
+/// 在启动时通过 [`super::resolve::merge_overlay`] 合并进全局 `config.json`。
+/// 仅列出需要覆盖的字段；未出现的字段沿用全局值。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigOverlay {
@@ -218,8 +219,14 @@ pub struct ConfigOverlay {
     pub active_small_profile: Option<String>,
     /// 覆盖小模型的模型标识。
     pub active_small_model: Option<String>,
-    /// 覆盖配置文件列表。
+    /// 整体替换 profiles 列表（非按 name 合并）。
     pub profiles: Option<Vec<Profile>>,
+    /// 按字段合并 `runtime`（仅覆盖文件中出现的键）。
+    #[serde(default)]
+    pub runtime: Option<RuntimeSection>,
+    /// 整体替换 `permissions` 段。
+    #[serde(default)]
+    pub permissions: Option<crate::permission::PermissionsSection>,
     /// 覆盖扩展专有配置。同 key 覆盖，异 key 保留。
     #[serde(default)]
     pub extensions: Option<BTreeMap<String, ExtensionRawConfig>>,

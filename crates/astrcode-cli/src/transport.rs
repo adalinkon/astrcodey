@@ -32,7 +32,20 @@ pub struct InProcessTransport {
 
 impl InProcessTransport {
     /// 启动后台服务器任务并返回已连接的传输实例。
+    ///
+    /// 进程内模式（TUI / exec）在配置未写 `runtime.approvalMode` 时默认 **yolo**；
+    /// 显式写入 `manual` 的配置仍会尊重用户选择。
+    /// TODO: A BETTER WAY
+    #[allow(dead_code)] // 便捷入口；TUI/exec 使用 `start_with` 传入审批模式选项。
     pub fn start() -> Self {
+        Self::start_with(astrcode_server::bootstrap::BootstrapOptions {
+            default_approval_mode_if_unset: Some(astrcode_core::permission::ApprovalMode::Yolo),
+            ..Default::default()
+        })
+    }
+
+    /// 可覆盖审批模式等启动选项的进程内传输。
+    pub fn start_with(bootstrap_opts: bootstrap::BootstrapOptions) -> Self {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<ClientCommand>(CLIENT_COMMAND_CAPACITY);
         let event_tx = Arc::new(EventFanout::new(1024));
         let (ready_tx, ready_rx) = watch::channel(BootstrapState::Starting);
@@ -41,7 +54,7 @@ impl InProcessTransport {
         // 在后台 tokio 任务中运行服务器
         tokio::spawn(async move {
             // 引导服务器运行时（加载配置、初始化组件等）
-            let runtime = match bootstrap::bootstrap().await {
+            let runtime = match bootstrap::bootstrap_with(bootstrap_opts).await {
                 Ok(rt) => Arc::new(rt),
                 Err(e) => {
                     let message = e.to_string();

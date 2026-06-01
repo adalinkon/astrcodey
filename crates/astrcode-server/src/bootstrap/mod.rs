@@ -23,6 +23,45 @@ mod server_system;
 
 pub use server_system::{ServerSystem, spawn_server_system};
 
+fn approval_mode_wire(mode: astrcode_core::permission::ApprovalMode) -> String {
+    match mode {
+        astrcode_core::permission::ApprovalMode::Manual => "manual".into(),
+        astrcode_core::permission::ApprovalMode::Yolo => "yolo".into(),
+    }
+}
+
+fn apply_approval_mode_bootstrap_options(
+    config: &mut astrcode_core::config::Config,
+    opts: &BootstrapOptions,
+) {
+    if let Some(mode) = opts.approval_mode_override {
+        config.runtime.approval_mode = Some(approval_mode_wire(mode));
+        return;
+    }
+    if config.runtime.approval_mode.is_none() {
+        if let Some(mode) = opts.default_approval_mode_if_unset {
+            config.runtime.approval_mode = Some(approval_mode_wire(mode));
+        }
+    }
+}
+
+/// 加载全局配置、合并项目 overlay、应用启动选项（与 [`bootstrap_with`] / 热重载共用）。
+pub(crate) async fn load_merged_config(
+    config_store: &dyn ConfigStore,
+    opts: &BootstrapOptions,
+) -> Result<astrcode_core::config::Config, astrcode_core::config::ConfigStoreError> {
+    let mut config = config_store.load().await?;
+    let cwd = opts
+        .working_dir
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    if let Some(overlay) = config_store.load_overlay(&cwd.to_string_lossy()).await? {
+        config = astrcode_core::config::merge_overlay(config, overlay);
+    }
+    apply_approval_mode_bootstrap_options(&mut config, opts);
+    Ok(config)
+}
+
 pub use crate::config_manager::ConfigManager;
 use crate::{
     child_session::ChildSessionCoordinator, session_manager::SessionManager,
@@ -100,6 +139,10 @@ pub struct BootstrapOptions {
     pub config_path: Option<std::path::PathBuf>,
     /// 自定义工作目录，为 None 时使用当前目录
     pub working_dir: Option<std::path::PathBuf>,
+    /// 当 `runtime.approvalMode` 未设置时使用的审批模式（CLI/TUI 进程内启动默认为 Yolo）。
+    pub default_approval_mode_if_unset: Option<astrcode_core::permission::ApprovalMode>,
+    /// 强制覆盖 `runtime.approvalMode`（如 CLI `--yolo` / `--manual`）。
+    pub approval_mode_override: Option<astrcode_core::permission::ApprovalMode>,
 }
 
 /// 使用默认选项引导服务器运行时。
@@ -133,22 +176,21 @@ pub async fn bootstrap_with(opts: BootstrapOptions) -> Result<ServerRuntime, Boo
     } else {
         FileConfigStore::default_path()
     };
-    let config = config_store.load().await?;
+    let config = load_merged_config(&config_store, &opts).await?;
+
+    // 2. 确定当前项目工作目录（用于项目级 config 覆盖与扩展发现）。
+    let cwd = opts
+        .working_dir
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
     let effective = config_resolve::resolve_effective_config(&config_store, &config).await;
 
-    // 2. 构建提示词组装器。
+    // 3. 构建提示词组装器。
     let context_settings = effective.context.clone();
     let context_assembler = Arc::new(LlmContextAssembler::new(context_settings));
 
-    // 3. 确定当前项目工作目录。
-    //
-    // 这个目录只用于启动期项目识别、扩展加载和默认隐式会话。
-    // 显式创建 session 时，工具快照会使用 session 自己的 working_dir。
-    let cwd = opts
-        .working_dir
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-
-    // 4. 初始化事件存储。
+    // 4. 初始化事件存储（步骤号延续上文「构建提示词组装器」之后）。
     //
     // 测试启动（config_path.is_some()）使用内存存储，避免污染真实会话目录；
     // 正常启动按项目路径选择文件系统会话仓库。

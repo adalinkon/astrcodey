@@ -46,8 +46,10 @@ use crate::transport::InProcessTransport;
 type Client = AstrcodeClient<InProcessTransport>;
 
 /// TUI entry point — called from main.rs.
-pub async fn run() -> io::Result<()> {
-    let client = Arc::new(AstrcodeClient::new(InProcessTransport::start()));
+pub async fn run(bootstrap_opts: astrcode_server::bootstrap::BootstrapOptions) -> io::Result<()> {
+    let client = Arc::new(AstrcodeClient::new(InProcessTransport::start_with(
+        bootstrap_opts,
+    )));
     let mut server_stream = client.subscribe_events().await.map_err(io_error)?;
 
     let mut terminal = TerminalSession::enter()?;

@@ -368,7 +368,11 @@ fn build_extension_settings(
 
 /// 将项目级覆盖配置合并到基础配置中。
 ///
-/// 覆盖配置中的非 `None` 字段会替换基础配置中的对应字段。
+/// - 标量字段（`activeProfile` 等）：覆盖层有值则替换。
+/// - `profiles`：有值则整体替换全局列表。
+/// - `runtime`：按字段合并（仅覆盖出现的键）。
+/// - `permissions`：有值则整体替换。
+/// - `extensions`：同扩展 id 合并；双方均为 JSON 对象时按 key 合并，否则覆盖层整段替换。
 pub fn merge_overlay(mut base: Config, overlay: ConfigOverlay) -> Config {
     if let Some(p) = overlay.active_profile {
         base.active_profile = p;
@@ -382,14 +386,93 @@ pub fn merge_overlay(mut base: Config, overlay: ConfigOverlay) -> Config {
     if let Some(m) = overlay.active_small_model {
         base.active_small_model = Some(m);
     }
+    if let Some(profiles) = overlay.profiles {
+        base.profiles = profiles;
+    }
+    if let Some(runtime) = overlay.runtime {
+        merge_runtime_section(&mut base.runtime, runtime);
+    }
+    if let Some(permissions) = overlay.permissions {
+        base.permissions = Some(permissions);
+    }
     if let Some(extensions) = overlay.extensions {
-        // 同 key 覆盖，异 key 保留
         let base_extensions = base.extensions.get_or_insert_with(BTreeMap::new);
-        for (k, v) in extensions {
-            base_extensions.insert(k, v);
-        }
+        merge_extension_configs(base_extensions, extensions);
     }
     base
+}
+
+/// 合并 `extensions` 段：同 id 且双方均为 object 时递归合并 JSON，否则覆盖层替换整段。
+fn merge_extension_configs(
+    base: &mut BTreeMap<String, ExtensionRawConfig>,
+    overlay: BTreeMap<String, ExtensionRawConfig>,
+) {
+    for (extension_id, overlay_value) in overlay {
+        match base.get_mut(&extension_id) {
+            Some(base_value) if base_value.is_object() && overlay_value.is_object() => {
+                merge_json_values(base_value, overlay_value);
+            },
+            Some(_) | None => {
+                base.insert(extension_id, overlay_value);
+            },
+        }
+    }
+}
+
+/// 递归合并 JSON object；类型不一致时以覆盖层为准。
+fn merge_json_values(base: &mut serde_json::Value, overlay: serde_json::Value) {
+    let (Some(base_map), Some(overlay_map)) = (base.as_object_mut(), overlay.as_object()) else {
+        *base = overlay;
+        return;
+    };
+    for (key, overlay_field) in overlay_map {
+        match base_map.get_mut(key) {
+            Some(base_field) if base_field.is_object() && overlay_field.is_object() => {
+                merge_json_values(base_field, overlay_field.clone());
+            },
+            Some(_) | None => {
+                base_map.insert(key.clone(), overlay_field.clone());
+            },
+        }
+    }
+}
+
+/// 将覆盖层 `runtime` 中已设置的字段合并进基础 `runtime`。
+fn merge_runtime_section(base: &mut RuntimeSection, overlay: RuntimeSection) {
+    macro_rules! merge_field {
+        ($field:ident) => {
+            if overlay.$field.is_some() {
+                base.$field = overlay.$field;
+            }
+        };
+    }
+    merge_field!(llm_connect_timeout_secs);
+    merge_field!(llm_read_timeout_secs);
+    merge_field!(llm_max_retries);
+    merge_field!(llm_retry_base_delay_ms);
+    merge_field!(compact_auto_enabled);
+    merge_field!(compact_threshold_percent);
+    merge_field!(compact_max_retry_attempts);
+    merge_field!(compact_max_output_tokens);
+    merge_field!(compact_keep_recent_turns);
+    merge_field!(compact_circuit_breaker_threshold);
+    merge_field!(compact_circuit_breaker_cooldown_secs);
+    merge_field!(predictive_compact_enabled);
+    merge_field!(predictive_compact_baseline_growth_tokens);
+    merge_field!(post_compact_max_files);
+    merge_field!(post_compact_token_budget);
+    merge_field!(post_compact_max_tokens_per_file);
+    merge_field!(agent_max_depth);
+    merge_field!(agent_tool_max_parallel_calls);
+    merge_field!(shell_timeout_secs);
+    merge_field!(allow_api_key_shell_command);
+    merge_field!(approval_mode);
+    if let Some(states) = overlay.extension_states {
+        let base_states = base.extension_states.get_or_insert_with(BTreeMap::new);
+        for (k, v) in states {
+            base_states.insert(k, v);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -558,6 +641,66 @@ mod tests {
         assert_eq!(effective.llm.model_id, "deepseek-chat");
         assert_eq!(effective.small_llm.model_id, "claude-haiku-4-5-20251001");
         assert_eq!(effective.small_llm.provider_kind, "anthropic");
+    }
+
+    #[test]
+    fn merge_overlay_extension_configs_merges_json_objects() {
+        let base = Config {
+            extensions: Some(BTreeMap::from([(
+                "astrcode-web-tools".into(),
+                serde_json::json!({ "search": { "defaultMaxResults": 3 }, "fetch": { "cacheTtlSecs": 900 } }),
+            )])),
+            ..Config::default()
+        };
+        let overlay = ConfigOverlay {
+            extensions: Some(BTreeMap::from([(
+                "astrcode-web-tools".into(),
+                serde_json::json!({ "search": { "provider": "brave" } }),
+            )])),
+            ..ConfigOverlay::default()
+        };
+        let merged = merge_overlay(base, overlay);
+        let ext = merged.extensions.as_ref().unwrap();
+        assert_eq!(ext["astrcode-web-tools"]["search"]["defaultMaxResults"], 3);
+        assert_eq!(ext["astrcode-web-tools"]["search"]["provider"], "brave");
+        assert_eq!(ext["astrcode-web-tools"]["fetch"]["cacheTtlSecs"], 900);
+    }
+
+    #[test]
+    fn merge_overlay_runtime_and_extensions() {
+        let base = Config {
+            runtime: RuntimeSection {
+                llm_max_retries: Some(2),
+                extension_states: Some(BTreeMap::from([("astrcode.memory".into(), false)])),
+                ..RuntimeSection::default()
+            },
+            extensions: Some(BTreeMap::from([(
+                "astrcode-web-tools".into(),
+                serde_json::json!({ "search": { "defaultMaxResults": 3 } }),
+            )])),
+            ..Config::default()
+        };
+        let overlay = ConfigOverlay {
+            runtime: Some(RuntimeSection {
+                llm_max_retries: Some(5),
+                extension_states: Some(BTreeMap::from([("astrcode.memory".into(), true)])),
+                ..RuntimeSection::default()
+            }),
+            extensions: Some(BTreeMap::from([(
+                "astrcode-web-tools".into(),
+                serde_json::json!({ "fetch": { "cacheTtlSecs": 60 } }),
+            )])),
+            ..ConfigOverlay::default()
+        };
+        let merged = merge_overlay(base, overlay);
+        assert_eq!(merged.runtime.llm_max_retries, Some(5));
+        assert_eq!(
+            merged.runtime.extension_states.as_ref().unwrap()["astrcode.memory"],
+            true
+        );
+        let ext = merged.extensions.as_ref().unwrap();
+        assert_eq!(ext["astrcode-web-tools"]["search"]["defaultMaxResults"], 3);
+        assert_eq!(ext["astrcode-web-tools"]["fetch"]["cacheTtlSecs"], 60);
     }
 
     #[test]

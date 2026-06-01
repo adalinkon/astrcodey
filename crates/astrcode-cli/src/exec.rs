@@ -31,8 +31,13 @@ enum NotificationAction {
 }
 
 /// 执行单次提示并等待响应完成。
-pub async fn run(prompt: &str, jsonl: bool, timeout_secs: u64) -> Result<(), ExecError> {
-    let client = AstrcodeClient::new(InProcessTransport::start());
+pub async fn run(
+    prompt: &str,
+    jsonl: bool,
+    timeout_secs: u64,
+    bootstrap_opts: astrcode_server::bootstrap::BootstrapOptions,
+) -> Result<(), ExecError> {
+    let client = AstrcodeClient::new(InProcessTransport::start_with(bootstrap_opts));
 
     let _sid = client.create_session(".").await?;
 

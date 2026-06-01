@@ -12,6 +12,7 @@ use axum::{
 };
 
 use super::super::{HttpState, bad_request_response, internal_error_response};
+use crate::bootstrap::{self, BootstrapOptions};
 
 pub(in crate::http) async fn get_config(State(state): State<HttpState>) -> Response {
     let raw = state.runtime.config_manager().raw_config_snapshot();
@@ -72,7 +73,16 @@ pub(in crate::http) async fn get_config(State(state): State<HttpState>) -> Respo
 }
 
 pub(in crate::http) async fn reload_config(State(state): State<HttpState>) -> Response {
-    let config = match state.runtime.config_manager().config_store().load().await {
+    let reload_opts = BootstrapOptions {
+        working_dir: Some(state.runtime.startup_working_dir().clone()),
+        ..BootstrapOptions::default()
+    };
+    let config = match bootstrap::load_merged_config(
+        state.runtime.config_manager().config_store().as_ref(),
+        &reload_opts,
+    )
+    .await
+    {
         Ok(c) => c,
         Err(error) => {
             return internal_error_response("reload_failed", error);
