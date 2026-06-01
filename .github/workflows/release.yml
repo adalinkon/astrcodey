@@ -46,8 +46,8 @@ jobs:
             TAG="${GITHUB_REF_NAME}"
             VERSION="${TAG#v}"
           else
-            # workflow_dispatch: 从 Cargo.toml 读取当前版本并 bump
-            CURRENT=$(grep -m1 '^version' crates/astrcode-cli/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+            # workflow_dispatch: 从 workspace Cargo.toml 读取当前版本并 bump
+            CURRENT=$(grep -A5 '^\[workspace\.package\]' Cargo.toml | grep -m1 '^version = ' | sed 's/.*"\(.*\)"/\1/')
             IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
             case "${{ inputs.bump }}" in
               major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
@@ -66,17 +66,19 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           TAG="${{ steps.version.outputs.tag }}"
+          OLD=$(grep -A5 '^\[workspace\.package\]' Cargo.toml | grep -m1 '^version = ' | sed 's/.*"\(.*\)"/\1/')
 
-          # 更新所有 crate 的 version（仅匹配 [package] 下的 version 行）
-          for toml in $(find crates -name "Cargo.toml") src-tauri/Cargo.toml; do
-            sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${VERSION}\"/}" "$toml"
-          done
+          # workspace 版本（各 crate 通过 version.workspace = true 继承）
+          sed -i "0,/^version = \"${OLD}\"/{s/^version = \"${OLD}\"/version = \"${VERSION}\"/}" Cargo.toml
 
-          # 更新 tauri.conf.json
-          sed -i "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" src-tauri/tauri.conf.json
+          sed -i "s/\"version\": \"${OLD}\"/\"version\": \"${VERSION}\"/" src-tauri/tauri.conf.json
 
           # Keep frontend package metadata and its lockfile in sync.
           npm version "${VERSION}" --no-git-tag-version --prefix frontend
+
+          sed -i "s/${OLD}/${VERSION}/g" npm/astrcode/package.json
+
+          cargo check --workspace --exclude astrcode-desktop
 
           # 提交并打 tag
           git config user.name "github-actions[bot]"
