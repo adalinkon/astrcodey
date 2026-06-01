@@ -4,6 +4,7 @@ pub mod acp;
 pub mod bootstrap;
 pub mod handler;
 pub mod http;
+pub mod task_utils;
 pub mod transport;
 
 #[cfg(feature = "testing")]

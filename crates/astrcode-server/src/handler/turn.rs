@@ -46,7 +46,7 @@ impl CommandHandler {
         let actor_tx = self.actor_tx.clone();
         let sid_for_watcher = sid.clone();
         let turn_id_for_watcher = turn_id.clone();
-        tokio::spawn(async move {
+        crate::task_utils::spawn_traced("turn_completion_watcher", async move {
             run_completion_watcher(
                 handle,
                 scheduler,

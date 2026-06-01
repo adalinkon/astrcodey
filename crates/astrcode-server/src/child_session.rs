@@ -113,7 +113,7 @@ impl ChildSessionCoordinator {
             return;
         };
         let coordinator = Arc::clone(self);
-        tokio::spawn(async move {
+        crate::task_utils::spawn_traced("child_session_completion_watcher", async move {
             while let Some(parent_sid) = rx.recv().await {
                 coordinator
                     .drain_completed(scheduler.as_ref(), &parent_sid)
@@ -622,7 +622,7 @@ impl ChildSessionCompletionGuard {
         let shutdown_handle = handle.shutdown_handle();
         let parent_sid = config.parent_session_id.clone();
 
-        tokio::spawn(async move {
+        crate::task_utils::spawn_traced("child_session_completion_guard", async move {
             let result = handle.wait().await;
             let outcome = match result {
                 Some(r) => match r.output {

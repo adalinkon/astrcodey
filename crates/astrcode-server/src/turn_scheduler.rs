@@ -119,6 +119,13 @@ const FORCE_KILL_GRACE_MS: u64 = 1500;
 const ABORT_WAIT_POLL_MS: u64 = 50;
 const ABORT_WAIT_EXTRA_MS: u64 = 500;
 
+#[derive(Debug, Clone)]
+enum InjectDecision {
+    StartNew,
+    StartAfterFinished { finished_turn_id: TurnId },
+    InjectInto { turn_id: TurnId },
+}
+
 #[derive(Clone)]
 pub struct TurnScheduler {
     session_manager: Arc<SessionManager>,
@@ -212,18 +219,28 @@ impl TurnScheduler {
         delivery: InputDelivery,
     ) -> Result<DeliveryOutcome, TurnScheduleError> {
         let gate = self.session_delivery_gate(&session_id).await;
-        let _guard = gate.lock().await;
-        self.deliver_input_locked(session_id, text, delivery).await
+        // gate 只用于保护“投递决策/队列操作”的同步段；I/O（open/submit）放锁外，避免慢盘/慢会话
+        // 导致同一 session 的输入投递完全串行化。
+        self.deliver_input_gated(gate, session_id, text, delivery)
+            .await
     }
 
-    async fn deliver_input_locked(
+    async fn deliver_input_gated(
         &self,
+        gate: SessionDeliveryGate,
         session_id: SessionId,
         text: String,
         delivery: InputDelivery,
     ) -> Result<DeliveryOutcome, TurnScheduleError> {
         match delivery {
             InputDelivery::StartNew => {
+                // 决策段：如果当前已有活跃 turn，直接返回 busy；否则放锁外执行 I/O。
+                {
+                    let _guard = gate.lock().await;
+                    if self.registry.has_active(&session_id) {
+                        return Err(TurnScheduleError::TurnAlreadyRunning);
+                    }
+                }
                 let started = self.start_execution(session_id.clone(), text).await?;
                 self.watch_detached_turn(
                     session_id,
@@ -236,78 +253,100 @@ impl TurnScheduler {
                 })
             },
             InputDelivery::InjectIfRunningElseStart => {
-                if let Some((finished_turn_id, _)) = self.registry.remove_if_finished(&session_id) {
-                    tracing::debug!(
-                        session_id = %session_id,
-                        turn_id = %finished_turn_id,
-                        "finished active turn was still registered; starting injected input as a new turn"
-                    );
-                    self.sync_durable_events(&session_id).await;
-                    let started = self.start_execution(session_id.clone(), text).await?;
-                    self.watch_detached_turn(
-                        session_id,
-                        started.turn_id.clone(),
-                        started.handle,
-                        "deliver_input:inject-after-finished",
-                    );
-                    return Ok(DeliveryOutcome::Started {
-                        turn_id: started.turn_id,
-                    });
-                }
-                if let Some(turn_id) = self.registry.active_turn_id(&session_id) {
-                    match self.inject_internal(&session_id, text.clone()).await {
-                        Ok(()) => Ok(DeliveryOutcome::Injected { turn_id }),
-                        Err(TurnScheduleError::NoActiveTurn) => {
-                            let started = self.start_execution(session_id.clone(), text).await?;
-                            self.watch_detached_turn(
-                                session_id,
-                                started.turn_id.clone(),
-                                started.handle,
-                                "deliver_input:inject-fallback",
-                            );
-                            Ok(DeliveryOutcome::Started {
-                                turn_id: started.turn_id,
-                            })
-                        },
-                        Err(error) => Err(error),
+                // 决策段：读取/清理 registry 以及判断是否 inject；I/O 放锁外。
+                let decision = {
+                    let _guard = gate.lock().await;
+                    if let Some((finished_turn_id, _)) =
+                        self.registry.remove_if_finished(&session_id)
+                    {
+                        Some(InjectDecision::StartAfterFinished { finished_turn_id })
+                    } else if let Some(turn_id) = self.registry.active_turn_id(&session_id) {
+                        Some(InjectDecision::InjectInto { turn_id })
+                    } else {
+                        Some(InjectDecision::StartNew)
                     }
-                } else {
-                    let started = self.start_execution(session_id.clone(), text).await?;
-                    self.watch_detached_turn(
-                        session_id,
-                        started.turn_id.clone(),
-                        started.handle,
-                        "deliver_input:inject",
-                    );
-                    Ok(DeliveryOutcome::Started {
-                        turn_id: started.turn_id,
-                    })
+                };
+
+                match decision.unwrap_or(InjectDecision::StartNew) {
+                    InjectDecision::StartAfterFinished { finished_turn_id } => {
+                        tracing::debug!(
+                            session_id = %session_id,
+                            turn_id = %finished_turn_id,
+                            "finished active turn was still registered; starting injected input as a new turn"
+                        );
+                        self.sync_durable_events(&session_id).await;
+                        let started = self.start_execution(session_id.clone(), text).await?;
+                        self.watch_detached_turn(
+                            session_id,
+                            started.turn_id.clone(),
+                            started.handle,
+                            "deliver_input:inject-after-finished",
+                        );
+                        Ok(DeliveryOutcome::Started {
+                            turn_id: started.turn_id,
+                        })
+                    },
+                    InjectDecision::InjectInto { turn_id } => {
+                        match self.inject_internal(&session_id, text.clone()).await {
+                            Ok(()) => Ok(DeliveryOutcome::Injected { turn_id }),
+                            Err(TurnScheduleError::NoActiveTurn) => {
+                                let started =
+                                    self.start_execution(session_id.clone(), text).await?;
+                                self.watch_detached_turn(
+                                    session_id,
+                                    started.turn_id.clone(),
+                                    started.handle,
+                                    "deliver_input:inject-fallback",
+                                );
+                                Ok(DeliveryOutcome::Started {
+                                    turn_id: started.turn_id,
+                                })
+                            },
+                            Err(error) => Err(error),
+                        }
+                    },
+                    InjectDecision::StartNew => {
+                        let started = self.start_execution(session_id.clone(), text).await?;
+                        self.watch_detached_turn(
+                            session_id,
+                            started.turn_id.clone(),
+                            started.handle,
+                            "deliver_input:inject",
+                        );
+                        Ok(DeliveryOutcome::Started {
+                            turn_id: started.turn_id,
+                        })
+                    },
                 }
             },
             InputDelivery::QueueIfRunningElseStart => {
-                if !self.registry.has_active(&session_id) {
-                    let started = self.start_execution(session_id.clone(), text).await?;
-                    self.watch_detached_turn(
-                        session_id,
-                        started.turn_id.clone(),
-                        started.handle,
-                        "deliver_input:queue",
-                    );
-                    return Ok(DeliveryOutcome::Started {
-                        turn_id: started.turn_id,
-                    });
+                // 决策段：若 idle，放锁外 start；若 running，入队（队列操作必须在 gate 内）。
+                {
+                    let _guard = gate.lock().await;
+                    if self.registry.has_active(&session_id) {
+                        let mut queues = self.pending_queues.lock();
+                        let queue = queues.entry(session_id.clone()).or_default();
+                        queue.push_back(PendingMessage { text });
+                        let queue_len = queue.len();
+                        drop(queues);
+                        tracing::info!(
+                            session_id = %session_id,
+                            queue_len = queue_len,
+                            "message queued for next turn"
+                        );
+                        return Ok(DeliveryOutcome::Queued { queue_len });
+                    }
                 }
-                let mut queues = self.pending_queues.lock();
-                let queue = queues.entry(session_id.clone()).or_default();
-                queue.push_back(PendingMessage { text });
-                let queue_len = queue.len();
-                drop(queues);
-                tracing::info!(
-                    session_id = %session_id,
-                    queue_len = queue_len,
-                    "message queued for next turn"
+                let started = self.start_execution(session_id.clone(), text).await?;
+                self.watch_detached_turn(
+                    session_id,
+                    started.turn_id.clone(),
+                    started.handle,
+                    "deliver_input:queue",
                 );
-                Ok(DeliveryOutcome::Queued { queue_len })
+                Ok(DeliveryOutcome::Started {
+                    turn_id: started.turn_id,
+                })
             },
         }
     }
@@ -319,7 +358,13 @@ impl TurnScheduler {
         text: String,
     ) -> Result<StartedExecution, TurnScheduleError> {
         let gate = self.session_delivery_gate(&session_id).await;
-        let _guard = gate.lock().await;
+        // 同 deliver_input：gate 仅保护同步段，I/O 放锁外。
+        {
+            let _guard = gate.lock().await;
+            if self.registry.has_active(&session_id) {
+                return Err(TurnScheduleError::TurnAlreadyRunning);
+            }
+        }
         self.start_execution(session_id, text).await
     }
 

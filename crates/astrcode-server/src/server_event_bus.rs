@@ -64,7 +64,7 @@ impl ServerEventBus {
                 .entry(session_id)
                 .or_insert_with(|| Arc::new(StreamingState::new(None))),
         );
-        tokio::spawn(async move {
+        crate::task_utils::spawn_traced("server_event_bus_fanout", async move {
             while let Some(event) = rx.recv().await {
                 update_streaming(&state, &event.payload);
                 tx.send(ClientNotification::Event(event));

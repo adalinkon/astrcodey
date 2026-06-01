@@ -1,4 +1,4 @@
-use astrcode_protocol::framing::JsonRpcError;
+use astrcode_extension_sdk::protocol::JsonRpcError;
 use serde::Deserialize;
 use serde_json::{Value, json};
 

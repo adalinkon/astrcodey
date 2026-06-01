@@ -29,7 +29,6 @@ where
     F::Output: Send + 'static,
 {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-    static BLOCK_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let rt = RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -43,22 +42,13 @@ where
             handle.runtime_flavor(),
             tokio::runtime::RuntimeFlavor::MultiThread
         ) {
-            return tokio::task::block_in_place(|| {
-                let _guard = BLOCK_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-                rt.block_on(future)
-            });
+            return tokio::task::block_in_place(|| rt.block_on(future));
         }
-        match std::thread::spawn(move || {
-            let _guard = BLOCK_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-            rt.block_on(future)
-        })
-        .join()
-        {
+        match std::thread::spawn(move || rt.block_on(future)).join() {
             Ok(output) => return output,
             Err(payload) => std::panic::resume_unwind(payload),
         }
     }
-    let _guard = BLOCK_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     rt.block_on(future)
 }
 

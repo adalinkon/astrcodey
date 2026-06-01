@@ -3,6 +3,7 @@
 mod cancel;
 mod peer;
 mod stream;
+mod task_utils;
 mod transport;
 
 pub use cancel::CancelToken;

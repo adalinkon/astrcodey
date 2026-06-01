@@ -71,13 +71,17 @@ impl HandlerRegistry {
         &mut self,
         def: crate::tool::ToolDefinition,
         handler: ToolHandlerFn,
-    ) {
+    ) -> Result<(), ErrorPayload> {
         let name = def.name.clone();
         if self.tools.contains_key(&name) {
-            panic!("duplicate tool registration: {name}");
+            return Err(ErrorPayload::new(
+                "duplicate_registration",
+                format!("duplicate tool registration: {name}"),
+            ));
         }
         self.catalog.tools.push(def);
         self.tools.insert(name, handler);
+        Ok(())
     }
 
     pub(crate) fn register_hook(
@@ -85,16 +89,20 @@ impl HandlerRegistry {
         on: impl Into<String>,
         mode: impl Into<String>,
         handler: HookHandlerFn,
-    ) {
+    ) -> Result<(), ErrorPayload> {
         let on = on.into();
         if self.hooks.contains_key(&on) {
-            panic!("duplicate hook registration: {on}");
+            return Err(ErrorPayload::new(
+                "duplicate_registration",
+                format!("duplicate hook registration: {on}"),
+            ));
         }
         self.catalog.hooks.push(HookManifestEntry {
             on: on.clone(),
             mode: mode.into(),
         });
         self.hooks.insert(on, handler);
+        Ok(())
     }
 
     pub(crate) fn register_command(
@@ -102,16 +110,20 @@ impl HandlerRegistry {
         name: impl Into<String>,
         description: impl Into<String>,
         handler: CommandHandlerFn,
-    ) {
+    ) -> Result<(), ErrorPayload> {
         let name = name.into();
         if self.commands.contains_key(&name) {
-            panic!("duplicate command registration: {name}");
+            return Err(ErrorPayload::new(
+                "duplicate_registration",
+                format!("duplicate command registration: {name}"),
+            ));
         }
         self.catalog.commands.push(CommandManifestEntry {
             name: name.clone(),
             description: description.into(),
         });
         self.commands.insert(name, handler);
+        Ok(())
     }
 
     pub fn handler_id_for(&self, kind: &str, name: &str) -> String {

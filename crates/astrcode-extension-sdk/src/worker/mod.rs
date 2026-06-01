@@ -62,19 +62,35 @@ impl Worker {
     }
 
     /// 注册 tool：manifest 定义与 handler 一次完成，避免两处手动对齐。
-    pub fn tool(&mut self, def: ToolDefinition, handler: ToolHandlerFn) {
-        self.registry.register_tool(def, handler);
+    pub fn tool(
+        &mut self,
+        def: ToolDefinition,
+        handler: ToolHandlerFn,
+    ) -> Result<&mut Self, ErrorPayload> {
+        self.registry.register_tool(def, handler)?;
+        Ok(self)
     }
 
     /// 注册 hook（`on` 为事件名，`mode` 为 `blocking` / `non_blocking`）。
-    pub fn hook(&mut self, on: impl Into<String>, mode: impl Into<String>, handler: HookHandlerFn) {
-        self.registry.register_hook(on, mode, handler);
+    pub fn hook(
+        &mut self,
+        on: impl Into<String>,
+        mode: impl Into<String>,
+        handler: HookHandlerFn,
+    ) -> Result<&mut Self, ErrorPayload> {
+        self.registry.register_hook(on, mode, handler)?;
+        Ok(self)
     }
 
     /// 注册 [`continue_after_stop`](crate::extension::ContinueAfterStopHandler) hook。
-    pub fn on_continue_after_stop(&mut self, mode: impl Into<String>, handler: HookHandlerFn) {
+    pub fn on_continue_after_stop(
+        &mut self,
+        mode: impl Into<String>,
+        handler: HookHandlerFn,
+    ) -> Result<&mut Self, ErrorPayload> {
         self.registry
-            .register_hook("continue_after_stop", mode, handler);
+            .register_hook("continue_after_stop", mode, handler)?;
+        Ok(self)
     }
 
     /// 注册 slash command。
@@ -83,8 +99,9 @@ impl Worker {
         name: impl Into<String>,
         description: impl Into<String>,
         handler: CommandHandlerFn,
-    ) {
-        self.registry.register_command(name, description, handler);
+    ) -> Result<&mut Self, ErrorPayload> {
+        self.registry.register_command(name, description, handler)?;
+        Ok(self)
     }
 
     pub async fn run_stdio(self) -> Result<(), ErrorPayload> {

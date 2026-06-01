@@ -7,7 +7,6 @@ description = "Progress todo list extension"
 
 [dependencies]
 astrcode-extension-sdk = { path = "../astrcode-extension-sdk" }
-astrcode-support = { path = "../astrcode-support" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }

@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use astrcode_support::hostpaths;
+use astrcode_extension_sdk::hostpaths;
 use serde::Deserialize;
 
 /// 全局 MCP 配置文件：`~/.astrcode/mcp.json`。

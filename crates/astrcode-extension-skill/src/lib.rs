@@ -17,9 +17,9 @@ use astrcode_extension_sdk::{
         ExtensionCommandResult, ExtensionError, PromptBuildContext, PromptBuildHandler,
         PromptContributions, Registrar, ToolHandler,
     },
+    frontmatter, hostpaths,
     tool::{ExecutionMode, ToolDefinition, ToolOrigin, ToolResult, tool_metadata},
 };
-use astrcode_support::{frontmatter, hostpaths};
 use serde::Deserialize;
 use serde_json::{Value, json};
 

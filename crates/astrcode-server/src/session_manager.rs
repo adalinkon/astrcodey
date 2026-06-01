@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -102,6 +102,10 @@ impl SessionManager {
         self.get_or_create_runtime_with_state(session_id).0
     }
 
+    fn get_runtime_if_present(&self, session_id: &SessionId) -> Option<Arc<SessionRuntimeState>> {
+        self.runtime_registry.get(session_id)
+    }
+
     fn get_or_create_runtime_with_state(
         &self,
         session_id: &SessionId,
@@ -196,10 +200,46 @@ impl SessionManager {
     }
 
     pub(crate) async fn open(&self, session_id: SessionId) -> Result<Session, SessionManagerError> {
-        let open_lock = self.open_lock(&session_id);
-        let opening = open_lock.lock().await;
-        let result = async {
+        loop {
+            if let Some(pending) = self.runtime_registry.pending_session_resume(&session_id) {
+                pending.wait().await;
+                continue;
+            }
+
+            // Fast-path: runtime 已存在且 SessionResume 已完成时，不需要 open_lock 串行化
+            // （避免慢盘/慢扩展导致“同一 session 的并发 reopen 全部排队”）。
+            if let Some(runtime) = self.get_runtime_if_present(&session_id) {
+                let session = Session::open(
+                    Arc::clone(&self.event_store),
+                    session_id.clone(),
+                    runtime,
+                    Arc::clone(&self.capabilities),
+                )
+                .await?;
+                self.attach_session_subscribers(&session);
+                return Ok(session);
+            }
+
+            // Cold open：仅在本进程首次打开时使用 open_lock 做短暂串行化，避免重复创建 runtime。
+            // 注意：生命周期事件派发（可能被慢扩展阻塞）放在锁外；并发 open 通过 pending gate
+            // 等待。
+            let open_lock = self.open_lock(&session_id);
+            let opening = open_lock.lock().await;
+            if let Some(pending) = self.runtime_registry.pending_session_resume(&session_id) {
+                drop(opening);
+                self.remove_open_lock_if_idle(&session_id, &open_lock);
+                pending.wait().await;
+                continue;
+            }
+
             let (runtime, resumed) = self.get_or_create_runtime_with_state(&session_id);
+            if resumed {
+                self.runtime_registry
+                    .begin_pending_session_resume(&session_id);
+            }
+            drop(opening);
+            self.remove_open_lock_if_idle(&session_id, &open_lock);
+
             let session = match Session::open(
                 Arc::clone(&self.event_store),
                 session_id.clone(),
@@ -211,24 +251,29 @@ impl SessionManager {
                 Ok(session) => session,
                 Err(error) => {
                     if resumed {
+                        self.runtime_registry
+                            .finish_pending_session_resume(&session_id);
                         self.remove_runtime_if_same(&session_id, &runtime);
                     }
                     return Err(error.into());
                 },
             };
+
             if resumed {
-                if let Err(error) = session.emit_lifecycle(ExtensionEvent::SessionResume).await {
+                let resume_result = session.emit_lifecycle(ExtensionEvent::SessionResume).await;
+                self.runtime_registry
+                    .finish_pending_session_resume(&session_id);
+                if let Err(error) = resume_result {
                     self.remove_runtime_if_same(&session_id, &runtime);
                     return Err(error.into());
                 }
+            } else if let Some(pending) = self.runtime_registry.pending_session_resume(&session_id)
+            {
+                pending.wait().await;
             }
             self.attach_session_subscribers(&session);
-            Ok(session)
+            return Ok(session);
         }
-        .await;
-        drop(opening);
-        self.remove_open_lock_if_idle(&session_id, &open_lock);
-        result
     }
 
     pub(crate) async fn delete(&self, session_id: &SessionId) -> Result<(), SessionManagerError> {
@@ -460,10 +505,37 @@ impl SessionManager {
     }
 }
 
+/// 首次 cold open 的 SessionResume 完成前，后续 open 需在此 gate 上等待。
+struct PendingSessionResume {
+    done: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl PendingSessionResume {
+    fn new() -> Self {
+        Self {
+            done: AtomicBool::new(false),
+            notify: tokio::sync::Notify::new(),
+        }
+    }
+
+    async fn wait(&self) {
+        while !self.done.load(Ordering::Acquire) {
+            self.notify.notified().await;
+        }
+    }
+
+    fn finish(&self) {
+        self.done.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+}
+
 /// 保证同一 `SessionId` 在当前进程里只有一份 local runtime state。
 struct SessionRuntimeRegistry {
     states: Mutex<HashMap<SessionId, Arc<SessionRuntimeState>>>,
     open_locks: Mutex<HashMap<SessionId, OpenLockEntry>>,
+    pending_session_resumes: Mutex<HashMap<SessionId, Arc<PendingSessionResume>>>,
 }
 
 struct OpenLockEntry {
@@ -477,6 +549,7 @@ impl SessionRuntimeRegistry {
         Self {
             states: Mutex::new(HashMap::new()),
             open_locks: Mutex::new(HashMap::new()),
+            pending_session_resumes: Mutex::new(HashMap::new()),
         }
     }
 
@@ -492,6 +565,30 @@ impl SessionRuntimeRegistry {
         let runtime = create();
         states.insert(session_id.clone(), Arc::clone(&runtime));
         (runtime, true)
+    }
+
+    fn get(&self, session_id: &SessionId) -> Option<Arc<SessionRuntimeState>> {
+        self.states.lock().get(session_id).map(Arc::clone)
+    }
+
+    fn begin_pending_session_resume(&self, session_id: &SessionId) {
+        self.pending_session_resumes
+            .lock()
+            .entry(session_id.clone())
+            .or_insert_with(|| Arc::new(PendingSessionResume::new()));
+    }
+
+    fn pending_session_resume(&self, session_id: &SessionId) -> Option<Arc<PendingSessionResume>> {
+        self.pending_session_resumes
+            .lock()
+            .get(session_id)
+            .map(Arc::clone)
+    }
+
+    fn finish_pending_session_resume(&self, session_id: &SessionId) {
+        if let Some(pending) = self.pending_session_resumes.lock().remove(session_id) {
+            pending.finish();
+        }
     }
 
     fn insert(&self, session_id: SessionId, runtime: Arc<SessionRuntimeState>) {

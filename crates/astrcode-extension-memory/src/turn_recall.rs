@@ -182,7 +182,7 @@ fn trim_lines_to_char_budget(lines: Vec<String>, max_chars: usize) -> Vec<String
 
 #[cfg(test)]
 mod tests {
-    use astrcode_support::hostpaths::ensure_dir;
+    use astrcode_extension_sdk::hostpaths::ensure_dir;
     use tempfile::TempDir;
 
     use super::*;

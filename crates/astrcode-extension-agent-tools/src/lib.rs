@@ -16,12 +16,12 @@ use astrcode_extension_sdk::{
         PromptBuildHandler, PromptContributions, Registrar, ToolHandler,
     },
     render::{RenderKeyValue, RenderSpec, RenderTone, UI_RENDER_METADATA_KEY},
+    text::compact_inline,
     tool::{
         CreateSessionRequest, ExecutionMode, SessionAccess, SubmitTurnRequest, ToolDefinition,
         ToolOrigin, ToolResult, tool_metadata,
     },
 };
-use astrcode_support::text::compact_inline;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -421,7 +421,7 @@ fn resolve_child_small_model(
 /// 为子 agent 的 body 追加共享增强内容：环境信息 + 行为规范。
 fn enhance_agent_prompt(agent_body: &str, working_dir: &str) -> String {
     let os = std::env::consts::OS;
-    let shell = astrcode_support::shell::resolve_shell().name;
+    let shell = astrcode_extension_sdk::shell::resolve_shell().name;
     format!(
         "{}\n\n---\n\nNotes:\n- Agent threads always have their cwd reset between bash calls; \
          please only use absolute file paths.\n- In your final response, share file paths (always \

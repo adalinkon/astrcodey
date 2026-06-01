@@ -6,7 +6,7 @@
 
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::SystemTime};
 
-use astrcode_support::hostpaths::{self, ensure_dir};
+use astrcode_extension_sdk::hostpaths::{self, ensure_dir};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 

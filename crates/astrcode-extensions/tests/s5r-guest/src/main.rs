@@ -77,7 +77,7 @@ async fn run() -> Result<(), ErrorPayload> {
             .parameters(json!({ "type": "object", "properties": {} }))
             .build(),
         tool_handler(|_ctx| async { Ok(tool_text("pong", false)) }),
-    );
+    )?;
 
     worker.tool(
         tool("greet")
@@ -91,7 +91,7 @@ async fn run() -> Result<(), ErrorPayload> {
         tool_handler_args(|args: GreetArgs, _ctx| async move {
             Ok(tool_text(format!("hello, {}!", args.name), false))
         }),
-    );
+    )?;
 
     worker.tool(
         tool("add")
@@ -108,7 +108,7 @@ async fn run() -> Result<(), ErrorPayload> {
         tool_handler_args(|args: AddArgs, _ctx| async move {
             Ok(tool_text(format!("{} + {} = {}", args.a, args.b, args.a + args.b), false))
         }),
-    );
+    )?;
 
     worker.tool(
         tool("ask_llm")
@@ -128,7 +128,7 @@ async fn run() -> Result<(), ErrorPayload> {
             let content = out["content"].as_str().unwrap_or("(no content)");
             Ok(tool_text(content, false))
         }),
-    );
+    )?;
 
     worker.tool(
         tool("pipeline_status")
@@ -140,7 +140,7 @@ async fn run() -> Result<(), ErrorPayload> {
             let llm_ok = PIPELINE_LLM_OK.load(Ordering::SeqCst);
             Ok(tool_text(format!("steps={steps} llm_ok={llm_ok}"), false))
         }),
-    );
+    )?;
 
     worker.tool(
         tool("read_workspace")
@@ -156,7 +156,7 @@ async fn run() -> Result<(), ErrorPayload> {
             let content = out["content"].as_str().unwrap_or("");
             Ok(tool_text(format!("read probe.txt: {content}"), false))
         }),
-    );
+    )?;
 
     worker.tool(
         tool("slow")
@@ -172,7 +172,7 @@ async fn run() -> Result<(), ErrorPayload> {
             }
             Ok(tool_text("done", false))
         }),
-    );
+    )?;
 
     worker.command(
         "demo",
@@ -183,7 +183,7 @@ async fn run() -> Result<(), ErrorPayload> {
                 json!({ "kind": "display", "content": "s5r guest demo works!", "is_error": false }),
             ))
         }),
-    );
+    )?;
 
     worker.hook(
         "pre_tool_use",
@@ -212,7 +212,7 @@ async fn run() -> Result<(), ErrorPayload> {
             }
             Ok(HandlerResult::ok())
         }),
-    );
+    )?;
 
     worker.hook(
         "turn_end",
@@ -229,7 +229,7 @@ async fn run() -> Result<(), ErrorPayload> {
                 }],
             })
         }),
-    );
+    )?;
 
     worker.hook(
         "pipeline_step",
@@ -265,7 +265,7 @@ async fn run() -> Result<(), ErrorPayload> {
                 )),
             }
         }),
-    );
+    )?;
 
     worker.run_stdio().await
 }

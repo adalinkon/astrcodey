@@ -111,7 +111,7 @@ impl<T: FrameTransport + 'static> Peer<T> {
 
     pub async fn start(self: &Arc<Self>) -> Result<(), PeerError> {
         let peer = Arc::clone(self);
-        let task = tokio::spawn(async move {
+        let task = crate::runtime::task_utils::spawn_traced("peer_read_loop", async move {
             peer.read_loop().await;
         });
         *self.read_task.lock() = Some(task);
@@ -236,7 +236,7 @@ impl<T: FrameTransport + 'static> Peer<T> {
         let cancel_watch = control.external_cancel.map(|ct| {
             let peer = Arc::clone(self);
             let id_for_cancel = wire_id.clone();
-            tokio::spawn(async move {
+            crate::runtime::task_utils::spawn_traced("peer_external_cancel_watch", async move {
                 ct.cancelled().await;
                 peer.cancel(&id_for_cancel, "caller_cancelled").await;
             })
@@ -391,7 +391,7 @@ impl<T: FrameTransport + 'static> Peer<T> {
                 },
             };
             let peer = Arc::clone(&self);
-            tokio::spawn(async move {
+            crate::runtime::task_utils::spawn_traced("peer_dispatch_inbound", async move {
                 peer.dispatch_inbound(msg).await;
             });
         }
@@ -502,7 +502,7 @@ impl<T: FrameTransport + 'static> Peer<T> {
             .insert(invoke_id.clone(), host_cancel.clone());
         let child_token = cancel_token.clone();
         let watch = host_cancel.clone();
-        tokio::spawn(async move {
+        crate::runtime::task_utils::spawn_traced("peer_inbound_cancel_watch", async move {
             watch.cancelled().await;
             child_token.cancel("host_cancel");
         });

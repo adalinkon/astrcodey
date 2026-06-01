@@ -7,8 +7,6 @@ description = "Stdio MCP tool extension"
 
 [dependencies]
 astrcode-extension-sdk = { path = "../astrcode-extension-sdk" }
-astrcode-protocol = { path = "../astrcode-protocol" }
-astrcode-support = { path = "../astrcode-support" }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

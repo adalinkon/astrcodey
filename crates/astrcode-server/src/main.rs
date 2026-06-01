@@ -67,7 +67,7 @@ async fn main() {
 
     // Background task: forward events → stdout
     let mut event_rx = event_tx.subscribe();
-    tokio::spawn(async move {
+    astrcode_server::task_utils::spawn_traced("stdout_forwarder", async move {
         while let Some(event) = event_rx.recv().await {
             let line = match notification_to_jsonrpc_message(&event)
                 .and_then(|message| to_jsonl_line(&message))

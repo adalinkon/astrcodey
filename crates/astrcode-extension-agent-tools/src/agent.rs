@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use astrcode_support::{frontmatter, hostpaths};
+use astrcode_extension_sdk::{frontmatter, hostpaths};
 
 /// 解析后的 Agent 配置（兼容 Claude 格式）。
 #[derive(Debug, Clone)]

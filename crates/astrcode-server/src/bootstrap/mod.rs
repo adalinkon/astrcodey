@@ -377,7 +377,7 @@ impl SessionResourceCleanup for TurnSchedulerCleanup {
     fn cleanup(&self, session_id: &astrcode_core::types::SessionId) {
         let scheduler = Arc::clone(&self.scheduler);
         let sid = session_id.clone();
-        tokio::spawn(async move {
+        crate::task_utils::spawn_traced("turn_scheduler_cleanup", async move {
             scheduler.abort_and_cleanup(&sid).await;
             tracing::debug!(session_id = %sid, "turn scheduler cleanup finished");
         });
