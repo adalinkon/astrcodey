@@ -534,11 +534,7 @@ mod tests {
         use astrcode_core::types::new_message_id;
 
         let session = test_session().await;
-        let publisher = Arc::new(TurnEvents::new(
-            session.clone(),
-            new_turn_id(),
-            None,
-        ));
+        let publisher = Arc::new(TurnEvents::new(session.clone(), new_turn_id(), None));
         publisher.invalidate_model_cache().await;
 
         let (sender, ingress) = TurnEventIngress::start(Arc::clone(&publisher));

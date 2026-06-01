@@ -407,7 +407,8 @@ fn content_type(headers: &HeaderMap) -> String {
 fn extract_markdown(content_type: &str, body: &[u8]) -> Result<String, FetchError> {
     if content_type.starts_with("text/html") || content_type.contains("html") {
         let html = String::from_utf8_lossy(body);
-        return Ok(html2text::from_read(html.as_bytes(), 120));
+        return html2text::from_read(html.as_bytes(), 120)
+            .map_err(|error| FetchError::Http(error.to_string()));
     }
     if content_type.starts_with("text/")
         || content_type.contains("json")

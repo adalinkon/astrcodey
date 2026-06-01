@@ -6,9 +6,34 @@
 //! - [`Event`]：携带会话/轮次标识和存储序号的事件信封
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer, ser::SerializeMap};
 
 use crate::{extension::ChildToolPolicy, llm::LlmMessage, tool::ToolResult, types::*};
+
+/// Event 信封字段名集合，与 `EventPayload` 各变体序列化输出**互斥**。
+///
+/// `Event` 使用 `#[serde(flatten)]` 将 envelope 与 payload 平铺到同一 JSON 对象；
+/// serde 的 `flatten` 不会做字段名冲突检查，重复字段会被后者静默覆盖，
+/// 导致 JSONL replay 错乱且 Rust 编译期无法发现。
+///
+/// 防护策略：
+/// 1. 运行时（`Event::serialize`）：先序列化 payload 扫描 keys，撞名直接 panic。
+/// 2. 编译期约束：所有 envelope 字段名必须出现在该常量中，新增字段请同步更新。
+/// 3. 测试扫描：`event_payload_variants_have_no_envelope_key_overlap` 遍历现有 `EventPayload`
+///    变体断言无冲突；新增变体时若未跑该测试，运行时防线仍会兜住。
+///
+/// 历史背景：早期 `Event` 在此处留有 `TODO: 更好的设计？`；完整两层结构
+/// `{ envelope: {...}, payload: {...} }` 会改 wire format 涉及 50+ 调用点，
+/// 留待后续大版本迁移。详见 `event_field_guard.rs`。
+pub const EVENT_ENVELOPE_KEYS: &[&str] = &[
+    "seq",
+    "id",
+    "session_id",
+    "turn_id",
+    "timestamp",
+    // 注：`type` 不在此处。`type` 由 `EventPayload` 的 `tag = "type"` 拥有，
+    // 属 payload 字段；envelope 自身不输出 `type`。
+];
 
 /// 会话的执行阶段。
 ///
@@ -463,10 +488,13 @@ impl EventPayload {
 ///
 /// **维护约定**：新增 [`EventPayload`] 变体时，其 serde 字段名不得与信封字段冲突：
 /// `seq`、`id`、`session_id`、`turn_id`、`timestamp`（`type` 由 payload 内部 tag 占用）。
-/// 冲突不会在 Rust 编译期报错，可能导致 JSONL replay 静默错乱。见
-/// `event_payload_fields_do_not_use_envelope_keys` 测试。
-/// TODO: 更好的设计？
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// 冲突不会在 Rust 编译期由 serde 检查，但 [`Event`] 的手写 `Serialize` impl
+/// 会在序列化时扫描 payload 字段并对撞名 **panic**，确保问题在写入路径上立刻暴露
+/// （而不是下游 replay 时才静默错乱）。新增 envelope 字段请同步更新
+/// [`EVENT_ENVELOPE_KEYS`]。测试
+/// `event_payload_variants_have_no_envelope_key_overlap` 会扫描所有现有变体
+/// 断言无冲突。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Event {
     /// 存储层分配的递增序号，新创建时为 `None`。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -480,8 +508,7 @@ pub struct Event {
     pub turn_id: Option<TurnId>,
     /// 事件时间戳（UTC）。
     pub timestamp: DateTime<Utc>,
-    /// 事件载荷（使用 flatten 平铺序列化）。
-    #[serde(flatten)]
+    /// 事件载荷（手写 Serialize 强制与信封字段不撞名）。
     pub payload: EventPayload,
 }
 
@@ -510,6 +537,81 @@ impl Event {
     /// 构造 turn 级事件。
     pub fn turn(session_id: SessionId, turn_id: TurnId, payload: EventPayload) -> Self {
         Self::new(session_id, Some(turn_id), payload)
+    }
+}
+
+/// 手写 Serialize：与原 `#[derive(Serialize)] + #[serde(flatten)]` 输出**完全一致**，
+/// 但在写入路径上对 payload 与 envelope 字段撞名作 runtime panic，
+/// 避免下游 JSONL replay 静默错乱。
+///
+/// 实现思路：先把 payload 序列化成 `serde_json::Map<String, Value>`，
+/// 扫 keys 是否落在 [`EVENT_ENVELOPE_KEYS`]；然后合并 envelope 字段并序列化。
+/// `skip_serializing_if = "Option::is_none"` 的语义由 envelope 写入路径手动还原。
+impl Serialize for Event {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // 1. 把 payload 物化成 JSON Value，扫 keys。
+        let payload_value =
+            serde_json::to_value(&self.payload).map_err(serde::ser::Error::custom)?;
+        let payload_map = payload_value.as_object().ok_or_else(|| {
+            serde::ser::Error::custom("EventPayload must serialize to a JSON object")
+        })?;
+
+        check_payload_no_envelope_collision(payload_map);
+
+        // 2. 计算最终 map 大小：payload 字段数 + 必需 envelope 字段 + 可选 envelope 字段。
+        let mut entry_count = payload_map.len() + 3; // id, session_id, timestamp 必出
+        if self.seq.is_some() {
+            entry_count += 1;
+        }
+        if self.turn_id.is_some() {
+            entry_count += 1;
+        }
+
+        // 3. 写入 map：先 payload 字段，再 envelope 字段。 serde flatten
+        //    的语义是「后者覆盖前者」，我们这里故意先 payload 后 envelope， 并已在上方 panic
+        //    拒掉撞名——所以输出与原 derive 完全一致。
+        let mut map = serializer.serialize_map(Some(entry_count))?;
+        for (k, v) in payload_map {
+            map.serialize_entry(k, v)?;
+        }
+        if let Some(seq) = self.seq {
+            map.serialize_entry("seq", &seq)?;
+        }
+        map.serialize_entry("id", &self.id)?;
+        map.serialize_entry("session_id", &self.session_id)?;
+        if let Some(turn_id) = &self.turn_id {
+            map.serialize_entry("turn_id", turn_id)?;
+        }
+        map.serialize_entry("timestamp", &self.timestamp)?;
+        map.end()
+    }
+}
+
+/// 检查 payload 序列化产出的顶层 key 不撞 [`EVENT_ENVELOPE_KEYS`]。
+///
+/// `type` 跳过——`EventPayload` 用 `#[serde(tag = "type")]` 内部判别，
+/// `type` 属 payload 拥有，不算冲突。
+///
+/// **独立成函数是为了可测性**：`#[should_panic]` 不能跨 `serde_json::to_value` 表达
+/// 复杂的"伪造 payload"场景。`Event::serialize` 内部调用此函数，测试中可独立调用
+/// 并直接断言 panic。
+pub fn check_payload_no_envelope_collision(
+    payload_map: &serde_json::Map<String, serde_json::Value>,
+) {
+    for key in payload_map.keys() {
+        if key == "type" {
+            continue;
+        }
+        if EVENT_ENVELOPE_KEYS.contains(&key.as_str()) {
+            panic!(
+                "EventPayload variant contains field `{key}` which collides with Event envelope \
+                 key. This would silently corrupt JSONL replay. Rename the payload field or add \
+                 it to EVENT_ENVELOPE_KEYS if it is a legitimate envelope key."
+            );
+        }
     }
 }
 
@@ -762,5 +864,273 @@ mod tests {
 
         let round_trip: EventPayload = serde_json::from_value(value).unwrap();
         assert_eq!(round_trip, payload);
+    }
+
+    /// 主动验证：护栏函数会在 payload 字段撞 envelope key 时 panic。
+    ///
+    /// 单独测独立函数而非 `Event::serialize`，因为我们需要一个**能伪造撞名**的
+    /// 入口——现有 `EventPayload` 变体都不会撞，从 `serde_json::from_value`
+    /// 路径无法构造（serde 拒绝未知字段）。直接调用 `check_payload_no_envelope_collision`
+    /// 传入手工 map 即可。
+    #[test]
+    #[should_panic(expected = "collides with Event envelope key")]
+    fn check_payload_no_envelope_collision_panics_on_collision() {
+        let mut payload_map = serde_json::Map::new();
+        payload_map.insert("type".into(), serde_json::json!("user_message"));
+        payload_map.insert("message_id".into(), serde_json::json!("m1"));
+        payload_map.insert("text".into(), serde_json::json!("hi"));
+        payload_map.insert("session_id".into(), serde_json::json!("spurious"));
+        check_payload_no_envelope_collision(&payload_map);
+    }
+
+    #[test]
+    fn check_payload_no_envelope_collision_allows_type_tag() {
+        let mut payload_map = serde_json::Map::new();
+        payload_map.insert("type".into(), serde_json::json!("user_message"));
+        payload_map.insert("message_id".into(), serde_json::json!("m1"));
+        payload_map.insert("text".into(), serde_json::json!("hi"));
+        // `type` 不算撞，不应 panic。
+        check_payload_no_envelope_collision(&payload_map);
+    }
+
+    /// 扫描所有现有 EventPayload 变体，断言其序列化产生的字段名不撞 envelope key。
+    ///
+    /// 作为运行时防线的反应式补充：现有变体不会引发 panic，
+    /// 但如果有人重命名某个变体字段为 envelope key，本测试会爆。
+    #[test]
+    fn event_payload_variants_have_no_envelope_key_overlap() {
+        let samples: Vec<EventPayload> = vec![
+            EventPayload::SessionStarted {
+                working_dir: ".".into(),
+                model_id: "m".into(),
+                parent_session_id: None,
+                tool_policy: None,
+                source_extension: None,
+            },
+            EventPayload::ModelIdChanged {
+                model_id: "m".into(),
+            },
+            EventPayload::SystemPromptConfigured {
+                text: "t".into(),
+                fingerprint: "f".into(),
+                extra_system_prompt: None,
+            },
+            EventPayload::SessionDeleted,
+            EventPayload::AgentSessionSpawned {
+                child_session_id: "c".into(),
+                agent_name: "a".into(),
+                task: "t".into(),
+                tool_policy: None,
+                tool_call_id: "tc".into(),
+            },
+            EventPayload::AgentRunStarted,
+            EventPayload::AgentRunCompleted { reason: "r".into() },
+            EventPayload::AgentSessionCompleted {
+                child_session_id: "c".into(),
+                final_session_id: "c".into(),
+                summary: "s".into(),
+            },
+            EventPayload::AgentSessionFailed {
+                child_session_id: "c".into(),
+                final_session_id: "c".into(),
+                error: "e".into(),
+            },
+            EventPayload::AgentSessionRecycled {
+                child_session_id: "c".into(),
+            },
+            EventPayload::TurnStarted,
+            EventPayload::TurnCompleted {
+                finish_reason: "stop".into(),
+            },
+            EventPayload::TurnAbortedContext,
+            EventPayload::UserMessage {
+                message_id: "m".into(),
+                text: "t".into(),
+            },
+            EventPayload::RecapGenerated {
+                text: "t".into(),
+                source: "manual".into(),
+            },
+            EventPayload::AssistantMessageStarted {
+                message_id: "m".into(),
+            },
+            EventPayload::AssistantTextDelta {
+                message_id: "m".into(),
+                delta: "d".into(),
+            },
+            EventPayload::AssistantMessageCompleted {
+                message_id: "m".into(),
+                text: "t".into(),
+                reasoning_content: None,
+            },
+            EventPayload::ThinkingDelta {
+                message_id: "m".into(),
+                delta: "d".into(),
+            },
+            EventPayload::ToolCallStarted {
+                call_id: "c".into(),
+                tool_name: "t".into(),
+            },
+            EventPayload::ToolCallArgumentsDelta {
+                call_id: "c".into(),
+                delta: "{}".into(),
+            },
+            EventPayload::ToolCallRequested {
+                call_id: "c".into(),
+                tool_name: "t".into(),
+                arguments: serde_json::json!({}),
+            },
+            EventPayload::ToolOutputDelta {
+                call_id: "c".into(),
+                stream: ToolOutputStream::Stdout,
+                delta: "d".into(),
+            },
+            EventPayload::ToolApprovalRequested {
+                call_id: "c".into(),
+                tool_name: "t".into(),
+                prompt: "p".into(),
+                rule_key: None,
+                source: crate::permission::ApprovalSource::Core,
+                arguments: serde_json::json!({}),
+            },
+            EventPayload::ToolApprovalResolved {
+                call_id: "c".into(),
+                decision: crate::permission::ApprovalDecision::AllowOnce,
+                detail: None,
+            },
+            EventPayload::ToolCallInteractionPending {
+                call_id: "c".into(),
+                content: "ok".into(),
+                metadata: BTreeMap::new(),
+            },
+            EventPayload::ToolCallCompleted {
+                call_id: "c".into(),
+                tool_name: "t".into(),
+                result: ToolResult {
+                    call_id: "c".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                    error: None,
+                    metadata: BTreeMap::new(),
+                    duration_ms: Some(10),
+                },
+                arguments: String::new(),
+                arguments_json: None,
+            },
+            EventPayload::CompactionStarted,
+            EventPayload::CompactionCompleted {
+                messages_removed: 5,
+            },
+            EventPayload::CompactionSkipped { reason: "r".into() },
+            EventPayload::CompactionFailed { reason: "r".into() },
+            EventPayload::CompactBoundaryCreated {
+                trigger: "manual".into(),
+                pre_tokens: 100,
+                post_tokens: 20,
+                summary: "s".into(),
+                transcript_path: None,
+                continued_session_id: "c".into(),
+                base_event_seq: 0,
+                strategy: crate::extension::CompactStrategy::Manual {
+                    keep_recent_turns: None,
+                },
+            },
+            EventPayload::SessionContinuedFromCompaction {
+                parent_session_id: "p".into(),
+                parent_cursor: "0".into(),
+                summary: "s".into(),
+                transcript_path: None,
+                context_messages: vec![],
+                retained_messages: vec![],
+            },
+            EventPayload::SessionForked {
+                source_session_id: "s".into(),
+                source_cursor: "0".into(),
+                context_messages: vec![],
+                retained_messages: vec![],
+            },
+            EventPayload::ErrorOccurred {
+                code: 1,
+                message: "m".into(),
+                recoverable: false,
+            },
+            EventPayload::Custom {
+                name: "n".into(),
+                data: serde_json::json!({}),
+            },
+            EventPayload::ExtensionEvent {
+                extension_id: "e".into(),
+                event_type: "t".into(),
+                schema_version: 1,
+                payload: serde_json::json!({}),
+            },
+        ];
+
+        for payload in &samples {
+            let value = serde_json::to_value(payload).unwrap();
+            let obj = value.as_object().expect("EventPayload -> JSON object");
+            for key in obj.keys() {
+                // `type` 是 EventPayload 自己的 tag，不属于 envelope 冲突。
+                if key == "type" {
+                    continue;
+                }
+                assert!(
+                    !EVENT_ENVELOPE_KEYS.contains(&key.as_str()),
+                    "EventPayload variant serializes field `{key}` which collides with envelope \
+                     key. Rename the payload field."
+                );
+            }
+        }
+    }
+
+    /// 手写 Serialize 与原 derive 输出字节一致。
+    /// 用现有变体 round-trip 验证不引入 regression。
+    #[test]
+    fn event_serialize_matches_original_flatten_layout() {
+        let event = Event {
+            seq: Some(7),
+            id: "event-1".into(),
+            session_id: "session-1".into(),
+            turn_id: Some("turn-1".into()),
+            timestamp: DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            payload: EventPayload::UserMessage {
+                message_id: "m1".into(),
+                text: "hello".into(),
+            },
+        };
+        let value = serde_json::to_value(&event).unwrap();
+        // payload 字段在顶层，与 envelope 字段平铺。
+        assert_eq!(value["type"], "user_message");
+        assert_eq!(value["message_id"], "m1");
+        assert_eq!(value["text"], "hello");
+        assert_eq!(value["seq"], 7);
+        assert_eq!(value["id"], "event-1");
+        assert_eq!(value["session_id"], "session-1");
+        assert_eq!(value["turn_id"], "turn-1");
+        assert!(value.get("timestamp").is_some());
+        // 没有嵌套的 `payload` 字段。
+        assert!(value.get("payload").is_none());
+        // 可选 None 字段不出现。
+    }
+
+    #[test]
+    fn event_serialize_omits_none_optional_envelope_fields() {
+        let event = Event {
+            seq: None,
+            id: "event-1".into(),
+            session_id: "session-1".into(),
+            turn_id: None,
+            timestamp: DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            payload: EventPayload::SessionDeleted,
+        };
+        let value = serde_json::to_value(&event).unwrap();
+        assert!(value.get("seq").is_none());
+        assert!(value.get("turn_id").is_none());
+        assert_eq!(value["type"], "session_deleted");
+        assert_eq!(value["id"], "event-1");
     }
 }

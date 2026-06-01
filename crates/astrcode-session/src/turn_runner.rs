@@ -52,6 +52,20 @@ pub(crate) async fn drive_agent(
 }
 
 /// AgentTurn — 一个临时的回合处理器。
+///
+/// **演进注记**：当前结构体同时持有 `session` / `llm` / `tools` / `compaction`
+/// 五个领域，"每一项 `process_prompt_inner` 都会用到"。如果**以下需求同时出现**，
+/// 需要拆分为独立阶段（`PrepareStage` / `LlmStage` / `ToolStage` / `CompactStage`）
+/// 并由 `TurnLoop` 以 **Trait 对象** 或 **泛型参数** 组合：
+///
+/// 1. 同一 session 并行多回合（sub-agent / tree-of-thought）；
+/// 2. 中途回滚到上一 checkpoint（需要动 `compaction` 与 `llm_stage` 边界）；
+/// 3. 多 provider 轮换（需要替换 `Arc<dyn LlmProvider>` 以外的依赖）。
+///
+/// **当前不拆**：`process_prompt_inner` 三个阶段之间的状态转移
+/// （`state.tool_deduplicator_mut()` / `state.append_final_text`）
+/// 与 `compaction` 强耦合，拆为独立阶段需先拆 `TurnState`。
+/// YAGNI：在明确提出以上需求时再动。参考 issue #TBD。
 pub(crate) struct TurnLoop {
     session: Session,
     llm: Arc<dyn astrcode_core::llm::LlmProvider>,
@@ -431,6 +445,27 @@ impl TurnLoop {
         })
     }
 
+    /// 运行 `BeforeRequest` 扩展钩子。
+    ///
+    /// 返回值覆盖 LLM 请求的 messages。Append 时**不**动会话语义、
+    /// 不入事件日志；仅对本次 LLM 调用生效。
+    ///
+    /// **性能注记**：`send_messages.clone()` 不可消除。
+    /// `ProviderContext` 在 `astrcode-core::extension::ProviderContext` 上
+    /// 定义为持有 `Vec<LlmMessage>` **所有权**，`emit_provider` 又需
+    /// `&self` 借用；caller 必须 clone 才能让 hook 看到消息。`AppendMessages`
+    /// 分支看似可避免 clone（`send_messages` 走 move），但为了在同一
+    /// match 里能服侍 `Allow` / `ReplaceMessages` 两个分支不重复构造 ctx，
+    /// 只能在进入前就持有独立副本。
+    ///
+    /// 消除 clone 需要扩展点演进：
+    /// 1. `ProviderContext.messages: Arc<Vec<LlmMessage>>`，caller 共享 所有权 `Arc::clone` 代替
+    ///    `Vec::clone`；
+    /// 2. `ExtensionRunner::emit_provider` 内部用 `Arc::make_mut` 实现 copy-on-write，hook
+    ///    未改就零拷贝；
+    /// 3. `ProviderEvent::BeforeRequest` hook 保持现状（接受只读快照）。
+    ///
+    /// 是**API 演进**而非 bug——参考 issue #TBD。不优先动。
     async fn apply_before_provider_request_hook(
         &self,
         extension_runner: &astrcode_extensions::runner::ExtensionRunner,

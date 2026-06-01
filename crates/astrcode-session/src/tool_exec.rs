@@ -13,9 +13,7 @@ use astrcode_tools::registry::ToolRegistry;
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    deferred_tools::suggest_tool_alias, session::Session, tool_types::ExecutableToolCall,
-};
+use super::{deferred_tools::suggest_tool_alias, session::Session, tool_types::ExecutableToolCall};
 
 // ─── Runtime context types ──────────────────────────────────────────────
 

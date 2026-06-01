@@ -299,6 +299,81 @@ async fn inject_message_when_idle_starts_turn() {
 }
 
 #[tokio::test]
+async fn inject_message_after_turn_task_finished_starts_new_turn() {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
+    let session_id = new_session_id();
+    store
+        .create_session(&session_id, ".", "mock", None, None, None)
+        .await
+        .unwrap();
+
+    let ops = build_test_ops(Arc::clone(&store), "handled notification");
+
+    let started = ops
+        .scheduler
+        .start_with_completion(session_id.clone(), "initial".into())
+        .await
+        .unwrap();
+    let first_turn_id = started.turn_id.clone();
+    let result = started.handle.wait().await.unwrap();
+    assert!(result.output.is_ok(), "{:?}", result.output);
+    assert!(
+        ops.scheduler.registry().has_active(&session_id),
+        "start_with_completion caller has not finalized registry cleanup yet"
+    );
+
+    for _ in 0..50 {
+        if ops.scheduler.registry().active_is_finished(&session_id) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        ops.scheduler.registry().active_is_finished(&session_id),
+        "test requires a finished task that is still registered active"
+    );
+
+    ops.inject_message(
+        SessionAccess::same(session_id.as_str()),
+        "<background-shell-notification>done</background-shell-notification>".into(),
+    )
+    .await
+    .unwrap();
+
+    for _ in 0..100 {
+        let events = store.replay_events(&session_id).await.unwrap();
+        let injected = events.iter().find(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::UserMessage { text, .. }
+                    if text.contains("<background-shell-notification>")
+            )
+        });
+        if injected.is_some_and(|event| event.turn_id.as_ref() != Some(&first_turn_id)) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let events = store.replay_events(&session_id).await.unwrap();
+    let injected = events
+        .iter()
+        .find(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::UserMessage { text, .. }
+                    if text.contains("<background-shell-notification>")
+            )
+        })
+        .expect("background shell notification should be written");
+    assert_ne!(
+        injected.turn_id.as_ref(),
+        Some(&first_turn_id),
+        "late background notification must start a fresh turn, not attach to the completed one"
+    );
+}
+
+#[tokio::test]
 async fn submit_turn_sync_returns_llm_output() {
     let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
     let parent_id = new_session_id();

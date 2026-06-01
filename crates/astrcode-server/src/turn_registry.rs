@@ -69,6 +69,18 @@ impl TurnRegistry {
         }
     }
 
+    /// 仅当活跃 turn 的底层 task 已结束时移除，返回其 turn_id。
+    pub fn remove_if_finished(&self, session_id: &SessionId) -> Option<(TurnId, Arc<Session>)> {
+        let mut entries = self.entries.lock();
+        if !entries
+            .get(session_id)
+            .is_some_and(|entry| entry.shutdown_handle.is_finished())
+        {
+            return None;
+        }
+        entries.remove(session_id).map(|e| (e.turn_id, e.session))
+    }
+
     /// 请求活跃 turn 协作式 shutdown，不移除 registry。
     pub fn request_shutdown(&self, session_id: &SessionId) -> Option<(TurnId, Arc<Session>)> {
         let entries = self.entries.lock();
@@ -314,6 +326,32 @@ mod tests {
         assert!(registry.has_active(&sid));
 
         assert!(registry.remove_if_matches(&sid, &turn_id).is_some());
+        assert!(!registry.has_active(&sid));
+    }
+
+    #[tokio::test]
+    async fn remove_if_finished_only_removes_completed_turn() {
+        let registry = TurnRegistry::new();
+        let sid = SessionId::from("session-1");
+        let turn_id = TurnId::from("turn-1");
+        let session = make_session("session-1").await;
+        let finished = tokio::spawn(async {}).abort_handle();
+
+        registry.register(
+            sid.clone(),
+            turn_id.clone(),
+            TurnShutdownHandle::new(CancellationToken::new(), finished),
+            session,
+        );
+
+        for _ in 0..50 {
+            if registry.active_is_finished(&sid) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        let (removed_turn_id, _) = registry.remove_if_finished(&sid).unwrap();
+        assert_eq!(removed_turn_id, turn_id);
         assert!(!registry.has_active(&sid));
     }
 

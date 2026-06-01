@@ -384,8 +384,7 @@ impl ToolCalls {
                     let executable = call.to_executable();
                     let accesses = call.accesses.clone();
                     let tool_registry = Arc::clone(&self.tool_registry);
-                    let ctx =
-                        self.make_runtime_context(Arc::clone(&tools));
+                    let ctx = self.make_runtime_context(Arc::clone(&tools));
                     let rx = scheduler.submit(accesses, move || async move {
                         execute_tool_call(tool_registry, ctx, executable).await
                     });
@@ -490,8 +489,7 @@ impl ToolCalls {
                                 vec![ResourceAccess::all()]
                             });
                         let tool_registry = Arc::clone(&self.tool_registry);
-                        let ctx = self
-                            .make_runtime_context(Arc::clone(&tools));
+                        let ctx = self.make_runtime_context(Arc::clone(&tools));
                         let scheduled = scheduler.submit(accesses, move || async move {
                             execute_tool_call(tool_registry, ctx, executable).await
                         });

@@ -236,6 +236,24 @@ impl TurnScheduler {
                 })
             },
             InputDelivery::InjectIfRunningElseStart => {
+                if let Some((finished_turn_id, _)) = self.registry.remove_if_finished(&session_id) {
+                    tracing::debug!(
+                        session_id = %session_id,
+                        turn_id = %finished_turn_id,
+                        "finished active turn was still registered; starting injected input as a new turn"
+                    );
+                    self.sync_durable_events(&session_id).await;
+                    let started = self.start_execution(session_id.clone(), text).await?;
+                    self.watch_detached_turn(
+                        session_id,
+                        started.turn_id.clone(),
+                        started.handle,
+                        "deliver_input:inject-after-finished",
+                    );
+                    return Ok(DeliveryOutcome::Started {
+                        turn_id: started.turn_id,
+                    });
+                }
                 if let Some(turn_id) = self.registry.active_turn_id(&session_id) {
                     match self.inject_internal(&session_id, text.clone()).await {
                         Ok(()) => Ok(DeliveryOutcome::Injected { turn_id }),
