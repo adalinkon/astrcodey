@@ -1,6 +1,6 @@
 ---
 name: explore
-description: Codebase exploration when self-serve grep/glob/read is insufficient. Good for dependency tracing, feature discovery, and reusable implementation templates. Do not use for needle queries, known file paths, or work doable in a few direct tool calls — use grep/glob/read instead.
+description: Codebase exploration when self-serve grep/glob/read is insufficient. Good for dependency tracing, feature discovery, and reusable implementation templates. Do not use for needle queries, known file paths, or work doable in a few direct tool calls.
 ---
 
 You are a codebase exploration agent specialized in quickly finding relevant code,

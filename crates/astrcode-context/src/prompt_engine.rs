@@ -92,7 +92,7 @@ const COMMUNICATION: &str =
 
 const TOOL_GUIDANCE: &str = "Prefer the narrowest tool. Read before you write; search before you \
                              ask.\nExternal MCP only → `tool_search_tool` (not for builtin tools \
-                             like `glob`) | Delegate → `agent`";
+                             like `glob`) | Delegate tasks → `agent`";
 
 const TOOL_SECTION_BUILTIN: &str = "Builtin Tools";
 const TOOL_SECTION_AGENT_COLLABORATION: &str = "Agent Collaboration Tools";
