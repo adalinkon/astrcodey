@@ -6,8 +6,7 @@ use std::collections::HashMap;
 
 use astrcode_core::{
     permission::ApprovalSource,
-    tool::{ToolDefinition, ToolResult},
-    tool_access::ResourceAccess,
+    tool::{ExecutionMode, ToolDefinition, ToolResult},
 };
 
 use super::turn_publish::TurnEvents;
@@ -28,7 +27,7 @@ pub struct PreparedToolCall {
     pub call_id: String,
     pub name: String,
     pub tool_input: serde_json::Value,
-    pub accesses: Vec<ResourceAccess>,
+    pub mode: ExecutionMode,
     pub outcome: PreparedToolOutcome,
 }
 

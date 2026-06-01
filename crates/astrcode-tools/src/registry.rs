@@ -283,19 +283,23 @@ mod tests {
     }
 
     #[test]
-    fn builtins_are_marked_parallel() {
+    fn builtins_use_read_parallel_write_sequential_modes() {
         let mut registry = ToolRegistry::new();
         for tool in builtin_tools(std::path::PathBuf::from("."), 30) {
             registry.register(tool);
         }
 
-        for definition in registry.list_definitions() {
-            assert_eq!(
-                definition.execution_mode,
-                ExecutionMode::Parallel,
-                "tool '{}' should be parallel; conflict graph scheduler handles ordering",
-                definition.name
-            );
+        let modes = registry
+            .list_definitions()
+            .into_iter()
+            .map(|definition| (definition.name, definition.execution_mode))
+            .collect::<BTreeMap<_, _>>();
+
+        for name in ["glob", "grep", "read"] {
+            assert_eq!(modes[name], ExecutionMode::Parallel);
+        }
+        for name in ["edit", "patch", "shell", "terminal", "write"] {
+            assert_eq!(modes[name], ExecutionMode::Sequential);
         }
     }
 

@@ -206,13 +206,18 @@ fn apply_patch_tool_definition() -> &'static ToolDefinition {
         description: concat!(
             "Apply a unified diff across one or more files.\n\n",
             "When NOT to use:\n",
-            "- Single small replacement → `edit`\n\n",
+            "- Single small replacement → `edit`\n",
+            "- New file creation → `write`\n\n",
             "Tips:\n",
-            "- One diff touching multiple files",
+            "- One diff can touch multiple files; per-file failures roll back only that file, \
+             others still apply\n",
+            "- Format: `--- ` / `+++ ` headers + `@@` hunk markers (`a/`/`b/` prefixes stripped). \
+             New file: `--- /dev/null`. Deletion: `+++ /dev/null`\n",
+            "- Context lines must match the current file exactly (re-`read` first if unsure)",
         )
         .into(),
         origin: ToolOrigin::Builtin,
-        execution_mode: ExecutionMode::Parallel,
+        execution_mode: ExecutionMode::Sequential,
         parameters: serde_json::json!({
             "type": "object",
             "properties": {

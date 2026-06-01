@@ -56,15 +56,17 @@ pub(crate) fn memory_tools_instruction(
 }
 
 pub(crate) const SAVE_TOOL_DESC: &str = "\
-Save a durable fact for future sessions. Not for secrets or repo-obvious info. Use memory_list \
-                                         first; if similar exists, retry with replace_match to \
-                                         update in place.";
+Save a durable fact for future sessions. Not for secrets or repo-obvious info.\n\nTips:\n- \
+Call `memory_list` first; if similar exists, retry with `replace_match` (substring) to update \
+in place\n- `category`: `user_pref` | `project_ctx` | `decision` | `general` (default `general`)";
 
-pub(crate) const DELETE_TOOL_DESC: &str =
-    "Delete memories matching a substring (case-insensitive).";
+pub(crate) const DELETE_TOOL_DESC: &str = "\
+Delete memories matching a substring (case-insensitive). Irreversible.\n\nTips:\n- Use \
+`memory_list` with the same pattern first to preview matches";
 
 pub(crate) const LIST_TOOL_DESC: &str = "\
-List or search stored memories. Omit query for recent entries.";
+List or search stored memories. Omit `query` for recent entries (newest first).\n\nTips:\n- \
+`query` is a case-insensitive substring; `limit` defaults to 20, max 50";
 
 pub(crate) fn project_memory_injection(lines: &[String]) -> String {
     format!(

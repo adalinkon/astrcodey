@@ -1,4 +1,4 @@
-//! Tool execution pipeline — preprocessing, conflict-graph scheduling,
+//! Tool execution pipeline — preprocessing, parallel read scheduling,
 //! result commit, and persistence.
 
 use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
@@ -8,14 +8,14 @@ use astrcode_core::{
     extension::{PostToolUseContext, PostToolUseResult, PreToolUseContext, PreToolUseResult},
     permission::{ApprovalDecision, ApprovalSource, PermissionContext, PermissionDecision},
     storage::ToolResultArtifactReader,
-    tool::{ToolDefinition, ToolResult},
+    tool::{ExecutionMode, ToolDefinition, ToolResult},
     tool_access::ResourceAccess,
     tool_ui::{complete_questionnaire_content, is_awaiting_user_input_content},
     types::ToolCallId,
 };
 use astrcode_extensions::runner::ExtensionRunner;
 use astrcode_tools::registry::ToolRegistry;
-use tokio::sync::oneshot;
+use tokio::{sync::oneshot, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -24,10 +24,9 @@ use super::{
     tool_deduplicator::{SameStepCheck, ToolCallDeduplicator},
     tool_exec::{ToolCallRuntimeContext, TurnToolContext, execute_tool_call},
     tool_json_repair::parse_and_repair_json,
-    tool_scheduler::ToolScheduler,
     tool_types::{
-        CommitToolResults, ExecuteToolCalls, PendingCommittedToolResult, PendingToolCall,
-        PreparedToolCall, PreparedToolOutcome,
+        CommitToolResults, ExecutableToolCall, ExecuteToolCalls, PendingCommittedToolResult,
+        PendingToolCall, PreparedToolCall, PreparedToolOutcome,
     },
     turn_context::{SharedTurnContext, TurnError},
     turn_publish::TurnEvents,
@@ -103,7 +102,7 @@ impl ToolCalls {
     /// 1. 解析 JSON 参数（解析失败时尝试修复，仍失败则使用空对象并记录警告）。
     /// 2. 检查工具白名单，不在白名单中的工具直接标记为 `Blocked`。
     /// 3. 分发 `PreToolUse` 扩展钩子，允许扩展修改输入或阻止执行。
-    /// 4. 解析资源访问声明，供冲突图调度器判定并行性。
+    /// 4. 通过权限链判定是否允许执行，并记录工具执行模式。
     pub async fn prepare_tool_calls(
         &self,
         tool_calls: &[PendingToolCall],
@@ -136,7 +135,7 @@ impl ToolCalls {
                     call_id: tc.call_id.clone(),
                     name: tc.name.clone(),
                     tool_input: args,
-                    accesses: Vec::new(),
+                    mode: ExecutionMode::Sequential,
                     outcome: PreparedToolOutcome::Blocked(blocked_result),
                 });
                 continue;
@@ -202,25 +201,11 @@ impl ToolCalls {
 
             send_tool_requested(publisher, tc, &tool_input).await?;
 
-            let accesses = match &outcome {
-                PreparedToolOutcome::Ready => self
-                    .tool_registry
-                    .resource_accesses(
-                        &tc.name,
-                        &tool_input,
-                        Path::new(&self.turn.shared.working_dir),
-                    )
-                    .unwrap_or_else(|error| {
-                        tracing::debug!(
-                            tool_name = %tc.name,
-                            error = %error,
-                            "resource_accesses parse failed; treating as exclusive lock"
-                        );
-                        vec![ResourceAccess::all()]
-                    }),
+            let mode = match &outcome {
+                PreparedToolOutcome::Ready => self.tool_registry.execution_mode(&tc.name),
                 PreparedToolOutcome::Blocked(_)
                 | PreparedToolOutcome::DuplicateSameStep
-                | PreparedToolOutcome::NeedsApproval { .. } => Vec::new(),
+                | PreparedToolOutcome::NeedsApproval { .. } => ExecutionMode::Sequential,
             };
 
             prepared.push(PreparedToolCall {
@@ -228,7 +213,7 @@ impl ToolCalls {
                 call_id: tc.call_id.clone(),
                 name: tc.name.clone(),
                 tool_input,
-                accesses,
+                mode,
                 outcome,
             });
         }
@@ -312,12 +297,244 @@ impl ToolCalls {
 
     /// 执行已预处理的工具调用。
     ///
-    /// 所有 Ready 调用提交给冲突图调度器；调度器基于资源访问声明决定并行/串行。
-    /// 结果按 LLM 返回的原始顺序 commit；`agent` 的 await 延后，避免阻塞同批已完成工具。
+    /// 只读工具按连续批次并发执行；写入、shell、terminal 以及审批/阻止结果都会先刷新当前
+    /// 只读批次，再按原始顺序串行处理。
     pub async fn execute_and_commit(
         &self,
-        input: ExecuteToolCalls<'_>,
+        mut input: ExecuteToolCalls<'_>,
     ) -> Result<Vec<String>, TurnError> {
+        let mut discovered_tools = Vec::new();
+        let tools = Arc::from(input.tools);
+        let mut parallel_batch = Vec::new();
+        let mut parallel_batch_start = None;
+
+        for position in 0..input.prepared.len() {
+            if self.cancellation_token.is_cancelled() {
+                return Err(TurnError::Aborted);
+            }
+            let call = &input.prepared[position];
+            match &call.outcome {
+                PreparedToolOutcome::Blocked(result) => {
+                    discovered_tools.extend(
+                        self.flush_and_commit_parallel_batch(
+                            &mut parallel_batch,
+                            &mut parallel_batch_start,
+                            &mut input,
+                            Arc::clone(&tools),
+                        )
+                        .await?,
+                    );
+                    discovered_tools.extend(
+                        self.commit_single_result(&mut input, position, result.clone())
+                            .await?,
+                    );
+                },
+                PreparedToolOutcome::DuplicateSameStep => {
+                    discovered_tools.extend(
+                        self.flush_and_commit_parallel_batch(
+                            &mut parallel_batch,
+                            &mut parallel_batch_start,
+                            &mut input,
+                            Arc::clone(&tools),
+                        )
+                        .await?,
+                    );
+                    let result = input
+                        .state
+                        .tool_deduplicator()
+                        .await_same_step_result(&input.prepared[position].call_id)
+                        .await;
+                    discovered_tools.extend(
+                        self.commit_single_result(&mut input, position, result)
+                            .await?,
+                    );
+                },
+                PreparedToolOutcome::NeedsApproval {
+                    prompt,
+                    rule_key,
+                    source,
+                } => {
+                    discovered_tools.extend(
+                        self.flush_and_commit_parallel_batch(
+                            &mut parallel_batch,
+                            &mut parallel_batch_start,
+                            &mut input,
+                            Arc::clone(&tools),
+                        )
+                        .await?,
+                    );
+                    let result = self
+                        .request_approval_and_resolve(
+                            &input,
+                            position,
+                            prompt.clone(),
+                            rule_key.clone(),
+                            *source,
+                            Arc::clone(&tools),
+                        )
+                        .await?;
+                    discovered_tools.extend(
+                        self.commit_single_result(&mut input, position, result)
+                            .await?,
+                    );
+                },
+                PreparedToolOutcome::Ready if call.mode == ExecutionMode::Parallel => {
+                    if parallel_batch_start.is_none() {
+                        parallel_batch_start = Some(position);
+                    }
+                    parallel_batch.push(call.to_executable());
+                },
+                PreparedToolOutcome::Ready => {
+                    discovered_tools.extend(
+                        self.flush_and_commit_parallel_batch(
+                            &mut parallel_batch,
+                            &mut parallel_batch_start,
+                            &mut input,
+                            Arc::clone(&tools),
+                        )
+                        .await?,
+                    );
+                    let result = self
+                        .execute_single_tool(
+                            input.prepared[position].to_executable(),
+                            Arc::clone(&tools),
+                        )
+                        .await?;
+                    discovered_tools.extend(
+                        self.commit_single_result(&mut input, position, result)
+                            .await?,
+                    );
+                },
+            }
+        }
+
+        discovered_tools.extend(
+            self.flush_and_commit_parallel_batch(
+                &mut parallel_batch,
+                &mut parallel_batch_start,
+                &mut input,
+                tools,
+            )
+            .await?,
+        );
+
+        Ok(discovered_tools)
+    }
+
+    async fn request_approval_and_resolve(
+        &self,
+        input: &ExecuteToolCalls<'_>,
+        position: usize,
+        prompt: String,
+        rule_key: Option<String>,
+        source: ApprovalSource,
+        tools: Arc<[ToolDefinition]>,
+    ) -> Result<ToolResult, TurnError> {
+        let call = &input.prepared[position];
+        let (tx, rx) = oneshot::channel();
+        self.session
+            .runtime()
+            .register_pending_approval(ToolCallId::from(call.call_id.as_str()), tx);
+        input
+            .publisher
+            .durable(EventPayload::ToolApprovalRequested {
+                call_id: call.call_id.clone().into(),
+                tool_name: call.name.clone(),
+                prompt: prompt.clone(),
+                rule_key: rule_key.clone(),
+                source,
+                arguments: call.tool_input.clone(),
+            })
+            .await?;
+
+        let (decision, resolution_detail) = tokio::select! {
+            _ = self.cancellation_token.cancelled() => return Err(TurnError::Aborted),
+            result = tokio::time::timeout(Duration::from_secs(APPROVAL_TIMEOUT_SECS), rx) => {
+                match result {
+                    Ok(Ok(decision)) => (decision, None),
+                    Ok(Err(_)) => (
+                        ApprovalDecision::DenyOnce,
+                        Some("approval receiver dropped".into()),
+                    ),
+                    Err(_) => (
+                        ApprovalDecision::DenyOnce,
+                        Some(format!("approval timed out after {APPROVAL_TIMEOUT_SECS}s")),
+                    ),
+                }
+            }
+        };
+        input
+            .publisher
+            .durable(EventPayload::ToolApprovalResolved {
+                call_id: call.call_id.clone().into(),
+                decision,
+                detail: resolution_detail.clone(),
+            })
+            .await?;
+        if matches!(
+            decision,
+            ApprovalDecision::AllowAlways | ApprovalDecision::DenyAlways
+        ) {
+            self.turn
+                .shared
+                .approval_history
+                .record_decision(rule_key.as_deref(), decision);
+            if let Some(dir) = self.turn.shared.session_store_dir.as_deref() {
+                let path = crate::permission::approval_history_path(dir);
+                let _ = self.turn.shared.approval_history.persist_to(&path);
+            }
+        }
+        if decision.allows() {
+            return self.execute_single_tool(call.to_executable(), tools).await;
+        }
+        let reason = resolution_detail
+            .map(|detail| format!("Tool execution denied ({detail}, {source:?}): {prompt}"))
+            .unwrap_or_else(|| format!("Tool execution denied by user ({source:?}): {prompt}"));
+        Ok(ToolResult {
+            call_id: call.call_id.clone(),
+            content: reason.clone(),
+            is_error: true,
+            error: Some(reason),
+            metadata: Default::default(),
+            duration_ms: None,
+        })
+    }
+
+    async fn flush_and_commit_parallel_batch(
+        &self,
+        parallel_batch: &mut Vec<ExecutableToolCall>,
+        parallel_batch_start: &mut Option<usize>,
+        input: &mut ExecuteToolCalls<'_>,
+        tools: Arc<[ToolDefinition]>,
+    ) -> Result<Vec<String>, TurnError> {
+        let Some(batch_start) = parallel_batch_start.take() else {
+            return Ok(Vec::new());
+        };
+        let batch_len = parallel_batch.len();
+        let batch_end = batch_start + batch_len;
+        let mut results = HashMap::new();
+
+        self.flush_parallel_batch(parallel_batch, tools, &mut results)
+            .await?;
+
+        self.commit_tool_results(CommitToolResults {
+            prepared: &input.prepared[batch_start..batch_end],
+            results,
+            state: input.state,
+            publisher: Arc::clone(&input.publisher),
+        })
+        .await
+    }
+
+    async fn flush_parallel_batch(
+        &self,
+        batch: &mut Vec<ExecutableToolCall>,
+        tools: Arc<[ToolDefinition]>,
+        results: &mut HashMap<usize, ToolResult>,
+    ) -> Result<(), TurnError> {
+        if batch.is_empty() {
+            return Ok(());
+        }
         let max_parallel = self
             .session
             .caps()
@@ -325,251 +542,85 @@ impl ToolCalls {
             .agent
             .tool_max_parallel_calls
             .max(1);
-        let mut scheduler = ToolScheduler::new(max_parallel);
-        let mut discovered_tools = Vec::new();
-        let tools = Arc::from(input.tools);
+        let mut pending = std::mem::take(batch).into_iter();
+        let mut join_set = JoinSet::new();
 
-        enum ResultSource {
-            Blocked(ToolResult),
-            Scheduled(oneshot::Receiver<(usize, ToolResult)>),
-            DuplicateSameStep,
-            PendingApproval {
-                rx: oneshot::Receiver<ApprovalDecision>,
-                prompt: String,
-                rule_key: Option<String>,
-                source: ApprovalSource,
-            },
+        for _ in 0..max_parallel {
+            let Some(call) = pending.next() else { break };
+            self.spawn_tool_call(&mut join_set, call, Arc::clone(&tools));
         }
 
-        let mut sources = Vec::with_capacity(input.prepared.len());
-        for call in input.prepared {
-            if self.cancellation_token.is_cancelled() {
-                return Err(TurnError::Aborted);
-            }
-            match &call.outcome {
-                PreparedToolOutcome::Blocked(result) => {
-                    sources.push(ResultSource::Blocked(result.clone()));
+        loop {
+            let joined = tokio::select! {
+                _ = self.cancellation_token.cancelled() => {
+                    join_set.abort_all();
+                    return Err(TurnError::Aborted);
                 },
-                PreparedToolOutcome::DuplicateSameStep => {
-                    sources.push(ResultSource::DuplicateSameStep);
-                },
-                PreparedToolOutcome::NeedsApproval {
-                    prompt,
-                    rule_key,
-                    source,
-                } => {
-                    let (tx, rx) = oneshot::channel();
-                    self.session
-                        .runtime()
-                        .register_pending_approval(ToolCallId::from(call.call_id.as_str()), tx);
-                    input
-                        .publisher
-                        .durable(EventPayload::ToolApprovalRequested {
-                            call_id: call.call_id.clone().into(),
-                            tool_name: call.name.clone(),
-                            prompt: prompt.clone(),
-                            rule_key: rule_key.clone(),
-                            source: *source,
-                            arguments: call.tool_input.clone(),
-                        })
-                        .await?;
-                    sources.push(ResultSource::PendingApproval {
-                        rx,
-                        prompt: prompt.clone(),
-                        rule_key: rule_key.clone(),
-                        source: *source,
-                    });
-                },
-                PreparedToolOutcome::Ready => {
-                    let executable = call.to_executable();
-                    let accesses = call.accesses.clone();
-                    let tool_registry = Arc::clone(&self.tool_registry);
-                    let ctx = self.make_runtime_context(Arc::clone(&tools));
-                    let rx = scheduler.submit(accesses, move || async move {
-                        execute_tool_call(tool_registry, ctx, executable).await
-                    });
-                    sources.push(ResultSource::Scheduled(rx));
-                },
-            }
-        }
-
-        let mut resolved = vec![None; sources.len()];
-        let mut deferred_agent_rxs = Vec::new();
-
-        for (position, source) in sources.into_iter().enumerate() {
-            if self.cancellation_token.is_cancelled() {
-                return Err(TurnError::Aborted);
-            }
-
-            let tool_name = &input.prepared[position].name;
-            let result = match source {
-                ResultSource::Blocked(result) => result,
-                ResultSource::DuplicateSameStep => {
-                    input
-                        .state
-                        .tool_deduplicator()
-                        .await_same_step_result(&input.prepared[position].call_id)
-                        .await
-                },
-                ResultSource::Scheduled(rx) => {
-                    if defers_serial_result_collection(tool_name) {
-                        deferred_agent_rxs.push((position, rx));
-                        continue;
-                    }
-                    let (_index, result) = scheduler
-                        .await_result(rx)
-                        .await
-                        .map_err(|_| TurnError::Aborted)?;
-                    result
-                },
-                ResultSource::PendingApproval {
-                    rx,
-                    prompt,
-                    rule_key,
-                    source,
-                } => {
-                    let call = &input.prepared[position];
-                    let (decision, resolution_detail) = tokio::select! {
-                        _ = self.cancellation_token.cancelled() => return Err(TurnError::Aborted),
-                        result = tokio::time::timeout(
-                            Duration::from_secs(APPROVAL_TIMEOUT_SECS),
-                            rx,
-                        ) => {
-                            match result {
-                                Ok(Ok(decision)) => (decision, None),
-                                Ok(Err(_)) => (
-                                    ApprovalDecision::DenyOnce,
-                                    Some("approval receiver dropped".into()),
-                                ),
-                                Err(_) => (
-                                    ApprovalDecision::DenyOnce,
-                                    Some(format!(
-                                        "approval timed out after {APPROVAL_TIMEOUT_SECS}s"
-                                    )),
-                                ),
-                            }
-                        }
-                    };
-                    input
-                        .publisher
-                        .durable(EventPayload::ToolApprovalResolved {
-                            call_id: call.call_id.clone().into(),
-                            decision,
-                            detail: resolution_detail.clone(),
-                        })
-                        .await?;
-                    if matches!(
-                        decision,
-                        ApprovalDecision::AllowAlways | ApprovalDecision::DenyAlways
-                    ) {
-                        self.turn
-                            .shared
-                            .approval_history
-                            .record_decision(rule_key.as_deref(), decision);
-                        if let Some(dir) = self.turn.shared.session_store_dir.as_deref() {
-                            let path = crate::permission::approval_history_path(dir);
-                            let _ = self.turn.shared.approval_history.persist_to(&path);
-                        }
-                    }
-                    if decision.allows() {
-                        let executable = call.to_executable();
-                        let accesses = self
-                            .tool_registry
-                            .resource_accesses(
-                                &call.name,
-                                &call.tool_input,
-                                Path::new(&self.turn.shared.working_dir),
-                            )
-                            .unwrap_or_else(|error| {
-                                tracing::debug!(
-                                    tool_name = %call.name,
-                                    error = %error,
-                                    "resource_accesses parse failed after approval; treating as exclusive lock"
-                                );
-                                vec![ResourceAccess::all()]
-                            });
-                        let tool_registry = Arc::clone(&self.tool_registry);
-                        let ctx = self.make_runtime_context(Arc::clone(&tools));
-                        let scheduled = scheduler.submit(accesses, move || async move {
-                            execute_tool_call(tool_registry, ctx, executable).await
-                        });
-                        if defers_serial_result_collection(tool_name) {
-                            deferred_agent_rxs.push((position, scheduled));
-                            continue;
-                        }
-                        let (_index, result) = scheduler
-                            .await_result(scheduled)
-                            .await
-                            .map_err(|_| TurnError::Aborted)?;
-                        result
-                    } else {
-                        let reason = resolution_detail
-                            .map(|detail| {
-                                format!("Tool execution denied ({detail}, {source:?}): {prompt}")
-                            })
-                            .unwrap_or_else(|| {
-                                format!("Tool execution denied by user ({source:?}): {prompt}")
-                            });
-                        ToolResult {
-                            call_id: call.call_id.clone(),
-                            content: reason.clone(),
-                            is_error: true,
-                            error: Some(reason),
-                            metadata: Default::default(),
-                            duration_ms: None,
-                        }
-                    }
-                },
+                joined = join_set.join_next() => joined,
             };
-
-            resolved[position] = Some(result);
-        }
-
-        for (position, rx) in deferred_agent_rxs {
-            if self.cancellation_token.is_cancelled() {
-                return Err(TurnError::Aborted);
-            }
-            let (_index, result) = scheduler
-                .await_result(rx)
-                .await
-                .map_err(|_| TurnError::Aborted)?;
-            resolved[position] = Some(result);
-        }
-
-        for (position, result_slot) in resolved.into_iter().enumerate() {
-            if self.cancellation_token.is_cancelled() {
-                return Err(TurnError::Aborted);
-            }
-
-            let mut result = match result_slot {
-                Some(result) => result,
-                None => return Err(TurnError::Aborted),
+            let Some(joined) = joined else {
+                break;
             };
+            let (index, result) = joined?;
+            results.insert(index, result);
 
-            if is_awaiting_user_input_content(&result.content) {
-                result = self
-                    .await_tool_ui_response(
-                        &input.prepared[position],
-                        result,
-                        Arc::clone(&input.publisher),
-                    )
-                    .await?;
+            if let Some(call) = pending.next() {
+                self.spawn_tool_call(&mut join_set, call, Arc::clone(&tools));
             }
+        }
+        Ok(())
+    }
 
-            let mut results = HashMap::new();
-            results.insert(input.prepared[position].index, result);
-            discovered_tools.extend(
-                self.commit_tool_results(CommitToolResults {
-                    prepared: &input.prepared[position..position + 1],
-                    results,
-                    state: input.state,
-                    publisher: Arc::clone(&input.publisher),
-                })
-                .await?,
-            );
+    fn spawn_tool_call(
+        &self,
+        join_set: &mut JoinSet<(usize, ToolResult)>,
+        call: ExecutableToolCall,
+        tools: Arc<[ToolDefinition]>,
+    ) {
+        let tool_registry = Arc::clone(&self.tool_registry);
+        let ctx = self.make_runtime_context(tools);
+        join_set.spawn(async move { execute_tool_call(tool_registry, ctx, call).await });
+    }
+
+    async fn execute_single_tool(
+        &self,
+        call: ExecutableToolCall,
+        tools: Arc<[ToolDefinition]>,
+    ) -> Result<ToolResult, TurnError> {
+        let (_index, result) = execute_tool_call(
+            Arc::clone(&self.tool_registry),
+            self.make_runtime_context(tools),
+            call,
+        )
+        .await;
+        Ok(result)
+    }
+
+    async fn commit_single_result(
+        &self,
+        input: &mut ExecuteToolCalls<'_>,
+        position: usize,
+        mut result: ToolResult,
+    ) -> Result<Vec<String>, TurnError> {
+        if is_awaiting_user_input_content(&result.content) {
+            result = self
+                .await_tool_ui_response(
+                    &input.prepared[position],
+                    result,
+                    Arc::clone(&input.publisher),
+                )
+                .await?;
         }
 
-        Ok(discovered_tools)
+        let mut results = HashMap::new();
+        results.insert(input.prepared[position].index, result);
+        self.commit_tool_results(CommitToolResults {
+            prepared: &input.prepared[position..position + 1],
+            results,
+            state: input.state,
+            publisher: Arc::clone(&input.publisher),
+        })
+        .await
     }
 
     async fn await_tool_ui_response(
@@ -920,23 +971,5 @@ fn tool_ui_response_error_result(call_id: &str, message: &str) -> ToolResult {
         error: Some(message.to_string()),
         metadata: Default::default(),
         duration_ms: None,
-    }
-}
-
-/// `agent` 在父 turn 内只编排子 session，耗时长；收集结果时延后 await，
-/// 避免阻塞同批已完成但排序靠后的工具 commit。
-fn defers_serial_result_collection(tool_name: &str) -> bool {
-    tool_name.eq_ignore_ascii_case("agent")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn agent_defers_serial_result_collection() {
-        assert!(defers_serial_result_collection("agent"));
-        assert!(defers_serial_result_collection("Agent"));
-        assert!(!defers_serial_result_collection("grep"));
     }
 }

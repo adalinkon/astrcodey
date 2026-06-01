@@ -625,7 +625,7 @@ fn shell_tool_definition(timeout_secs: u64) -> ToolDefinition {
             timeout_secs = timeout_secs,
         ),
         origin: ToolOrigin::Builtin,
-        execution_mode: ExecutionMode::Parallel,
+        execution_mode: ExecutionMode::Sequential,
         parameters: serde_json::json!({
             "type": "object",
             "properties": {

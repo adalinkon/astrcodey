@@ -172,7 +172,7 @@ fn edit_file_tool_definition() -> &'static ToolDefinition {
             "- Single-file, small, precise edits after `read`",
         ).into(),
         origin: ToolOrigin::Builtin,
-        execution_mode: ExecutionMode::Parallel,
+        execution_mode: ExecutionMode::Sequential,
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
