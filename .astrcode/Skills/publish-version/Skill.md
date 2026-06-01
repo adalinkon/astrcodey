@@ -53,6 +53,7 @@ sed -i 's/"version": "OLD"/"version": "NEW"/' frontend/package.json
 sed -i 's/"version": "OLD"/"version": "NEW"/g' npm/astrcode/package.json
 # 替换以 @whatevertogo/astrcode- 前缀的依赖版本（视 package.json 结构，可使用更可靠的 jq/perl 操作）
 sed -i 's/"@whatevertogo\/astrcode-\(.*\)": "OLD"/"@whatevertogo\/astrcode-\1": "NEW"/g' npm/astrcode/package.json
+等等内容所有版本都需要更新
 ```
 
 > 可选更安全做法：使用 `jq` 或 `node` 脚本直接解析并更新 `package.json`，以避免误替换。
@@ -64,6 +65,9 @@ sed -i 's/"@whatevertogo\/astrcode-\(.*\)": "OLD"/"@whatevertogo\/astrcode-\1": 
 ```bash
 cargo check
 cargo fmt --check
+cargo clippy --all
+cargo clippy --all-targets -- -D warnings
+cargo test
 ```
 
 ### 4. 提交并打 tag
