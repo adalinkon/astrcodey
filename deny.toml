@@ -26,6 +26,7 @@ allow = [
     "MPL-2.0",
     "OpenSSL",
     "Unlicense",
+    "BSL-1.0",
 ]
 confidence-threshold = 0.93
 

@@ -1,4 +1,10 @@
-import { useRef, useState, useCallback, useEffect, type ClipboardEvent } from 'react'
+import {
+  useRef,
+  useState,
+  useCallback,
+  useEffect,
+  type ClipboardEvent,
+} from 'react'
 import { useAppStore } from '../../store/conversation'
 import {
   composerShell,
@@ -44,7 +50,9 @@ export default function InputBar() {
   const [value, setValue] = useState('')
   const [attachments, setAttachments] = useState<PromptAttachment[]>([])
   const attachmentsRef = useRef(attachments)
-  attachmentsRef.current = attachments
+  useEffect(() => {
+    attachmentsRef.current = attachments
+  }, [attachments])
   const [isComposing, setIsComposing] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isCompacting = phase === 'compacting' || compactSubmitting
@@ -245,7 +253,11 @@ export default function InputBar() {
 
   const submit = useCallback(async () => {
     const trimmed = value.trim()
-    if ((!trimmed && attachments.length === 0) || !activeSessionId || !canSubmit) {
+    if (
+      (!trimmed && attachments.length === 0) ||
+      !activeSessionId ||
+      !canSubmit
+    ) {
       return
     }
     closeSlashTrigger()

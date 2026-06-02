@@ -279,7 +279,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  submitPrompt: async (text: string, attachments: import('../services/types').PromptAttachmentWire[] = []) => {
+  submitPrompt: async (
+    text: string,
+    attachments: import('../services/types').PromptAttachmentWire[] = []
+  ) => {
     const state = get()
     const { activeSessionId } = state
     if (!activeSessionId) {
@@ -331,7 +334,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         return true
       }
 
-      const response = await api.submitPrompt(activeSessionId, text, attachments)
+      const response = await api.submitPrompt(
+        activeSessionId,
+        text,
+        attachments
+      )
       if (response.kind === 'accepted') {
         set((current) => ({
           phase: 'thinking',
