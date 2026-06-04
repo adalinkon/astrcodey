@@ -62,6 +62,7 @@ pub(crate) async fn drive_agent(
 /// 2. 中途回滚到上一 checkpoint（需要动 `compaction` 与 `llm_stage` 边界）；
 /// 3. 多 provider 轮换（需要替换 `Arc<dyn LlmProvider>` 以外的依赖）。
 ///
+/// TODO: 更好的做法是**先拆 `TurnState`**（当前 `TurnLoop` 内部状态载体）为独立阶段的状态载体，
 /// **当前不拆**：`process_prompt_inner` 三个阶段之间的状态转移
 /// （`state.tool_deduplicator_mut()` / `state.append_final_text`）
 /// 与 `compaction` 强耦合，拆为独立阶段需先拆 `TurnState`。
