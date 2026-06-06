@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
 };
 
@@ -17,8 +17,7 @@ use astrcode_core::{
     event::{Event, EventPayload},
     storage::StorageError,
 };
-use astrcode_support::sync::lock_parking;
-use parking_lot::Mutex;
+use tokio::sync::{mpsc, oneshot};
 
 /// `(first_event, last_event, first_user_message)` from a single log scan.
 pub type EventLogEnds = (Option<Event>, Option<Event>, Option<String>);
@@ -160,31 +159,167 @@ fn read_first_and_last_at_path(path: &Path) -> Result<EventLogEnds, StorageError
     Ok((first, last, first_user))
 }
 
-fn create_at_path(
-    path: PathBuf,
-    mut initial_event: Event,
-) -> Result<(EventLog, Event), StorageError> {
-    initial_event.seq = Some(0);
+// ── Write-side commands ───────────────────────────────────────────────────────
 
+const CHANNEL_CAPACITY: usize = 1024;
+
+enum WriteCommand {
+    Append {
+        event: Box<Event>,
+        done: oneshot::Sender<Result<Event, StorageError>>,
+    },
+    AppendBatch {
+        events: Vec<Event>,
+        done: oneshot::Sender<Result<Vec<Event>, StorageError>>,
+    },
+    FlushSync {
+        done: oneshot::Sender<Result<(), StorageError>>,
+    },
+    Shutdown,
+}
+
+struct WriterState {
+    writer: BufWriter<File>,
+    next_seq: u64,
+    path: PathBuf,
+    dirty: bool,
+}
+
+impl WriterState {
+    fn open_append(path: PathBuf, next_seq: u64) -> Result<Self, StorageError> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| {
+                StorageError::Io(std::io::Error::new(e.kind(), enhance_open_error(&path, e)))
+            })?;
+        Ok(Self {
+            writer: BufWriter::new(file),
+            next_seq,
+            path,
+            dirty: false,
+        })
+    }
+
+    fn append_one(&mut self, mut event: Box<Event>) -> Result<Event, StorageError> {
+        event.seq = Some(self.next_seq);
+        self.next_seq += 1;
+        let line = serde_json::to_string(&*event)?;
+        writeln!(self.writer, "{line}")?;
+        self.writer.flush().map_err(|e| {
+            StorageError::Io(std::io::Error::new(
+                e.kind(),
+                enhance_flush_error(&self.path, e),
+            ))
+        })?;
+        self.dirty = true;
+        Ok(*event)
+    }
+
+    fn append_batch(&mut self, events: &mut [Event]) -> Result<(), StorageError> {
+        for event in events.iter_mut() {
+            event.seq = Some(self.next_seq);
+            self.next_seq += 1;
+            let line = serde_json::to_string(event)?;
+            writeln!(self.writer, "{line}")?;
+        }
+        self.writer.flush().map_err(|e| {
+            StorageError::Io(std::io::Error::new(
+                e.kind(),
+                enhance_flush_error(&self.path, e),
+            ))
+        })?;
+        self.dirty = true;
+        Ok(())
+    }
+
+    fn flush_and_sync(&mut self) -> Result<(), StorageError> {
+        if !self.dirty {
+            return Ok(());
+        }
+        self.writer.flush().map_err(|e| {
+            StorageError::Io(std::io::Error::new(
+                e.kind(),
+                enhance_flush_error(&self.path, e),
+            ))
+        })?;
+        self.writer.get_ref().sync_all().map_err(|e| {
+            StorageError::Io(std::io::Error::new(
+                e.kind(),
+                enhance_sync_error(&self.path, e),
+            ))
+        })?;
+        self.dirty = false;
+        Ok(())
+    }
+}
+
+fn write_loop(
+    mut rx: mpsc::Receiver<WriteCommand>,
+    mut state: WriterState,
+    next_seq: Arc<AtomicU64>,
+) {
+    while let Some(cmd) = rx.blocking_recv() {
+        match cmd {
+            WriteCommand::Append { event, done } => {
+                let result = state.append_one(event);
+                if result.is_ok() {
+                    next_seq.store(state.next_seq, Ordering::Release);
+                }
+                let _ = done.send(result);
+            }
+            WriteCommand::AppendBatch { mut events, done } => {
+                let result = state.append_batch(&mut events);
+                if result.is_ok() {
+                    next_seq.store(state.next_seq, Ordering::Release);
+                }
+                let _ = done.send(result.map(|_| events));
+            }
+            WriteCommand::FlushSync { done } => {
+                let _ = done.send(state.flush_and_sync());
+            }
+            WriteCommand::Shutdown => break,
+        }
+    }
+
+    if let Err(e) = state.flush_and_sync() {
+        tracing::warn!(
+            path = %state.path.display(),
+            error = %e,
+            "failed to flush event log on writer thread shutdown"
+        );
+    }
+}
+
+// ── EventLog ──────────────────────────────────────────────────────────────────
+
+fn create_at_path(path: PathBuf, mut initial_event: Event) -> Result<(WriterState, Event), StorageError> {
+    initial_event.seq = Some(0);
     let file = File::create(&path).map_err(|e| {
         StorageError::Io(std::io::Error::new(e.kind(), enhance_open_error(&path, e)))
     })?;
     let mut writer = BufWriter::new(file);
     let line = serde_json::to_string(&initial_event)?;
     writeln!(writer, "{}", line)?;
-    EventLog::flush_and_sync_writer(&mut writer, &path)?;
+    writer.flush().map_err(|e| {
+        StorageError::Io(std::io::Error::new(e.kind(), enhance_flush_error(&path, e)))
+    })?;
+    writer.get_ref().sync_all().map_err(|e| {
+        StorageError::Io(std::io::Error::new(e.kind(), enhance_sync_error(&path, e)))
+    })?;
     Ok((
-        EventLog {
-            path,
-            writer: Arc::new(Mutex::new(writer)),
-            next_seq: Arc::new(Mutex::new(1)),
-            sync_pending: Arc::new(AtomicBool::new(false)),
+        WriterState {
+            writer,
+            next_seq: 1,
+            path: path.clone(),
+            dirty: false,
         },
         initial_event,
     ))
 }
 
-fn open_at_path(path: PathBuf) -> Result<EventLog, StorageError> {
+fn open_at_path(path: PathBuf) -> Result<WriterState, StorageError> {
     if !path.exists() {
         return Err(std::io::Error::new(
             ErrorKind::NotFound,
@@ -193,47 +328,33 @@ fn open_at_path(path: PathBuf) -> Result<EventLog, StorageError> {
         .into());
     }
     let next_seq = last_seq_from_path(&path)?.saturating_add(1);
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
-    Ok(EventLog {
-        path,
-        writer: Arc::new(Mutex::new(BufWriter::new(file))),
-        next_seq: Arc::new(Mutex::new(next_seq)),
-        sync_pending: Arc::new(AtomicBool::new(false)),
-    })
+    WriterState::open_append(path, next_seq)
 }
 
-/// An append-only JSONL event log.
+/// An append-only JSONL event log backed by a dedicated writer thread.
 ///
 /// Each session has one event log file. Events are written as newline-delimited
 /// JSON objects and never modified. Storage assigns `seq` at append time.
 ///
-/// 内部持有 BufWriter<File> 避免每次 append 都重开文件，大幅减少系统调用开销。
+/// # Architecture
+///
+/// ```text
+/// EventLog
+///   ├── tx (bounded channel, 1024 capacity)
+///   │     └── write_loop (spawn_blocking)
+///   │           ├── BufWriter<File>
+///   │           └── dirty tracking (deferred fsync)
+///   └── next_seq (AtomicU64, lock-free count)
+/// ```
 pub struct EventLog {
     path: PathBuf,
-    writer: Arc<Mutex<BufWriter<File>>>,
-    next_seq: Arc<Mutex<u64>>,
-    sync_pending: Arc<AtomicBool>,
+    tx: mpsc::Sender<WriteCommand>,
+    next_seq: Arc<AtomicU64>,
 }
 
 impl Drop for EventLog {
     fn drop(&mut self) {
-        let mut writer = lock_parking(&self.writer);
-        if let Err(e) = writer.flush() {
-            tracing::warn!(
-                "Failed to flush event log '{}' on drop: {e}",
-                self.path.display()
-            );
-            return;
-        }
-        if let Err(e) = writer.get_ref().sync_all() {
-            tracing::warn!(
-                "Failed to sync event log '{}' on drop: {e}",
-                self.path.display()
-            );
-        }
+        let _ = self.tx.try_send(WriteCommand::Shutdown);
     }
 }
 
@@ -243,48 +364,74 @@ impl EventLog {
         path: PathBuf,
         initial_event: Event,
     ) -> Result<(Self, Event), StorageError> {
-        run_blocking_io(move || create_at_path(path, initial_event)).await
+        let (state, stored_event) =
+            run_blocking_io(move || create_at_path(path, initial_event)).await?;
+        Ok((Self::from_writer_state(state), stored_event))
     }
 
     /// Open an existing event log.
     pub async fn open(path: PathBuf) -> Result<Self, StorageError> {
-        run_blocking_io(move || open_at_path(path)).await
+        let state = run_blocking_io(move || open_at_path(path)).await?;
+        Ok(Self::from_writer_state(state))
+    }
+
+    fn from_writer_state(state: WriterState) -> Self {
+        let path = state.path.clone();
+        let next_seq = Arc::new(AtomicU64::new(state.next_seq));
+        let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
+        let next_seq_clone = Arc::clone(&next_seq);
+        let panic_path = state.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                write_loop(rx, state, next_seq_clone);
+            }));
+            if let Err(e) = result {
+                let msg: String = e
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| e.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown panic payload".to_string());
+                tracing::error!(
+                    path = %panic_path.display(),
+                    panic = %msg,
+                    "event log writer thread panicked; pending writes may be lost"
+                );
+            }
+        });
+        Self { path, tx, next_seq }
     }
 
     /// Append a durable event to the log and return it with its assigned seq.
     ///
-    /// Writes to the OS page cache immediately (process-crash-safe) but defers
-    /// `sync_all()` until [`force_sync`] is called, typically at turn boundaries.
-    /// I/O is offloaded to a blocking thread to avoid stalling the tokio runtime.
-    pub async fn append(&self, mut event: Event) -> Result<Event, StorageError> {
-        let writer = Arc::clone(&self.writer);
-        let next_seq = Arc::clone(&self.next_seq);
-        let path = self.path.clone();
-        let sync_pending = Arc::clone(&self.sync_pending);
+    /// Sends the event to a dedicated writer thread via a bounded channel.
+    /// The writer thread assigns `seq`, serializes, and writes the line —
+    /// no mutex contention on the write path.
+    /// Writes to the OS page cache immediately; call [`force_sync`] for fsync.
+    pub async fn append(&self, event: Event) -> Result<Event, StorageError> {
+        let (done, rx) = oneshot::channel();
+        self.tx
+            .send(WriteCommand::Append { event: Box::new(event), done })
+            .await
+            .map_err(|_| StorageError::Io(std::io::Error::other("event log writer closed")))?;
+        rx.await
+            .map_err(|_| StorageError::Io(std::io::Error::other("event log writer dropped")))?
+    }
 
-        tokio::task::spawn_blocking(move || {
-            // 持有 seq 锁直到写入完成，避免并发 append 在磁盘上出现 seq 乱序。
-            let mut seq_guard = lock_parking(&next_seq);
-            event.seq = Some(*seq_guard);
-            *seq_guard += 1;
-
-            let line = serde_json::to_string(&event)?;
-            let mut guard = lock_parking(&writer);
-            writeln!(guard, "{}", line)?;
-            guard.flush().map_err(|e| {
-                StorageError::Io(std::io::Error::new(e.kind(), enhance_flush_error(&path, e)))
-            })?;
-            drop(guard);
-            drop(seq_guard);
-            sync_pending.store(true, Ordering::Release);
-            Ok(event)
-        })
-        .await
-        .map_err(|e| {
-            StorageError::Io(std::io::Error::other(format!(
-                "event log write task failed: {e}"
-            )))
-        })?
+    /// Append multiple events in a single writer-thread command.
+    ///
+    /// The writer thread assigns sequential `seq` numbers, serializes,
+    /// and writes all lines with a single `BufWriter::flush()`.
+    pub async fn append_batch(&self, events: Vec<Event>) -> Result<Vec<Event>, StorageError> {
+        if events.is_empty() {
+            return Ok(events);
+        }
+        let (done, rx) = oneshot::channel();
+        self.tx
+            .send(WriteCommand::AppendBatch { events, done })
+            .await
+            .map_err(|_| StorageError::Io(std::io::Error::other("event log writer closed")))?;
+        rx.await
+            .map_err(|_| StorageError::Io(std::io::Error::other("event log writer dropped")))?
     }
 
     /// Replay all events from the beginning.
@@ -302,25 +449,23 @@ impl EventLog {
         run_blocking_io(move || replay_events_at_path(&path, Some(seq))).await
     }
 
-    /// Count total events.
+    /// Count total events (lock-free read of the writer thread's seq counter).
     pub async fn count(&self) -> Result<usize, StorageError> {
-        Ok(*lock_parking(&self.next_seq) as usize)
+        Ok(self.next_seq.load(Ordering::Acquire) as usize)
     }
 
     /// Force-fsync the event log if there are pending writes.
     ///
     /// Called at turn boundaries to ensure all events written since the last
     /// sync are durable (power-loss-safe). No-op if nothing is pending.
-    pub fn force_sync(&self) -> Result<(), StorageError> {
-        force_sync_shared(&self.writer, &self.path, &self.sync_pending)
-    }
-
-    /// Async wrapper around [`force_sync`] that offloads blocking fsync to a worker thread.
-    pub async fn force_sync_async(&self) -> Result<(), StorageError> {
-        let writer = Arc::clone(&self.writer);
-        let path = self.path.clone();
-        let sync_pending = Arc::clone(&self.sync_pending);
-        run_blocking_io(move || force_sync_shared(&writer, &path, &sync_pending)).await
+    pub async fn force_sync(&self) -> Result<(), StorageError> {
+        let (done, rx) = oneshot::channel();
+        self.tx
+            .send(WriteCommand::FlushSync { done })
+            .await
+            .map_err(|_| StorageError::Io(std::io::Error::other("event log writer closed")))?;
+        rx.await
+            .map_err(|_| StorageError::Io(std::io::Error::other("event log writer dropped")))?
     }
 
     /// Get the file path.
@@ -344,18 +489,6 @@ impl EventLog {
     pub async fn read_first_and_last(path: &Path) -> Result<EventLogEnds, StorageError> {
         let path = path.to_path_buf();
         run_blocking_io(move || read_first_and_last_at_path(&path)).await
-    }
-
-    fn flush_and_sync_writer(
-        writer: &mut BufWriter<File>,
-        path: &Path,
-    ) -> Result<(), StorageError> {
-        writer.flush().map_err(|e| {
-            StorageError::Io(std::io::Error::new(e.kind(), enhance_flush_error(path, e)))
-        })?;
-        writer.get_ref().sync_all().map_err(|e| {
-            StorageError::Io(std::io::Error::new(e.kind(), enhance_sync_error(path, e)))
-        })
     }
 }
 
@@ -452,25 +585,6 @@ fn trim_ascii_whitespace(line: &[u8]) -> &[u8] {
         .rposition(|b| !b.is_ascii_whitespace())
         .map_or(start, |i| i + 1);
     &line[start..end]
-}
-
-fn force_sync_shared(
-    writer: &Arc<Mutex<BufWriter<File>>>,
-    path: &Path,
-    sync_pending: &Arc<AtomicBool>,
-) -> Result<(), StorageError> {
-    if !sync_pending.load(Ordering::Acquire) {
-        return Ok(());
-    }
-    let mut writer = lock_parking(writer);
-    writer.flush().map_err(|e| {
-        StorageError::Io(std::io::Error::new(e.kind(), enhance_flush_error(path, e)))
-    })?;
-    writer.get_ref().sync_all().map_err(|e| {
-        StorageError::Io(std::io::Error::new(e.kind(), enhance_sync_error(path, e)))
-    })?;
-    sync_pending.store(false, Ordering::Release);
-    Ok(())
 }
 
 fn enhance_open_error(path: &Path, e: std::io::Error) -> String {
@@ -589,91 +703,6 @@ impl Iterator for EventLogIterator {
                 },
             }
         }
-    }
-}
-
-/// 批量追加器，仅用于单元测试。
-///
-/// 缓冲追加请求，在显式 [`flush`](Self::flush) 时批量写入。
-/// 生产路径应使用 [`EventLog::append`]。
-///
-/// # 所有权
-///
-/// `BatchAppender` 通过值获取 `EventLog` 的所有权。
-/// 创建后不得再通过原始引用调用 `EventLog::append()`，
-/// 否则会导致序列号冲突和数据损坏。
-/// 使用 [`BatchAppender::into_inner`] 可以回收底层日志。
-#[cfg(test)]
-pub struct BatchAppender {
-    /// 底层事件日志
-    log: EventLog,
-    /// 待刷盘的事件缓冲区
-    buffer: Vec<Event>,
-}
-
-#[cfg(test)]
-impl BatchAppender {
-    /// 创建新的批量追加器。
-    ///
-    /// 接管 `log` 的所有权，调用方不应再持有或使用该 `EventLog`。
-    pub fn new(log: EventLog) -> Self {
-        Self {
-            log,
-            buffer: Vec::new(),
-        }
-    }
-
-    /// 将事件推入缓冲区，等待后续刷盘。
-    pub fn push(&mut self, event: Event) {
-        self.buffer.push(event);
-    }
-
-    /// 将缓冲区中的所有事件批量写入日志文件并刷盘。
-    ///
-    /// 返回本次刷盘的事件数量。刷盘成功后才更新 seq 和清空缓冲区，
-    /// 避免部分写入导致事件丢失。
-    pub fn flush(&mut self) -> Result<usize, StorageError> {
-        if self.buffer.is_empty() {
-            return Ok(0);
-        }
-
-        let count = self.buffer.len();
-        let mut next_seq = lock_parking(&self.log.next_seq);
-        let mut writer = lock_parking(&self.log.writer);
-        let mut seq = *next_seq;
-        for event in &mut self.buffer {
-            event.seq = Some(seq);
-            seq += 1;
-            let line = serde_json::to_string(event)?;
-            writeln!(writer, "{}", line)?;
-        }
-        writer.flush().map_err(|e| {
-            StorageError::Io(std::io::Error::new(
-                e.kind(),
-                enhance_flush_error(&self.log.path, e),
-            ))
-        })?;
-        // 与 `EventLog::append` 一致：仅 flush 到页缓存，耐久性由 `force_sync` 保证。
-        self.log.sync_pending.store(true, Ordering::Release);
-        // 先刷盘成功再更新 seq 和清空 buffer，避免部分写入后 seq 已前进导致事件丢失
-        *next_seq = seq;
-        self.buffer.clear();
-        Ok(count)
-    }
-
-    /// 回收底层 `EventLog`，丢弃未刷盘的缓冲区事件。
-    ///
-    /// 返回前会尝试刷盘。如果刷盘失败，仍然返回 `EventLog`
-    /// （未刷盘的事件会丢失）。
-    pub fn into_inner(mut self) -> EventLog {
-        if let Err(error) = self.flush() {
-            tracing::warn!(
-                path = %self.log.path.display(),
-                %error,
-                "BatchAppender::into_inner: flush failed, buffered events may be lost"
-            );
-        }
-        self.log
     }
 }
 
@@ -808,7 +837,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn batch_appender_push_and_flush_round_trip() {
+    async fn append_batch_writes_multiple_events() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("batch.jsonl");
         let (log, start) = EventLog::create(path.clone(), make_start_event("s1"))
@@ -817,65 +846,71 @@ mod tests {
 
         assert_eq!(start.seq, Some(0));
 
-        let mut appender = BatchAppender::new(log);
-        appender.push(Event::new(
-            "s1".into(),
-            Some("turn-1".into()),
-            EventPayload::TurnStarted,
-        ));
-        appender.push(Event::new(
-            "s1".into(),
-            Some("turn-1".into()),
-            EventPayload::TurnCompleted {
-                finish_reason: "stop".into(),
-            },
-        ));
+        let stored = log
+            .append_batch(vec![
+                Event::new(
+                    "s1".into(),
+                    Some("turn-1".into()),
+                    EventPayload::TurnStarted,
+                ),
+                Event::new(
+                    "s1".into(),
+                    Some("turn-1".into()),
+                    EventPayload::TurnCompleted {
+                        finish_reason: "stop".into(),
+                    },
+                ),
+            ])
+            .await
+            .unwrap();
 
-        assert_eq!(appender.flush().unwrap(), 2);
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0].seq, Some(1));
+        assert_eq!(stored[1].seq, Some(2));
 
-        let log = appender.into_inner();
         let events = log.replay_all().await.unwrap();
         assert_eq!(events.len(), 3);
-        assert_eq!(events[0].seq, Some(0)); // start
-        assert_eq!(events[1].seq, Some(1)); // batch event 1
-        assert_eq!(events[2].seq, Some(2)); // batch event 2
+        assert_eq!(events[0].seq, Some(0));
+        assert_eq!(events[1].seq, Some(1));
+        assert_eq!(events[2].seq, Some(2));
     }
 
     #[tokio::test]
-    async fn batch_appender_flush_empty_is_noop() {
+    async fn append_batch_empty_is_noop() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("empty.jsonl");
         let (log, start) = EventLog::create(path.clone(), make_start_event("s1"))
             .await
             .unwrap();
 
-        let mut appender = BatchAppender::new(log);
-        assert_eq!(appender.flush().unwrap(), 0);
+        let stored = log.append_batch(vec![]).await.unwrap();
+        assert!(stored.is_empty());
 
-        let log = appender.into_inner();
         let events = log.replay_all().await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].seq, Some(start.seq.unwrap()));
     }
 
     #[tokio::test]
-    async fn batch_appender_into_inner_flushes_remaining() {
+    async fn drop_flushes_pending_writes() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("drop.jsonl");
         let (log, _) = EventLog::create(path.clone(), make_start_event("s1"))
             .await
             .unwrap();
 
-        let mut appender = BatchAppender::new(log);
-        appender.push(Event::new(
+        log.append(Event::new(
             "s1".into(),
             Some("turn-1".into()),
             EventPayload::TurnStarted,
-        ));
-        // Don't call flush — into_inner should flush for us.
-        let log = appender.into_inner();
+        ))
+        .await
+        .unwrap();
+        // append() already flushed to OS page cache; data is readable before Drop.
+        drop(log);
 
-        let events = log.replay_all().await.unwrap();
+        let reopened = EventLog::open(path).await.unwrap();
+        let events = reopened.replay_all().await.unwrap();
         assert_eq!(events.len(), 2);
         assert_eq!(events[1].seq, Some(1));
     }

@@ -680,7 +680,7 @@ impl EventStore for FileSystemSessionRepository {
 
     async fn sync_durable_events(&self, session_id: &SessionId) -> Result<(), StorageError> {
         let meta = self.get_or_open_meta(session_id).await?;
-        meta.log.force_sync_async().await
+        meta.log.force_sync().await
     }
 }
 
