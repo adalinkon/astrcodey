@@ -268,17 +268,17 @@ fn write_loop(
                     next_seq.store(state.next_seq, Ordering::Release);
                 }
                 let _ = done.send(result);
-            }
+            },
             WriteCommand::AppendBatch { mut events, done } => {
                 let result = state.append_batch(&mut events);
                 if result.is_ok() {
                     next_seq.store(state.next_seq, Ordering::Release);
                 }
                 let _ = done.send(result.map(|_| events));
-            }
+            },
             WriteCommand::FlushSync { done } => {
                 let _ = done.send(state.flush_and_sync());
-            }
+            },
             WriteCommand::Shutdown => break,
         }
     }
@@ -294,7 +294,10 @@ fn write_loop(
 
 // ── EventLog ──────────────────────────────────────────────────────────────────
 
-fn create_at_path(path: PathBuf, mut initial_event: Event) -> Result<(WriterState, Event), StorageError> {
+fn create_at_path(
+    path: PathBuf,
+    mut initial_event: Event,
+) -> Result<(WriterState, Event), StorageError> {
     initial_event.seq = Some(0);
     let file = File::create(&path).map_err(|e| {
         StorageError::Io(std::io::Error::new(e.kind(), enhance_open_error(&path, e)))
@@ -410,7 +413,10 @@ impl EventLog {
     pub async fn append(&self, event: Event) -> Result<Event, StorageError> {
         let (done, rx) = oneshot::channel();
         self.tx
-            .send(WriteCommand::Append { event: Box::new(event), done })
+            .send(WriteCommand::Append {
+                event: Box::new(event),
+                done,
+            })
             .await
             .map_err(|_| StorageError::Io(std::io::Error::other("event log writer closed")))?;
         rx.await
