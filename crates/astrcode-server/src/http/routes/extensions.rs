@@ -2,10 +2,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use astrcode_extensions::runner::{ExtensionStageDiagnostics, ExtensionStageStatus};
 use astrcode_protocol::{
     events::ClientNotification,
     http::{
-        ExtensionListResponseDto, ExtensionReloadResponseDto, ExtensionStateDto,
+        ExtensionDeclarationDto, ExtensionDiagnosticsDto, ExtensionListResponseDto,
+        ExtensionReloadResponseDto, ExtensionStageDiagnosticsDto, ExtensionStateDto,
         SetExtensionEnabledRequest, SetExtensionEnabledResponseDto,
     },
 };
@@ -96,12 +98,16 @@ pub(in crate::http) async fn set_enabled(
 
 async fn collect_extensions(state: &HttpState) -> Vec<ExtensionStateDto> {
     let effective = state.runtime.config_manager().read_effective();
-    let loaded_ids = state
-        .runtime
-        .extension_runner()
-        .registered_extension_ids()
-        .await;
+    let runner = state.runtime.extension_runner();
+    let loaded_ids = runner.registered_extension_ids().await;
     let loaded_set: BTreeSet<_> = loaded_ids.iter().cloned().collect();
+    let registry = runner.registry_snapshot().await;
+    let declarations: BTreeMap<_, _> = registry
+        .extensions
+        .into_iter()
+        .map(|declaration| (declaration.id.clone(), declaration))
+        .collect();
+    let diagnostics = runner.diagnostics_snapshot();
     let bundled_set: BTreeSet<_> = astrcode_bundled_extensions::bundled_extension_ids()
         .into_iter()
         .map(str::to_string)
@@ -110,6 +116,7 @@ async fn collect_extensions(state: &HttpState) -> Vec<ExtensionStateDto> {
     let mut ids: BTreeSet<String> = loaded_set.iter().cloned().collect();
     ids.extend(bundled_set.iter().cloned());
     ids.extend(effective.extensions.extension_states.keys().cloned());
+    ids.extend(diagnostics.keys().cloned());
 
     ids.into_iter()
         .map(|extension_id| {
@@ -126,9 +133,68 @@ async fn collect_extensions(state: &HttpState) -> Vec<ExtensionStateDto> {
                     &extension_id,
                 ),
                 loaded: loaded_set.contains(&extension_id),
+                declaration: declarations
+                    .get(&extension_id)
+                    .cloned()
+                    .map(extension_declaration_dto),
+                diagnostics: diagnostics
+                    .get(&extension_id)
+                    .cloned()
+                    .map(extension_diagnostics_dto),
                 extension_id,
                 source: source.to_string(),
             }
         })
         .collect()
+}
+
+fn extension_declaration_dto(
+    declaration: astrcode_extensions::runner::ExtensionDeclarationSnapshot,
+) -> ExtensionDeclarationDto {
+    ExtensionDeclarationDto {
+        id: declaration.id,
+        capabilities: declaration.capabilities,
+        tools: declaration.tools,
+        dynamic_tools: declaration.dynamic_tools,
+        commands: declaration.commands,
+        dynamic_commands: declaration.dynamic_commands,
+        keybindings: declaration.keybindings,
+        status_items: declaration.status_items,
+        events: declaration.events,
+    }
+}
+
+fn extension_diagnostics_dto(
+    diagnostics: astrcode_extensions::runner::ExtensionDiagnostics,
+) -> ExtensionDiagnosticsDto {
+    ExtensionDiagnosticsDto {
+        load: extension_stage_diagnostics_dto(diagnostics.load),
+        register: extension_stage_diagnostics_dto(diagnostics.register),
+        start: extension_stage_diagnostics_dto(diagnostics.start),
+        hook_calls: diagnostics.hook_calls,
+        hook_timeouts: diagnostics.hook_timeouts,
+        last_hook: diagnostics.last_hook,
+        last_duration_ms: diagnostics.last_duration_ms,
+        last_error: diagnostics.last_error,
+    }
+}
+
+fn extension_stage_diagnostics_dto(
+    diagnostics: ExtensionStageDiagnostics,
+) -> ExtensionStageDiagnosticsDto {
+    ExtensionStageDiagnosticsDto {
+        status: extension_stage_status_string(diagnostics.status).to_string(),
+        duration_ms: diagnostics.duration_ms,
+        error: diagnostics.error,
+    }
+}
+
+fn extension_stage_status_string(status: ExtensionStageStatus) -> &'static str {
+    match status {
+        ExtensionStageStatus::Unknown => "unknown",
+        ExtensionStageStatus::Running => "running",
+        ExtensionStageStatus::Succeeded => "succeeded",
+        ExtensionStageStatus::Failed => "failed",
+        ExtensionStageStatus::Skipped => "skipped",
+    }
 }

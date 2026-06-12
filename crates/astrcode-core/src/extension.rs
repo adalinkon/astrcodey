@@ -9,6 +9,7 @@
 //! - 类型化的处理器 trait 和上下文结构体
 
 use std::{
+    collections::BTreeSet,
     future::Future,
     sync::{Arc, Mutex},
     time::Duration,
@@ -491,12 +492,28 @@ pub struct ExtensionManifest {
 ///
 /// 声明是 emit 时校验的依据：未声明的事件类型会被拒绝，payload 超限也会被拒绝。
 /// `extension_id` 不在声明中——它由 runtime 在构造 [`ExtensionEventSink`] 时注入。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExtensionEventDecl {
     pub event_type: String,
+    #[serde(default = "default_extension_event_schema_version")]
     pub schema_version: u32,
+    #[serde(default = "default_extension_event_durable")]
     pub durable: bool,
+    #[serde(default = "default_extension_event_max_payload_bytes")]
     pub max_payload_bytes: usize,
+}
+
+const fn default_extension_event_schema_version() -> u32 {
+    1
+}
+
+const fn default_extension_event_durable() -> bool {
+    true
+}
+
+const fn default_extension_event_max_payload_bytes() -> usize {
+    64 * 1024
 }
 
 /// [`Registrar::extension_event`] 返回的构建器。
@@ -598,6 +615,38 @@ pub enum HookMode {
     /// 执行但结果仅供参考。
     /// 适用于：风格建议、可选指导。
     Advisory,
+}
+
+/// Tool hook 作用范围。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolHookTarget {
+    All,
+    Names(BTreeSet<String>),
+}
+
+impl ToolHookTarget {
+    pub fn all() -> Self {
+        Self::All
+    }
+
+    pub fn names(names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self::Names(names.into_iter().map(Into::into).collect())
+    }
+
+    pub fn matches(&self, tool_name: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Names(names) => names.contains(tool_name),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ToolHookRegistration<H: ?Sized> {
+    pub mode: HookMode,
+    pub priority: i32,
+    pub target: ToolHookTarget,
+    pub handler: std::sync::Arc<H>,
 }
 
 /// 插件在 PromptBuild hook 中提供的 prompt 片段。
@@ -1170,8 +1219,8 @@ pub struct Registrar {
     command_discovery: Vec<std::sync::Arc<dyn CommandDiscoveryHandler>>,
     keybindings: Vec<Keybinding>,
     status_items: Vec<StatusItem>,
-    pre_tool_use: Vec<(HookMode, i32, std::sync::Arc<dyn PreToolUseHandler>)>,
-    post_tool_use: Vec<(HookMode, i32, std::sync::Arc<dyn PostToolUseHandler>)>,
+    pre_tool_use: Vec<ToolHookRegistration<dyn PreToolUseHandler>>,
+    post_tool_use: Vec<ToolHookRegistration<dyn PostToolUseHandler>>,
     provider: Vec<(
         ProviderEvent,
         HookMode,
@@ -1255,7 +1304,22 @@ impl Registrar {
         priority: i32,
         handler: std::sync::Arc<dyn PreToolUseHandler>,
     ) {
-        self.pre_tool_use.push((mode, priority, handler));
+        self.on_pre_tool_use_for(ToolHookTarget::All, mode, priority, handler);
+    }
+
+    pub fn on_pre_tool_use_for(
+        &mut self,
+        target: ToolHookTarget,
+        mode: HookMode,
+        priority: i32,
+        handler: std::sync::Arc<dyn PreToolUseHandler>,
+    ) {
+        self.pre_tool_use.push(ToolHookRegistration {
+            mode,
+            priority,
+            target,
+            handler,
+        });
     }
 
     pub fn on_post_tool_use(
@@ -1264,7 +1328,22 @@ impl Registrar {
         priority: i32,
         handler: std::sync::Arc<dyn PostToolUseHandler>,
     ) {
-        self.post_tool_use.push((mode, priority, handler));
+        self.on_post_tool_use_for(ToolHookTarget::All, mode, priority, handler);
+    }
+
+    pub fn on_post_tool_use_for(
+        &mut self,
+        target: ToolHookTarget,
+        mode: HookMode,
+        priority: i32,
+        handler: std::sync::Arc<dyn PostToolUseHandler>,
+    ) {
+        self.post_tool_use.push(ToolHookRegistration {
+            mode,
+            priority,
+            target,
+            handler,
+        });
     }
 
     pub fn on_provider(
@@ -1274,7 +1353,43 @@ impl Registrar {
         priority: i32,
         handler: std::sync::Arc<dyn ProviderHandler>,
     ) {
-        self.provider.push((event, mode, priority, handler));
+        match event {
+            ProviderEvent::BeforeRequest => {
+                self.on_before_provider_request(mode, priority, handler);
+            },
+            ProviderEvent::AfterResponse => {
+                self.on_after_provider_response(priority, handler);
+            },
+        }
+    }
+
+    /// 注册 provider request hook。
+    ///
+    /// Request 阶段允许 `Blocking` handler 阻断请求或改写 messages。
+    pub fn on_before_provider_request(
+        &mut self,
+        mode: HookMode,
+        priority: i32,
+        handler: std::sync::Arc<dyn ProviderHandler>,
+    ) {
+        self.provider
+            .push((ProviderEvent::BeforeRequest, mode, priority, handler));
+    }
+
+    /// 注册 provider response observer。
+    ///
+    /// Response 阶段只观察结果，不允许阻断或改写后续流程。
+    pub fn on_after_provider_response(
+        &mut self,
+        priority: i32,
+        handler: std::sync::Arc<dyn ProviderHandler>,
+    ) {
+        self.provider.push((
+            ProviderEvent::AfterResponse,
+            HookMode::Advisory,
+            priority,
+            handler,
+        ));
     }
 
     pub fn on_prompt_build(
@@ -1383,11 +1498,11 @@ impl Registrar {
         &self.command_discovery
     }
 
-    pub fn pre_tool_use(&self) -> &[(HookMode, i32, std::sync::Arc<dyn PreToolUseHandler>)] {
+    pub fn pre_tool_use(&self) -> &[ToolHookRegistration<dyn PreToolUseHandler>] {
         &self.pre_tool_use
     }
 
-    pub fn post_tool_use(&self) -> &[(HookMode, i32, std::sync::Arc<dyn PostToolUseHandler>)] {
+    pub fn post_tool_use(&self) -> &[ToolHookRegistration<dyn PostToolUseHandler>] {
         &self.post_tool_use
     }
 

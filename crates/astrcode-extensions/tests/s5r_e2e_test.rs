@@ -181,7 +181,11 @@ async fn s5r_manifest_registers_tools_hooks_and_capabilities() {
     assert!(reg.tools().iter().any(|(d, _)| d.name == "ping"));
     assert!(reg.tools().iter().any(|(d, _)| d.name == "greet"));
     assert_eq!(reg.pre_tool_use().len(), 1);
-    assert_eq!(reg.pre_tool_use()[0].0, HookMode::Blocking);
+    assert_eq!(reg.pre_tool_use()[0].mode, HookMode::Blocking);
+    assert!(matches!(
+        reg.pre_tool_use()[0].target,
+        astrcode_core::extension::ToolHookTarget::All
+    ));
     assert_eq!(reg.commands().len(), 1);
 }
 

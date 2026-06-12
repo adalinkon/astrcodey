@@ -273,6 +273,44 @@ export interface ExtensionStateView {
   enabled: boolean
   loaded: boolean
   source: 'builtin' | 'disk' | 'unknown'
+  declaration?: ExtensionDeclarationView
+  diagnostics?: ExtensionDiagnosticsView
+}
+
+export interface ExtensionDeclarationView {
+  id: string
+  capabilities: string[]
+  tools: Record<string, unknown>[]
+  dynamicTools: boolean
+  commands: Record<string, unknown>[]
+  dynamicCommands: boolean
+  keybindings: Record<string, unknown>[]
+  statusItems: Record<string, unknown>[]
+  events: Record<string, unknown>[]
+}
+
+export interface ExtensionDiagnosticsView {
+  load: ExtensionStageDiagnosticsView
+  register: ExtensionStageDiagnosticsView
+  start: ExtensionStageDiagnosticsView
+  hookCalls: number
+  hookTimeouts: number
+  lastHook?: string
+  lastDurationMs?: number
+  lastError?: string
+}
+
+export type ExtensionStageStatusView =
+  | 'unknown'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'skipped'
+
+export interface ExtensionStageDiagnosticsView {
+  status: ExtensionStageStatusView
+  durationMs?: number
+  error?: string
 }
 
 export interface CurrentModelInfo {

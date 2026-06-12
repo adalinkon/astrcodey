@@ -30,7 +30,11 @@ impl ExtensionSource for BundledExtensionSource {
     async fn load(&self, _ctx: &ExtensionLoadContext) -> LoadExtensionsResult {
         let mut errors = Vec::new();
         let extensions = bundled_extensions(&self.extension_states, &mut errors);
-        LoadExtensionsResult { extensions, errors }
+        LoadExtensionsResult {
+            extensions,
+            errors,
+            load_failures: Vec::new(),
+        }
     }
 }
 

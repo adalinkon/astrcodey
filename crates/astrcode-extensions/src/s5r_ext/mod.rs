@@ -12,8 +12,8 @@ use astrcode_core::extension::{
     ExtensionEventDecl, HookMode, HookResult, LifecycleContext, LifecycleHandler,
     PostToolUseContext, PostToolUseHandler, PostToolUseResult, PreToolUseContext,
     PreToolUseHandler, PreToolUseResult, PromptBuildContext, PromptBuildHandler,
-    PromptContributions, ProviderContext, ProviderEvent, ProviderHandler, ProviderResult,
-    Registrar, SlashCommand, StopReason, ToolHandler,
+    PromptContributions, ProviderContext, ProviderHandler, ProviderResult, Registrar, SlashCommand,
+    StopReason, ToolHandler,
 };
 use astrcode_extension_sdk::{
     s5r::event_to_name,
@@ -184,8 +184,7 @@ impl Extension for S5rExtension {
                     );
                 },
                 ExtensionEvent::BeforeProviderRequest => {
-                    reg.on_provider(
-                        ProviderEvent::BeforeRequest,
+                    reg.on_before_provider_request(
                         *mode,
                         0,
                         Arc::new(S5rProviderHandler {
@@ -196,9 +195,7 @@ impl Extension for S5rExtension {
                     );
                 },
                 ExtensionEvent::AfterProviderResponse => {
-                    reg.on_provider(
-                        ProviderEvent::AfterResponse,
-                        *mode,
+                    reg.on_after_provider_response(
                         0,
                         Arc::new(S5rProviderHandler {
                             session,
