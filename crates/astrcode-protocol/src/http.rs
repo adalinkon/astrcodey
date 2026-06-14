@@ -5,7 +5,9 @@
 
 use astrcode_core::{
     event::{Phase, ToolOutputStream},
+    extension::{ExtensionCapability, ExtensionEventDecl, Keybinding, SlashCommand, StatusItem},
     message_attachment::MessageAttachment,
+    tool::ToolDefinition,
 };
 use serde::{Deserialize, Serialize};
 
@@ -455,6 +457,63 @@ pub struct ExtensionStateDto {
     pub loaded: bool,
     /// `builtin` / `disk` / `unknown`
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declaration: Option<ExtensionDeclarationDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<ExtensionDiagnosticsDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionDeclarationDto {
+    pub id: String,
+    pub capabilities: Vec<ExtensionCapability>,
+    pub tools: Vec<ToolDefinition>,
+    #[serde(default)]
+    pub dynamic_tools: bool,
+    pub commands: Vec<SlashCommand>,
+    #[serde(default)]
+    pub dynamic_commands: bool,
+    pub keybindings: Vec<Keybinding>,
+    pub status_items: Vec<StatusItem>,
+    pub events: Vec<ExtensionEventDecl>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionDiagnosticsDto {
+    #[serde(default)]
+    pub load: ExtensionStageDiagnosticsDto,
+    #[serde(default)]
+    pub register: ExtensionStageDiagnosticsDto,
+    #[serde(default)]
+    pub start: ExtensionStageDiagnosticsDto,
+    #[serde(default)]
+    pub hook_calls: u64,
+    #[serde(default)]
+    pub hook_timeouts: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_hook: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionStageDiagnosticsDto {
+    /// `unknown` / `running` / `succeeded` / `failed` / `skipped`
+    #[serde(default = "default_extension_stage_status")]
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+fn default_extension_stage_status() -> String {
+    "unknown".to_string()
 }
 
 /// GET /api/extensions 响应。

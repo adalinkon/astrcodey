@@ -320,6 +320,15 @@ impl EventReader for FileSystemSessionRepository {
         Ok(model)
     }
 
+    async fn session_provider_messages(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<astrcode_core::llm::LlmMessage>, StorageError> {
+        let meta = self.get_or_open_meta(session_id).await?;
+        let messages = meta.projection.read().await.provider_messages();
+        Ok(messages)
+    }
+
     async fn session_system_prompt(
         &self,
         session_id: &SessionId,
@@ -327,6 +336,30 @@ impl EventReader for FileSystemSessionRepository {
         let meta = self.get_or_open_meta(session_id).await?;
         let prompt = meta.projection.read().await.system_prompt.clone();
         Ok(prompt)
+    }
+
+    async fn session_has_messages(&self, session_id: &SessionId) -> Result<bool, StorageError> {
+        let meta = self.get_or_open_meta(session_id).await?;
+        let has_messages = meta.projection.read().await.has_messages();
+        Ok(has_messages)
+    }
+
+    async fn session_agent_sessions(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<astrcode_core::storage::AgentSessionLinkView>, StorageError> {
+        let meta = self.get_or_open_meta(session_id).await?;
+        let agent_sessions = meta.projection.read().await.agent_sessions.clone();
+        Ok(agent_sessions)
+    }
+
+    async fn session_visible_user_message_count(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<usize, StorageError> {
+        let meta = self.get_or_open_meta(session_id).await?;
+        let count = meta.projection.read().await.visible_user_message_count();
+        Ok(count)
     }
 
     async fn list_session_summaries(&self) -> Result<Vec<SessionSummary>, StorageError> {
@@ -337,8 +370,7 @@ impl EventReader for FileSystemSessionRepository {
         for session_id in session_ids {
             if let Some(meta) = sessions.get(&session_id) {
                 // 已打开的会话直接使用内存中的投影
-                let model = meta.projection.read().await.clone();
-                summaries.push(SessionSummary::from(model));
+                summaries.push(meta.projection.read().await.to_summary());
             } else {
                 // 未打开的会话只读首行事件（SessionStarted）构造轻量摘要
                 if let Some(summary) = self.read_summary_from_first_event(&session_id).await? {
@@ -352,11 +384,14 @@ impl EventReader for FileSystemSessionRepository {
     }
 
     async fn latest_cursor(&self, session_id: &SessionId) -> Result<Option<Cursor>, StorageError> {
-        Ok(self
-            .session_read_model(session_id)
-            .await?
+        let meta = self.get_or_open_meta(session_id).await?;
+        let cursor = meta
+            .projection
+            .read()
+            .await
             .latest_seq
-            .map(|seq| seq.to_string()))
+            .map(|seq| seq.to_string());
+        Ok(cursor)
     }
 
     async fn replay_from(

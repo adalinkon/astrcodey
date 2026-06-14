@@ -8,7 +8,7 @@ use astrcode_core::{
         ContextAssembler, PostCompactEnrichInput,
     },
     extension::{CompactStrategy, CompactTrigger},
-    llm::LlmProvider,
+    llm::{LlmMessage, LlmProvider},
     storage::SessionReadModel,
     tool::ToolDefinition,
 };
@@ -28,6 +28,7 @@ use crate::{
 pub struct IdleCompactionParams {
     pub keep_recent_turns: Option<usize>,
     pub transcript_path: Option<String>,
+    pub provider_messages: Vec<LlmMessage>,
 }
 
 /// 空闲态 compact 结果。
@@ -59,7 +60,11 @@ pub async fn compact_idle_session(
     tools: &[ToolDefinition],
     params: IdleCompactionParams,
 ) -> Result<IdleCompactionOutcome, IdleCompactionError> {
-    let provider_messages = state.provider_messages();
+    let IdleCompactionParams {
+        keep_recent_turns,
+        transcript_path,
+        provider_messages,
+    } = params;
     let hook_ctx = CompactHookContext {
         session_id: session.id.as_str(),
         working_dir: &state.working_dir,
@@ -70,7 +75,7 @@ pub async fn compact_idle_session(
     let custom_instructions = collect_compact_instructions(extension_runner, hook_ctx).await?;
     let base_event_seq = crate::session::parse_base_event_seq(session.latest_cursor().await?)?;
     let render_options = CompactSummaryRenderOptions {
-        transcript_path: params.transcript_path,
+        transcript_path,
         custom_instructions: custom_instructions.clone(),
     };
     let request_fn = make_compact_request_fn(llm);
@@ -83,7 +88,7 @@ pub async fn compact_idle_session(
             CompactMessagesOptions {
                 run: true,
                 use_llm: true,
-                keep_recent_turns: params.keep_recent_turns,
+                keep_recent_turns,
             },
             request_fn,
         )
@@ -133,9 +138,7 @@ pub async fn compact_idle_session(
         &fingerprint,
         state.extra_system_prompt.as_deref(),
         base_event_seq,
-        CompactStrategy::Manual {
-            keep_recent_turns: params.keep_recent_turns,
-        },
+        CompactStrategy::Manual { keep_recent_turns },
     )
     .await
     {

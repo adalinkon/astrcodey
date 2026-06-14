@@ -587,6 +587,7 @@ async fn compact_idle_session_skips_when_cursor_races_during_llm() {
         .refresh_tools(&state.working_dir)
         .await
         .list_definitions();
+    let provider_messages = state.provider_messages();
 
     let session_for_race = Arc::clone(&session);
     let compact_task = tokio::spawn(async move {
@@ -600,6 +601,7 @@ async fn compact_idle_session_skips_when_cursor_races_during_llm() {
             IdleCompactionParams {
                 keep_recent_turns: None,
                 transcript_path: None,
+                provider_messages,
             },
         )
         .await

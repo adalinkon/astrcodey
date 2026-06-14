@@ -38,6 +38,7 @@ pub struct ExtensionRunner {
     records: RwLock<Vec<ExtensionRecord>>,
     /// 预计算的 handler 索引，注册时重建，分发时直接查表
     index: parking_lot::RwLock<Arc<HandlerIndex>>,
+    diagnostics: parking_lot::RwLock<BTreeMap<String, ExtensionDiagnostics>>,
     /// 会话原子操作能力（在 bind_session_ops() 调用前为 None）
     session_ops: Arc<StdRwLock<Option<Arc<dyn SessionOperations>>>>,
     /// 每个扩展的宿主管理任务集合。
@@ -67,6 +68,60 @@ struct ExtensionRecord {
 pub struct RegisteredSlashCommand {
     pub extension_id: String,
     pub command: astrcode_extension_sdk::extension::SlashCommand,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExtensionRegistrySnapshot {
+    pub extensions: Vec<ExtensionDeclarationSnapshot>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExtensionDeclarationSnapshot {
+    pub id: String,
+    pub capabilities: Vec<ExtensionCapability>,
+    pub tools: Vec<ToolDefinition>,
+    pub dynamic_tools: bool,
+    pub commands: Vec<astrcode_extension_sdk::extension::SlashCommand>,
+    pub dynamic_commands: bool,
+    pub keybindings: Vec<astrcode_extension_sdk::extension::Keybinding>,
+    pub status_items: Vec<astrcode_extension_sdk::extension::StatusItem>,
+    pub events: Vec<ExtensionEventDecl>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExtensionStageStatus {
+    #[default]
+    Unknown,
+    Running,
+    Succeeded,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtensionStageDiagnostics {
+    pub status: ExtensionStageStatus,
+    pub duration_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtensionDiagnostics {
+    pub load: ExtensionStageDiagnostics,
+    pub register: ExtensionStageDiagnostics,
+    pub start: ExtensionStageDiagnostics,
+    pub hook_calls: u64,
+    pub hook_timeouts: u64,
+    pub last_hook: Option<String>,
+    pub last_duration_ms: Option<u64>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ExtensionDiagnosticStage {
+    Load,
+    Register,
+    Start,
 }
 
 /// 一次主动健康检查的扩展级结果。
@@ -151,7 +206,9 @@ impl ExtensionEventSink for BoundExtensionEventSink {
 // ─── Handler Index ──────────────────────────────────────────────────────
 
 type ExtensionHandler<H> = (String, HookMode, Arc<H>);
+type ToolExtensionHandler<H> = (String, HookMode, ToolHookTarget, Arc<H>);
 type PrioritizedHandler<H> = (i32, String, HookMode, Arc<H>);
+type PrioritizedToolHandler<H> = (i32, String, HookMode, ToolHookTarget, Arc<H>);
 type PrioritizedEventHandler<K, H> = (K, i32, String, HookMode, Arc<H>);
 
 /// 预排序的 handler 索引。
@@ -160,8 +217,8 @@ type PrioritizedEventHandler<K, H> = (K, i32, String, HookMode, Arc<H>);
 /// 各列表按 priority 降序排列，provider/compact/lifecycle 按 event 分组。
 #[allow(clippy::type_complexity)]
 struct HandlerIndex {
-    pre_tool_use: Vec<ExtensionHandler<dyn PreToolUseHandler>>,
-    post_tool_use: Vec<ExtensionHandler<dyn PostToolUseHandler>>,
+    pre_tool_use: Vec<ToolExtensionHandler<dyn PreToolUseHandler>>,
+    post_tool_use: Vec<ToolExtensionHandler<dyn PostToolUseHandler>>,
     provider: HashMap<ProviderEvent, Vec<ExtensionHandler<dyn ProviderHandler>>>,
     prompt_build: Vec<Arc<dyn PromptBuildHandler>>,
     compact: HashMap<CompactEvent, Vec<Arc<dyn CompactHandler>>>,
@@ -201,8 +258,8 @@ impl HandlerIndex {
 }
 
 fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
-    let mut pre: Vec<PrioritizedHandler<dyn PreToolUseHandler>> = Vec::new();
-    let mut post: Vec<PrioritizedHandler<dyn PostToolUseHandler>> = Vec::new();
+    let mut pre: Vec<PrioritizedToolHandler<dyn PreToolUseHandler>> = Vec::new();
+    let mut post: Vec<PrioritizedToolHandler<dyn PostToolUseHandler>> = Vec::new();
     let mut prov: Vec<PrioritizedEventHandler<ProviderEvent, dyn ProviderHandler>> = Vec::new();
     let mut pb: Vec<(i32, Arc<dyn PromptBuildHandler>)> = Vec::new();
     let mut cmp: Vec<(CompactEvent, i32, Arc<dyn CompactHandler>)> = Vec::new();
@@ -234,11 +291,23 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
 
     for record in records {
         capabilities.insert(record.id.clone(), record.capabilities.clone());
-        for (mode, pri, h) in record.reg.pre_tool_use() {
-            pre.push((*pri, record.id.clone(), *mode, Arc::clone(h)));
+        for registration in record.reg.pre_tool_use() {
+            pre.push((
+                registration.priority,
+                record.id.clone(),
+                registration.mode,
+                registration.target.clone(),
+                Arc::clone(&registration.handler),
+            ));
         }
-        for (mode, pri, h) in record.reg.post_tool_use() {
-            post.push((*pri, record.id.clone(), *mode, Arc::clone(h)));
+        for registration in record.reg.post_tool_use() {
+            post.push((
+                registration.priority,
+                record.id.clone(),
+                registration.mode,
+                registration.target.clone(),
+                Arc::clone(&registration.handler),
+            ));
         }
         for (ev, mode, pri, h) in record.reg.provider() {
             prov.push((*ev, *pri, record.id.clone(), *mode, Arc::clone(h)));
@@ -309,8 +378,14 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
     lc.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     HandlerIndex {
-        pre_tool_use: pre.into_iter().map(|(_, id, m, h)| (id, m, h)).collect(),
-        post_tool_use: post.into_iter().map(|(_, id, m, h)| (id, m, h)).collect(),
+        pre_tool_use: pre
+            .into_iter()
+            .map(|(_, id, m, target, h)| (id, m, target, h))
+            .collect(),
+        post_tool_use: post
+            .into_iter()
+            .map(|(_, id, m, target, h)| (id, m, target, h))
+            .collect(),
         provider: group_by_event_with_mode(prov),
         prompt_build: pb.into_iter().map(|(_, h)| h).collect(),
         compact: group_by_event_plain(cmp),
@@ -367,8 +442,8 @@ fn log_handler_dispatch_order(records: &[ExtensionRecord]) {
         return;
     }
 
-    let mut pre: Vec<(&str, i32, HookMode)> = Vec::new();
-    let mut post: Vec<(&str, i32, HookMode)> = Vec::new();
+    let mut pre: Vec<(&str, i32, HookMode, ToolHookTarget)> = Vec::new();
+    let mut post: Vec<(&str, i32, HookMode, ToolHookTarget)> = Vec::new();
     let mut provider: Vec<(&str, ProviderEvent, i32, HookMode)> = Vec::new();
     let mut prompt: Vec<(&str, i32)> = Vec::new();
     let mut compact: Vec<(&str, CompactEvent, i32)> = Vec::new();
@@ -376,11 +451,21 @@ fn log_handler_dispatch_order(records: &[ExtensionRecord]) {
 
     for record in records {
         let id = record.id.as_str();
-        for (mode, pri, _) in record.reg.pre_tool_use() {
-            pre.push((id, *pri, *mode));
+        for registration in record.reg.pre_tool_use() {
+            pre.push((
+                id,
+                registration.priority,
+                registration.mode,
+                registration.target.clone(),
+            ));
         }
-        for (mode, pri, _) in record.reg.post_tool_use() {
-            post.push((id, *pri, *mode));
+        for registration in record.reg.post_tool_use() {
+            post.push((
+                id,
+                registration.priority,
+                registration.mode,
+                registration.target.clone(),
+            ));
         }
         for (ev, mode, pri, _) in record.reg.provider() {
             provider.push((id, *ev, *pri, *mode));
@@ -453,6 +538,7 @@ impl ExtensionRunner {
                 extension_data_dir_extensions: std::collections::HashSet::new(),
                 capabilities: HashMap::new(),
             })),
+            diagnostics: parking_lot::RwLock::new(BTreeMap::new()),
             session_ops: Arc::new(StdRwLock::new(None)),
             extension_tasks: RwLock::new(HashMap::new()),
             timeout,
@@ -479,18 +565,44 @@ impl ExtensionRunner {
 
         if self.extensions.read().await.iter().any(|e| e.id() == id) {
             tracing::warn!(extension_id = %id, "extension already registered, skipping duplicate");
+            self.record_stage_result(
+                &id,
+                ExtensionDiagnosticStage::Register,
+                Some(Duration::ZERO),
+                None,
+                ExtensionStageStatus::Skipped,
+            );
             return Ok(false);
         }
 
         // register() 只收集声明；start() 才进入运行态。
+        self.record_stage_running(&id, ExtensionDiagnosticStage::Register);
+        let register_started = std::time::Instant::now();
         let mut reg = Registrar::new();
         ext.register(&mut reg);
         if reg.needs_extension_data_dir() {
             let dir = astrcode_support::hostpaths::extensions_data_dir(&id);
-            std::fs::create_dir_all(&dir).map_err(|e| {
-                ExtensionError::Internal(format!("failed to create extension data dir: {e}"))
-            })?;
+            if let Err(error) = std::fs::create_dir_all(&dir) {
+                let error = ExtensionError::Internal(format!(
+                    "failed to create extension data dir: {error}"
+                ));
+                self.record_stage_result(
+                    &id,
+                    ExtensionDiagnosticStage::Register,
+                    Some(register_started.elapsed()),
+                    Some(error.to_string()),
+                    ExtensionStageStatus::Failed,
+                );
+                return Err(error);
+            }
         }
+        self.record_stage_result(
+            &id,
+            ExtensionDiagnosticStage::Register,
+            Some(register_started.elapsed()),
+            None,
+            ExtensionStageStatus::Succeeded,
+        );
 
         let tasks = ExtensionTasks::new(id.clone());
 
@@ -541,7 +653,25 @@ impl ExtensionRunner {
             event_sink,
             host_services,
         );
-        ext.start(ctx).await?;
+        self.record_stage_running(&id, ExtensionDiagnosticStage::Start);
+        let start_started = std::time::Instant::now();
+        if let Err(error) = ext.start(ctx).await {
+            self.record_stage_result(
+                &id,
+                ExtensionDiagnosticStage::Start,
+                Some(start_started.elapsed()),
+                Some(error.to_string()),
+                ExtensionStageStatus::Failed,
+            );
+            return Err(error);
+        }
+        self.record_stage_result(
+            &id,
+            ExtensionDiagnosticStage::Start,
+            Some(start_started.elapsed()),
+            None,
+            ExtensionStageStatus::Succeeded,
+        );
 
         self.extensions.write().await.push(ext);
         self.extension_tasks.write().await.insert(id.clone(), tasks);
@@ -596,6 +726,7 @@ impl ExtensionRunner {
         }
         let stop_result = ext.stop(reason).await;
         stop_result?;
+        self.diagnostics.write().remove(extension_id);
         Ok(true)
     }
 
@@ -735,6 +866,108 @@ impl ExtensionRunner {
         Arc::clone(&self.index.read())
     }
 
+    pub fn record_extension_load_success(&self, extension_id: &str, elapsed: Option<Duration>) {
+        self.record_stage_result(
+            extension_id,
+            ExtensionDiagnosticStage::Load,
+            elapsed,
+            None,
+            ExtensionStageStatus::Succeeded,
+        );
+    }
+
+    pub fn record_extension_load_failure(
+        &self,
+        extension_id: &str,
+        error: impl Into<String>,
+        elapsed: Option<Duration>,
+    ) {
+        self.record_stage_result(
+            extension_id,
+            ExtensionDiagnosticStage::Load,
+            elapsed,
+            Some(error.into()),
+            ExtensionStageStatus::Failed,
+        );
+    }
+
+    fn record_stage_running(&self, extension_id: &str, stage: ExtensionDiagnosticStage) {
+        let mut diagnostics = self.diagnostics.write();
+        let entry = diagnostics.entry(extension_id.to_string()).or_default();
+        let stage = stage_diagnostics_mut(entry, stage);
+        stage.status = ExtensionStageStatus::Running;
+        stage.duration_ms = None;
+        stage.error = None;
+    }
+
+    fn record_stage_result(
+        &self,
+        extension_id: &str,
+        stage: ExtensionDiagnosticStage,
+        elapsed: Option<Duration>,
+        error: Option<String>,
+        status: ExtensionStageStatus,
+    ) {
+        let mut diagnostics = self.diagnostics.write();
+        let entry = diagnostics.entry(extension_id.to_string()).or_default();
+        let stage = stage_diagnostics_mut(entry, stage);
+        stage.status = status;
+        stage.duration_ms = elapsed.map(|duration| duration.as_millis() as u64);
+        stage.error = error;
+    }
+
+    fn record_hook_result(
+        &self,
+        extension_id: &str,
+        hook: &'static str,
+        elapsed: Duration,
+        error: Option<String>,
+        timed_out: bool,
+    ) {
+        let mut diagnostics = self.diagnostics.write();
+        let entry = diagnostics.entry(extension_id.to_string()).or_default();
+        entry.hook_calls = entry.hook_calls.saturating_add(1);
+        if timed_out {
+            entry.hook_timeouts = entry.hook_timeouts.saturating_add(1);
+        }
+        entry.last_hook = Some(hook.to_string());
+        entry.last_duration_ms = Some(elapsed.as_millis() as u64);
+        entry.last_error = error;
+    }
+
+    pub fn diagnostics_snapshot(&self) -> BTreeMap<String, ExtensionDiagnostics> {
+        self.diagnostics.read().clone()
+    }
+
+    pub async fn registry_snapshot(&self) -> ExtensionRegistrySnapshot {
+        let records = self.records.read().await;
+        let extensions = records
+            .iter()
+            .map(|record| ExtensionDeclarationSnapshot {
+                id: record.id.clone(),
+                capabilities: record.capabilities.clone(),
+                tools: record
+                    .reg
+                    .tools()
+                    .iter()
+                    .map(|(definition, _)| definition.clone())
+                    .collect(),
+                dynamic_tools: !record.reg.tool_discoveries().is_empty(),
+                commands: record
+                    .reg
+                    .commands()
+                    .iter()
+                    .map(|(command, _)| command.clone())
+                    .collect(),
+                dynamic_commands: !record.reg.command_discoveries().is_empty(),
+                keybindings: record.reg.keybindings().to_vec(),
+                status_items: record.reg.status_items().to_vec(),
+                events: record.reg.extension_event_decls().to_vec(),
+            })
+            .collect();
+        ExtensionRegistrySnapshot { extensions }
+    }
+
     async fn spawn_extension_task<F>(&self, extension_id: &str, task_name: &'static str, fut: F)
     where
         F: std::future::Future<Output = ()> + Send + 'static,
@@ -762,7 +995,10 @@ impl ExtensionRunner {
         let mut ctx = ctx;
         let mut modified = false;
 
-        for (extension_id, mode, handler) in &index.pre_tool_use {
+        for (extension_id, mode, target, handler) in &index.pre_tool_use {
+            if !target.matches(&ctx.tool_name) {
+                continue;
+            }
             let mut handler_ctx = ctx.clone();
             if !index.allows(extension_id, ExtensionCapability::SessionState) {
                 handler_ctx.session_store_dir = None;
@@ -771,9 +1007,43 @@ impl ExtensionRunner {
                 attach_extension_event_sink(&index, extension_id, &ctx.event_tx);
             match mode {
                 HookMode::Blocking => {
-                    let result = tokio::time::timeout(self.timeout, handler.handle(handler_ctx))
-                        .await
-                        .map_err(|_| ExtensionError::Timeout(self.timeout.as_millis() as u64))??;
+                    let started = std::time::Instant::now();
+                    let result =
+                        match tokio::time::timeout(self.timeout, handler.handle(handler_ctx)).await
+                        {
+                            Ok(Ok(result)) => {
+                                self.record_hook_result(
+                                    extension_id,
+                                    "pre_tool_use",
+                                    started.elapsed(),
+                                    None,
+                                    false,
+                                );
+                                result
+                            },
+                            Ok(Err(error)) => {
+                                self.record_hook_result(
+                                    extension_id,
+                                    "pre_tool_use",
+                                    started.elapsed(),
+                                    Some(error.to_string()),
+                                    false,
+                                );
+                                return Err(error);
+                            },
+                            Err(_) => {
+                                let error =
+                                    ExtensionError::Timeout(self.timeout.as_millis() as u64);
+                                self.record_hook_result(
+                                    extension_id,
+                                    "pre_tool_use",
+                                    started.elapsed(),
+                                    Some(error.to_string()),
+                                    true,
+                                );
+                                return Err(error);
+                            },
+                        };
                     match result {
                         PreToolUseResult::Block { reason } => {
                             return Ok(PreToolUseResult::Block { reason });
@@ -789,8 +1059,24 @@ impl ExtensionRunner {
                     }
                 },
                 HookMode::Advisory => {
+                    let started = std::time::Instant::now();
                     if let Err(e) = handler.handle(handler_ctx).await {
+                        self.record_hook_result(
+                            extension_id,
+                            "pre_tool_use",
+                            started.elapsed(),
+                            Some(e.to_string()),
+                            false,
+                        );
                         tracing::warn!(error = %e, "advisory pre_tool_use handler failed");
+                    } else {
+                        self.record_hook_result(
+                            extension_id,
+                            "pre_tool_use",
+                            started.elapsed(),
+                            None,
+                            false,
+                        );
                     }
                 },
                 HookMode::NonBlocking => {
@@ -822,7 +1108,10 @@ impl ExtensionRunner {
         let mut ctx = ctx;
         let mut modified = false;
 
-        for (extension_id, mode, handler) in &index.post_tool_use {
+        for (extension_id, mode, target, handler) in &index.post_tool_use {
+            if !target.matches(&ctx.tool_name) {
+                continue;
+            }
             let mut handler_ctx = ctx.clone();
             if !index.allows(extension_id, ExtensionCapability::SessionState) {
                 handler_ctx.session_store_dir = None;
@@ -831,9 +1120,43 @@ impl ExtensionRunner {
                 attach_extension_event_sink(&index, extension_id, &ctx.event_tx);
             match mode {
                 HookMode::Blocking => {
-                    let result = tokio::time::timeout(self.timeout, handler.handle(handler_ctx))
-                        .await
-                        .map_err(|_| ExtensionError::Timeout(self.timeout.as_millis() as u64))??;
+                    let started = std::time::Instant::now();
+                    let result =
+                        match tokio::time::timeout(self.timeout, handler.handle(handler_ctx)).await
+                        {
+                            Ok(Ok(result)) => {
+                                self.record_hook_result(
+                                    extension_id,
+                                    "post_tool_use",
+                                    started.elapsed(),
+                                    None,
+                                    false,
+                                );
+                                result
+                            },
+                            Ok(Err(error)) => {
+                                self.record_hook_result(
+                                    extension_id,
+                                    "post_tool_use",
+                                    started.elapsed(),
+                                    Some(error.to_string()),
+                                    false,
+                                );
+                                return Err(error);
+                            },
+                            Err(_) => {
+                                let error =
+                                    ExtensionError::Timeout(self.timeout.as_millis() as u64);
+                                self.record_hook_result(
+                                    extension_id,
+                                    "post_tool_use",
+                                    started.elapsed(),
+                                    Some(error.to_string()),
+                                    true,
+                                );
+                                return Err(error);
+                            },
+                        };
                     match result {
                         PostToolUseResult::Block { reason } => {
                             return Ok(PostToolUseResult::Block { reason });
@@ -848,8 +1171,24 @@ impl ExtensionRunner {
                     }
                 },
                 HookMode::Advisory => {
+                    let started = std::time::Instant::now();
                     if let Err(e) = handler.handle(handler_ctx).await {
+                        self.record_hook_result(
+                            extension_id,
+                            "post_tool_use",
+                            started.elapsed(),
+                            Some(e.to_string()),
+                            false,
+                        );
                         tracing::warn!(error = %e, "advisory post_tool_use handler failed");
+                    } else {
+                        self.record_hook_result(
+                            extension_id,
+                            "post_tool_use",
+                            started.elapsed(),
+                            None,
+                            false,
+                        );
                     }
                 },
                 HookMode::NonBlocking => {
@@ -894,9 +1233,43 @@ impl ExtensionRunner {
             }
             match mode {
                 HookMode::Blocking => {
-                    let result = tokio::time::timeout(self.timeout, handler.handle(handler_ctx))
-                        .await
-                        .map_err(|_| ExtensionError::Timeout(self.timeout.as_millis() as u64))??;
+                    let started = std::time::Instant::now();
+                    let result =
+                        match tokio::time::timeout(self.timeout, handler.handle(handler_ctx)).await
+                        {
+                            Ok(Ok(result)) => {
+                                self.record_hook_result(
+                                    extension_id,
+                                    provider_hook_name(event),
+                                    started.elapsed(),
+                                    None,
+                                    false,
+                                );
+                                result
+                            },
+                            Ok(Err(error)) => {
+                                self.record_hook_result(
+                                    extension_id,
+                                    provider_hook_name(event),
+                                    started.elapsed(),
+                                    Some(error.to_string()),
+                                    false,
+                                );
+                                return Err(error);
+                            },
+                            Err(_) => {
+                                let error =
+                                    ExtensionError::Timeout(self.timeout.as_millis() as u64);
+                                self.record_hook_result(
+                                    extension_id,
+                                    provider_hook_name(event),
+                                    started.elapsed(),
+                                    Some(error.to_string()),
+                                    true,
+                                );
+                                return Err(error);
+                            },
+                        };
                     match result {
                         ProviderResult::Block { reason } => {
                             return Ok(ProviderResult::Block { reason });
@@ -918,8 +1291,24 @@ impl ExtensionRunner {
                     }
                 },
                 HookMode::Advisory => {
+                    let started = std::time::Instant::now();
                     if let Err(e) = handler.handle(handler_ctx).await {
+                        self.record_hook_result(
+                            extension_id,
+                            provider_hook_name(event),
+                            started.elapsed(),
+                            Some(e.to_string()),
+                            false,
+                        );
                         tracing::warn!(error = %e, "advisory provider handler failed");
+                    } else {
+                        self.record_hook_result(
+                            extension_id,
+                            provider_hook_name(event),
+                            started.elapsed(),
+                            None,
+                            false,
+                        );
                     }
                 },
                 HookMode::NonBlocking => {
@@ -1335,6 +1724,24 @@ fn command_dispatch_priority(extension_id: &str) -> u8 {
     }
 }
 
+fn provider_hook_name(event: ProviderEvent) -> &'static str {
+    match event {
+        ProviderEvent::BeforeRequest => "before_provider_request",
+        ProviderEvent::AfterResponse => "after_provider_response",
+    }
+}
+
+fn stage_diagnostics_mut(
+    diagnostics: &mut ExtensionDiagnostics,
+    stage: ExtensionDiagnosticStage,
+) -> &mut ExtensionStageDiagnostics {
+    match stage {
+        ExtensionDiagnosticStage::Load => &mut diagnostics.load,
+        ExtensionDiagnosticStage::Register => &mut diagnostics.register,
+        ExtensionDiagnosticStage::Start => &mut diagnostics.start,
+    }
+}
+
 /// 类型化工具适配器，将 `ToolHandler` 包装为 `Tool` trait 实现。
 struct HandlerTool {
     definition: ToolDefinition,
@@ -1501,8 +1908,9 @@ mod tests {
     use astrcode_core::{event::EventPayload, tool_access::ResourceAccess};
     use astrcode_extension_sdk::{
         extension::{
-            Extension, ExtensionCapability, ExtensionCtx, ExtensionError, Registrar, StopReason,
-            ToolHandler,
+            Extension, ExtensionCapability, ExtensionCtx, ExtensionError, HookMode,
+            PreToolUseContext, PreToolUseHandler, PreToolUseResult, ProviderContext, ProviderEvent,
+            ProviderHandler, ProviderResult, Registrar, StopReason, ToolHandler, ToolHookTarget,
         },
         tool::{
             ExecutionMode, ToolCapabilities, ToolDefinition, ToolExecutionContext, ToolOrigin,
@@ -1541,6 +1949,20 @@ mod tests {
     }
 
     struct SmallModelProbeTool;
+
+    struct TargetedPreHookExtension {
+        calls: Arc<AtomicUsize>,
+    }
+
+    struct CountingPreHook {
+        calls: Arc<AtomicUsize>,
+    }
+
+    struct StartFailingExtension;
+
+    struct BlockingProviderResponseExtension;
+
+    struct BlockingProviderHook;
 
     #[async_trait::async_trait]
     impl Extension for StateProbeExtension {
@@ -1633,6 +2055,73 @@ mod tests {
                 false,
                 Default::default(),
             ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Extension for TargetedPreHookExtension {
+        fn id(&self) -> &str {
+            "targeted-pre-hook"
+        }
+
+        fn register(&self, reg: &mut Registrar) {
+            reg.on_pre_tool_use_for(
+                ToolHookTarget::names(["targetTool"]),
+                HookMode::Blocking,
+                0,
+                Arc::new(CountingPreHook {
+                    calls: Arc::clone(&self.calls),
+                }),
+            );
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PreToolUseHandler for CountingPreHook {
+        async fn handle(
+            &self,
+            _ctx: PreToolUseContext,
+        ) -> Result<PreToolUseResult, ExtensionError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(PreToolUseResult::Allow)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Extension for StartFailingExtension {
+        fn id(&self) -> &str {
+            "start-failing"
+        }
+
+        async fn start(&self, _ctx: ExtensionCtx) -> Result<(), ExtensionError> {
+            Err(ExtensionError::Internal(
+                "startup dependency missing".into(),
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Extension for BlockingProviderResponseExtension {
+        fn id(&self) -> &str {
+            "provider-response-observer"
+        }
+
+        fn register(&self, reg: &mut Registrar) {
+            reg.on_provider(
+                ProviderEvent::AfterResponse,
+                HookMode::Blocking,
+                0,
+                Arc::new(BlockingProviderHook),
+            );
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ProviderHandler for BlockingProviderHook {
+        async fn handle(&self, _ctx: ProviderContext) -> Result<ProviderResult, ExtensionError> {
+            Ok(ProviderResult::Block {
+                reason: "response observers cannot block".into(),
+            })
         }
     }
 
@@ -1888,6 +2377,129 @@ mod tests {
             let result = tool.execute(json!({}), &ctx).await.unwrap();
             assert_eq!(result.content, expected);
         }
+    }
+
+    #[tokio::test]
+    async fn targeted_pre_tool_hook_only_runs_for_matching_tool() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let runner = ExtensionRunner::new(Duration::from_secs(1));
+        runner
+            .register(Arc::new(TargetedPreHookExtension {
+                calls: Arc::clone(&calls),
+            }))
+            .await
+            .unwrap();
+
+        let base_ctx = |tool_name: &str| PreToolUseContext {
+            session_id: "session".into(),
+            working_dir: "D:/workspace".into(),
+            model: astrcode_core::config::ModelSelection::simple("model"),
+            tool_name: tool_name.into(),
+            tool_input: json!({}),
+            approval_mode: astrcode_core::permission::ApprovalMode::Manual,
+            available_tools: Vec::new(),
+            event_tx: None,
+            extension_event_sink: None,
+            session_store_dir: None,
+        };
+
+        runner
+            .emit_pre_tool_use(base_ctx("otherTool"))
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        runner
+            .emit_pre_tool_use(base_ctx("targetTool"))
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let diagnostics = runner.diagnostics_snapshot();
+        let hook_diagnostics = diagnostics.get("targeted-pre-hook").unwrap();
+        assert_eq!(hook_diagnostics.hook_calls, 1);
+        assert_eq!(hook_diagnostics.last_hook.as_deref(), Some("pre_tool_use"));
+    }
+
+    #[tokio::test]
+    async fn diagnostics_records_register_and_start_failure_states() {
+        let runner = ExtensionRunner::new(Duration::from_secs(1));
+        let err = runner.register(Arc::new(StartFailingExtension)).await;
+        assert!(err.is_err());
+
+        let diagnostics = runner.diagnostics_snapshot();
+        let diagnostics = diagnostics.get("start-failing").unwrap();
+        assert_eq!(
+            diagnostics.register.status,
+            super::ExtensionStageStatus::Succeeded
+        );
+        assert_eq!(
+            diagnostics.start.status,
+            super::ExtensionStageStatus::Failed
+        );
+        assert!(
+            diagnostics
+                .start
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("startup dependency missing"))
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_response_hook_observes_without_blocking() {
+        let runner = ExtensionRunner::new(Duration::from_secs(1));
+        runner
+            .register(Arc::new(BlockingProviderResponseExtension))
+            .await
+            .unwrap();
+
+        let result = runner
+            .emit_provider(
+                ProviderEvent::AfterResponse,
+                ProviderContext {
+                    session_id: "session".into(),
+                    working_dir: "D:/workspace".into(),
+                    model: astrcode_core::config::ModelSelection::simple("model"),
+                    messages: Vec::new(),
+                    session_store_dir: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(result, ProviderResult::Allow));
+        let diagnostics = runner.diagnostics_snapshot();
+        let diagnostics = diagnostics.get("provider-response-observer").unwrap();
+        assert_eq!(diagnostics.hook_calls, 1);
+        assert_eq!(
+            diagnostics.last_hook.as_deref(),
+            Some("after_provider_response")
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_snapshot_exposes_registered_extension_declarations() {
+        let runner = ExtensionRunner::new(Duration::from_secs(1));
+        runner
+            .register(Arc::new(StateProbeExtension { allowed: true }))
+            .await
+            .unwrap();
+
+        let snapshot = runner.registry_snapshot().await;
+        let declaration = snapshot
+            .extensions
+            .iter()
+            .find(|extension| extension.id == "state-probe")
+            .unwrap();
+
+        assert_eq!(
+            declaration.capabilities,
+            vec![ExtensionCapability::SessionState]
+        );
+        assert_eq!(declaration.tools.len(), 1);
+        assert_eq!(declaration.tools[0].name, "stateProbe");
+        assert!(!declaration.dynamic_tools);
     }
 
     #[tokio::test]

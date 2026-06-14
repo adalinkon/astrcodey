@@ -84,6 +84,12 @@ pub struct HostRouter {
     backends: HostBackends,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostCapabilityStatus {
+    Implemented,
+    Reserved,
+}
+
 impl HostRouter {
     pub fn new(host_services: &ExtensionHostServices, default_working_dir: Option<String>) -> Self {
         Self {
@@ -104,9 +110,27 @@ impl HostRouter {
     pub fn catalog_for_grants(caps: &[ExtensionCapability]) -> Vec<CapabilityDescriptor> {
         let mut out = Vec::new();
         for cap in caps {
+            if Self::capability_status(*cap) != HostCapabilityStatus::Implemented {
+                continue;
+            }
             out.extend(descriptors_for_capability(*cap));
         }
         out
+    }
+
+    pub fn capability_status(cap: ExtensionCapability) -> HostCapabilityStatus {
+        match cap {
+            ExtensionCapability::ProcessSpawn | ExtensionCapability::NetworkClient => {
+                HostCapabilityStatus::Reserved
+            },
+            ExtensionCapability::SessionState
+            | ExtensionCapability::SessionControl
+            | ExtensionCapability::MainModel
+            | ExtensionCapability::SmallModel
+            | ExtensionCapability::SessionHistory
+            | ExtensionCapability::EmitEvents
+            | ExtensionCapability::WorkspaceRead => HostCapabilityStatus::Implemented,
+        }
     }
 
     pub fn authorize_astrcode(
@@ -645,6 +669,8 @@ fn required_capability_for_astrcode(cap: &str) -> Option<ExtensionCapability> {
         c if c.starts_with("astrcode.session.state") => Some(ExtensionCapability::SessionState),
         "astrcode.event.emit" => Some(ExtensionCapability::EmitEvents),
         "astrcode.workspace.read" => Some(ExtensionCapability::WorkspaceRead),
+        "astrcode.process.spawn" => Some(ExtensionCapability::ProcessSpawn),
+        "astrcode.network.client" => Some(ExtensionCapability::NetworkClient),
         _ => None,
     }
 }
@@ -882,6 +908,40 @@ mod tests {
         let caps = HostRouter::catalog_for_grants(&[ExtensionCapability::SessionControl]);
         let names: Vec<_> = caps.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"astrcode.session.control.create"));
+    }
+
+    #[test]
+    fn catalog_excludes_reserved_capabilities() {
+        let caps = HostRouter::catalog_for_grants(&[
+            ExtensionCapability::WorkspaceRead,
+            ExtensionCapability::NetworkClient,
+            ExtensionCapability::ProcessSpawn,
+        ]);
+        let names: Vec<_> = caps.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"astrcode.workspace.read"));
+        assert!(!names.contains(&"astrcode.network.client"));
+        assert!(!names.contains(&"astrcode.process.spawn"));
+        assert_eq!(
+            HostRouter::capability_status(ExtensionCapability::NetworkClient),
+            HostCapabilityStatus::Reserved
+        );
+    }
+
+    #[test]
+    fn reserved_capability_returns_stable_error_when_declared() {
+        let router = HostRouter::from_backends(HostBackends::default());
+        let ctx = InvokeContext {
+            declared_capabilities: vec![ExtensionCapability::NetworkClient],
+            ..Default::default()
+        };
+        let err = router
+            .invoke_sync(
+                "astrcode.network.client",
+                &json!({ "url": "https://example.com" }).to_string(),
+                &ctx,
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "not_implemented");
     }
 
     #[test]

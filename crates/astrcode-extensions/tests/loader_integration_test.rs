@@ -1,7 +1,33 @@
 //! 集成测试：扩展加载器边界条件与 manifest 解析。
 
+use std::sync::Arc;
+
 use astrcode_extension_sdk::extension::{ExtensionCapability, ExtensionManifest};
-use astrcode_extensions::loader::ExtensionLoader;
+use astrcode_extensions::{
+    loader::{
+        ExtensionLoadContext, ExtensionLoadFailure, ExtensionLoader, ExtensionRuntime,
+        ExtensionSource, LoadExtensionsResult,
+    },
+    runner::{ExtensionRunner, ExtensionStageStatus},
+};
+
+struct BrokenSource;
+
+#[async_trait::async_trait]
+impl ExtensionSource for BrokenSource {
+    async fn load(&self, _ctx: &ExtensionLoadContext) -> LoadExtensionsResult {
+        LoadExtensionsResult {
+            extensions: Vec::new(),
+            errors: vec!["broken extension failed".into()],
+            load_failures: vec![ExtensionLoadFailure {
+                extension_id: Some("broken-extension".into()),
+                message: "broken extension failed".into(),
+                duration_ms: None,
+            }],
+            load_success_durations: Default::default(),
+        }
+    }
+}
 
 struct IsolatedTestHome {
     _temp: tempfile::TempDir,
@@ -40,6 +66,30 @@ async fn loader_returns_empty_result_for_none_working_dir() {
     let result = ExtensionLoader::load_all(None, None).await;
     assert!(result.extensions.is_empty());
     assert!(result.errors.is_empty());
+}
+
+#[tokio::test]
+async fn sync_sources_records_load_failure_diagnostics() {
+    let runner = Arc::new(ExtensionRunner::new(std::time::Duration::from_secs(1)));
+    let source = BrokenSource;
+    let errors = ExtensionRuntime::sync_sources(
+        &runner,
+        &ExtensionLoadContext {
+            working_dir: None,
+            host_router: None,
+        },
+        &[&source],
+    )
+    .await;
+
+    assert_eq!(errors, vec!["broken extension failed"]);
+    let diagnostics = runner.diagnostics_snapshot();
+    let diagnostics = diagnostics.get("broken-extension").unwrap();
+    assert_eq!(diagnostics.load.status, ExtensionStageStatus::Failed);
+    assert_eq!(
+        diagnostics.load.error.as_deref(),
+        Some("broken extension failed")
+    );
 }
 
 #[test]

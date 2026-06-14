@@ -4,19 +4,11 @@
 //! 本模块在每个 step 开始前统计读模型中的 user 条数；增量写入
 //! [`LifecycleContext::mid_turn_user_messages_synced`] 并随 [`ExtensionEvent::StepStart`] 派发。
 
-use astrcode_core::{
-    context::is_synthetic_context_message, llm::LlmRole, storage::SessionReadModel,
-};
+use astrcode_core::storage::SessionReadModel;
 
 /// 统计读模型中 provider 可见的非合成 user 消息条数。
 pub(crate) fn count_visible_user_messages(model: &SessionReadModel) -> usize {
-    model
-        .messages
-        .iter()
-        .filter(|entry| {
-            entry.message.role == LlmRole::User && !is_synthetic_context_message(&entry.message)
-        })
-        .count()
+    model.visible_user_message_count()
 }
 
 /// 是否存在尚未并入 LLM 上下文的 mid-turn user 消息（如后台 shell 完成通知）。

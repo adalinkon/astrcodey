@@ -82,6 +82,24 @@ impl TurnEvents {
         Ok(model)
     }
 
+    /// 统计 provider 可见的非合成 user 消息条数；优先读 turn 内 cache，避免 clone 整份读模型。
+    ///
+    /// cache 命中时假定计数已与投影一致：要么 turn 入口时 cache 为空（走 store），
+    /// 要么本 turn 内 durable 事件已通过 [`projection::reduce`] 同步到 cache。
+    /// 外部 bypass 写入后须先 [`Self::invalidate_model_cache`] 或 [`Self::reload_model_cache`]。
+    pub(crate) async fn visible_user_message_count(&self) -> Result<usize, TurnError> {
+        let cached_count = {
+            let guard = self.model_cache.lock().await;
+            guard
+                .as_ref()
+                .map(SessionReadModel::visible_user_message_count)
+        };
+        if let Some(count) = cached_count {
+            return Ok(count);
+        }
+        Ok(self.session.visible_user_message_count().await?)
+    }
+
     pub(crate) async fn durable(&self, payload: EventPayload) -> Result<(), TurnError> {
         let stored = match self
             .session

@@ -68,6 +68,16 @@ impl EventReader for InMemoryEventStore {
             .ok_or_else(|| StorageError::NotFound(session_id.clone()))
     }
 
+    async fn session_provider_messages(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<astrcode_core::llm::LlmMessage>, StorageError> {
+        let map = self.sessions.lock().await;
+        map.get(session_id)
+            .map(|session| session.projection.provider_messages())
+            .ok_or_else(|| StorageError::NotFound(session_id.clone()))
+    }
+
     async fn session_system_prompt(
         &self,
         session_id: &SessionId,
@@ -78,24 +88,50 @@ impl EventReader for InMemoryEventStore {
             .ok_or_else(|| StorageError::NotFound(session_id.clone()))
     }
 
+    async fn session_has_messages(&self, session_id: &SessionId) -> Result<bool, StorageError> {
+        let map = self.sessions.lock().await;
+        map.get(session_id)
+            .map(|session| session.projection.has_messages())
+            .ok_or_else(|| StorageError::NotFound(session_id.clone()))
+    }
+
+    async fn session_agent_sessions(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<astrcode_core::storage::AgentSessionLinkView>, StorageError> {
+        let map = self.sessions.lock().await;
+        map.get(session_id)
+            .map(|session| session.projection.agent_sessions.clone())
+            .ok_or_else(|| StorageError::NotFound(session_id.clone()))
+    }
+
+    async fn session_visible_user_message_count(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<usize, StorageError> {
+        let map = self.sessions.lock().await;
+        map.get(session_id)
+            .map(|session| session.projection.visible_user_message_count())
+            .ok_or_else(|| StorageError::NotFound(session_id.clone()))
+    }
+
     async fn list_session_summaries(&self) -> Result<Vec<SessionSummary>, StorageError> {
         let mut summaries = self
             .sessions
             .lock()
             .await
             .values()
-            .map(|session| SessionSummary::from(session.projection.clone()))
+            .map(|session| session.projection.to_summary())
             .collect::<Vec<_>>();
         summaries.sort_by(|left, right| left.session_id.cmp(&right.session_id));
         Ok(summaries)
     }
 
     async fn latest_cursor(&self, session_id: &SessionId) -> Result<Option<Cursor>, StorageError> {
-        Ok(self
-            .session_read_model(session_id)
-            .await?
-            .latest_seq
-            .map(|seq| seq.to_string()))
+        let map = self.sessions.lock().await;
+        map.get(session_id)
+            .map(|session| session.projection.latest_seq.map(|seq| seq.to_string()))
+            .ok_or_else(|| StorageError::NotFound(session_id.clone()))
     }
 
     async fn replay_from(

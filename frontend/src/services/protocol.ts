@@ -597,6 +597,14 @@ export function decodeModelTestResult(value: unknown): ModelTestResult {
 function decodeExtensionStateView(value: unknown): ExtensionStateView {
   const object = decodeObject(value, 'extension state')
   const source = requiredString(object, 'source')
+  const declaration =
+    object.declaration == null
+      ? undefined
+      : decodeExtensionDeclarationView(object.declaration)
+  const diagnostics =
+    object.diagnostics == null
+      ? undefined
+      : decodeExtensionDiagnosticsView(object.diagnostics)
   return {
     extensionId: requiredString(object, 'extensionId'),
     enabled: requiredBoolean(object, 'enabled'),
@@ -605,7 +613,74 @@ function decodeExtensionStateView(value: unknown): ExtensionStateView {
       source === 'builtin' || source === 'disk' || source === 'unknown'
         ? source
         : 'unknown',
+    declaration,
+    diagnostics,
   }
+}
+
+function decodeExtensionDeclarationView(
+  value: unknown
+): NonNullable<ExtensionStateView['declaration']> {
+  const object = decodeObject(value, 'extension declaration')
+  return {
+    id: requiredString(object, 'id'),
+    capabilities: arrayField(object, 'capabilities').filter(
+      (item): item is string => typeof item === 'string'
+    ),
+    tools: arrayField(object, 'tools').filter(isRecord),
+    dynamicTools: object.dynamicTools === true,
+    commands: arrayField(object, 'commands').filter(isRecord),
+    dynamicCommands: object.dynamicCommands === true,
+    keybindings: arrayField(object, 'keybindings').filter(isRecord),
+    statusItems: arrayField(object, 'statusItems').filter(isRecord),
+    events: arrayField(object, 'events').filter(isRecord),
+  }
+}
+
+function decodeExtensionDiagnosticsView(
+  value: unknown
+): NonNullable<ExtensionStateView['diagnostics']> {
+  const object = decodeObject(value, 'extension diagnostics')
+  return {
+    load: decodeExtensionStageDiagnosticsView(object.load),
+    register: decodeExtensionStageDiagnosticsView(object.register),
+    start: decodeExtensionStageDiagnosticsView(object.start),
+    hookCalls: optionalNumber(object, 'hookCalls') ?? 0,
+    hookTimeouts: optionalNumber(object, 'hookTimeouts') ?? 0,
+    lastHook: optionalString(object, 'lastHook'),
+    lastDurationMs: optionalNumber(object, 'lastDurationMs'),
+    lastError: optionalString(object, 'lastError'),
+  }
+}
+
+function decodeExtensionStageDiagnosticsView(
+  value: unknown
+): NonNullable<ExtensionStateView['diagnostics']>['load'] {
+  const object =
+    value == null ? {} : decodeObject(value, 'extension stage diagnostics')
+  return {
+    status: decodeExtensionStageStatus(optionalString(object, 'status')),
+    durationMs: optionalNumber(object, 'durationMs'),
+    error: optionalString(object, 'error'),
+  }
+}
+
+function decodeExtensionStageStatus(
+  value: string | undefined
+): NonNullable<ExtensionStateView['diagnostics']>['load']['status'] {
+  switch (value) {
+    case 'running':
+    case 'succeeded':
+    case 'failed':
+    case 'skipped':
+      return value
+    default:
+      return 'unknown'
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value != null && !Array.isArray(value)
 }
 
 export function decodeExtensionListResponse(value: unknown): {

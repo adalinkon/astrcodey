@@ -176,8 +176,8 @@ impl TurnLoop {
         }
 
         let mut state = TurnState::new(all_tools);
-        if let Ok(model) = publisher.snapshot_model().await {
-            state.set_tracked_user_message_count(count_visible_user_messages(&model));
+        if let Ok(count) = publisher.visible_user_message_count().await {
+            state.set_tracked_user_message_count(count);
         }
 
         // Step
@@ -231,7 +231,9 @@ impl TurnLoop {
                 StreamOutcome::Complete { text, .. } => {
                     hook_messages.push(LlmMessage::assistant(text));
                 },
-                StreamOutcome::ToolCalls { text, tool_calls, .. } => {
+                StreamOutcome::ToolCalls {
+                    text, tool_calls, ..
+                } => {
                     let mut content: Vec<LlmContent> = Vec::new();
                     if let Some(t) = text {
                         if !t.is_empty() {
@@ -574,22 +576,29 @@ impl TurnLoop {
             .emit_provider(ProviderEvent::AfterResponse, ctx)
             .await?
         {
-            ProviderResult::Block { reason } => Err(TurnError::ProviderBlocked { reason }),
+            ProviderResult::Block { reason } => {
+                return Err(TurnError::ProviderBlocked { reason });
+            },
             ProviderResult::ReplaceMessages { messages } => {
                 if let Some(text) = extract_last_assistant_text(&messages) {
                     state.set_final_text(text);
                 }
-                Ok(())
             },
             ProviderResult::AppendMessages { messages } => {
                 let extra = extract_text_from_messages(&messages);
                 if !extra.is_empty() {
                     state.append_final_text(&extra);
                 }
-                Ok(())
             },
-            ProviderResult::Allow => Ok(()),
+            ProviderResult::Allow => {},
         }
+        extension_runner
+            .emit_lifecycle(
+                ExtensionEvent::AfterProviderResponse,
+                self.shared().lifecycle_ctx(),
+            )
+            .await?;
+        Ok(())
     }
 
     fn check_aborted(&self) -> Result<(), TurnError> {
@@ -664,16 +673,20 @@ impl TurnLoop {
 }
 
 fn extract_last_assistant_text(messages: &[LlmMessage]) -> Option<String> {
-    messages.iter().rev().find(|m| m.role == LlmRole::Assistant).map(|msg| {
-        msg.content
-            .iter()
-            .filter_map(|c| match c {
-                LlmContent::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("")
-    })
+    messages
+        .iter()
+        .rev()
+        .find(|m| m.role == LlmRole::Assistant)
+        .map(|msg| {
+            msg.content
+                .iter()
+                .filter_map(|c| match c {
+                    LlmContent::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        })
 }
 
 fn extract_text_from_messages(messages: &[LlmMessage]) -> String {

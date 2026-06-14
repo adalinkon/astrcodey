@@ -5,6 +5,7 @@ use std::sync::Arc;
 use astrcode_core::{
     event::{Event, EventPayload},
     extension::{ChildToolPolicy, ExtensionEvent},
+    llm::LlmMessage,
     prompt::SystemPromptInput,
     storage::{
         CompactSnapshotInput, EventStore, SessionReadModel, StorageError, ToolResultArtifactInput,
@@ -209,8 +210,19 @@ impl Session {
         Ok(self.store.session_read_model(&self.id).await?)
     }
 
+    pub async fn provider_messages(&self) -> Result<Vec<LlmMessage>, SessionError> {
+        Ok(self.store.session_provider_messages(&self.id).await?)
+    }
+
     pub async fn current_system_prompt(&self) -> Result<Option<String>, SessionError> {
         Ok(self.store.session_system_prompt(&self.id).await?)
+    }
+
+    pub async fn visible_user_message_count(&self) -> Result<usize, SessionError> {
+        Ok(self
+            .store
+            .session_visible_user_message_count(&self.id)
+            .await?)
     }
 
     pub async fn latest_cursor(&self) -> Result<Option<Cursor>, SessionError> {

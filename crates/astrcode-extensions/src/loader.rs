@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use astrcode_extension_sdk::extension::{Extension, StopReason};
@@ -17,6 +17,15 @@ use crate::{host_router::HostRouter, runner::ExtensionRunner};
 pub struct LoadExtensionsResult {
     pub extensions: Vec<Arc<dyn Extension>>,
     pub errors: Vec<String>,
+    pub load_failures: Vec<ExtensionLoadFailure>,
+    pub load_success_durations: BTreeMap<String, Duration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionLoadFailure {
+    pub extension_id: Option<String>,
+    pub message: String,
+    pub duration_ms: Option<u64>,
 }
 
 /// 扩展加载上下文。
@@ -60,6 +69,24 @@ impl ExtensionRuntime {
 
         for source in sources {
             let load_result = source.load(ctx).await;
+            for extension in &load_result.extensions {
+                runner.record_extension_load_success(
+                    extension.id(),
+                    load_result
+                        .load_success_durations
+                        .get(extension.id())
+                        .copied(),
+                );
+            }
+            for failure in &load_result.load_failures {
+                if let Some(extension_id) = &failure.extension_id {
+                    runner.record_extension_load_failure(
+                        extension_id,
+                        failure.message.clone(),
+                        failure.duration_ms.map(Duration::from_millis),
+                    );
+                }
+            }
             desired_extensions.extend(load_result.extensions);
             load_errors.extend(load_result.errors);
         }
@@ -129,25 +156,37 @@ impl ExtensionLoader {
     ) -> LoadExtensionsResult {
         let mut extensions: Vec<Arc<dyn Extension>> = Vec::new();
         let mut errors: Vec<String> = Vec::new();
+        let mut load_failures: Vec<ExtensionLoadFailure> = Vec::new();
+        let mut load_success_durations = BTreeMap::new();
 
         let global_dir = hostpaths::extensions_dir();
         if global_dir.exists() {
-            let (exts, errs) = Self::load_from_dir(&global_dir, &host_router, working_dir).await;
+            let (exts, errs, failures, durations) =
+                Self::load_from_dir(&global_dir, &host_router, working_dir).await;
             extensions.extend(exts);
             errors.extend(errs);
+            load_failures.extend(failures);
+            load_success_durations.extend(durations);
         }
 
         if let Some(wd) = working_dir {
             let project_dir = PathBuf::from(wd).join(".astrcode").join("extensions");
             if project_dir.exists() {
-                let (project_exts, project_errs) =
+                let (project_exts, project_errs, project_failures, project_durations) =
                     Self::load_from_dir(&project_dir, &host_router, working_dir).await;
                 extensions.splice(0..0, project_exts);
                 errors.extend(project_errs);
+                load_failures.extend(project_failures);
+                load_success_durations.extend(project_durations);
             }
         }
 
-        LoadExtensionsResult { extensions, errors }
+        LoadExtensionsResult {
+            extensions,
+            errors,
+            load_failures,
+            load_success_durations,
+        }
     }
 
     #[doc(hidden)]
@@ -156,33 +195,58 @@ impl ExtensionLoader {
         host_router: &Option<Arc<HostRouter>>,
         working_dir: Option<&str>,
     ) -> (Vec<Arc<dyn Extension>>, Vec<String>) {
-        Self::load_from_dir(dir, host_router, working_dir).await
+        let (extensions, errors, _, _) = Self::load_from_dir(dir, host_router, working_dir).await;
+        (extensions, errors)
     }
 
     async fn load_from_dir(
         dir: &Path,
         host_router: &Option<Arc<HostRouter>>,
         working_dir: Option<&str>,
-    ) -> (Vec<Arc<dyn Extension>>, Vec<String>) {
+    ) -> (
+        Vec<Arc<dyn Extension>>,
+        Vec<String>,
+        Vec<ExtensionLoadFailure>,
+        BTreeMap<String, Duration>,
+    ) {
         let mut extensions = Vec::new();
         let mut errors = Vec::new();
+        let mut load_failures = Vec::new();
+        let mut load_success_durations = BTreeMap::new();
 
         let paths = match Self::extension_dirs(dir).await {
             Ok(paths) => paths,
             Err(e) => {
+                load_failures.push(ExtensionLoadFailure {
+                    extension_id: None,
+                    message: e.clone(),
+                    duration_ms: None,
+                });
                 errors.push(e);
-                return (extensions, errors);
+                return (extensions, errors, load_failures, load_success_durations);
             },
         };
 
         for path in paths {
+            let started = Instant::now();
             match Self::load_extension(&path, host_router.clone(), working_dir).await {
-                Ok(ext) => extensions.push(ext),
-                Err(e) => errors.push(format!("{}: {e}", path.display())),
+                Ok(ext) => {
+                    load_success_durations.insert(ext.id().to_string(), started.elapsed());
+                    extensions.push(ext);
+                },
+                Err(e) => {
+                    let message = format!("{}: {e}", path.display());
+                    load_failures.push(ExtensionLoadFailure {
+                        extension_id: Self::extension_id_hint(&path).await,
+                        message: message.clone(),
+                        duration_ms: Some(started.elapsed().as_millis() as u64),
+                    });
+                    errors.push(message);
+                },
             }
         }
 
-        (extensions, errors)
+        (extensions, errors, load_failures, load_success_durations)
     }
 
     async fn extension_dirs(dir: &Path) -> Result<Vec<PathBuf>, String> {
@@ -260,6 +324,26 @@ impl ExtensionLoader {
         crate::s5r_ext::S5rExtension::load(ext_dir, &entry, router, working_dir)
             .await
             .map(|ext| ext as Arc<dyn Extension>)
+    }
+
+    async fn extension_id_hint(ext_dir: &Path) -> Option<String> {
+        if let Ok(bytes) = tokio::fs::read(ext_dir.join("extension.json")).await {
+            if let Ok(entry) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                if let Some(id) = entry
+                    .get("id")
+                    .or_else(|| entry.get("extension_id"))
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    return Some(id.to_string());
+                }
+            }
+        }
+        ext_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
     }
 }
 
