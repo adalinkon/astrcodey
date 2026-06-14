@@ -34,6 +34,7 @@ impl ExtensionSource for BundledExtensionSource {
             extensions,
             errors,
             load_failures: Vec::new(),
+            load_success_durations: BTreeMap::new(),
         }
     }
 }

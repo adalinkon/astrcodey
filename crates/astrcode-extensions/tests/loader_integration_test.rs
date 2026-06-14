@@ -22,7 +22,9 @@ impl ExtensionSource for BrokenSource {
             load_failures: vec![ExtensionLoadFailure {
                 extension_id: Some("broken-extension".into()),
                 message: "broken extension failed".into(),
+                duration_ms: None,
             }],
+            load_success_durations: Default::default(),
         }
     }
 }

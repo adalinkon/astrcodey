@@ -1358,6 +1358,13 @@ impl Registrar {
                 self.on_before_provider_request(mode, priority, handler);
             },
             ProviderEvent::AfterResponse => {
+                if mode != HookMode::Advisory {
+                    tracing::warn!(
+                        ?mode,
+                        "on_provider(AfterResponse) ignores HookMode; use \
+                         on_after_provider_response instead"
+                    );
+                }
                 self.on_after_provider_response(priority, handler);
             },
         }

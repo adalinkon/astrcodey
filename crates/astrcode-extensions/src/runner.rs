@@ -568,7 +568,7 @@ impl ExtensionRunner {
             self.record_stage_result(
                 &id,
                 ExtensionDiagnosticStage::Register,
-                Duration::ZERO,
+                Some(Duration::ZERO),
                 None,
                 ExtensionStageStatus::Skipped,
             );
@@ -589,7 +589,7 @@ impl ExtensionRunner {
                 self.record_stage_result(
                     &id,
                     ExtensionDiagnosticStage::Register,
-                    register_started.elapsed(),
+                    Some(register_started.elapsed()),
                     Some(error.to_string()),
                     ExtensionStageStatus::Failed,
                 );
@@ -599,7 +599,7 @@ impl ExtensionRunner {
         self.record_stage_result(
             &id,
             ExtensionDiagnosticStage::Register,
-            register_started.elapsed(),
+            Some(register_started.elapsed()),
             None,
             ExtensionStageStatus::Succeeded,
         );
@@ -659,7 +659,7 @@ impl ExtensionRunner {
             self.record_stage_result(
                 &id,
                 ExtensionDiagnosticStage::Start,
-                start_started.elapsed(),
+                Some(start_started.elapsed()),
                 Some(error.to_string()),
                 ExtensionStageStatus::Failed,
             );
@@ -668,7 +668,7 @@ impl ExtensionRunner {
         self.record_stage_result(
             &id,
             ExtensionDiagnosticStage::Start,
-            start_started.elapsed(),
+            Some(start_started.elapsed()),
             None,
             ExtensionStageStatus::Succeeded,
         );
@@ -726,6 +726,7 @@ impl ExtensionRunner {
         }
         let stop_result = ext.stop(reason).await;
         stop_result?;
+        self.diagnostics.write().remove(extension_id);
         Ok(true)
     }
 
@@ -865,21 +866,26 @@ impl ExtensionRunner {
         Arc::clone(&self.index.read())
     }
 
-    pub fn record_extension_load_success(&self, extension_id: &str) {
+    pub fn record_extension_load_success(&self, extension_id: &str, elapsed: Option<Duration>) {
         self.record_stage_result(
             extension_id,
             ExtensionDiagnosticStage::Load,
-            Duration::ZERO,
+            elapsed,
             None,
             ExtensionStageStatus::Succeeded,
         );
     }
 
-    pub fn record_extension_load_failure(&self, extension_id: &str, error: impl Into<String>) {
+    pub fn record_extension_load_failure(
+        &self,
+        extension_id: &str,
+        error: impl Into<String>,
+        elapsed: Option<Duration>,
+    ) {
         self.record_stage_result(
             extension_id,
             ExtensionDiagnosticStage::Load,
-            Duration::ZERO,
+            elapsed,
             Some(error.into()),
             ExtensionStageStatus::Failed,
         );
@@ -898,7 +904,7 @@ impl ExtensionRunner {
         &self,
         extension_id: &str,
         stage: ExtensionDiagnosticStage,
-        elapsed: Duration,
+        elapsed: Option<Duration>,
         error: Option<String>,
         status: ExtensionStageStatus,
     ) {
@@ -906,7 +912,7 @@ impl ExtensionRunner {
         let entry = diagnostics.entry(extension_id.to_string()).or_default();
         let stage = stage_diagnostics_mut(entry, stage);
         stage.status = status;
-        stage.duration_ms = Some(elapsed.as_millis() as u64);
+        stage.duration_ms = elapsed.map(|duration| duration.as_millis() as u64);
         stage.error = error;
     }
 
