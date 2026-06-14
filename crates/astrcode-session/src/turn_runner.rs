@@ -576,22 +576,29 @@ impl TurnLoop {
             .emit_provider(ProviderEvent::AfterResponse, ctx)
             .await?
         {
-            ProviderResult::Block { reason } => Err(TurnError::ProviderBlocked { reason }),
+            ProviderResult::Block { reason } => {
+                return Err(TurnError::ProviderBlocked { reason });
+            },
             ProviderResult::ReplaceMessages { messages } => {
                 if let Some(text) = extract_last_assistant_text(&messages) {
                     state.set_final_text(text);
                 }
-                Ok(())
             },
             ProviderResult::AppendMessages { messages } => {
                 let extra = extract_text_from_messages(&messages);
                 if !extra.is_empty() {
                     state.append_final_text(&extra);
                 }
-                Ok(())
             },
-            ProviderResult::Allow => Ok(()),
+            ProviderResult::Allow => {},
         }
+        extension_runner
+            .emit_lifecycle(
+                ExtensionEvent::AfterProviderResponse,
+                self.shared().lifecycle_ctx(),
+            )
+            .await?;
+        Ok(())
     }
 
     fn check_aborted(&self) -> Result<(), TurnError> {
