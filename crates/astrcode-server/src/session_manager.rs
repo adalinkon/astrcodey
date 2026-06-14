@@ -316,6 +316,26 @@ impl SessionManager {
             .map_err(SessionManagerError::from)
     }
 
+    pub(crate) async fn has_messages(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<bool, SessionManagerError> {
+        self.event_store
+            .session_has_messages(session_id)
+            .await
+            .map_err(SessionManagerError::from)
+    }
+
+    pub(crate) async fn agent_sessions(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<astrcode_core::storage::AgentSessionLinkView>, SessionManagerError> {
+        self.event_store
+            .session_agent_sessions(session_id)
+            .await
+            .map_err(SessionManagerError::from)
+    }
+
     pub(crate) async fn list_summaries(&self) -> Result<Vec<SessionSummary>, SessionManagerError> {
         self.event_store
             .list_session_summaries()

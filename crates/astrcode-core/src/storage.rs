@@ -41,11 +41,49 @@ pub trait EventReader: Send + Sync {
         session_id: &SessionId,
     ) -> Result<SessionReadModel, StorageError>;
 
+    /// 返回当前会话 provider 可见消息。
+    ///
+    /// 默认实现保留兼容性；存储实现应覆盖为从内存投影直接派生，避免为了读取
+    /// LLM 历史先 clone 整个 [`SessionReadModel`]。
+    async fn session_provider_messages(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<LlmMessage>, StorageError> {
+        Ok(self
+            .session_read_model(session_id)
+            .await?
+            .provider_messages())
+    }
+
     /// 返回当前会话的 system_prompt，只读单个字段避免 clone 整个读模型。
     async fn session_system_prompt(
         &self,
         session_id: &SessionId,
     ) -> Result<Option<String>, StorageError>;
+
+    /// 返回当前会话是否已有普通 transcript 消息。
+    async fn session_has_messages(&self, session_id: &SessionId) -> Result<bool, StorageError> {
+        Ok(self.session_read_model(session_id).await?.has_messages())
+    }
+
+    /// 返回当前会话的子 agent 链接状态。
+    async fn session_agent_sessions(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<AgentSessionLinkView>, StorageError> {
+        Ok(self.session_read_model(session_id).await?.agent_sessions)
+    }
+
+    /// 统计 provider 可见的非合成 user 消息条数。
+    async fn session_visible_user_message_count(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<usize, StorageError> {
+        Ok(self
+            .session_read_model(session_id)
+            .await?
+            .visible_user_message_count())
+    }
 
     /// 返回所有会话摘要，供列表类接口使用。
     async fn list_session_summaries(&self) -> Result<Vec<SessionSummary>, StorageError>;
@@ -554,6 +592,11 @@ impl SessionReadModel {
         crate::llm::provider_visible_messages(messages)
     }
 
+    /// 是否已有普通 transcript 消息。
+    pub fn has_messages(&self) -> bool {
+        !self.messages.is_empty()
+    }
+
     /// 当前快照 cursor。
     pub fn cursor(&self) -> Cursor {
         self.latest_seq
@@ -572,6 +615,33 @@ impl SessionReadModel {
                     _ => None,
                 })
             })
+    }
+
+    /// 统计 provider 可见的非合成 user 消息条数。
+    pub fn visible_user_message_count(&self) -> usize {
+        self.messages
+            .iter()
+            .filter(|entry| {
+                entry.message.role == LlmRole::User
+                    && !crate::context::is_synthetic_context_message(&entry.message)
+            })
+            .count()
+    }
+
+    /// 生成会话列表摘要，只复制列表接口需要的少量字段。
+    pub fn to_summary(&self) -> SessionSummary {
+        SessionSummary {
+            session_id: self.session_id.clone(),
+            created_at: self.created_at.clone(),
+            updated_at: self.updated_at.clone(),
+            working_dir: self.working_dir.clone(),
+            model_id: self.model_id.clone(),
+            parent_session_id: self.parent_session_id.clone(),
+            phase: self.phase,
+            latest_cursor: self.cursor(),
+            first_user_message: self.first_user_message(),
+            source_extension: self.source_extension.clone(),
+        }
     }
 
     /// 返回 abort / repair 时必须补齐的 tool call。
@@ -779,6 +849,21 @@ mod tests {
         });
 
         assert_eq!(model.first_user_message().as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn session_summary_from_ref_matches_consuming_conversion() {
+        let mut model = SessionReadModel::empty("session-test".into());
+        model.working_dir = "D:/work/project".into();
+        model.model_id = "mock".into();
+        model.latest_seq = Some(7);
+        model.messages.push(SequencedLlmMessage {
+            message: LlmMessage::user("hello"),
+            updated_seq: 1,
+            source: None,
+        });
+
+        assert_eq!(model.to_summary(), SessionSummary::from(model.clone()));
     }
 
     #[test]

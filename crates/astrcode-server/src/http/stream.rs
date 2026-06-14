@@ -84,13 +84,13 @@ pub(in crate::http) async fn session_stream(
     let session_id = SessionId::from(raw_session_id);
 
     // Validate session exists before opening the stream.
-    let read_model = match http_state
+    let has_messages = match http_state
         .runtime
         .session_manager
-        .read_model(&session_id)
+        .has_messages(&session_id)
         .await
     {
-        Ok(model) => model,
+        Ok(has_messages) => has_messages,
         Err(_) => {
             return error_response(
                 StatusCode::NOT_FOUND,
@@ -99,9 +99,23 @@ pub(in crate::http) async fn session_stream(
             );
         },
     };
-    let has_messages = !read_model.messages.is_empty();
-    let child_sessions = read_model
-        .agent_sessions
+    let agent_sessions = match http_state
+        .runtime
+        .session_manager
+        .agent_sessions(&session_id)
+        .await
+    {
+        Ok(agent_sessions) => agent_sessions,
+        Err(error) => {
+            tracing::warn!(session_id = %session_id, "failed to read agent sessions for SSE stream: {error}");
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "session_not_found",
+                "Session not found",
+            );
+        },
+    };
+    let child_sessions = agent_sessions
         .iter()
         .filter(|link| link.status == AgentSessionStatus::Running)
         .map(|link| {
@@ -114,8 +128,7 @@ pub(in crate::http) async fn session_stream(
         })
         .collect();
     let leaf_child_sessions = reverse_child_session_index(&child_sessions);
-    let last_child_phase = read_model
-        .agent_sessions
+    let last_child_phase = agent_sessions
         .iter()
         .filter_map(|link| {
             link.phase

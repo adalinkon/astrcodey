@@ -120,6 +120,7 @@ impl CommandHandler {
             IdleCompactionParams {
                 keep_recent_turns,
                 transcript_path: snapshot_path,
+                provider_messages,
             },
         )
         .await

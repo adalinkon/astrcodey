@@ -103,7 +103,10 @@ impl TurnState {
     }
 
     pub(crate) fn take_output_parts(&mut self) -> (String, Vec<ToolResult>) {
-        (std::mem::take(&mut self.final_text), std::mem::take(&mut self.tool_results))
+        (
+            std::mem::take(&mut self.final_text),
+            std::mem::take(&mut self.tool_results),
+        )
     }
 
     pub(crate) fn all_tool_snapshots(&self) -> &[ToolSnapshot] {

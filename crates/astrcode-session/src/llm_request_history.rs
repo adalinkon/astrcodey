@@ -35,10 +35,13 @@ pub(crate) fn build_llm_request_messages(
 
 /// 已提交 tool 结果内容的字符总量（用于 tool 结果预算）。
 pub(crate) fn committed_tool_result_content_len(model: &SessionReadModel) -> usize {
-    visible_messages_for_assembler(model)
+    model
+        .context_messages
         .iter()
+        .chain(model.messages.iter())
+        .map(|entry| &entry.message)
         .filter(|message| message.role == LlmRole::Tool)
-        .flat_map(|message| &message.content)
+        .flat_map(|message| message.content.iter())
         .filter_map(|content| match content {
             LlmContent::ToolResult { content, .. } => Some(content.len()),
             _ => None,
