@@ -7,7 +7,7 @@
 //! | 策略 | running | idle | 典型调用方 |
 //! |------|---------|------|------------|
 //! | [`InputDelivery::StartNew`] | busy | 开 turn | 测试、必须独占 turn 的路径 |
-//! | [`InputDelivery::InjectIfRunningElseStart`] | durable `UserMessage`（同 `turn_id`） | 开 turn | TUI `InjectMessage`、HTTP `POST .../inject`、`SessionOperations::inject_message`、子 session 完成通知 |
+//! | [`InputDelivery::InjectIfRunningElseStart`] | durable `UserMessage`（同 `turn_id`） | 开 turn | HTTP `POST .../inject`、`SessionOperations::inject_message`、子 session 完成通知 |
 //! | [`InputDelivery::QueueIfRunningElseStart`] | `pending_queues` FIFO | 开 turn | HTTP/ACP `submit_input`（连发 prompt 不打断当前 turn） |
 //!
 //! **Steer** 不是第三种策略：它是 `Inject` 写 EventLog 后，由 `TurnRunner` 在下一 agent step

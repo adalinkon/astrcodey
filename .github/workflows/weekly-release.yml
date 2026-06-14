@@ -140,7 +140,7 @@ jobs:
 
             echo "---"
             echo ""
-            echo "**Install:** \`npm install -g astrcode@${TAG#v}\`"
+            echo "**Install:** download the matching server binary from this GitHub Release."
           } > release-notes.md
 
           cat release-notes.md
@@ -155,4 +155,4 @@ jobs:
           git push origin "$TAG"
 
   # 触发 release.yml（由 tag push 触发）
-  # build-cli / build-desktop / publish-npm / release 全部由 release.yml 处理
+  # Server binary build and release upload are handled by release.yml.

@@ -43,18 +43,21 @@ pub(super) fn configured_auth_token() -> String {
 }
 
 pub(super) fn collect_allowed_origins() -> Vec<HeaderValue> {
+    collect_allowed_origins_from_extra(std::env::var("ASTRCODE_CORS_ORIGINS").ok().as_deref())
+}
+
+fn collect_allowed_origins_from_extra(extra: Option<&str>) -> Vec<HeaderValue> {
     let mut origins = vec![
         "http://localhost:5173",
         "http://localhost:3000",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:3000",
-        "http://tauri.localhost",
-        "https://tauri.localhost",
     ]
     .into_iter()
     .filter_map(|s| s.parse::<HeaderValue>().ok())
     .collect::<Vec<_>>();
-    if let Ok(extra) = std::env::var("ASTRCODE_CORS_ORIGINS") {
+
+    if let Some(extra) = extra {
         for origin in extra.split(',') {
             if let Ok(hv) = origin.trim().parse::<HeaderValue>() {
                 origins.push(hv);
@@ -62,4 +65,37 @@ pub(super) fn collect_allowed_origins() -> Vec<HeaderValue> {
         }
     }
     origins
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_allowed_origins_from_extra;
+
+    fn origin_strings(extra: Option<&str>) -> Vec<String> {
+        collect_allowed_origins_from_extra(extra)
+            .into_iter()
+            .filter_map(|value| value.to_str().ok().map(str::to_owned))
+            .collect()
+    }
+
+    #[test]
+    fn default_allowed_origins_are_web_dev_hosts_only() {
+        let origins = origin_strings(None);
+
+        assert!(origins.contains(&"http://localhost:5173".to_string()));
+        assert!(origins.contains(&"http://127.0.0.1:5173".to_string()));
+        assert!(!origins.contains(&"http://tauri.localhost".to_string()));
+        assert!(!origins.contains(&"https://tauri.localhost".to_string()));
+    }
+
+    #[test]
+    fn explicit_allowed_origins_are_appended() {
+        let origins = origin_strings(Some(
+            "https://example.test, bad\norigin, https://admin.example.test",
+        ));
+
+        assert!(origins.contains(&"https://example.test".to_string()));
+        assert!(origins.contains(&"https://admin.example.test".to_string()));
+        assert!(!origins.contains(&"bad\norigin".to_string()));
+    }
 }

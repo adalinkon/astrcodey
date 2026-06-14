@@ -31,7 +31,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets --all-features --exclude astrcode-desktop -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
     name: Test
@@ -42,7 +42,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build s5r guest binary (E2E)
         run: cargo build --release --manifest-path crates/astrcode-extensions/tests/s5r-guest/Cargo.toml
-      - run: cargo test --workspace --all-features --exclude astrcode-desktop
+      - run: cargo test --workspace --all-features
 
   audit:
     name: Security Audit
@@ -84,7 +84,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace --all-features --exclude astrcode-desktop
+      - run: cargo check --workspace --all-features
 
   # ── Frontend ──────────────────────────────────────────────────────
 
@@ -164,22 +164,22 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
-            binary: astrcode
+            binary: astrcode-http-server
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-latest
-            binary: astrcode
+            binary: astrcode-http-server
           - target: x86_64-apple-darwin
             runner: macos-latest
-            binary: astrcode
+            binary: astrcode-http-server
           - target: aarch64-apple-darwin
             runner: macos-latest
-            binary: astrcode
+            binary: astrcode-http-server
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
-            binary: astrcode.exe
+            binary: astrcode-http-server.exe
           - target: aarch64-pc-windows-msvc
             runner: windows-latest
-            binary: astrcode.exe
+            binary: astrcode-http-server.exe
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -200,6 +200,6 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: astrcode-${{ matrix.target }}
+          name: astrcode-http-server-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/${{ matrix.binary }}
           if-no-files-found: error

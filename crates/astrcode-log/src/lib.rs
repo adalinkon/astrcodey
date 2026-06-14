@@ -62,8 +62,8 @@ pub struct LogOptions {
     pub file_filter: String,
     /// Whether to enable file logging at all.
     pub file_enabled: bool,
-    /// Whether to enable stderr logging. Disable for TUI mode to avoid
-    /// corrupting the terminal UI.
+    /// Whether to enable stderr logging. Disable for hosts that reserve
+    /// stderr for their own user interface.
     pub stderr_enabled: bool,
 }
 

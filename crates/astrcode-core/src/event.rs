@@ -123,7 +123,7 @@ pub enum EventPayload {
         /// 持久化以便子 session resume 时重建相同的工具表。
         #[serde(default)]
         tool_policy: Option<ChildToolPolicy>,
-        /// 触发此子会话的工具调用 ID（用于 TUI 路由子 session 事件）。
+        /// 触发此子会话的工具调用 ID（用于客户端路由子 session 事件）。
         tool_call_id: ToolCallId,
     },
 

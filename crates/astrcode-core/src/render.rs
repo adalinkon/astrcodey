@@ -1,7 +1,7 @@
 //! 结构化 UI 渲染协议。
 //!
 //! 插件和工具只描述语义化的渲染意图，不直接控制终端。
-//! 具体皮肤和终端布局由 CLI 适配层决定。
+//! 具体皮肤和布局由宿主客户端决定。
 
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +14,7 @@ pub const UI_RENDER_METADATA_KEY: &str = "ui_render";
 /// 或普通工具输出承载。
 pub const UI_SUMMARY_METADATA_KEY: &str = "ui_summary";
 
-/// 渲染语气，由具体 TUI 皮肤映射到颜色和样式。
+/// 渲染语气，由具体客户端皮肤映射到颜色和样式。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum RenderTone {
@@ -57,7 +57,7 @@ pub enum RenderSpec {
         #[serde(default)]
         tone: RenderTone,
     },
-    /// Markdown 文本，CLI v1 以安全纯文本方式展示。
+    /// Markdown 文本，客户端可按自身能力选择富文本或安全纯文本展示。
     Markdown {
         /// Markdown 内容。
         text: String,
@@ -142,7 +142,7 @@ pub enum RenderSpec {
         #[serde(default)]
         tone: RenderTone,
     },
-    /// 受限 ANSI 文本。CLI 可选择去除或裁剪控制序列。
+    /// 受限 ANSI 文本。客户端可选择去除或裁剪控制序列。
     RawAnsiLimited {
         /// 文本内容。
         text: String,

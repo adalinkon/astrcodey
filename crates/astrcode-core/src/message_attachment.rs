@@ -4,7 +4,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// 单条附件内容上限（与 TUI / 前端一致）。
+/// 单条附件内容上限（与 Web/客户端一致）。
 pub const MAX_ATTACHMENT_CONTENT_BYTES: usize = 4 * 1024 * 1024;
 
 /// 单次 prompt 附件数量上限。

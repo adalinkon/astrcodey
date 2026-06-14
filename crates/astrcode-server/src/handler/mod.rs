@@ -1,6 +1,6 @@
 //! 命令处理器 — 使用 ServerRuntime 处理客户端命令。
 //!
-//! 传输层无关：同时被 stdio 二进制和进程内 CLI 使用。
+//! 传输层无关：同时被 stdio 二进制、HTTP 和 ACP 路径使用。
 //! 负责将 `ClientCommand` 路由到对应的服务方法，并通过广播通道发送通知。
 //!
 //! 运行中输入的路由策略由 [`TurnScheduler::deliver_input`] 统一执行：

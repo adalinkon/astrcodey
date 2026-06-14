@@ -1814,7 +1814,7 @@ impl Default for Registrar {
 
 /// 插件注册的快捷键绑定。
 ///
-/// 当用户按下对应组合键时，TUI 将执行关联的斜杠命令（如同用户输入该命令）。
+/// 当用户按下对应组合键时，客户端将执行关联的斜杠命令（如同用户输入该命令）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Keybinding {
     /// 快捷键描述（如 "shift+tab", "ctrl+p"）。
@@ -1832,7 +1832,7 @@ pub struct Keybinding {
 
 /// 插件注册的状态栏项。
 ///
-/// 显示在 TUI footer 和前端状态栏中。插件可以通过 `StatusItemUpdate`
+/// 显示在客户端状态栏中。插件可以通过 `StatusItemUpdate`
 /// 通知动态更新内容。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusItem {

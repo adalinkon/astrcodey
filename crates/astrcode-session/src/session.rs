@@ -71,7 +71,7 @@ impl Session {
     /// **注意**：`runtime` 必须由调用方保证「同 sid 唯一」，否则同 sid 的不同 Session
     /// 实例会有不同的 broadcast、不同的工具表、不同的 event_tx，订阅者只能看到自己那份
     /// 实例上发出的事件。生产路径走 `SessionManager`，由其内部的 `runtime_states` HashMap
-    /// 保证唯一；CLI / 测试若直接调本入口须自行维护一份 sid→runtime 映射，或接受隔离语义。
+    /// 保证唯一；测试或其它宿主若直接调本入口须自行维护一份 sid→runtime 映射，或接受隔离语义。
     pub async fn create_with_params(params: SessionCreateParams) -> Result<Self, SessionError> {
         params
             .store

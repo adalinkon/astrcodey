@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-default-members = ["crates/astrcode-cli"]
+default-members = ["crates/astrcode-server", "eval-tasks"]
 members = [
     "crates/astrcode-kernel",
     "crates/astrcode-core",
@@ -15,20 +15,16 @@ members = [
     "crates/astrcode-bundled-extensions",
     "crates/astrcode-server",
     "crates/astrcode-protocol",
-    "crates/astrcode-client",
-    "crates/astrcode-cli",
     "crates/astrcode-log",
     "crates/astrcode-extension-agent-tools",
     "crates/astrcode-extension-mcp",
     "crates/astrcode-extension-skill",
     "crates/astrcode-extension-todo-tool",
     "crates/astrcode-extension-mode",
-    "crates/astrcode-extension-goal",
     "crates/astrcode-extension-memory",
     "crates/astrcode-extension-channels",
     "crates/astrcode-extension-web-tools",
-    "crates/astrcode-eval",
-    "src-tauri",
+    "eval-tasks",
 ]
 
 [workspace.package]

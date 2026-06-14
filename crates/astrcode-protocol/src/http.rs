@@ -103,7 +103,7 @@ pub struct CompactSessionResponse {
     pub message: String,
 }
 
-/// 执行扩展斜杠命令请求（与 CLI `ExecuteExtensionCommand` 对齐）。
+/// 执行扩展斜杠命令请求（与内部 `ExecuteExtensionCommand` 对齐）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteExtensionCommandRequest {

@@ -19,7 +19,7 @@ function resolveRunInfo(): { port: number; authToken: string } | undefined {
   }
 }
 
-const devHost = process.env.TAURI_DEV_HOST
+const devHost = process.env.VITE_DEV_HOST
 const host = devHost || '127.0.0.1'
 const runInfo = resolveRunInfo()
 
@@ -34,7 +34,6 @@ export default defineConfig({
     strictPort: true,
     host,
     hmr: devHost ? { protocol: 'ws', host: devHost, port: 5174 } : undefined,
-    watch: { ignored: ['**/src-tauri/**'] },
     proxy: runInfo
       ? {
           '/api': {

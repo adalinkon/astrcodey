@@ -8,7 +8,7 @@ function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === 'AbortError'
 }
 
-/** SSE 必须用 WebView 原生 fetch；Tauri plugin-http 会缓冲响应体直到连接结束。 */
+/** SSE must use the browser fetch implementation so the response body can stream incrementally. */
 function streamFetch(): typeof window.fetch {
   return window.fetch.bind(window)
 }

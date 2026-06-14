@@ -9,7 +9,7 @@ import path from 'node:path'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FRONTEND_DIR = path.resolve(__dirname, '..')
-const VITE_CLI = path.join(
+const VITE_BIN = path.join(
   FRONTEND_DIR,
   'node_modules',
   'vite',
@@ -22,7 +22,7 @@ const DEFAULT_MAX_RETRIES = 120
 const DEFAULT_RETRY_MS = 500
 
 export function resolveDevServerHost(env = process.env) {
-  return env.TAURI_DEV_HOST || DEFAULT_HOST
+  return env.VITE_DEV_HOST || DEFAULT_HOST
 }
 
 export function healthCheckOptions(host, port = DEFAULT_PORT) {
@@ -59,7 +59,7 @@ function run() {
     `[dev-server] Starting Vite in ${FRONTEND_DIR} (host=${host}, port=${port})...`
   )
 
-  const vite = spawn(process.execPath, [VITE_CLI], {
+  const vite = spawn(process.execPath, [VITE_BIN], {
     stdio: 'inherit',
     cwd: FRONTEND_DIR,
   })

@@ -2,7 +2,6 @@ import { useState, useCallback, useMemo } from 'react'
 import { useAppStore } from '../../store/conversation'
 import { cn } from '../../lib/utils'
 import { PHASE_BG_CLASS } from '../../lib/styles'
-import { getHostBridge } from '../../lib/hostBridge'
 import ProjectGroup from './ProjectGroup'
 import NewProjectModal from './NewProjectModal'
 import SettingsModal from '../Settings/SettingsModal'
@@ -26,8 +25,6 @@ export default function Sidebar() {
 
   const [showNewProject, setShowNewProject] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
-
-  const bridge = useMemo(() => getHostBridge(), [])
   const projectGroups = useMemo(
     () => groupSessionsByWorkingDir(sessions),
     [sessions]
@@ -168,8 +165,8 @@ export default function Sidebar() {
         <NewProjectModal
           onConfirm={handleNewProject}
           onCancel={() => setShowNewProject(false)}
-          canBrowse={bridge.canSelectDirectory}
-          onSelectDirectory={bridge.selectDirectory}
+          canBrowse={false}
+          onSelectDirectory={() => Promise.resolve(null)}
         />
       )}
       {showSettings && (

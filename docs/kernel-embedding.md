@@ -75,7 +75,7 @@ by `astrcode-session`.
 
 ## 与 pi-mono 的对应关系
 
-pi-mono 的 `coding-agent` 通过 core/session services 暴露可嵌入入口，CLI/TUI 只是
+pi-mono 的 `coding-agent` 通过 core/session services 暴露可嵌入入口，具体入口只是
 默认装配层。AstrCode 的对应结构是：
 
 | pi-mono 概念 | AstrCode 对应 |

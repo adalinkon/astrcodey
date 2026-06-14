@@ -71,14 +71,10 @@ jobs:
           # workspace 版本（各 crate 通过 version.workspace = true 继承）
           sed -i "0,/^version = \"${OLD}\"/{s/^version = \"${OLD}\"/version = \"${VERSION}\"/}" Cargo.toml
 
-          sed -i "s/\"version\": \"${OLD}\"/\"version\": \"${VERSION}\"/" src-tauri/tauri.conf.json
-
           # Keep frontend package metadata and its lockfile in sync.
           npm version "${VERSION}" --no-git-tag-version --prefix frontend
 
-          sed -i "s/${OLD}/${VERSION}/g" npm/astrcode/package.json
-
-          cargo check --workspace --exclude astrcode-desktop
+          cargo check --workspace
 
           # 提交并打 tag
           git config user.name "github-actions[bot]"
@@ -89,10 +85,10 @@ jobs:
           git push origin HEAD:${{ github.ref_name }}
           git push origin "${TAG}"
 
-  # ── CLI binary builds ─────────────────────────────────────────────
+  # ── Server binary builds ──────────────────────────────────────────
 
-  build-cli:
-    name: CLI (${{ matrix.target }})
+  build-server:
+    name: Server (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     needs: [prepare]
     permissions:
@@ -103,33 +99,33 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
-            artifact: astrcode-x86_64-linux
-            binary: astrcode
+            artifact: astrcode-http-server-x86_64-linux
+            binary: astrcode-http-server
             archive: tar.gz
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-latest
-            artifact: astrcode-aarch64-linux
-            binary: astrcode
+            artifact: astrcode-http-server-aarch64-linux
+            binary: astrcode-http-server
             archive: tar.gz
           - target: x86_64-apple-darwin
             runner: macos-latest
-            artifact: astrcode-x86_64-macos
-            binary: astrcode
+            artifact: astrcode-http-server-x86_64-macos
+            binary: astrcode-http-server
             archive: tar.gz
           - target: aarch64-apple-darwin
             runner: macos-latest
-            artifact: astrcode-aarch64-macos
-            binary: astrcode
+            artifact: astrcode-http-server-aarch64-macos
+            binary: astrcode-http-server
             archive: tar.gz
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
-            artifact: astrcode-x86_64-windows
-            binary: astrcode.exe
+            artifact: astrcode-http-server-x86_64-windows
+            binary: astrcode-http-server.exe
             archive: zip
           - target: aarch64-pc-windows-msvc
             runner: windows-latest
-            artifact: astrcode-aarch64-windows
-            binary: astrcode.exe
+            artifact: astrcode-http-server-aarch64-windows
+            binary: astrcode-http-server.exe
             archive: zip
     steps:
       - uses: actions/checkout@v4
@@ -149,7 +145,7 @@ jobs:
       - name: Build release binary
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} --bin astrcode-http-server
       - name: Package (tar.gz)
         if: matrix.archive == 'tar.gz'
         run: tar czf ${{ matrix.artifact }}.tar.gz -C target/${{ matrix.target }}/release ${{ matrix.binary }}
@@ -163,109 +159,12 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.${{ matrix.archive }}
 
-  # ── Tauri desktop builds ──────────────────────────────────────────
-
-  build-desktop:
-    name: Desktop (${{ matrix.target }})
-    runs-on: ${{ matrix.runner }}
-    needs: [prepare]
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-          - target: x86_64-apple-darwin
-            runner: macos-latest
-          - target: aarch64-apple-darwin
-            runner: macos-latest
-          - target: x86_64-pc-windows-msvc
-            runner: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.tag }}
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: tauri-${{ matrix.target }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .node-version
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - name: Install frontend dependencies
-        run: npm ci
-        working-directory: frontend
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: src-tauri
-          tauriScript: node ../frontend/node_modules/@tauri-apps/cli/tauri.js
-          tagName: ${{ needs.prepare.outputs.tag }}
-          releaseName: ${{ needs.prepare.outputs.tag }}
-          releaseBody: "__INSTALLERS__"
-          releaseDraft: true
-          includeUpdaterJson: false
-
-  # ── Publish to npm ────────────────────────────────────────────────
-
-  publish-npm:
-    name: Publish to npm
-    runs-on: ubuntu-latest
-    needs: [prepare, build-cli]
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.tag }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: "https://registry.npmjs.org"
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      - name: Prepare npm packages
-        run: |
-          VERSION=${{ needs.prepare.outputs.version }} \
-            bash scripts/prepare-npm-packages.sh artifacts npm-dist
-      - name: Publish platform packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          for pkg_dir in npm-dist/@whatevertogo/*/; do
-            if [ -f "$pkg_dir/package.json" ] && [ "$(basename "$pkg_dir")" != "astrcode" ]; then
-              echo "Publishing $(basename $pkg_dir)..."
-              cd "$pkg_dir"
-              npm publish --access public
-              cd -
-            fi
-          done
-      - name: Publish main package
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          cd npm-dist/@whatevertogo/astrcode
-          npm publish --access public
-
   # ── GitHub Release ────────────────────────────────────────────────
 
   release:
     name: Publish Release
     runs-on: ubuntu-latest
-    needs: [prepare, build-cli, build-desktop]
+    needs: [prepare, build-server]
     permissions:
       contents: write
     steps:
@@ -324,7 +223,7 @@ jobs:
 
             echo "---"
             echo ""
-            echo "**Install:** \`npm install -g astrcode@${{ needs.prepare.outputs.version }}\`"
+            echo "**Artifacts:** prebuilt \`astrcode-http-server\` binaries"
           } > release-notes.md
           cat release-notes.md
       - name: Create GitHub Release

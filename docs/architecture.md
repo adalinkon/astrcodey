@@ -1,6 +1,6 @@
 # AstrCode 架构设计
 
-Rust 实现的 AI coding agent，~88.2k 行（Rust ~79.5k + TypeScript ~8.6k），`crates/` 下 23 个 crate + Tauri 桌面壳，支持 TUI、Web 前端、Desktop GUI 和 ACP 四种前端。
+Rust 实现的 AI coding agent，当前主路径是 HTTP/SSE server、浏览器 Web 前端和 ACP 编辑器集成。
 
 核心判断：**EventLog 是事实，Session 是投影，Agent 是无状态运行时。**
 
@@ -87,7 +87,7 @@ session-A (root)
 
 | 策略 | turn 运行中 | turn 空闲 | 典型入口 |
 |------|-------------|-------------|----------|
-| `InjectIfRunningElseStart` | 立即 durable `UserMessage`（绑定当前 `turn_id`）；下一 agent step 进入 LLM 上下文（steer） | 开新 turn | TUI `InjectMessage`、HTTP `POST /api/sessions/{id}/inject`、`SessionOperations::inject_message` |
+| `InjectIfRunningElseStart` | 立即 durable `UserMessage`（绑定当前 `turn_id`）；下一 agent step 进入 LLM 上下文（steer） | 开新 turn | HTTP `POST /api/sessions/{id}/inject`、`SessionOperations::inject_message` |
 | `QueueIfRunningElseStart` | `pending_queues` FIFO，不打断当前 turn | 开新 turn | HTTP/ACP `submit_input`（连发 prompt） |
 | `StartNew` | 拒绝（busy） | 开新 turn | 必须独占 turn 的内部路径 |
 
@@ -225,7 +225,7 @@ Identity → System → Task Guidelines → Communication → Environment
 - **Keybinding 注册** — `Registrar::keybinding()` 注册快捷键（如 `Shift+Tab`），绑定到扩展命令
 - **StatusItem 注册** — `Registrar::status_item()` 贡献状态栏条目，运行时通过 `StatusItemUpdate` 通知动态更新
 
-这些能力随 `ExtensionCommandList` 通知下发到客户端，TUI 和前端均可渲染。
+这些能力随 `ExtensionCommandList` 通知下发到客户端，由 Web 前端或其它客户端渲染。
 
 ### 延迟绑定
 
@@ -246,7 +246,7 @@ Mode 扩展已从内置逻辑迁移为完整插件：通过 `Registrar` 注册 `
 借鉴 OpenCode 的架构：
 
 - **后端**：`astrcode-server` 提供 HTTP/SSE API（Axum），JSON-RPC 2.0 协议
-- **前端**：可以是 TUI（`astrcode-cli`）、Web 浏览器、Desktop GUI（Tauri + React）或 ACP 客户端
+- **前端**：当前主维护入口是 Web 浏览器，另保留 ACP 客户端集成能力
 - HTTP 模块已拆分为 `http/` 子模块：`routes/`（REST 路由）、`projection/`（事件投影）、`stream.rs`（SSE）、`auth.rs`（认证）
 - 路由：sessions CRUD、prompt 提交、compact、abort、fork、SSE 事件流
 - SSE 流携带 `cursor`（event seq），客户端断连后可从 cursor 恢复
@@ -254,16 +254,8 @@ Mode 扩展已从内置逻辑迁移为完整插件：通过 `Registrar` 注册 `
 
 ### 传输层
 
-- `astrcode-client`：typed JSON-RPC client + stream subscription
 - `astrcode-protocol`：wire types（commands / events / framing / HTTP DTO）独立 crate
 - 支持 stdio transport（`astrcode-server --stdio`）用于嵌入式场景
-
-### Desktop GUI (Tauri)
-
-- **Sidecar 模式**：嵌入 `astrcode-http-server` 作为 sidecar 进程
-- **通信方式**：HTTP API + SSE（本地动态端口），通过 `tauri-plugin-http` 绕过 webkit2gtk 网络栈
-- **技术栈**：Tauri v2 + React 19 + TypeScript + Tailwind CSS v4
-- **状态管理**：Zustand
 
 ---
 
@@ -309,4 +301,4 @@ Session 是唯一的持久事实来源。所有状态变化都以不可变事件
 
 ### 前后端分离
 
-前端不负责业务逻辑，只负责交互和渲染。后端通过 HTTP/SSE 提供标准化 API，支持多种前端形态（TUI/GUI/Headless）。
+前端不负责业务逻辑，只负责交互和渲染。后端通过 HTTP/SSE 提供标准化 API，支持 Web 和嵌入式/ACP 等多种前端形态。

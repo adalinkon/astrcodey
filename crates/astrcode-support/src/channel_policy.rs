@@ -6,7 +6,7 @@
 //! |------|------|----------|
 //! | **Fan-out + live UI** | bounded + drop slow subscriber | [`EventFanout`](crate::event_fanout::EventFanout) |
 //! | **Turn 事件 ingress** | **unbounded** + 单 FIFO worker 串行 durable | `TurnEventIngress` / `TurnEventSender` |
-//! | **控制面 / 低频信号** | bounded(小) | CLI 命令、scheduler finish、child 完成、stdio |
+//! | **控制面 / 低频信号** | bounded(小) | client 命令、scheduler finish、child 完成、stdio |
 //! | **外部 I/O 单消费者** | unbounded | `LlmEvent` provider → turn |
 //!
 //! fan-out 用 bounded 是为了：**有界内存，慢订阅者通过 snapshot/cursor 重连恢复**。
@@ -17,7 +17,7 @@
 /// 客户端通知 fan-out 容量参数。
 pub const EVENT_FANOUT_CAPACITY: usize = 1024;
 
-/// 进程内 CLI → server 命令队列。
+/// 进程内 client → server 命令队列。
 pub const CLIENT_COMMAND_CAPACITY: usize = 128;
 
 /// 工具调度器 finish 信号。

@@ -337,7 +337,7 @@ pub struct CreateSessionRequest {
     pub source_extension: Option<String>,
     /// 一次性子 session，首个 turn 完成后自动回收。
     pub ephemeral: bool,
-    /// 触发创建子 session 的工具调用 ID，写入 AgentSessionSpawned 供 TUI 路由。
+    /// 触发创建子 session 的工具调用 ID，写入 AgentSessionSpawned 供客户端路由。
     pub tool_call_id: String,
 }
 

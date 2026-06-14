@@ -108,7 +108,7 @@ fn execute_write_sync(
     if let Some(old_bytes) = old_bytes {
         metadata.insert("oldBytes".into(), serde_json::json!(old_bytes));
     }
-    // 注入 unified diff 供 TUI/前端结构化渲染。
+    // 注入 unified diff 供 Web/客户端结构化渲染。
     if let Some(ref old_text) = old {
         let display_path = path.display().to_string();
         let (diff_text, ins, del) =

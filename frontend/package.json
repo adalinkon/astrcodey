@@ -1,5 +1,5 @@
 {
-  "name": "astrcode-desktop",
+  "name": "astrcode-web",
   "version": "0.3.1",
   "private": true,
   "type": "module",
@@ -10,10 +10,6 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri",
-    "tauri:dev": "npm run prepare:sidecar && cd ../src-tauri && node ../frontend/node_modules/@tauri-apps/cli/tauri.js dev",
-    "tauri:build": "cd ../src-tauri && node ../frontend/node_modules/@tauri-apps/cli/tauri.js build",
-    "prepare:sidecar": "node scripts/prepare-sidecar.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format:check": "prettier --check .",
@@ -25,8 +21,6 @@
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.13.25",
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-http": "^2.5.9",
     "clsx": "^2.1.1",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
@@ -38,7 +32,6 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@tailwindcss/vite": "^4.3.0",
-    "@tauri-apps/cli": "^2",
     "@types/node": "^25.9.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

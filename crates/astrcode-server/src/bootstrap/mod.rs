@@ -139,9 +139,9 @@ pub struct BootstrapOptions {
     pub config_path: Option<std::path::PathBuf>,
     /// 自定义工作目录，为 None 时使用当前目录
     pub working_dir: Option<std::path::PathBuf>,
-    /// 当 `runtime.approvalMode` 未设置时使用的审批模式（CLI/TUI 进程内启动默认为 Yolo）。
+    /// 当 `runtime.approvalMode` 未设置时使用的审批模式。
     pub default_approval_mode_if_unset: Option<astrcode_core::permission::ApprovalMode>,
-    /// 强制覆盖 `runtime.approvalMode`（如 CLI `--yolo` / `--manual`）。
+    /// 强制覆盖 `runtime.approvalMode`。
     pub approval_mode_override: Option<astrcode_core::permission::ApprovalMode>,
 }
 

@@ -1,5 +1,3 @@
-import { getHostBridge } from '../lib/hostBridge'
-import { isTauriEnvironment } from '../lib/tauri'
 import {
   decodeActiveSelectionResponse,
   decodeAvailableModels,
@@ -34,14 +32,8 @@ import type {
 let baseUrl = ''
 let authToken = ''
 
-let _tauriFetch: typeof window.fetch | null = null
-
 async function resolveFetch(): Promise<typeof window.fetch> {
-  if (isTauriEnvironment() && !_tauriFetch) {
-    const { fetch } = await import('@tauri-apps/plugin-http')
-    _tauriFetch = fetch as unknown as typeof window.fetch
-  }
-  return _tauriFetch ?? window.fetch
+  return window.fetch
 }
 
 export function setServerPort(port: number, token?: string): void {
@@ -63,7 +55,7 @@ export function authHeaders(): Record<string, string> {
 }
 
 export function initBaseUrl(): void {
-  const origin = getHostBridge().getServerOrigin()
+  const origin = window.location.origin
   if (origin) {
     baseUrl = origin
   }
@@ -192,7 +184,7 @@ export async function listCommands(
   )
 }
 
-/** 执行扩展斜杠命令（与 CLI `ExecuteExtensionCommand` 对齐，不受 turn 忙碌影响）。 */
+/** 执行扩展斜杠命令（与内部 `ExecuteExtensionCommand` 对齐，不受 turn 忙碌影响）。 */
 export async function executeExtensionCommand(
   sessionId: string,
   command: string,

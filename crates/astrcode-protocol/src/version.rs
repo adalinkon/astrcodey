@@ -21,7 +21,7 @@ pub struct InitializeResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientInfo {
-    /// 如 `astrcode-tui`。
+    /// 如 `astrcode-web`。
     pub name: String,
     /// 语义化版本字符串。
     pub version: String,

@@ -44,7 +44,7 @@ pub struct EvalConfig {
 impl Default for EvalConfig {
     fn default() -> Self {
         Self {
-            cases_dir: PathBuf::from("eval-tasks"),
+            cases_dir: default_cases_dir(),
             concurrency: 4,
             tags_filter: None,
             keep_workdir: false,
@@ -53,6 +53,10 @@ impl Default for EvalConfig {
             storage_root: None,
         }
     }
+}
+
+pub fn default_cases_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("cases")
 }
 
 /// 执行评测并返回报告。

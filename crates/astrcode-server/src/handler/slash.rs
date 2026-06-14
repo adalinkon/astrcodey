@@ -172,8 +172,8 @@ impl CommandHandler {
                         is_error,
                     },
                 );
-                // HTTP 同步返回展示内容（Web 前端读 Handled.message）；TUI 走
-                // ExtensionCommandResult 通知。
+                // HTTP 同步返回展示内容（Web 前端读 Handled.message）；
+                // 其它客户端也可消费 ExtensionCommandResult 通知。
                 Ok(PromptSubmission::Handled {
                     message: if is_error {
                         format!("Error: {content}")

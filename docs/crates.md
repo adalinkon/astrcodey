@@ -6,7 +6,7 @@
 
 ## 总览
 
-AstrCode 当前 workspace 有 27 个成员：`crates/` 下 26 个 crate，加上 `src-tauri` 的桌面壳 `astrcode-desktop`。
+AstrCode 当前 Rust workspace 由 `crates/` 下的 server/runtime crate，以及位于 `eval-tasks/` 目录根部的 `astrcode-eval` crate 组成。
 
 整体分层可以按依赖方向理解：
 
@@ -15,7 +15,7 @@ AstrCode 当前 workspace 有 27 个成员：`crates/` 下 26 个 crate，加上
 3. 会话运行时层：`astrcode-session`。
 4. 扩展系统层：`astrcode-extension-sdk`、`astrcode-extensions`、`astrcode-bundled-extensions` 和各 `astrcode-extension-*` 内置扩展。
 5. 服务与客户端层：`astrcode-server`、`astrcode-client`。
-6. 用户入口层：`astrcode-cli`、`astrcode-desktop`。
+6. 用户入口层：`astrcode-cli`。
 7. 辅助评测层：`astrcode-eval`。
 
 一个关键边界：所有 `astrcode-extension-*` 内置扩展都只依赖 `astrcode-extension-sdk`，不直接依赖 server/session/storage 等宿主内部 crate。这保证内置扩展和外置扩展走同一套公开 SDK 契约。
@@ -41,7 +41,6 @@ AstrCode 当前 workspace 有 27 个成员：`crates/` 下 26 个 crate，加上
 | `astrcode-extension-skill` | `crates/astrcode-extension-skill` | lib | Claude-style Skill 发现、`Skill` 工具、skill slash command |
 | `astrcode-extension-todo-tool` | `crates/astrcode-extension-todo-tool` | lib | `todoWrite` session-local 进度列表 |
 | `astrcode-extension-mode` | `crates/astrcode-extension-mode` | lib | code/plan 模式切换、plan artifact、`askUser` |
-| `astrcode-extension-goal` | `crates/astrcode-extension-goal` | lib | Codex-style session goal、token 预算与自动续跑 |
 | `astrcode-extension-memory` | `crates/astrcode-extension-memory` | lib | 用户/项目记忆、记忆索引、召回、保存/删除工具 |
 | `astrcode-extension-channels` | `crates/astrcode-extension-channels` | lib | Telegram channel 入口扩展 |
 | `astrcode-extension-web-tools` | `crates/astrcode-extension-web-tools` | lib | `web-search` 和 `fetch-url` 网络工具 |
@@ -49,8 +48,7 @@ AstrCode 当前 workspace 有 27 个成员：`crates/` 下 26 个 crate，加上
 | `astrcode-client` | `crates/astrcode-client` | lib | typed JSON-RPC client、transport、事件流 |
 | `astrcode-cli` | `crates/astrcode-cli` | bin | `astrcode` CLI、TUI、exec、server 子命令 |
 | `astrcode-log` | `crates/astrcode-log` | lib | tracing 初始化、stderr/file 双层日志、日志清理 |
-| `astrcode-eval` | `crates/astrcode-eval` | lib | 评测 case、runner、judge、metrics、report |
-| `astrcode-desktop` | `src-tauri` | bin | Tauri v2 桌面壳、sidecar HTTP server 管理 |
+| `astrcode-eval` | `eval-tasks` | lib + bin | 评测 case、runner、judge、metrics、report |
 
 ## `astrcode-core`
 
@@ -676,13 +674,13 @@ Feature：
 - 环境变量：`ASTRCODE_LOG` 覆盖 stderr level，`ASTRCODE_LOG_FILE` 覆盖 file level。
 - 清理策略：保留 30 天日志，并兼容清理 legacy daily log 文件名。
 
-依赖边界：依赖 `astrcode-support` 的 host path。它被 CLI/server/desktop 等入口使用。
+依赖边界：依赖 `astrcode-support` 的 host path。它被 CLI/server 等入口使用。
 
 测试线索：单元测试覆盖日志文件名不复用、latest pointer、旧日志清理。
 
 ## `astrcode-eval`
 
-路径：`crates/astrcode-eval`
+路径：`eval-tasks`
 
 职责：Agent 任务评测框架。它面向 benchmark/eval，不参与主运行时核心路径。
 
@@ -700,27 +698,3 @@ Feature：
 依赖边界：只依赖 `astrcode-core` 和通用库。`astrcode-cli` 通过 `dev-mode` feature 可选依赖它。
 
 测试线索：评测 fixture 位于 `eval-tasks/fixtures/*`，包含 `buggy-rust`、`implement-trie` 等独立项目。
-
-## `astrcode-desktop`
-
-路径：`src-tauri`
-
-职责：Tauri v2 桌面壳。它不是 `crates/` 下的库 crate，而是 workspace 成员 binary，负责启动/协调本地 HTTP sidecar，并向 React 前端暴露 Tauri commands。
-
-主要模块：
-
-- `main.rs`：Tauri app builder，注册插件和 commands。
-- `commands.rs`：Tauri command。包含启动 sidecar server、窗口最小化/最大化/关闭、sidecar state、HTTP token/端口响应等。
-- `instance.rs`：单实例协调、锁文件、已有实例唤起/复用。
-- `paths.rs`：`~/.astrcode`、instance lock/info 路径。
-- `build.rs`：Tauri build hook。
-
-关键行为：
-
-- sidecar 模式运行 `astrcode-http-server`，动态选择本地端口和 auth token。
-- 前端通过 HTTP API + SSE 与后端通信，并使用 `tauri-plugin-http` 绕过平台 webview 网络栈差异。
-- 用 `fs2` 文件锁和 instance info 管理单实例。
-
-依赖边界：不依赖 workspace 内部 Rust crate；通过 sidecar 进程和 HTTP 协议与后端交互。
-
-测试线索：当前该 crate 主要依赖编译检查和桌面集成验证；改 commands 或 sidecar 协议时应同步前端调用方。

@@ -7,7 +7,7 @@
 | `"ui_render"` | `RenderSpec`（JSON 对象） | 描述结构化渲染布局，替代默认纯文本展示 |
 | `"ui_summary"` | `string` | 一行折叠摘要，UI 用它覆盖工具调用摘要行 |
 
-TUI、Web、Desktop 从同一份 metadata 中提取渲染信息，各自决定展示方式。
+Web 前端从同一份 metadata 中提取渲染信息；其它客户端也可以复用该结构化协议自行决定展示方式。
 
 ---
 
@@ -79,7 +79,7 @@ Ok(ToolResult::text(
 | `type` | 必填字段 | 可选字段 | 说明 |
 |---|---|---|---|
 | `text` | `text` | `tone` | 普通文本 |
-| `markdown` | `text` | `tone` | Markdown 文本，CLI v1 以安全纯文本展示 |
+| `markdown` | `text` | `tone` | Markdown 文本，客户端可按自身能力选择富文本或安全纯文本展示 |
 | `box` | — | `title`, `tone`, `children` | 分组容器，`children` 为子节点列表 |
 | `list` | — | `items`, `ordered`, `tone` | 列表，`ordered` 控制有序/无序 |
 | `key_value` | — | `entries`, `tone` | 键值表，`entries` 为 `[{key, value, tone?}]` 数组 |
@@ -87,11 +87,11 @@ Ok(ToolResult::text(
 | `diff` | `text` | `tone` | Diff 文本 |
 | `code` | `text` | `language`, `tone` | 代码块 |
 | `image_ref` | `uri` | `alt`, `tone` | 图片引用 |
-| `raw_ansi_limited` | `text` | `tone` | 受限 ANSI 文本，CLI 可选择去除或裁剪控制序列 |
+| `raw_ansi_limited` | `text` | `tone` | 受限 ANSI 文本，客户端可选择去除或裁剪控制序列 |
 
 ## RenderTone
 
-所有节点都支持可选的 `tone` 字段，由具体 TUI 皮肤 / 前端主题映射到颜色和样式：
+所有节点都支持可选的 `tone` 字段，由具体前端主题或客户端皮肤映射到颜色和样式：
 
 | tone | 语义 |
 |---|---|
@@ -187,5 +187,5 @@ let text = spec.plain_text_fallback();
 |---|---|
 | Rust 核心类型 | `crates/astrcode-core/src/render.rs` |
 | 工具使用示例 | `crates/astrcode-extension-mode/src/tools.rs`（`upsert_session_plan`） |
-| TUI 消费 | `crates/astrcode-cli/src/tui/app/handle_event.rs` |
+| 前端消费 | `frontend/src/components/Chat/RenderSpecViewer.tsx` |
 | 前端类型 + 提取 | `frontend/src/types/render-spec.ts` |

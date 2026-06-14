@@ -1,8 +1,8 @@
 //! Composable kernel primitives for AstrCode hosts.
 //!
 //! The kernel crate owns runtime-level registries and host-facing composition
-//! contracts. Concrete built-in tools, extension loaders, servers, CLIs, and
-//! desktop shells register themselves from outside this crate.
+//! contracts. Concrete built-in tools, extension loaders, servers, and clients
+//! register themselves from outside this crate.
 
 pub mod extension_runtime;
 pub mod tool_pack;

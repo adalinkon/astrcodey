@@ -5,8 +5,12 @@ edition.workspace = true
 license.workspace = true
 description = "Agent task evaluation framework: benchmark runner, scoring judge, metrics collection, and report generation"
 
+[[bin]]
+name = "astrcode-eval"
+path = "src/main.rs"
+
 [dependencies]
-astrcode-core = { path = "../astrcode-core" }
+astrcode-core = { path = "../crates/astrcode-core" }
 tokio = { workspace = true, features = ["sync", "time", "process", "rt-multi-thread", "macros"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -14,7 +18,9 @@ toml = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 chrono = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 tempfile = { workspace = true }
 walkdir = { workspace = true }
+clap = { workspace = true }

@@ -1,6 +1,5 @@
 import { create } from 'zustand'
 import * as api from '../services/api'
-import { resolveHostBridge } from '../lib/hostBridge'
 import type { ConversationDelta } from '../services/types'
 import { applyDeltaToState } from './delta/applyDelta'
 import { isRegisteredSlashCommand } from '../lib/keybindings'
@@ -8,7 +7,6 @@ import {
   commandNoteBlock,
   isCompactCommand,
   resolvePhase,
-  withTimeout,
 } from './delta/blockHelpers'
 import { connectSse } from './stream'
 import { canInjectMidTurn, isExecutionPhase } from './phaseHelpers'
@@ -65,33 +63,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   initServer: async () => {
     set({ connectionStatus: 'connecting', connectionError: null })
 
-    const bridge = await resolveHostBridge()
-
-    if (bridge.isDesktopHost) {
-      try {
-        const { invoke } = await import('@tauri-apps/api/core')
-        const result = await withTimeout(
-          invoke<{ port: number; token?: string }>('start_server'),
-          15_000,
-          '启动 AstrCode 服务超时，请关闭残留 astrcode-http-server 进程后重试'
-        )
-        api.setServerPort(result.port, result.token)
-        set({ serverPort: result.port })
-      } catch (err) {
-        set({
-          connectionStatus: 'error',
-          connectionError: err instanceof Error ? err.message : String(err),
-        })
-        return
-      }
-    } else {
-      api.initBaseUrl()
-      const envToken = (
-        import.meta as unknown as { env: Record<string, string> }
-      ).env?.VITE_AUTH_TOKEN
-      if (envToken) {
-        api.setAuthToken(envToken)
-      }
+    api.initBaseUrl()
+    const envToken = (import.meta as unknown as { env: Record<string, string> })
+      .env?.VITE_AUTH_TOKEN
+    if (envToken) {
+      api.setAuthToken(envToken)
     }
 
     set({ connectionStatus: 'connected' })

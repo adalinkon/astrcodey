@@ -1,6 +1,6 @@
 import type { KeybindingInfo } from '../services/types'
 
-/** 与后端/CLI 一致的快捷键 id（如 `shift+tab`）。 */
+/** 与后端一致的快捷键 id（如 `shift+tab`）。 */
 export function keyIdFromKeyboardEvent(event: KeyboardEvent): string {
   const parts: string[] = []
   if (event.ctrlKey || event.metaKey) parts.push('ctrl')

@@ -2,14 +2,13 @@
 """Check workspace crate dependency direction rules.
 
 Layer hierarchy:
-  L0 Foundation:   astrcode-core, astrcode-desktop
+  L0 Foundation:   astrcode-core
   L1 Infrastructure: astrcode-kernel, astrcode-support, astrcode-protocol, astrcode-ai
   L2 Domain:       astrcode-log, astrcode-storage, astrcode-context,
-                   astrcode-tools, astrcode-extensions, astrcode-client
+                   astrcode-tools, astrcode-extensions, astrcode-eval
   L3 Extensions:   astrcode-extension-*, astrcode-bundled-extensions
   L4 Session:      astrcode-session
   L5 Server:       astrcode-server
-  L6 CLI:          astrcode-cli
 
 Rule: a crate may only depend on crates at a strictly lower layer.
 Exception: astrcode-bundled-extensions (L3) may depend on same-layer
@@ -28,13 +27,11 @@ from pathlib import Path
 LAYERS: dict[str, int] = {
     # L0 – Foundation
     "astrcode-core": 0,
-    "astrcode-desktop": 0,
     # L1 – Infrastructure
     "astrcode-kernel": 1,
     "astrcode-support": 1,
     "astrcode-protocol": 1,
     "astrcode-ai": 1,
-    "astrcode-eval": 1,
     "astrcode-extension-sdk": 1,
     # L2 – Domain Services
     "astrcode-log": 2,
@@ -42,7 +39,7 @@ LAYERS: dict[str, int] = {
     "astrcode-context": 2,
     "astrcode-tools": 2,
     "astrcode-extensions": 2,
-    "astrcode-client": 2,
+    "astrcode-eval": 2,
     # L3 – Extensions
     "astrcode-extension-agent-tools": 3,
     "astrcode-extension-mcp": 3,
@@ -57,8 +54,6 @@ LAYERS: dict[str, int] = {
     "astrcode-session": 4,
     # L5 – Server
     "astrcode-server": 5,
-    # L6 – CLI
-    "astrcode-cli": 6,
 }
 
 LAYER_NAMES: dict[int, str] = {
@@ -68,7 +63,6 @@ LAYER_NAMES: dict[int, str] = {
     3: "Extensions",
     4: "Session",
     5: "Server",
-    6: "CLI",
 }
 
 ALLOWED_SAME_LAYER: set[tuple[str, str]] = {
