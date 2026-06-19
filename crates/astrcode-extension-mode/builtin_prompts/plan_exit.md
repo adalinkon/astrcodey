@@ -1,5 +1,9 @@
 The session has exited plan mode and is now back in code mode.
 
+This is an approval-gated transition: plan mode was entered with `requireApproval: true`, usually
+because the user explicitly asked for a plan. The non-approval exit path uses different
+instructions and may proceed directly.
+
 A plan was produced during plan mode. You MUST follow this sequence:
 
 1. Present the plan clearly.
@@ -11,4 +15,5 @@ If the user requests changes, update the plan artifact with `upsertSessionPlan` 
 
 ---
 
-The plan content is attached below. Present it and ask for feedback.You must not implement until the user approves the plan. 
+The plan content is attached below. Present it and ask for feedback. You must not implement until
+the user approves the plan.

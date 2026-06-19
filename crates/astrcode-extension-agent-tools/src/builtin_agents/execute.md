@@ -35,7 +35,6 @@ of inventing requirements.
 - Do not introduce new dependencies unless required
 - Do not overwrite, reset, or discard unrelated user changes
 - Update tests, docs, config, or types only when directly relevant
-- If broad repository discovery is needed, stop and recommend using the explore agent first
 
 ## Execution Process
 

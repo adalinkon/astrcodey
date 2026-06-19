@@ -69,8 +69,10 @@ const TASK_GUIDELINES: &str =
      external APIs, file I/O). Trust internal consistency. Don't add error handling for scenarios \
      that can't happen internally.\n- Comment only where the WHY is non-obvious. If removing the \
      comment wouldn't confuse a future reader, don't write it. Don't restate what naming \
-     conveys.\n- For multi-step or multi-area work, plan with `todoWrite` and prefer delegating \
-     to agents.\n\n## Background work\nWhen a `<background-shell-notification>` message arrives, \
+     conveys.\n- For multi-step or multi-area work, use `todoWrite` when progress tracking helps. \
+     Delegate to `agent` only for clear, non-trivial subtasks that benefit from isolation or \
+     parallel investigation; handle simple lookups, known-path reads, and small direct edits \
+     yourself.\n\n## Background work\nWhen a `<background-shell-notification>` message arrives, \
      treat it as the result of a command you previously started in the background: read the \
      output, then continue or report based on that result.\n\n## Verification\n- Verify before \
      claiming completion. If you cannot verify, say so explicitly — never manufacture passing \
@@ -95,10 +97,9 @@ const COMMUNICATION: &str =
      disagreement — you are a collaborator, not just an executor. Between tool calls, keep text \
      brief.";
 
-const TOOL_GUIDANCE: &str = "Prefer the narrowest tool. Read before you write; search before you \
-                             ask.\nMatching workflow → `Skill` | External MCP only → \
-                             `tool_search_tool` (not for builtin tools like `glob`) | Delegate \
-                             tasks → `agent`";
+const TOOL_GUIDANCE: &str = "Read before you write; search before you ask.\nMatching workflow → \
+                             `Skill` | External MCP only → `tool_search_tool` (not for builtin \
+                             tools like `glob`) | Substantial independent subtask → `agent`";
 
 const TOOL_SECTION_BUILTIN: &str = "Builtin Tools";
 const TOOL_SECTION_AGENT_COLLABORATION: &str = "Agent Collaboration Tools";
