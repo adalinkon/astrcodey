@@ -207,8 +207,10 @@ impl ExtensionEventSink for BoundExtensionEventSink {
 
 type ExtensionHandler<H> = (String, HookMode, Arc<H>);
 type ToolExtensionHandler<H> = (String, HookMode, ToolHookTarget, Arc<H>);
-type PrioritizedHandler<H> = (i32, String, HookMode, Arc<H>);
+type ContinueAfterStopExtensionHandler<H> = (String, HookMode, ContinueAfterStopOptions, Arc<H>);
 type PrioritizedToolHandler<H> = (i32, String, HookMode, ToolHookTarget, Arc<H>);
+type PrioritizedContinueAfterStopHandler<H> =
+    (i32, String, HookMode, ContinueAfterStopOptions, Arc<H>);
 type PrioritizedEventHandler<K, H> = (K, i32, String, HookMode, Arc<H>);
 
 /// 预排序的 handler 索引。
@@ -223,7 +225,7 @@ struct HandlerIndex {
     prompt_build: Vec<Arc<dyn PromptBuildHandler>>,
     compact: HashMap<CompactEvent, Vec<Arc<dyn CompactHandler>>>,
     post_tool_use_failure: Vec<Arc<dyn PostToolUseFailureHandler>>,
-    continue_after_stop: Vec<ExtensionHandler<dyn ContinueAfterStopHandler>>,
+    continue_after_stop: Vec<ContinueAfterStopExtensionHandler<dyn ContinueAfterStopHandler>>,
     lifecycle: HashMap<ExtensionEvent, Vec<ExtensionHandler<dyn LifecycleHandler>>>,
     // 预计算的 collect 缓存
     tool_metadata:
@@ -264,7 +266,8 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
     let mut pb: Vec<(i32, Arc<dyn PromptBuildHandler>)> = Vec::new();
     let mut cmp: Vec<(CompactEvent, i32, Arc<dyn CompactHandler>)> = Vec::new();
     let mut ptuf: Vec<(i32, Arc<dyn PostToolUseFailureHandler>)> = Vec::new();
-    let mut cas: Vec<PrioritizedHandler<dyn ContinueAfterStopHandler>> = Vec::new();
+    let mut cas: Vec<PrioritizedContinueAfterStopHandler<dyn ContinueAfterStopHandler>> =
+        Vec::new();
     let mut lc: Vec<PrioritizedEventHandler<ExtensionEvent, dyn LifecycleHandler>> = Vec::new();
     let mut tool_metadata = std::collections::HashMap::new();
     let mut tool_ui = std::collections::HashMap::new();
@@ -321,8 +324,14 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
         for (pri, h) in record.reg.post_tool_use_failure() {
             ptuf.push((*pri, Arc::clone(h)));
         }
-        for (mode, pri, h) in record.reg.continue_after_stop() {
-            cas.push((*pri, record.id.clone(), *mode, Arc::clone(h)));
+        for registration in record.reg.continue_after_stop() {
+            cas.push((
+                registration.priority,
+                record.id.clone(),
+                registration.mode,
+                registration.options,
+                Arc::clone(&registration.handler),
+            ));
         }
         for (ev, mode, pri, h) in record.reg.lifecycle() {
             lc.push((ev.clone(), *pri, record.id.clone(), *mode, Arc::clone(h)));
@@ -390,7 +399,10 @@ fn build_handler_index(records: &[ExtensionRecord]) -> HandlerIndex {
         prompt_build: pb.into_iter().map(|(_, h)| h).collect(),
         compact: group_by_event_plain(cmp),
         post_tool_use_failure: ptuf.into_iter().map(|(_, h)| h).collect(),
-        continue_after_stop: cas.into_iter().map(|(_, id, m, h)| (id, m, h)).collect(),
+        continue_after_stop: cas
+            .into_iter()
+            .map(|(_, id, m, options, h)| (id, m, options, h))
+            .collect(),
         lifecycle: group_by_event_with_mode(lc),
         tool_metadata,
         tool_ui,
@@ -1403,7 +1415,7 @@ impl ExtensionRunner {
     /// LLM 自然结束（无 tool call）后询问扩展是否再跑一个 step。
     ///
     /// 按优先级降序；首个返回 [`ContinueAfterStopResult::ContinueOneStep`] 的 blocking
-    /// handler 生效。每轮 turn 的继续次数由宿主 [`TurnState`] 预算限制。
+    /// handler 生效。每个 handler 的每轮预算由插件注册时声明。
     pub async fn emit_continue_after_stop(
         &self,
         ctx: ContinueAfterStopContext,
@@ -1413,7 +1425,15 @@ impl ExtensionRunner {
             return Ok(ContinueAfterStopResult::EndTurn);
         }
 
-        for (extension_id, mode, handler) in &index.continue_after_stop {
+        for (extension_id, mode, options, handler) in &index.continue_after_stop {
+            if !options.allows(ctx.continuations_this_turn) {
+                tracing::debug!(
+                    extension_id = %extension_id,
+                    continuations_this_turn = ctx.continuations_this_turn,
+                    "ContinueAfterStop: extension continuation limit exhausted"
+                );
+                continue;
+            }
             match mode {
                 HookMode::Blocking => {
                     let result = tokio::time::timeout(self.timeout, handler.handle(ctx.clone()))
@@ -1905,12 +1925,14 @@ mod tests {
         time::Duration,
     };
 
-    use astrcode_core::{event::EventPayload, tool_access::ResourceAccess};
+    use astrcode_core::{config::ModelSelection, event::EventPayload, tool_access::ResourceAccess};
     use astrcode_extension_sdk::{
         extension::{
-            Extension, ExtensionCapability, ExtensionCtx, ExtensionError, HookMode,
-            PreToolUseContext, PreToolUseHandler, PreToolUseResult, ProviderContext, ProviderEvent,
-            ProviderHandler, ProviderResult, Registrar, StopReason, ToolHandler, ToolHookTarget,
+            ContinueAfterStopContext, ContinueAfterStopHandler, ContinueAfterStopOptions,
+            ContinueAfterStopResult, Extension, ExtensionCapability, ExtensionCtx, ExtensionError,
+            HookMode, PreToolUseContext, PreToolUseHandler, PreToolUseResult, ProviderContext,
+            ProviderEvent, ProviderHandler, ProviderResult, Registrar, StopReason, ToolHandler,
+            ToolHookTarget,
         },
         tool::{
             ExecutionMode, ToolCapabilities, ToolDefinition, ToolExecutionContext, ToolOrigin,
@@ -1963,6 +1985,16 @@ mod tests {
     struct BlockingProviderResponseExtension;
 
     struct BlockingProviderHook;
+
+    struct ContinueAfterStopProbeExtension {
+        id: &'static str,
+        options: ContinueAfterStopOptions,
+        calls: Arc<AtomicUsize>,
+    }
+
+    struct ContinueAfterStopProbe {
+        calls: Arc<AtomicUsize>,
+    }
 
     #[async_trait::async_trait]
     impl Extension for StateProbeExtension {
@@ -2122,6 +2154,46 @@ mod tests {
             Ok(ProviderResult::Block {
                 reason: "response observers cannot block".into(),
             })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Extension for ContinueAfterStopProbeExtension {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn register(&self, reg: &mut Registrar) {
+            reg.on_continue_after_stop(
+                HookMode::Blocking,
+                0,
+                self.options,
+                Arc::new(ContinueAfterStopProbe {
+                    calls: Arc::clone(&self.calls),
+                }),
+            );
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ContinueAfterStopHandler for ContinueAfterStopProbe {
+        async fn handle(
+            &self,
+            _ctx: ContinueAfterStopContext,
+        ) -> Result<ContinueAfterStopResult, ExtensionError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ContinueAfterStopResult::ContinueOneStep)
+        }
+    }
+
+    fn continue_after_stop_ctx(continuations_this_turn: u32) -> ContinueAfterStopContext {
+        ContinueAfterStopContext {
+            session_id: "session".into(),
+            working_dir: "D:/workspace".into(),
+            model: ModelSelection::simple("model"),
+            assistant_text: "done".into(),
+            finish_reason: "stop".into(),
+            continuations_this_turn,
         }
     }
 
@@ -2476,6 +2548,78 @@ mod tests {
             diagnostics.last_hook.as_deref(),
             Some("after_provider_response")
         );
+    }
+
+    #[tokio::test]
+    async fn continue_after_stop_default_options_do_not_limit_continuations() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let runner = ExtensionRunner::new(Duration::from_secs(1));
+        runner
+            .register(Arc::new(ContinueAfterStopProbeExtension {
+                id: "default-continue",
+                options: ContinueAfterStopOptions::default(),
+                calls: Arc::clone(&calls),
+            }))
+            .await
+            .unwrap();
+
+        let result = runner
+            .emit_continue_after_stop(continue_after_stop_ctx(100))
+            .await
+            .unwrap();
+
+        assert_eq!(result, ContinueAfterStopResult::ContinueOneStep);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn continue_after_stop_limited_options_stop_after_configured_continuations() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let runner = ExtensionRunner::new(Duration::from_secs(1));
+        runner
+            .register(Arc::new(ContinueAfterStopProbeExtension {
+                id: "limited-continue",
+                options: ContinueAfterStopOptions::limited(3),
+                calls: Arc::clone(&calls),
+            }))
+            .await
+            .unwrap();
+
+        let allowed = runner
+            .emit_continue_after_stop(continue_after_stop_ctx(2))
+            .await
+            .unwrap();
+        assert_eq!(allowed, ContinueAfterStopResult::ContinueOneStep);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let blocked = runner
+            .emit_continue_after_stop(continue_after_stop_ctx(3))
+            .await
+            .unwrap();
+        assert_eq!(blocked, ContinueAfterStopResult::EndTurn);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn continue_after_stop_unlimited_options_allow_late_continuations() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let runner = ExtensionRunner::new(Duration::from_secs(1));
+        runner
+            .register(Arc::new(ContinueAfterStopProbeExtension {
+                id: "unlimited-continue",
+                options: ContinueAfterStopOptions::unlimited(),
+                calls: Arc::clone(&calls),
+            }))
+            .await
+            .unwrap();
+
+        let result = runner
+            .emit_continue_after_stop(continue_after_stop_ctx(100))
+            .await
+            .unwrap();
+
+        assert_eq!(result, ContinueAfterStopResult::ContinueOneStep);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

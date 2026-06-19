@@ -49,6 +49,7 @@ E2E：`cargo test -p astrcode-extensions --test s5r_e2e_test`
 | `astrcode-skill` | `astrcode-extension-skill` | 启用 | 斜杠命令 Skill 发现与调度 |
 | `astrcode-todo-tool` | `astrcode-extension-todo-tool` | 启用 | Todo 进度追踪工具 |
 | `astrcode-mode` | `astrcode-extension-mode` | 启用 | Code / Plan 模式切换 |
+| `astrcode-goal` | `astrcode-extension-goal` | 启用 | Codex-style session goal 与自动续跑 |
 | `astrcode.memory` | `astrcode-extension-memory` | **关闭** | 项目级 Markdown 记忆 |
 | `astrcode-channels` | `astrcode-extension-channels` | **关闭** | Telegram 通道桥接 |
 | `astrcode-web-tools` | `astrcode-extension-web-tools` | 启用 | `web-search` / `fetch-url` 内置 Web 工具 |
@@ -104,5 +105,11 @@ E2E：`cargo test -p astrcode-extensions --test s5r_e2e_test`
 使用 `astrcode-extension-sdk::worker::Worker` 注册 handler，参考 `tests/s5r-guest/src/main.rs` 与 `s5r_e2e_test.rs`。
 
 **agent-tool 类外置插件**（子 Agent 委派）：见 [extension-author-guide.md — 外置 agent-tool](extension-author-guide.md#外置-agent-tool-类插件)。
+
+### ContinueAfterStop 预算
+
+`ContinueAfterStop` hook 注册时可声明 `ContinueAfterStopOptions`。默认不做 host 级次数限制，是否继续主要交给 handler 自己的状态机决定；需要 host 代为限制时声明 `ContinueAfterStopOptions::limited(n)`，需要明确表达无限续跑时声明 `ContinueAfterStopOptions::unlimited()`。
+
+磁盘 s5r 扩展的握手 manifest 可在 `continue_after_stop` hook 的 `options.max_per_turn` 上携带数字字段；缺省表示不限制，`-1` 也表示无限续跑，非负数表示每 turn 上限。宿主调用 hook 时会在 input 中传入 `continuations_this_turn`，表示当前 turn 已经发生的自动续跑次数。
 
 协议细节见 [s5r-protocol.md](s5r-protocol.md)。

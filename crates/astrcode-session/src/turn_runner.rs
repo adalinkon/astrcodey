@@ -664,19 +664,17 @@ impl TurnLoop {
         finish_reason: &str,
         state: &mut TurnState,
     ) -> Result<bool, TurnError> {
-        if !state.can_continue_after_stop() {
-            return Ok(false);
-        }
         let ctx = ContinueAfterStopContext {
             session_id: self.shared().session_id.to_string(),
             working_dir: self.shared().working_dir.clone(),
             model: self.shared().model_selection(),
             assistant_text: assistant_text.to_string(),
             finish_reason: finish_reason.to_string(),
+            continuations_this_turn: state.continue_after_stop_count(),
         };
         let decision = extension_runner.emit_continue_after_stop(ctx).await?;
         if decision == ContinueAfterStopResult::ContinueOneStep {
-            state.consume_continue_after_stop();
+            state.record_continue_after_stop();
             tracing::debug!("ContinueAfterStop: running one more agent step");
             return Ok(true);
         }

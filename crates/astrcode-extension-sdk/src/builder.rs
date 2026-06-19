@@ -199,6 +199,7 @@ mod tests {
             model: ModelSelection::simple("test"),
             assistant_text: "done".into(),
             finish_reason: "stop".into(),
+            continuations_this_turn: 0,
         };
         let result = handler.handle(ctx).await.unwrap();
         assert_eq!(result, ContinueAfterStopResult::ContinueOneStep);

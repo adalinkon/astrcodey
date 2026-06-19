@@ -11,15 +11,12 @@ use crate::{
     tool_deduplicator::ToolCallDeduplicator,
 };
 
-/// 每轮 turn 内 `ContinueAfterStop` 可触发的额外 step 上限。
-pub(crate) const MAX_CONTINUE_AFTER_STOP_PER_TURN: u8 = 3;
-
 /// Mutable state carried across provider/tool iterations in a single turn.
 pub(crate) struct TurnState {
     final_text: String,
     tool_results: Vec<ToolResult>,
     reactive_compact_used: bool,
-    continue_after_stop_remaining: u8,
+    continue_after_stop_count: u32,
     /// 已计入上下文的非合成 user 消息数（用于 steer flush 检测）。
     tracked_user_message_count: usize,
     active_deferred_tools: HashSet<String>,
@@ -45,7 +42,7 @@ impl TurnState {
             final_text: String::new(),
             tool_results: Vec::new(),
             reactive_compact_used: false,
-            continue_after_stop_remaining: MAX_CONTINUE_AFTER_STOP_PER_TURN,
+            continue_after_stop_count: 0,
             tracked_user_message_count: 0,
             active_deferred_tools,
             all_tools,
@@ -62,12 +59,12 @@ impl TurnState {
         &mut self.tool_deduplicator
     }
 
-    pub(crate) fn can_continue_after_stop(&self) -> bool {
-        self.continue_after_stop_remaining > 0
+    pub(crate) fn continue_after_stop_count(&self) -> u32 {
+        self.continue_after_stop_count
     }
 
-    pub(crate) fn consume_continue_after_stop(&mut self) {
-        self.continue_after_stop_remaining = self.continue_after_stop_remaining.saturating_sub(1);
+    pub(crate) fn record_continue_after_stop(&mut self) {
+        self.continue_after_stop_count = self.continue_after_stop_count.saturating_add(1);
     }
 
     pub(crate) fn tracked_user_message_count(&self) -> usize {

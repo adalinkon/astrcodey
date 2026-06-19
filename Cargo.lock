@@ -204,6 +204,7 @@ version = "0.2.17"
 dependencies = [
  "astrcode-extension-agent-tools",
  "astrcode-extension-channels",
+ "astrcode-extension-goal",
  "astrcode-extension-mcp",
  "astrcode-extension-memory",
  "astrcode-extension-mode",
@@ -357,6 +358,19 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "astrcode-extension-goal"
+version = "0.2.17"
+dependencies = [
+ "astrcode-extension-sdk",
+ "async-trait",
+ "chrono",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

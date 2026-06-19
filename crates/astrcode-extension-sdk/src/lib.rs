@@ -18,12 +18,17 @@ pub mod config {
 
 pub mod llm {
     pub use astrcode_core::llm::{
-        LlmContent, LlmEvent, LlmMessage, LlmProvider, LlmRole, ModelLimits, collect_stream_text,
+        LlmContent, LlmEvent, LlmMessage, LlmProvider, LlmRole, LlmTokenUsage, ModelLimits,
+        collect_stream_text,
     };
 }
 
 pub mod render {
     pub use astrcode_core::render::*;
+}
+
+pub mod event {
+    pub use astrcode_core::event::{Event, EventPayload};
 }
 
 pub mod storage {
@@ -48,7 +53,7 @@ pub mod tool {
 }
 
 pub mod types {
-    pub use astrcode_core::types::project_key_from_path;
+    pub use astrcode_core::types::{SessionId, project_key_from_path};
 }
 
 /// Host path utilities usable by extensions.
@@ -105,13 +110,14 @@ pub mod prelude {
         extension::{
             CommandContext, CommandHandler, CompactContext, CompactContributions, CompactEvent,
             CompactHandler, CompactResult, ContinueAfterStopContext, ContinueAfterStopHandler,
-            ContinueAfterStopResult, Extension, ExtensionCapability, ExtensionCommandResult,
-            ExtensionConfig, ExtensionCtx, ExtensionError, ExtensionEvent, ExtensionManifest,
-            HookMode, HookResult, LifecycleContext, LifecycleHandler, PostToolUseContext,
-            PostToolUseHandler, PostToolUseResult, PreToolUseContext, PreToolUseHandler,
-            PreToolUseResult, PromptBuildContext, PromptBuildHandler, PromptContributions,
-            ProviderContext, ProviderEvent, ProviderHandler, ProviderResult, Registrar,
-            SlashCommand, StatusItemUpdatePayload, StopReason, ToolHandler,
+            ContinueAfterStopLimit, ContinueAfterStopOptions, ContinueAfterStopResult, Extension,
+            ExtensionCapability, ExtensionCommandResult, ExtensionConfig, ExtensionCtx,
+            ExtensionError, ExtensionEvent, ExtensionManifest, HookMode, HookResult,
+            LifecycleContext, LifecycleHandler, PostToolUseContext, PostToolUseHandler,
+            PostToolUseResult, PreToolUseContext, PreToolUseHandler, PreToolUseResult,
+            PromptBuildContext, PromptBuildHandler, PromptContributions, ProviderContext,
+            ProviderEvent, ProviderHandler, ProviderResult, Registrar, SlashCommand,
+            StatusItemUpdatePayload, StopReason, ToolHandler,
         },
         manifest::validate_manifest,
         s5r::effects::HandlerResult,

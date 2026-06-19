@@ -16,6 +16,7 @@ pub use registry::{CommandHandlerFn, HookHandlerFn, ToolHandlerFn, WorkerCallCon
 use serde_json::{Value, json};
 
 use crate::{
+    extension::ContinueAfterStopOptions,
     runtime::{CancelToken, InvokeHandler, InvokeReply, Peer, ProcessStdioTransport},
     s5r::{HandlerDescriptor, HandlerResult, PeerInfo, S5R_STACK},
     tool::ToolDefinition,
@@ -83,13 +84,17 @@ impl Worker {
     }
 
     /// 注册 [`continue_after_stop`](crate::extension::ContinueAfterStopHandler) hook。
+    ///
+    /// `options.max_per_turn` 在线缆 manifest 中表示为一个数字：`-1` 为无限，
+    /// 非负数为每 turn 上限。
     pub fn on_continue_after_stop(
         &mut self,
         mode: impl Into<String>,
+        options: ContinueAfterStopOptions,
         handler: HookHandlerFn,
     ) -> Result<&mut Self, ErrorPayload> {
         self.registry
-            .register_hook("continue_after_stop", mode, handler)?;
+            .register_continue_after_stop_hook(mode, options, handler)?;
         Ok(self)
     }
 

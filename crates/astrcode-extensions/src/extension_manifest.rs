@@ -1,6 +1,6 @@
 //! s5r 扩展握手 manifest 类型与解析。
 
-use astrcode_core::extension::{ExtensionCapability, ExtensionEventDecl};
+use astrcode_core::extension::{ContinueAfterStopLimit, ExtensionCapability, ExtensionEventDecl};
 use astrcode_extension_sdk::s5r::capability_from_wire;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -44,6 +44,14 @@ pub mod manifest_types {
     pub struct ManifestHook {
         pub on: String,
         pub mode: String,
+        #[serde(default)]
+        pub options: ManifestHookOptions,
+    }
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct ManifestHookOptions {
+        #[serde(default)]
+        pub max_per_turn: Option<ContinueAfterStopLimit>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]

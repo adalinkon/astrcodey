@@ -204,6 +204,7 @@ First-party extensions are wired through [`astrcode-bundled-extensions`](crates/
 | Extension | Crate | Description |
 |---|---|---|
 | **Mode** | `astrcode-extension-mode` | Agent running mode switching (Code / Plan), with Exit Gate, plan artifact persistence, keybinding & status item registration |
+| **Goal** | `astrcode-extension-goal` | Codex-style session goal tracking, token budgets, and automatic continuation |
 | **Skill** | `astrcode-extension-skill` | Slash-command skill discovery and dispatch |
 | **MCP** | `astrcode-extension-mcp` | MCP protocol client with persistent process pool, background pre-warm, inflight merge |
 | **Todo Tool** | `astrcode-extension-todo-tool` | Progress tracking todo list tool |
@@ -343,10 +344,10 @@ For detailed configuration documentation, see [Configuration Guide](docs/configu
    ┌─────────┴──┐  ┌────┴─────────────────────────┐
    │astrcode-   │  │ Extension layer             │
    │ context    │  │ bundled-extensions          │
-   │ Token budget│  │ sdk · mode · skill · todo  │
-   │ Auto-compact│  │ agent-tools · mcp · memory │
-   └────────────┘  │ channels · web-tools       │
-                   │ + disk IPC extensions      │
+   │ Token budget│  │ sdk · mode · goal · skill  │
+   │ Auto-compact│  │ todo · agent-tools · mcp   │
+   └────────────┘  │ memory · channels · web-tools │
+                   │ + disk IPC extensions         │
                    └────────────────────────────┘
         ┌─────────────────────────────────────┐
         │              Shared layer            │
@@ -385,6 +386,7 @@ The Cargo workspace under [`crates/`](crates/) contains **23 crates**, plus [`sr
 | [`astrcode-extension-sdk`](crates/astrcode-extension-sdk) | 2.3k | Stable extension authoring API, capability declarations, wire protocol types, manifest helpers |
 | [`astrcode-bundled-extensions`](crates/astrcode-bundled-extensions) | 0.1k | Composition root that registers all first-party extension crates |
 | [`astrcode-extension-mode`](crates/astrcode-extension-mode) | 1.2k | Code / Plan mode switching, exit gate, plan artifact, keybindings & status bar |
+| [`astrcode-extension-goal`](crates/astrcode-extension-goal) | 1.1k | Codex-style session goals, token budgets, and automatic continuation |
 | [`astrcode-extension-skill`](crates/astrcode-extension-skill) | 0.9k | Slash-command skill discovery and Skill tool dispatch |
 | [`astrcode-extension-todo-tool`](crates/astrcode-extension-todo-tool) | 0.8k | Progress-tracking todo list tool |
 | [`astrcode-extension-agent-tools`](crates/astrcode-extension-agent-tools) | 0.7k | Sub-agent delegation, agent discovery (Claude Code compatible) |

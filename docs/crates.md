@@ -6,7 +6,7 @@
 
 ## 总览
 
-AstrCode 当前 workspace 有 26 个成员：`crates/` 下 25 个 crate，加上 `src-tauri` 的桌面壳 `astrcode-desktop`。
+AstrCode 当前 workspace 有 27 个成员：`crates/` 下 26 个 crate，加上 `src-tauri` 的桌面壳 `astrcode-desktop`。
 
 整体分层可以按依赖方向理解：
 
@@ -41,6 +41,7 @@ AstrCode 当前 workspace 有 26 个成员：`crates/` 下 25 个 crate，加上
 | `astrcode-extension-skill` | `crates/astrcode-extension-skill` | lib | Claude-style Skill 发现、`Skill` 工具、skill slash command |
 | `astrcode-extension-todo-tool` | `crates/astrcode-extension-todo-tool` | lib | `todoWrite` session-local 进度列表 |
 | `astrcode-extension-mode` | `crates/astrcode-extension-mode` | lib | code/plan 模式切换、plan artifact、`askUser` |
+| `astrcode-extension-goal` | `crates/astrcode-extension-goal` | lib | Codex-style session goal、token 预算与自动续跑 |
 | `astrcode-extension-memory` | `crates/astrcode-extension-memory` | lib | 用户/项目记忆、记忆索引、召回、保存/删除工具 |
 | `astrcode-extension-channels` | `crates/astrcode-extension-channels` | lib | Telegram channel 入口扩展 |
 | `astrcode-extension-web-tools` | `crates/astrcode-extension-web-tools` | lib | `web-search` 和 `fetch-url` 网络工具 |
@@ -318,7 +319,7 @@ AstrCode 当前 workspace 有 26 个成员：`crates/` 下 25 个 crate，加上
 
 Feature：
 
-- `default` 包含 agent-tools、mcp、skill、todo-tool、mode、memory、channels、web-tools。
+- `default` 包含 agent-tools、mcp、skill、todo-tool、mode、goal、memory、channels、web-tools。
 - 单独 feature 对应每个内置扩展，便于裁剪二进制。
 
 依赖边界：依赖内置扩展 crate 和 `astrcode-extensions`/`astrcode-extension-sdk`。这是少数允许直接依赖所有内置扩展的 composition crate。
@@ -460,6 +461,27 @@ Feature：
 依赖边界：只依赖 `astrcode-extension-sdk`。
 
 测试线索：`tools.rs`、`store.rs`、`catalog.rs`、`ask_user.rs` 覆盖模式切换、计划写入、状态持久化和 UI 参数。
+
+## `astrcode-extension-goal`
+
+路径：`crates/astrcode-extension-goal`
+
+职责：提供 Codex-style session goal 状态机，让模型可以创建、查询、完成或标记阻塞一个当前目标，并在目标仍 active 时通过 `ContinueAfterStop` 请求宿主继续一个 agent step。
+
+关键行为：
+
+- 扩展 id：`astrcode-goal`。
+- 工具：`getGoal`、`createGoal`、`updateGoal`。
+- Slash command：`/goal`，可显示、创建、暂停、恢复、清空、complete 或 blocked 当前 goal。
+- 持久化：`<session>/extension_data/astrcode-goal/goal/goal-state.json`。
+- 续跑：注册 `ContinueAfterStopOptions::unlimited()` 的 blocking `ContinueAfterStop` hook；hook 只设置下一步续跑意图，真正的目标上下文由 `BeforeProviderRequest` 以非持久 provider-visible user message 注入。
+- Token 预算：声明 `SessionHistory` 后通过 SDK `EventReader` 汇总 `TokenUsageRecorded`，达到 `tokenBudget` 时把 goal 标为 `budget_limited` 并停止自动续跑。
+
+能力声明：`SessionState`、`SessionHistory`。
+
+依赖边界：只依赖 `astrcode-extension-sdk`。session 数据目录、事件读取和 LLM/tool 类型都通过 SDK re-export 使用。
+
+测试线索：`store.rs` 覆盖状态持久化和状态转移；`lib.rs` 覆盖 token 预算、prompt 注入文本和 token fallback 汇总。
 
 ## `astrcode-extension-memory`
 
@@ -702,4 +724,3 @@ Feature：
 依赖边界：不依赖 workspace 内部 Rust crate；通过 sidecar 进程和 HTTP 协议与后端交互。
 
 测试线索：当前该 crate 主要依赖编译检查和桌面集成验证；改 commands 或 sidecar 协议时应同步前端调用方。
-

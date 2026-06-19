@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 
 use astrcode_core::extension::{
-    CompactContributions, CompactResult, ContinueAfterStopResult, EXTENSION_TOOL_OUTCOME_KEY,
-    ExtensionCommandResult, ExtensionError, ExtensionEvent, ExtensionEventDecl,
-    ExtensionToolOutcome, HookMode, HookResult, PostToolUseResult, PreToolUseResult,
-    PromptContributions, ProviderResult,
+    CompactContributions, CompactResult, ContinueAfterStopOptions, ContinueAfterStopResult,
+    EXTENSION_TOOL_OUTCOME_KEY, ExtensionCommandResult, ExtensionError, ExtensionEvent,
+    ExtensionEventDecl, ExtensionToolOutcome, HookMode, HookResult, PostToolUseResult,
+    PreToolUseResult, PromptContributions, ProviderResult,
 };
 use astrcode_extension_sdk::{
     extension::SlashCommand,
@@ -52,13 +52,24 @@ pub fn build_commands(reg: &ExtensionRegistration) -> Vec<SlashCommand> {
         .collect()
 }
 
-pub fn build_subscriptions(reg: &ExtensionRegistration) -> Vec<(ExtensionEvent, HookMode)> {
+pub fn build_subscriptions(
+    reg: &ExtensionRegistration,
+) -> Vec<(ExtensionEvent, HookMode, ContinueAfterStopOptions)> {
     reg.hooks
         .iter()
         .filter_map(|h: &ManifestHook| {
             let event = event_from_name(&h.on)?;
             let mode = mode_from_name(&h.mode)?;
-            Some((event, mode))
+            Some((
+                event,
+                mode,
+                ContinueAfterStopOptions {
+                    max_per_turn: h
+                        .options
+                        .max_per_turn
+                        .unwrap_or(ContinueAfterStopOptions::default().max_per_turn),
+                },
+            ))
         })
         .collect()
 }

@@ -7,10 +7,10 @@ use std::{path::Path, sync::Arc};
 
 use astrcode_core::extension::{
     CommandContext, CommandHandler, CompactContext, CompactEvent, CompactHandler, CompactResult,
-    ContinueAfterStopContext, ContinueAfterStopHandler, ContinueAfterStopResult, Extension,
-    ExtensionCapability, ExtensionCommandResult, ExtensionError, ExtensionEvent,
-    ExtensionEventDecl, HookMode, HookResult, LifecycleContext, LifecycleHandler,
-    PostToolUseContext, PostToolUseHandler, PostToolUseResult, PreToolUseContext,
+    ContinueAfterStopContext, ContinueAfterStopHandler, ContinueAfterStopOptions,
+    ContinueAfterStopResult, Extension, ExtensionCapability, ExtensionCommandResult,
+    ExtensionError, ExtensionEvent, ExtensionEventDecl, HookMode, HookResult, LifecycleContext,
+    LifecycleHandler, PostToolUseContext, PostToolUseHandler, PostToolUseResult, PreToolUseContext,
     PreToolUseHandler, PreToolUseResult, PromptBuildContext, PromptBuildHandler,
     PromptContributions, ProviderContext, ProviderHandler, ProviderResult, Registrar, SlashCommand,
     StopReason, ToolHandler,
@@ -41,7 +41,7 @@ pub struct S5rExtension {
     event_decls: Vec<ExtensionEventDecl>,
     tools: Vec<ToolDefinition>,
     commands: Vec<SlashCommand>,
-    subscriptions: Vec<(ExtensionEvent, HookMode)>,
+    subscriptions: Vec<(ExtensionEvent, HookMode, ContinueAfterStopOptions)>,
 }
 
 impl S5rExtension {
@@ -165,7 +165,7 @@ impl Extension for S5rExtension {
                 }),
             );
         }
-        for (event, mode) in &self.subscriptions {
+        for (event, mode, options) in &self.subscriptions {
             let session = Arc::clone(&self.session);
             let ext_id = self.id.clone();
             match event {
@@ -208,6 +208,7 @@ impl Extension for S5rExtension {
                     reg.on_continue_after_stop(
                         *mode,
                         0,
+                        *options,
                         Arc::new(S5rContinueAfterStopHandler { session, ext_id }),
                     );
                 },
@@ -518,6 +519,7 @@ impl ContinueAfterStopHandler for S5rContinueAfterStopHandler {
             "model": ctx.model,
             "assistant_text": ctx.assistant_text,
             "finish_reason": ctx.finish_reason,
+            "continuations_this_turn": ctx.continuations_this_turn,
         });
         let hid = handler_id(&self.ext_id, "hook", "continue_after_stop");
         let resp = self

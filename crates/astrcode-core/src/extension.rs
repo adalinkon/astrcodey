@@ -649,6 +649,14 @@ pub struct ToolHookRegistration<H: ?Sized> {
     pub handler: std::sync::Arc<H>,
 }
 
+#[derive(Clone)]
+pub struct ContinueAfterStopRegistration<H: ?Sized> {
+    pub mode: HookMode,
+    pub priority: i32,
+    pub options: ContinueAfterStopOptions,
+    pub handler: std::sync::Arc<H>,
+}
+
 /// 插件在 PromptBuild hook 中提供的 prompt 片段。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PromptContributions {
@@ -893,8 +901,117 @@ pub enum PostToolUseResult {
 pub enum ContinueAfterStopResult {
     /// 结束 turn（默认）。
     EndTurn,
-    /// 再执行一个 step（由宿主限制每轮预算）。
+    /// 再执行一个 step（可由注册该 hook 时声明的 options 限制）。
     ContinueOneStep,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContinueAfterStopOptions {
+    pub max_per_turn: ContinueAfterStopLimit,
+}
+
+impl ContinueAfterStopOptions {
+    pub const fn limited(max_per_turn: u32) -> Self {
+        Self {
+            max_per_turn: ContinueAfterStopLimit::limited(max_per_turn),
+        }
+    }
+
+    pub const fn unlimited() -> Self {
+        Self {
+            max_per_turn: ContinueAfterStopLimit::unlimited(),
+        }
+    }
+
+    pub const fn allows(self, continuations_this_turn: u32) -> bool {
+        self.max_per_turn.allows(continuations_this_turn)
+    }
+}
+
+impl Default for ContinueAfterStopOptions {
+    fn default() -> Self {
+        Self::unlimited()
+    }
+}
+
+/// 单个 `ContinueAfterStop` hook 在同一个 turn 内可请求的续跑上限。
+///
+/// S5R manifest 中用数字表示：`-1` 表示无限，非负数表示每 turn 上限。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "i64", into = "i64")]
+pub enum ContinueAfterStopLimit {
+    Limited { max_per_turn: u32 },
+    Unlimited,
+}
+
+impl ContinueAfterStopLimit {
+    pub const fn limited(max_per_turn: u32) -> Self {
+        Self::Limited { max_per_turn }
+    }
+
+    pub const fn unlimited() -> Self {
+        Self::Unlimited
+    }
+
+    pub const fn allows(self, continuations_this_turn: u32) -> bool {
+        match self {
+            Self::Limited { max_per_turn } => continuations_this_turn < max_per_turn,
+            Self::Unlimited => true,
+        }
+    }
+}
+
+impl TryFrom<i64> for ContinueAfterStopLimit {
+    type Error = String;
+
+    fn try_from(max_per_turn: i64) -> Result<Self, Self::Error> {
+        match max_per_turn {
+            -1 => Ok(Self::Unlimited),
+            value if (0..=i64::from(u32::MAX)).contains(&value) => Ok(Self::limited(value as u32)),
+            _ => {
+                Err("continue_after_stop max_per_turn must be -1 or a non-negative integer".into())
+            },
+        }
+    }
+}
+
+impl From<ContinueAfterStopLimit> for i64 {
+    fn from(budget: ContinueAfterStopLimit) -> Self {
+        match budget {
+            ContinueAfterStopLimit::Limited { max_per_turn } => i64::from(max_per_turn),
+            ContinueAfterStopLimit::Unlimited => -1,
+        }
+    }
+}
+
+#[cfg(test)]
+mod continue_after_stop_limit_tests {
+    use super::*;
+
+    #[test]
+    fn default_options_are_unlimited() {
+        assert!(ContinueAfterStopOptions::default().allows(u32::MAX));
+    }
+
+    #[test]
+    fn serializes_unlimited_as_negative_one() {
+        let value = serde_json::to_value(ContinueAfterStopLimit::unlimited()).unwrap();
+        assert_eq!(value, serde_json::json!(-1));
+    }
+
+    #[test]
+    fn deserializes_non_negative_values_as_limited_limit() {
+        let limit: ContinueAfterStopLimit = serde_json::from_value(serde_json::json!(7)).unwrap();
+        assert_eq!(limit, ContinueAfterStopLimit::limited(7));
+    }
+
+    #[test]
+    fn rejects_negative_values_other_than_unlimited_sentinel() {
+        let error = serde_json::from_value::<ContinueAfterStopLimit>(serde_json::json!(-2))
+            .expect_err("negative values other than -1 should be invalid");
+
+        assert!(error.to_string().contains("must be -1"));
+    }
 }
 
 /// LLM 自然结束后的扩展决策钩子上下文。
@@ -905,6 +1022,7 @@ pub struct ContinueAfterStopContext {
     pub model: ModelSelection,
     pub assistant_text: String,
     pub finish_reason: String,
+    pub continuations_this_turn: u32,
 }
 
 /// Provider 钩子结果。
@@ -1230,7 +1348,7 @@ pub struct Registrar {
     prompt_build: Vec<(i32, std::sync::Arc<dyn PromptBuildHandler>)>,
     compact: Vec<(CompactEvent, i32, std::sync::Arc<dyn CompactHandler>)>,
     post_tool_use_failure: Vec<(i32, std::sync::Arc<dyn PostToolUseFailureHandler>)>,
-    continue_after_stop: Vec<(HookMode, i32, std::sync::Arc<dyn ContinueAfterStopHandler>)>,
+    continue_after_stop: Vec<ContinueAfterStopRegistration<dyn ContinueAfterStopHandler>>,
     lifecycle: Vec<(
         ExtensionEvent,
         HookMode,
@@ -1428,9 +1546,16 @@ impl Registrar {
         &mut self,
         mode: HookMode,
         priority: i32,
+        options: ContinueAfterStopOptions,
         handler: std::sync::Arc<dyn ContinueAfterStopHandler>,
     ) {
-        self.continue_after_stop.push((mode, priority, handler));
+        self.continue_after_stop
+            .push(ContinueAfterStopRegistration {
+                mode,
+                priority,
+                options,
+                handler,
+            });
     }
 
     pub fn on_event(
@@ -1538,7 +1663,7 @@ impl Registrar {
 
     pub fn continue_after_stop(
         &self,
-    ) -> &[(HookMode, i32, std::sync::Arc<dyn ContinueAfterStopHandler>)] {
+    ) -> &[ContinueAfterStopRegistration<dyn ContinueAfterStopHandler>] {
         &self.continue_after_stop
     }
 

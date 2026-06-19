@@ -5,9 +5,12 @@ use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 use serde_json::Value;
 
 use crate::{
+    extension::ContinueAfterStopOptions,
     runtime::CancelToken,
     s5r::{CAP_HANDLER_INVOKE, ErrorPayload, HandlerResult, InvokeMsg},
-    worker::manifest::{CommandManifestEntry, HookManifestEntry, ManifestCatalog},
+    worker::manifest::{
+        CommandManifestEntry, HookManifestEntry, HookManifestOptions, ManifestCatalog,
+    },
 };
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -100,6 +103,31 @@ impl HandlerRegistry {
         self.catalog.hooks.push(HookManifestEntry {
             on: on.clone(),
             mode: mode.into(),
+            options: HookManifestOptions::default(),
+        });
+        self.hooks.insert(on, handler);
+        Ok(())
+    }
+
+    pub(crate) fn register_continue_after_stop_hook(
+        &mut self,
+        mode: impl Into<String>,
+        options: ContinueAfterStopOptions,
+        handler: HookHandlerFn,
+    ) -> Result<(), ErrorPayload> {
+        let on = "continue_after_stop".to_string();
+        if self.hooks.contains_key(&on) {
+            return Err(ErrorPayload::new(
+                "duplicate_registration",
+                format!("duplicate hook registration: {on}"),
+            ));
+        }
+        self.catalog.hooks.push(HookManifestEntry {
+            on: on.clone(),
+            mode: mode.into(),
+            options: HookManifestOptions {
+                max_per_turn: Some(options.max_per_turn),
+            },
         });
         self.hooks.insert(on, handler);
         Ok(())
