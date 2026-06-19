@@ -39,6 +39,7 @@ pub trait ChatAccumulator: Default + Send + Sync + 'static {
     );
     fn ingest_responses(&mut self, event: &serde_json::Value, tx: &mpsc::UnboundedSender<LlmEvent>);
     fn done_sent(&self) -> bool;
+    fn finish_reason(&self) -> Option<&str>;
     fn mark_done(&mut self);
 }
 
@@ -69,6 +70,7 @@ pub struct StandardAccumulator {
     tool_calls: BTreeMap<u64, ToolCallPartial>,
     response_tool_items: BTreeMap<String, ResponseToolCallPartial>,
     done_sent: bool,
+    finish_reason: Option<String>,
     cache_usage_reported: bool,
     /// 累计的 reasoning 文本，用于 diff 提取增量。
     reasoning_accumulated: String,
@@ -212,8 +214,10 @@ impl ChatAccumulator for StandardAccumulator {
         tx: &mpsc::UnboundedSender<LlmEvent>,
     ) {
         if !self.cache_usage_reported {
-            trace_prompt_cache_usage(event);
-            self.cache_usage_reported = true;
+            if let Some(usage) = extract_token_usage(event) {
+                send_event(tx, LlmEvent::Usage { usage });
+                self.cache_usage_reported = true;
+            }
         }
         if let Some(choices) = event["choices"].as_array() {
             for choice in choices {
@@ -260,15 +264,7 @@ impl ChatAccumulator for StandardAccumulator {
                     }
                 }
                 if let Some(finish) = choice["finish_reason"].as_str() {
-                    if !self.done_sent {
-                        self.done_sent = true;
-                        send_event(
-                            tx,
-                            LlmEvent::Done {
-                                finish_reason: finish.to_string(),
-                            },
-                        );
-                    }
+                    self.finish_reason = Some(finish.to_string());
                 }
             }
         }
@@ -280,8 +276,10 @@ impl ChatAccumulator for StandardAccumulator {
         tx: &mpsc::UnboundedSender<LlmEvent>,
     ) {
         if !self.cache_usage_reported {
-            trace_prompt_cache_usage(event);
-            self.cache_usage_reported = true;
+            if let Some(usage) = extract_token_usage(event) {
+                send_event(tx, LlmEvent::Usage { usage });
+                self.cache_usage_reported = true;
+            }
         }
         let Some(event_type) = event["type"].as_str() else {
             return;
@@ -416,6 +414,10 @@ impl ChatAccumulator for StandardAccumulator {
 
     fn done_sent(&self) -> bool {
         self.done_sent
+    }
+
+    fn finish_reason(&self) -> Option<&str> {
+        self.finish_reason.as_deref()
     }
 
     fn mark_done(&mut self) {
@@ -690,12 +692,7 @@ impl<A: ChatAccumulator> OpenAiProvider<A> {
             process_sse_line(&line, &mut accumulator, api_mode, tx);
         }
         if !accumulator.done_sent() && !tx.is_closed() {
-            send_event(
-                tx,
-                LlmEvent::Done {
-                    finish_reason: "stop".into(),
-                },
-            );
+            emit_done_once(&mut accumulator, tx);
         }
         Ok(())
     }
@@ -772,12 +769,8 @@ fn emit_done_once(accumulator: &mut impl ChatAccumulator, tx: &mpsc::UnboundedSe
         return;
     }
     accumulator.mark_done();
-    send_event(
-        tx,
-        LlmEvent::Done {
-            finish_reason: "stop".into(),
-        },
-    );
+    let finish_reason = accumulator.finish_reason().unwrap_or("stop").to_string();
+    send_event(tx, LlmEvent::Done { finish_reason });
 }
 
 fn process_sse_data(
@@ -887,30 +880,49 @@ fn json_argument_fragment(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn trace_prompt_cache_usage(event: &serde_json::Value) {
+fn extract_token_usage(event: &serde_json::Value) -> Option<LlmTokenUsage> {
     let usage = event
         .get("usage")
-        .or_else(|| event.pointer("/response/usage"));
-    let Some(usage) = usage else {
-        return;
-    };
+        .or_else(|| event.pointer("/response/usage"))?;
 
-    let prompt_tokens = usage
+    let input_tokens = usage
         .get("prompt_tokens")
         .or_else(|| usage.get("input_tokens"))
         .and_then(|v| v.as_u64());
-    let cached_tokens = usage
+    let cached_input_tokens = usage
         .pointer("/prompt_tokens_details/cached_tokens")
         .or_else(|| usage.pointer("/input_tokens_details/cached_tokens"))
         .and_then(|v| v.as_u64());
+    let output_tokens = usage
+        .get("completion_tokens")
+        .or_else(|| usage.get("output_tokens"))
+        .and_then(|v| v.as_u64());
+    let reasoning_output_tokens = usage
+        .pointer("/completion_tokens_details/reasoning_tokens")
+        .or_else(|| usage.pointer("/output_tokens_details/reasoning_tokens"))
+        .and_then(|v| v.as_u64());
+    let total_tokens = usage.get("total_tokens").and_then(|v| v.as_u64());
 
-    if prompt_tokens.is_some() || cached_tokens.is_some() {
-        tracing::debug!(
-            ?prompt_tokens,
-            ?cached_tokens,
-            "LLM prompt cache usage reported"
-        );
+    let usage = LlmTokenUsage {
+        input_tokens,
+        cached_input_tokens,
+        output_tokens,
+        reasoning_output_tokens,
+        total_tokens,
+    };
+    if token_usage_has_value(&usage) {
+        Some(usage)
+    } else {
+        None
     }
+}
+
+fn token_usage_has_value(usage: &LlmTokenUsage) -> bool {
+    usage.input_tokens.is_some()
+        || usage.cached_input_tokens.is_some()
+        || usage.output_tokens.is_some()
+        || usage.reasoning_output_tokens.is_some()
+        || usage.total_tokens.is_some()
 }
 
 // ─── 便捷类型别名 ──────────────────────────────────────────────────────
@@ -1017,6 +1029,126 @@ mod tests {
         let a = p.build_request_body(&messages, &[sample_tool()]);
         let b = p.build_request_body(&messages, &[other]);
         assert_ne!(a["prompt_cache_key"], b["prompt_cache_key"]);
+    }
+
+    #[test]
+    fn chat_completion_usage_emits_token_usage() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut acc = StandardAccumulator::default();
+
+        acc.ingest_chat_completion(
+            &serde_json::json!({
+                "usage": {
+                    "prompt_tokens": 100,
+                    "prompt_tokens_details": {"cached_tokens": 64},
+                    "completion_tokens": 20,
+                    "completion_tokens_details": {"reasoning_tokens": 5},
+                    "total_tokens": 120
+                },
+                "choices": []
+            }),
+            &tx,
+        );
+
+        let events = drain_events(&mut rx);
+        assert!(matches!(
+            events.as_slice(),
+            [LlmEvent::Usage { usage }]
+                if usage.input_tokens == Some(100)
+                    && usage.cached_input_tokens == Some(64)
+                    && usage.output_tokens == Some(20)
+                    && usage.reasoning_output_tokens == Some(5)
+                    && usage.total_tokens == Some(120)
+        ));
+    }
+
+    #[test]
+    fn chat_completion_usage_after_finish_is_emitted_before_done_marker() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut acc = StandardAccumulator::default();
+
+        process_sse_line(
+            r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+            &mut acc,
+            OpenAiApiMode::ChatCompletions,
+            &tx,
+        );
+        process_sse_line(
+            r#"data: {"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":64},"completion_tokens":20,"total_tokens":120},"choices":[]}"#,
+            &mut acc,
+            OpenAiApiMode::ChatCompletions,
+            &tx,
+        );
+        process_sse_line(
+            "data: [DONE]",
+            &mut acc,
+            OpenAiApiMode::ChatCompletions,
+            &tx,
+        );
+
+        let events = drain_events(&mut rx);
+        assert!(matches!(
+            events.as_slice(),
+            [
+                LlmEvent::Usage { usage },
+                LlmEvent::Done { finish_reason }
+            ] if usage.input_tokens == Some(100)
+                && usage.cached_input_tokens == Some(64)
+                && usage.output_tokens == Some(20)
+                && usage.total_tokens == Some(120)
+                && finish_reason == "stop"
+        ));
+        assert!(acc.done_sent());
+    }
+
+    #[test]
+    fn responses_usage_emits_after_initial_delta_without_usage() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut acc = StandardAccumulator::default();
+
+        acc.ingest_responses(
+            &serde_json::json!({
+                "type": "response.output_text.delta",
+                "delta": "ok"
+            }),
+            &tx,
+        );
+        acc.ingest_responses(
+            &serde_json::json!({
+                "type": "response.completed",
+                "response": {
+                    "usage": {
+                        "input_tokens": 50,
+                        "input_tokens_details": {"cached_tokens": 32},
+                        "output_tokens": 10,
+                        "output_tokens_details": {"reasoning_tokens": 3},
+                        "total_tokens": 60
+                    }
+                }
+            }),
+            &tx,
+        );
+
+        let events = drain_events(&mut rx);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LlmEvent::ContentDelta { delta } if delta == "ok"))
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            LlmEvent::Usage { usage }
+                if usage.input_tokens == Some(50)
+                    && usage.cached_input_tokens == Some(32)
+                    && usage.output_tokens == Some(10)
+                    && usage.reasoning_output_tokens == Some(3)
+                    && usage.total_tokens == Some(60)
+        )));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LlmEvent::Done { .. }))
+        );
     }
 
     #[test]

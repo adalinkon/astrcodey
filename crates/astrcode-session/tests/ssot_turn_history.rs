@@ -10,7 +10,10 @@ use std::{
 
 use astrcode_core::{
     event::EventPayload,
-    llm::{LlmContent, LlmError, LlmEvent, LlmMessage, LlmProvider, LlmRole, ModelLimits},
+    llm::{
+        LlmContent, LlmError, LlmEvent, LlmMessage, LlmProvider, LlmRole, LlmTokenUsage,
+        ModelLimits,
+    },
     storage::EventStore,
     tool::ToolDefinition,
     types::{new_message_id, new_session_id, new_turn_id},
@@ -26,6 +29,17 @@ fn test_caps(llm: Arc<dyn LlmProvider>) -> Arc<SessionRuntimeServices> {
 }
 
 async fn spawn_session(llm: Arc<dyn LlmProvider>) -> Session {
+    let (session, _, _) = spawn_session_with_store(llm).await;
+    session
+}
+
+async fn spawn_session_with_store(
+    llm: Arc<dyn LlmProvider>,
+) -> (
+    Session,
+    Arc<dyn EventStore>,
+    astrcode_core::types::SessionId,
+) {
     let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
     let caps = test_caps(llm);
     let sid = new_session_id();
@@ -37,7 +51,7 @@ async fn spawn_session(llm: Arc<dyn LlmProvider>) -> Session {
     let working_dir = std::env::temp_dir().join(sid.as_str());
     std::fs::create_dir_all(&working_dir).unwrap();
     let session = Session::create_with_params(SessionCreateParams {
-        store,
+        store: Arc::clone(&store),
         sid: sid.clone(),
         working_dir: working_dir.to_string_lossy().into_owned(),
         model_id: "mock-model".into(),
@@ -50,7 +64,7 @@ async fn spawn_session(llm: Arc<dyn LlmProvider>) -> Session {
     .await
     .unwrap();
     session.refresh_tools(&working_dir.to_string_lossy()).await;
-    session
+    (session, store, sid)
 }
 
 struct ToolLoopLlm {
@@ -132,6 +146,71 @@ async fn ssot_tool_loop_projection_matches_provider_messages() {
             && m.joined_display_text("\n").contains("final answer")),
         "expected final assistant text in projection"
     );
+}
+
+struct UsageLlm;
+
+#[async_trait::async_trait]
+impl LlmProvider for UsageLlm {
+    async fn generate(
+        &self,
+        _messages: Vec<LlmMessage>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<mpsc::UnboundedReceiver<LlmEvent>, LlmError> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let _ = tx.send(LlmEvent::Usage {
+            usage: LlmTokenUsage {
+                input_tokens: Some(100),
+                cached_input_tokens: Some(64),
+                output_tokens: Some(20),
+                reasoning_output_tokens: Some(5),
+                total_tokens: Some(120),
+            },
+        });
+        let _ = tx.send(LlmEvent::ContentDelta { delta: "ok".into() });
+        let _ = tx.send(LlmEvent::Done {
+            finish_reason: "stop".into(),
+        });
+        Ok(rx)
+    }
+
+    fn model_limits(&self) -> ModelLimits {
+        ModelLimits {
+            max_input_tokens: 12345,
+            max_output_tokens: 4096,
+        }
+    }
+}
+
+#[tokio::test]
+async fn token_usage_is_persisted_as_durable_event() {
+    let (session, store, sid) = spawn_session_with_store(Arc::new(UsageLlm)).await;
+    let turn_id = new_turn_id();
+    let handle = session
+        .submit("record usage".into(), vec![], turn_id)
+        .await
+        .unwrap();
+    let result = handle.wait().await.unwrap();
+    assert!(result.output.is_ok(), "{:?}", result.output);
+
+    let events = store.replay_events(&sid).await.unwrap();
+    let token_usage = events.iter().find_map(|event| match &event.payload {
+        EventPayload::TokenUsageRecorded {
+            usage,
+            model_context_window,
+        } => Some((usage, model_context_window)),
+        _ => None,
+    });
+
+    let Some((usage, model_context_window)) = token_usage else {
+        panic!("expected TokenUsageRecorded event");
+    };
+    assert_eq!(*model_context_window, 12345);
+    assert_eq!(usage.input_tokens, Some(100));
+    assert_eq!(usage.cached_input_tokens, Some(64));
+    assert_eq!(usage.output_tokens, Some(20));
+    assert_eq!(usage.reasoning_output_tokens, Some(5));
+    assert_eq!(usage.total_tokens, Some(120));
 }
 
 struct ThinkingToolsLlm {

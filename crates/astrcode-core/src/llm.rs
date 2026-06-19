@@ -387,6 +387,21 @@ fn truncate_incomplete_tool_protocol(messages: &mut Vec<LlmMessage>) {
     }
 }
 
+/// 单次 LLM 调用的 token 使用统计。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LlmTokenUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+}
+
 /// LLM 流式输出过程中的事件。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -411,6 +426,8 @@ pub enum LlmEvent {
         /// 本次增量参数片段。
         delta: String,
     },
+    /// 单次 LLM 调用的 token 使用统计。
+    Usage { usage: LlmTokenUsage },
     /// 流式输出已完成。
     Done { finish_reason: String },
     /// 流式输出过程中发生错误。

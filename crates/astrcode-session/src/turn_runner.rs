@@ -197,6 +197,7 @@ impl TurnLoop {
                 .prepare_stage(extension_runner.as_ref(), &state, turn_id, publisher)
                 .await?;
             let request_messages = prepared.messages.clone();
+            let model_context_window = prepared.llm.model_limits().max_input_tokens;
             let visible_tools = state.visible_tools();
             let outcome = match self.llm_stage(prepared, &visible_tools, publisher).await {
                 Ok(outcome) => outcome,
@@ -225,6 +226,15 @@ impl TurnLoop {
                 },
                 Err(error) => return Err(error),
             };
+
+            if let Some(usage) = outcome.usage() {
+                publisher
+                    .durable(EventPayload::TokenUsageRecorded {
+                        usage,
+                        model_context_window,
+                    })
+                    .await?;
+            }
 
             let mut hook_messages = request_messages;
             match &outcome {
@@ -264,6 +274,7 @@ impl TurnLoop {
                     finish_reason,
                     message_id,
                     message_started,
+                    usage: _,
                 } => {
                     let reasoning_content = non_empty_reasoning_content(reasoning_content);
                     let assistant_text_for_continue = text.clone();
@@ -319,6 +330,7 @@ impl TurnLoop {
                     tool_calls,
                     message_id,
                     message_started,
+                    usage: _,
                 } => {
                     let reasoning_content = non_empty_reasoning_content(reasoning_content);
                     let visible_text = text.as_deref().unwrap_or_default();

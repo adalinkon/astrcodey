@@ -382,6 +382,7 @@ pub fn reduce(event: &Event, model: &mut SessionReadModel) {
         },
         EventPayload::Custom { .. } => {},
         EventPayload::RecapGenerated { .. } => {},
+        EventPayload::TokenUsageRecorded { .. } => {},
         EventPayload::ExtensionEvent {
             extension_id,
             event_type,

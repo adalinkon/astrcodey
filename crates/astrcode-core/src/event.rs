@@ -9,8 +9,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::{
-    extension::ChildToolPolicy, llm::LlmMessage, message_attachment::MessageAttachment,
-    tool::ToolResult, types::*,
+    extension::ChildToolPolicy,
+    llm::{LlmMessage, LlmTokenUsage},
+    message_attachment::MessageAttachment,
+    tool::ToolResult,
+    types::*,
 };
 
 /// Event 顶层保留字段名集合。
@@ -230,6 +233,12 @@ pub enum EventPayload {
         /// 推理模型的思维链内容。
         #[serde(skip_serializing_if = "Option::is_none")]
         reasoning_content: Option<String>,
+    },
+
+    /// 单次 LLM 调用的 token 使用统计。
+    TokenUsageRecorded {
+        usage: LlmTokenUsage,
+        model_context_window: usize,
     },
 
     /// 思考过程的文本增量（用于推理模型的思维链）。
@@ -878,6 +887,32 @@ mod tests {
         assert_eq!(round_trip, payload);
     }
 
+    #[test]
+    fn token_usage_recorded_serializes_snake_case_usage_fields() {
+        let payload = EventPayload::TokenUsageRecorded {
+            usage: LlmTokenUsage {
+                input_tokens: Some(100),
+                cached_input_tokens: Some(64),
+                output_tokens: Some(20),
+                reasoning_output_tokens: Some(5),
+                total_tokens: Some(120),
+            },
+            model_context_window: 8192,
+        };
+
+        let value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(value["type"], "token_usage_recorded");
+        assert_eq!(value["usage"]["input_tokens"], 100);
+        assert_eq!(value["usage"]["cached_input_tokens"], 64);
+        assert_eq!(value["usage"]["output_tokens"], 20);
+        assert_eq!(value["usage"]["reasoning_output_tokens"], 5);
+        assert_eq!(value["usage"]["total_tokens"], 120);
+        assert_eq!(value["model_context_window"], 8192);
+
+        let round_trip: EventPayload = serde_json::from_value(value).unwrap();
+        assert_eq!(round_trip, payload);
+    }
+
     /// 扫描所有现有 EventPayload 变体，断言事件写出时 payload 字段不泄漏到顶层。
     #[test]
     fn event_payload_variants_stay_nested() {
@@ -945,6 +980,16 @@ mod tests {
                 message_id: "m".into(),
                 text: "t".into(),
                 reasoning_content: None,
+            },
+            EventPayload::TokenUsageRecorded {
+                usage: LlmTokenUsage {
+                    input_tokens: Some(1),
+                    cached_input_tokens: Some(1),
+                    output_tokens: Some(1),
+                    reasoning_output_tokens: Some(1),
+                    total_tokens: Some(2),
+                },
+                model_context_window: 1024,
             },
             EventPayload::ThinkingDelta {
                 message_id: "m".into(),

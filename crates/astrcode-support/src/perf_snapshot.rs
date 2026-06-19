@@ -74,6 +74,7 @@ fn payload_type(payload: &EventPayload) -> &'static str {
         EventPayload::AssistantMessageStarted { .. } => "assistant_message_started",
         EventPayload::AssistantTextDelta { .. } => "assistant_text_delta",
         EventPayload::AssistantMessageCompleted { .. } => "assistant_message_completed",
+        EventPayload::TokenUsageRecorded { .. } => "token_usage_recorded",
         EventPayload::ThinkingDelta { .. } => "thinking_delta",
         EventPayload::ToolCallStarted { .. } => "tool_call_started",
         EventPayload::ToolCallArgumentsDelta { .. } => "tool_call_arguments_delta",
@@ -157,6 +158,18 @@ fn payload_details(payload: &EventPayload) -> String {
             format!("bytes={}", text.len())
         },
         EventPayload::TurnCompleted { finish_reason } => format!("reason={finish_reason}"),
+        EventPayload::TokenUsageRecorded {
+            usage,
+            model_context_window,
+        } => format!(
+            "input={:?} cached={:?} output={:?} reasoning={:?} total={:?} context_window={}",
+            usage.input_tokens,
+            usage.cached_input_tokens,
+            usage.output_tokens,
+            usage.reasoning_output_tokens,
+            usage.total_tokens,
+            model_context_window
+        ),
         EventPayload::AgentRunCompleted { reason } => format!("reason={reason}"),
         EventPayload::ErrorOccurred {
             code, recoverable, ..

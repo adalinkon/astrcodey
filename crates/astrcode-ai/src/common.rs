@@ -79,6 +79,7 @@ pub fn send_event(tx: &mpsc::UnboundedSender<LlmEvent>, event: LlmEvent) -> bool
 #[derive(Debug, Default)]
 pub struct StreamEventSink {
     done_sent: bool,
+    usage_reported: bool,
     fallback_call_id: u64,
 }
 
@@ -89,6 +90,14 @@ impl StreamEventSink {
 
     pub fn done_sent(&self) -> bool {
         self.done_sent
+    }
+
+    pub fn usage_reported(&self) -> bool {
+        self.usage_reported
+    }
+
+    pub fn mark_usage_reported(&mut self) {
+        self.usage_reported = true;
     }
 
     pub fn tool_call_id(&mut self, provider_id: Option<&str>) -> String {

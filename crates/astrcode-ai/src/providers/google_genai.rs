@@ -158,6 +158,15 @@ fn process_gemini_chunk(
     tx: &mpsc::UnboundedSender<LlmEvent>,
     sink: &mut StreamEventSink,
 ) -> bool {
+    if !sink.usage_reported() {
+        if let Some(usage) = extract_gemini_token_usage(event) {
+            if !send_event(tx, LlmEvent::Usage { usage }) {
+                return false;
+            }
+            sink.mark_usage_reported();
+        }
+    }
+
     let Some(candidates) = event.get("candidates").and_then(|v| v.as_array()) else {
         return true;
     };
@@ -216,6 +225,28 @@ fn process_gemini_chunk(
     }
 
     true
+}
+
+fn extract_gemini_token_usage(event: &serde_json::Value) -> Option<LlmTokenUsage> {
+    let usage = event.get("usageMetadata")?;
+    let token_usage = LlmTokenUsage {
+        input_tokens: usage.get("promptTokenCount").and_then(|v| v.as_u64()),
+        cached_input_tokens: usage
+            .get("cachedContentTokenCount")
+            .and_then(|v| v.as_u64()),
+        output_tokens: usage.get("candidatesTokenCount").and_then(|v| v.as_u64()),
+        reasoning_output_tokens: usage.get("thoughtsTokenCount").and_then(|v| v.as_u64()),
+        total_tokens: usage.get("totalTokenCount").and_then(|v| v.as_u64()),
+    };
+    token_usage_has_value(&token_usage).then_some(token_usage)
+}
+
+fn token_usage_has_value(usage: &LlmTokenUsage) -> bool {
+    usage.input_tokens.is_some()
+        || usage.cached_input_tokens.is_some()
+        || usage.output_tokens.is_some()
+        || usage.reasoning_output_tokens.is_some()
+        || usage.total_tokens.is_some()
 }
 
 // ─── Message conversion ──────────────────────────────────────────────────
@@ -409,6 +440,36 @@ mod tests {
             .count();
         assert_eq!(done_count, 1);
         assert!(sink.done_sent());
+    }
+
+    #[test]
+    fn gemini_usage_metadata_emits_token_usage() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut sink = StreamEventSink::new();
+        let event = serde_json::json!({
+            "usageMetadata": {
+                "promptTokenCount": 100,
+                "cachedContentTokenCount": 64,
+                "candidatesTokenCount": 20,
+                "thoughtsTokenCount": 5,
+                "totalTokenCount": 120
+            },
+            "candidates": []
+        });
+
+        assert!(process_gemini_chunk(&event, &tx, &mut sink));
+
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(matches!(
+            events.as_slice(),
+            [LlmEvent::Usage { usage }]
+                if usage.input_tokens == Some(100)
+                    && usage.cached_input_tokens == Some(64)
+                    && usage.output_tokens == Some(20)
+                    && usage.reasoning_output_tokens == Some(5)
+                    && usage.total_tokens == Some(120)
+        ));
+        assert!(sink.usage_reported());
     }
 
     #[test]

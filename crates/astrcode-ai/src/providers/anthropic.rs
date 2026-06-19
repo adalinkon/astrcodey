@@ -212,6 +212,7 @@ impl LlmProvider for AnthropicProvider {
 #[derive(Debug, Default)]
 struct AnthropicStreamState {
     sink: StreamEventSink,
+    usage_reported: bool,
     /// SSE content block index → actual tool call id。
     index_to_call_id: HashMap<u64, String>,
     block_stream_state: HashMap<u64, BlockStreamState>,
@@ -383,6 +384,14 @@ fn handle_anthropic_event(
             }
         },
         "message_delta" => {
+            if !state.usage_reported {
+                if let Some(usage) = extract_anthropic_token_usage(event) {
+                    if !send_event(tx, LlmEvent::Usage { usage }) {
+                        return false;
+                    }
+                    state.usage_reported = true;
+                }
+            }
             if let Some(stop_reason) = event.pointer("/delta/stop_reason").and_then(|v| v.as_str())
             {
                 state.sink.emit_done(tx, stop_reason)
@@ -401,6 +410,29 @@ fn handle_anthropic_event(
         },
         _ => true,
     }
+}
+
+fn extract_anthropic_token_usage(event: &serde_json::Value) -> Option<LlmTokenUsage> {
+    let usage = event.get("usage")?;
+    // TODO: model cache_creation_input_tokens separately if callers need write-cache cost details.
+    let token_usage = LlmTokenUsage {
+        input_tokens: usage.get("input_tokens").and_then(|v| v.as_u64()),
+        cached_input_tokens: usage
+            .get("cache_read_input_tokens")
+            .and_then(|v| v.as_u64()),
+        output_tokens: usage.get("output_tokens").and_then(|v| v.as_u64()),
+        reasoning_output_tokens: None,
+        total_tokens: None,
+    };
+    token_usage_has_value(&token_usage).then_some(token_usage)
+}
+
+fn token_usage_has_value(usage: &LlmTokenUsage) -> bool {
+    usage.input_tokens.is_some()
+        || usage.cached_input_tokens.is_some()
+        || usage.output_tokens.is_some()
+        || usage.reasoning_output_tokens.is_some()
+        || usage.total_tokens.is_some()
 }
 
 // ─── Message conversion ──────────────────────────────────────────────────
@@ -689,6 +721,42 @@ mod tests {
             .count();
         assert_eq!(done_count, 1);
         assert!(state.sink.done_sent());
+    }
+
+    #[test]
+    fn message_delta_usage_emits_token_usage_before_done() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AnthropicStreamState::default();
+        let event = serde_json::json!({
+            "usage": {
+                "input_tokens": 100,
+                "cache_read_input_tokens": 40,
+                "cache_creation_input_tokens": 7,
+                "output_tokens": 20
+            },
+            "delta": {"stop_reason": "end_turn"}
+        });
+
+        assert!(handle_anthropic_event(
+            "message_delta",
+            &event,
+            &tx,
+            &mut state,
+        ));
+
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                LlmEvent::Usage { usage },
+                LlmEvent::Done { finish_reason }
+            ] if usage.input_tokens == Some(100)
+                && usage.cached_input_tokens == Some(40)
+                && usage.output_tokens == Some(20)
+                && usage.reasoning_output_tokens.is_none()
+                && usage.total_tokens.is_none()
+                && finish_reason == "end_turn"
+        ));
     }
 
     #[test]

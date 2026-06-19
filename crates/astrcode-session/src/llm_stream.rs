@@ -3,7 +3,7 @@
 use astrcode_core::{
     context::is_prompt_too_long_message,
     event::EventPayload,
-    llm::{LlmError, LlmEvent},
+    llm::{LlmError, LlmEvent, LlmTokenUsage},
     types::*,
 };
 use tokio::sync::mpsc;
@@ -38,6 +38,7 @@ pub enum StreamOutcome {
         finish_reason: String,
         message_id: MessageId,
         message_started: bool,
+        usage: Option<LlmTokenUsage>,
     },
     ToolCalls {
         text: Option<String>,
@@ -45,7 +46,16 @@ pub enum StreamOutcome {
         tool_calls: Vec<PendingToolCall>,
         message_id: MessageId,
         message_started: bool,
+        usage: Option<LlmTokenUsage>,
     },
+}
+
+impl StreamOutcome {
+    pub fn usage(&self) -> Option<LlmTokenUsage> {
+        match self {
+            Self::Complete { usage, .. } | Self::ToolCalls { usage, .. } => usage.clone(),
+        }
+    }
 }
 
 /// 消费 LLM 事件流直到完成或积累工具调用。
@@ -64,6 +74,7 @@ pub async fn consume_llm_stream(
     let mut tool_calls: Vec<PendingToolCall> = Vec::new();
     let mut message_started = false;
     let mut pending: Option<LlmEvent> = None;
+    let mut captured_usage: Option<LlmTokenUsage> = None;
 
     loop {
         let event = match pending.take() {
@@ -181,6 +192,9 @@ pub async fn consume_llm_stream(
                     })
                     .await;
             },
+            LlmEvent::Usage { usage } => {
+                captured_usage = Some(usage);
+            },
             LlmEvent::Done { finish_reason } => {
                 if tool_calls.is_empty() {
                     return Ok(StreamOutcome::Complete {
@@ -189,6 +203,7 @@ pub async fn consume_llm_stream(
                         finish_reason,
                         message_id,
                         message_started,
+                        usage: captured_usage,
                     });
                 }
                 let text = if current_text.is_empty() {
@@ -202,6 +217,7 @@ pub async fn consume_llm_stream(
                     tool_calls,
                     message_id,
                     message_started,
+                    usage: captured_usage,
                 });
             },
             LlmEvent::Error { message } => {
