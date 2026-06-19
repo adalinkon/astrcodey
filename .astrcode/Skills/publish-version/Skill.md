@@ -1,11 +1,7 @@
 ---
 name: publish-version
-description: 发布新版本：检查并同步所有版本号，提交，打 tag，推送到 GitHub 触发 release workflow
+description: 发布新版本：检查并同步所有版本号，提交，打 tag，推送到 GitHub 触发 release workflow,用户说「发版」「发布」「publish」「release」或明确要求发布某个版本时触发。
 ---
-
-## 触发条件
-
-用户说「发版」「发布」「publish」「release」或明确要求发布某个版本时触发。
 
 ## 发版流程
 
