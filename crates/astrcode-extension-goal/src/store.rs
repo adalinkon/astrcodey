@@ -77,6 +77,8 @@ pub(crate) struct GoalState {
     #[serde(default)]
     pub continuation_prompt_pending: bool,
     #[serde(default)]
+    pub budget_limit_prompt_pending: bool,
+    #[serde(default)]
     pub continuation_count: u64,
 }
 
@@ -97,6 +99,7 @@ impl GoalState {
             created_at: now,
             updated_at: now,
             continuation_prompt_pending: false,
+            budget_limit_prompt_pending: false,
             continuation_count: 0,
         }
     }
@@ -127,10 +130,27 @@ impl GoalState {
         pending
     }
 
+    pub(crate) fn mark_budget_limit_prompt_pending(&mut self) {
+        self.budget_limit_prompt_pending = true;
+        self.touch();
+    }
+
+    pub(crate) fn take_budget_limit_prompt_pending(&mut self) -> bool {
+        let pending = self.budget_limit_prompt_pending;
+        self.budget_limit_prompt_pending = false;
+        if pending {
+            self.touch();
+        }
+        pending
+    }
+
     pub(crate) fn set_status(&mut self, status: GoalStatus) {
         self.status = status;
         if status != GoalStatus::Active {
             self.continuation_prompt_pending = false;
+        }
+        if status != GoalStatus::BudgetLimited {
+            self.budget_limit_prompt_pending = false;
         }
         self.touch();
     }
@@ -239,12 +259,35 @@ impl GoalStore {
         let mut state = self
             .load()?
             .ok_or_else(|| "no goal exists for this session".to_string())?;
-        if state.status != GoalStatus::Paused {
+        if !matches!(state.status, GoalStatus::Paused | GoalStatus::BudgetLimited) {
             return Err(format!(
-                "only paused goals can be resumed; current status is {}",
+                "only paused or budget_limited goals can be resumed; current status is {}",
                 state.status.label()
             ));
         }
+        state.set_status(GoalStatus::Active);
+        self.save(&state)?;
+        Ok(state)
+    }
+
+    /// 调整 goal 的 token 预算并恢复到 active。
+    ///
+    /// 用于 BudgetLimited（预算耗尽）后"追加额度继续"的场景：保留原有
+    /// `token_usage_baseline` 和 `continuation_count`，只替换预算上限并解冻，
+    /// 避免用户只能 `/goal clear` 重建而丢失进度。
+    ///
+    /// `new_budget` 为新总预算（不是增量）；已完成的 goal 不可调整。
+    pub(crate) fn adjust_budget(&self, new_budget: u64) -> Result<GoalState, String> {
+        if new_budget == 0 {
+            return Err("tokenBudget must be greater than zero".to_string());
+        }
+        let mut state = self
+            .load()?
+            .ok_or_else(|| "no goal exists for this session".to_string())?;
+        if state.status == GoalStatus::Complete {
+            return Err("cannot adjust budget on a completed goal".to_string());
+        }
+        state.token_budget = Some(new_budget);
         state.set_status(GoalStatus::Active);
         self.save(&state)?;
         Ok(state)
@@ -329,6 +372,7 @@ mod tests {
             .create("Finish work".into(), None, None)
             .expect("create should succeed");
         state.mark_continuation_pending();
+        state.mark_budget_limit_prompt_pending();
         store.save(&state).expect("save should succeed");
 
         let updated = store
@@ -337,10 +381,11 @@ mod tests {
 
         assert_eq!(updated.status, GoalStatus::Blocked);
         assert!(!updated.continuation_prompt_pending);
+        assert!(!updated.budget_limit_prompt_pending);
     }
 
     #[test]
-    fn resume_only_allows_paused_goal() {
+    fn resume_allows_paused_or_budget_limited() {
         let store = GoalStore::new(test_root("resume"));
         store
             .create("Finish work".into(), None, None)
@@ -351,11 +396,72 @@ mod tests {
             .expect_err("active goal should not resume again");
         assert_eq!(
             error,
-            "only paused goals can be resumed; current status is active"
+            "only paused or budget_limited goals can be resumed; current status is active"
         );
 
         store.pause().expect("pause should succeed");
         let resumed = store.resume().expect("resume should succeed");
         assert_eq!(resumed.status, GoalStatus::Active);
+    }
+
+    #[test]
+    fn resume_allows_budget_limited_goal() {
+        let store = GoalStore::new(test_root("resume-budget-limited"));
+        let mut state = store
+            .create("Finish work".into(), Some(100), Some(0))
+            .expect("create should succeed");
+        state.set_status(GoalStatus::BudgetLimited);
+        store.save(&state).expect("save should succeed");
+
+        let resumed = store.resume().expect("budget_limited can resume");
+        assert_eq!(resumed.status, GoalStatus::Active);
+    }
+
+    #[test]
+    fn adjust_budget_raises_ceiling_and_reactivates() {
+        let store = GoalStore::new(test_root("adjust-budget"));
+        let mut state = store
+            .create("Finish work".into(), Some(100), Some(0))
+            .expect("create should succeed");
+        let original_baseline = state.token_usage_baseline;
+        // 累积一次续跑，记录此时的 baseline 和 count，验证 adjust_budget 不重置它们。
+        state.mark_continuation_pending();
+        state.take_continuation_prompt_pending();
+        store.save(&state).expect("save before budget limit");
+        let state_before_limit = store.load().unwrap().unwrap();
+        let expected_count = state_before_limit.continuation_count;
+        let mut state = state_before_limit;
+        state.set_status(GoalStatus::BudgetLimited);
+        store.save(&state).expect("save budget limited");
+
+        let adjusted = store.adjust_budget(500).expect("adjust should succeed");
+
+        assert_eq!(adjusted.status, GoalStatus::Active);
+        assert_eq!(adjusted.token_budget, Some(500));
+        // baseline 与 continuation_count 应保留，体现"追加额度"而非重建。
+        assert_eq!(adjusted.token_usage_baseline, original_baseline);
+        assert_eq!(adjusted.continuation_count, expected_count);
+    }
+
+    #[test]
+    fn adjust_budget_rejects_zero_and_completed() {
+        let store = GoalStore::new(test_root("adjust-budget-reject"));
+
+        let error = store
+            .adjust_budget(0)
+            .expect_err("zero budget rejected even without a goal");
+        assert_eq!(error, "tokenBudget must be greater than zero");
+
+        store
+            .create("Finish work".into(), Some(100), None)
+            .expect("create should succeed");
+        store
+            .update_status(GoalUpdateStatus::Complete)
+            .expect("complete should succeed");
+
+        let error = store
+            .adjust_budget(500)
+            .expect_err("completed goal cannot adjust budget");
+        assert_eq!(error, "cannot adjust budget on a completed goal");
     }
 }

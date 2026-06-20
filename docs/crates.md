@@ -472,10 +472,10 @@ Feature：
 
 - 扩展 id：`astrcode-goal`。
 - 工具：`getGoal`、`createGoal`、`updateGoal`。
-- Slash command：`/goal`，可显示、创建、暂停、恢复、清空、complete 或 blocked 当前 goal。
+- Slash command：`/goal`，可显示、创建、暂停、恢复、清空、complete 或 blocked 当前 goal；`/goal budget <n>` 在预算耗尽后调整总额并恢复 active。
 - 持久化：`<session>/extension_data/astrcode-goal/goal/goal-state.json`。
 - 续跑：注册 `ContinueAfterStopOptions::unlimited()` 的 blocking-only `ContinueAfterStop` decision hook；hook 只设置下一步续跑意图，真正的目标上下文由 `BeforeProviderRequest` 以非持久 provider-visible user message 注入，避免写入 durable transcript。
-- Token 预算：声明 `SessionHistory` 后通过 SDK `EventReader` 汇总 `TokenUsageRecorded`，达到 `tokenBudget` 时把 goal 标为 `budget_limited` 并停止自动续跑。
+- Token 预算：声明 `SessionHistory` 后通过 SDK `EventReader` 汇总 `TokenUsageRecorded`，按 non-cached input + output 统计 goal token（分项任一缺失时整体 fallback 到 provider `total_tokens`，并扣除 reasoning 保持口径一致）；达到 `tokenBudget` 时系统把 goal 标为 `budget_limited`，再通过一次非持久 hidden provider message 让模型收尾，随后停止自动续跑。`budget_limited` 与 `paused` 的 goal 都可经 `/goal resume` 或 `/goal budget <n>` 恢复。
 
 能力声明：`SessionHistory`。session-local goal state 使用默认 namespaced session state API。
 
