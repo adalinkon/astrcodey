@@ -53,7 +53,6 @@ Hook 语义矩阵见 [extension-hook-matrix.md](extension-hook-matrix.md)。
 | `astrcode-skill` | `astrcode-extension-skill` | 启用 | 斜杠命令 Skill 发现与调度 |
 | `astrcode-todo-tool` | `astrcode-extension-todo-tool` | 启用 | Todo 进度追踪工具 |
 | `astrcode-mode` | `astrcode-extension-mode` | 启用 | Code / Plan 模式切换 |
-| `astrcode-goal` | `astrcode-extension-goal` | 启用 | Codex-style session goal 与自动续跑 |
 | `astrcode.memory` | `astrcode-extension-memory` | **关闭** | 项目级 Markdown 记忆 |
 | `astrcode-channels` | `astrcode-extension-channels` | **关闭** | Telegram 通道桥接 |
 | `astrcode-web-tools` | `astrcode-extension-web-tools` | 启用 | `web-search` / `fetch-url` 内置 Web 工具 |

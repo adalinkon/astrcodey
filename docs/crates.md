@@ -460,27 +460,6 @@ Feature：
 
 测试线索：`tools.rs`、`store.rs`、`catalog.rs`、`ask_user.rs` 覆盖模式切换、计划写入、状态持久化和 UI 参数。
 
-## `astrcode-extension-goal`
-
-路径：`crates/astrcode-extension-goal`
-
-职责：提供 Codex-style session goal 状态机，让模型可以创建、查询、完成或标记阻塞一个当前目标，并在目标仍 active 时通过 `ContinueAfterStop` 请求宿主继续一个 agent step。
-
-关键行为：
-
-- 扩展 id：`astrcode-goal`。
-- 工具：`getGoal`、`createGoal`、`updateGoal`。
-- Slash command：`/goal`，可显示、创建、暂停、恢复、清空、complete 或 blocked 当前 goal；`/goal budget <n>` 在预算耗尽后调整总额并恢复 active。
-- 持久化：`<session>/extension_data/astrcode-goal/goal/goal-state.json`。
-- 续跑：注册 `ContinueAfterStopOptions::unlimited()` 的 blocking-only `ContinueAfterStop` decision hook；hook 只设置下一步续跑意图，真正的目标上下文由 `BeforeProviderRequest` 以非持久 provider-visible user message 注入，避免写入 durable transcript。
-- Token 预算：声明 `SessionHistory` 后通过 SDK `EventReader` 汇总 `TokenUsageRecorded`，按 non-cached input + output 统计 goal token（分项任一缺失时整体 fallback 到 provider `total_tokens`，并扣除 reasoning 保持口径一致）；达到 `tokenBudget` 时系统把 goal 标为 `budget_limited`，再通过一次非持久 hidden provider message 让模型收尾，随后停止自动续跑。`budget_limited` 与 `paused` 的 goal 都可经 `/goal resume` 或 `/goal budget <n>` 恢复。
-
-能力声明：`SessionHistory`。session-local goal state 使用默认 namespaced session state API。
-
-依赖边界：只依赖 `astrcode-extension-sdk`。session 数据目录、事件读取和 LLM/tool 类型都通过 SDK re-export 使用。
-
-测试线索：`store.rs` 覆盖状态持久化和状态转移；`lib.rs` 覆盖 token 预算、prompt 注入文本和 token fallback 汇总。
-
 ## `astrcode-extension-memory`
 
 路径：`crates/astrcode-extension-memory`
